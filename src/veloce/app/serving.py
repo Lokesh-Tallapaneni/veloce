@@ -48,10 +48,10 @@ class ServingMixin:
 
         The version is the installed *framework* version, resolved from the same
         distribution metadata `veloce.__version__` and `veloce --version` read.
-        It used to print `self.version`, which is the constructor's `version=` -
-        the API version emitted into the OpenAPI document - so a default app
-        announced `Veloce v0.1.0` whatever framework version was running, on the
-        one line an operator reads to find out.
+        Not `self.version`, which is the constructor's `version=` - the API
+        version emitted into the OpenAPI document. Printing that makes a
+        default app announce `Veloce v0.1.0` whatever framework version is
+        running, on the one line an operator reads to find out.
         """
         scheme = URL_SCHEME_HTTPS if tls else URL_SCHEME_HTTP
         print(f"\n  Veloce v{resolve_version()}")

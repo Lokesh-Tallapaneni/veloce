@@ -799,7 +799,7 @@ class Veloce(
         self._json_provider = provider
 
     def _resolve_handler_json_dumps(self) -> Any:
-        """The serialiser a handler's JSON return must use, or `None` for direct.
+        """Resolve the serialiser a handler's JSON return must use, or `None`.
 
         `None` is returned when the active provider is the stock one with no
         configured options, because the direct path already produces exactly
@@ -1003,8 +1003,9 @@ class Veloce(
         return await self._dispatch_request(request, self._ensure_pipeline())
 
     async def full_dispatch_request(self, request: Request) -> Any:
-        """Alias for `_dispatch_request` (which already runs the
-        full before/after-request hook chain inline).
+        """Dispatch `request` through the full before/after-request hook chain.
+
+        An alias for `_dispatch_request`, which already runs the chain inline.
         """
         return await self._dispatch_request(request, self._ensure_pipeline())
 
@@ -1141,8 +1142,7 @@ class Veloce(
         return dict(cached)
 
     def endpoint(self, name: str) -> Callable:
-        """Decorator attaching a function as the view for `name`
-        on an already-registered route.
+        """Attach a function as the view for an already-registered `name`.
 
         Useful when separating route declaration (via
         `app.add_url_rule(rule, endpoint="x")`) from view registration.
@@ -1290,8 +1290,9 @@ class Veloce(
     # ── URL processors (URL hooks) ────────────────────────
 
     def url_value_preprocessor(self, func: Callable) -> Callable:
-        """Register a function `fn(endpoint, values)` that can mutate the
-        matched path params before the handler runs.
+        """Register a callback that may mutate the matched path params.
+
+        Called as `fn(endpoint, values)` before the handler runs.
 
         Usage::
 
@@ -1317,9 +1318,10 @@ class Veloce(
         )
 
     def url_for(self, name: str, /, **path_params: Any) -> str:
-        """`Veloce.url_for` runs `@app.url_defaults` callbacks before
-        delegating to `Router.url_for`, so injected defaults appear in the
-        rendered URL.
+        """Build the URL for `name`, applying the `@app.url_defaults` callbacks.
+
+        They run before delegating to `Router.url_for`, so injected defaults
+        appear in the rendered URL.
 
         On build failure (unknown endpoint or missing path parameter),
         each registered `app.url_build_error_handlers` callback is
@@ -1360,8 +1362,9 @@ class Veloce(
         return self.url_for(name, **path_params)
 
     def url_defaults(self, func: Callable) -> Callable:
-        """Register a function `fn(endpoint, values)` that injects default
-        kwargs into every `url_for` / `url_path_for` call.
+        """Register a callback injecting default kwargs into every URL build.
+
+        Called as `fn(endpoint, values)` from `url_for` and `url_path_for`.
 
         Usage::
 
@@ -1627,7 +1630,7 @@ class Veloce(
         self._spawned_anon: set[asyncio.Task[Any]] = set()
 
     def _init_middleware_state(self) -> None:
-        """The app logger and the middleware ledger its registration funnels write."""
+        """Set up the app logger and the ledger middleware registration writes to."""
         # Set up logger: the logger name is the
         # `import_name` (already resolved to the caller's module above
         # when not passed explicitly).
@@ -1657,7 +1660,7 @@ class Veloce(
         self._mw_version = 0
 
     def _init_feature_pipeline(self) -> None:
-        """The feature registry and the pipeline compiled from it.
+        """Set up the feature registry and the pipeline compiled from it.
 
         The `FeatureSpec` declarations are appended in order and read back as a
         sequence, so they stay together here rather than being split by topic.
@@ -1746,7 +1749,7 @@ class Veloce(
         )
 
     def _init_asgi_stack_state(self) -> None:
-        """The ASGI wrapper stack and the observability hooks around it."""
+        """Set up the ASGI wrapper stack and the observability hooks around it."""
         # Standard ASGI middleware - `(class, options)` pairs. Each wraps the
         # whole ASGI application (instantiated as `cls(app, **options)`) and
         # is assembled lazily into `_asgi_stack` on the first request.
@@ -1768,7 +1771,7 @@ class Veloce(
         self._instrumentation_excludes: dict[Callable, frozenset[str]] = {}
 
     def _init_introspection_caches(self) -> None:
-        """The watchdog handle, error-handler maps, and the lazy route caches."""
+        """Set up the watchdog handle, error-handler maps and lazy route caches."""
         # Dev-mode event-loop blocking watchdog - armed during startup only
         # when the `EVENT_LOOP_WATCHDOG` config key is set, so it is `None`
         # (and free) for every other app.
@@ -1827,10 +1830,10 @@ class Veloce(
         self._first_request_lock: asyncio.Lock | None = None
         self._after_request_hooks: list[Callable] = []
         self._teardown_request_hooks: list[Callable] = []
-        # Blueprint hooks bucketed by blueprint name. Dispatch only walks
-        # the bucket whose name matches the matched route's `endpoint`
-        # prefix, avoiding the O(B*H) per-request no-op gate iteration
-        # the flattened-with-startswith-gate approach used to incur.
+        # Blueprint hooks bucketed by blueprint name. Dispatch walks only
+        # the bucket whose name matches the matched route's `endpoint` prefix,
+        # so the cost is the matched blueprint's hooks and not O(B*H) gate
+        # checks across every blueprint's.
         self._bp_before_hooks: dict[str, list[Callable]] = {}
         self._bp_after_hooks: dict[str, list[Callable]] = {}
         self._bp_teardown_hooks: dict[str, list[Callable]] = {}

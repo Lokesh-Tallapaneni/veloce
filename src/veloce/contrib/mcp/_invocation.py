@@ -45,11 +45,11 @@ _logger = logging.getLogger(__name__)
 def _argument_error_text(errors: Any) -> str:
     """Render binding errors as text a language model can act on.
 
-    The wire form used to be `str()` of the error list - a Python repr, with
-    single quotes and a `loc` path that reads as framework internals. A model
-    receiving that has to guess which argument it got wrong; naming the argument
-    and the expectation is the difference between a retry that can succeed and
-    one that cannot.
+    Not `str()` of the error list: that is a Python repr, with single quotes
+    and a `loc` path that reads as framework internals, and a model receiving it
+    has to guess which argument it got wrong. Naming the argument and the
+    expectation is the difference between a retry that can succeed and one that
+    cannot.
     """
     if not isinstance(errors, list) or not errors:
         return "Invalid arguments"
@@ -70,7 +70,7 @@ def _argument_error_text(errors: Any) -> str:
 
 
 def _resolve_log_level(session: Any) -> str | None:
-    """The level this call's notifications are filtered against.
+    """Resolve the level this call's notifications are filtered against.
 
     Precedence is per-request first, then per-connection. A modern request names
     its level in `_meta` and the dispatcher puts that in the ContextVar, so it

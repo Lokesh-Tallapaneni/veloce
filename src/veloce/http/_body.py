@@ -48,7 +48,7 @@ DEFAULT_LOW_WATER_CHUNKS = 4
 
 
 def body_too_large(limit: int | None) -> RequestEntityTooLarge:
-    """The refusal a body source raises, carrying the limit it tripped.
+    """Build the refusal a body source raises, carrying the limit it tripped.
 
     The limit rides on the exception so the rendered body matches the one the
     eager refusal paths emit through `too_large_payload`. Without it a streamed
@@ -63,7 +63,7 @@ def body_too_large(limit: int | None) -> RequestEntityTooLarge:
 
 
 def too_large_payload(limit: int | None) -> dict[str, Any]:
-    """The body both transports answer a `MAX_CONTENT_LENGTH` refusal with.
+    """Build the body both transports answer a `MAX_CONTENT_LENGTH` refusal with.
 
     Built here so the two paths cannot describe the same refusal differently.
     The ASGI path answered `{detail, status_code, limit}` as JSON while the

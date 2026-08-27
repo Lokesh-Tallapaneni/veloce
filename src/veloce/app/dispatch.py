@@ -183,7 +183,7 @@ def _adapt_hook_kwargs(
     request: Request,
     second_value: Any,
 ) -> dict[str, Any]:
-    """The kwargs `fn` accepts, from `request` and one other named value.
+    """Select the kwargs `fn` accepts, from `request` and one other value.
 
     After-request hooks and exception handlers are the same adapter: both take
     `request` and one more parameter (`response` / `exc`), either by name or via
@@ -302,7 +302,7 @@ class DispatchMixin:
     async def handle_request(
         self, request: Request, cp: CompiledPipeline | None = None, match: Any = None
     ) -> Response:
-        """Main request handler - runs middleware chain + route dispatch.
+        """Handle one request - run the middleware chain, then route dispatch.
 
         `cp` is the compiled pipeline for this request. `__call__` already
         resolves it (to gate the ASGI wrapper stack) and threads it in so the
@@ -495,10 +495,9 @@ class DispatchMixin:
         cold branches were moved out of `_asgi_app` and these were not. What is
         here is here on purpose.
 
-        This docstring used to call it a "thin orchestrator" whose phases "each
-        live in a focused helper". They do not - the method is over three
-        hundred lines - and a reader who believed it went looking for helpers
-        that were never there.
+        This is not a thin orchestrator delegating to per-phase helpers: the
+        method is over three hundred lines and the phases are inline. Reading
+        it means reading it, not following calls out.
 
         The `try/finally` owns the per-request teardown state (`_exc`,
         `_bp_name`, `resolver`) that the `finally` block reads; that is the
@@ -1195,11 +1194,10 @@ class DispatchMixin:
         # The handler may return a dict/BaseModel/list; if the route
         # declared a response_model, route the value through it so
         # extra fields drop, aliases apply, and unset/None filters fire.
-        # Every backend shapes: `_apply_response_model` dispatches a msgspec
-        # struct (or `list[Struct]`) to the backend-agnostic shaper. It used to
-        # be excluded here and reached `_coerce_response` unshaped, so
-        # `response_model` filtered nothing on that backend and a subclass put
-        # its extra fields on the wire.
+        # Every backend shapes. `_apply_response_model` dispatches a msgspec
+        # struct (or `list[Struct]`) to the backend-agnostic shaper like any
+        # other value: a backend that reached `_coerce_response` unshaped would
+        # filter nothing, and a subclass would put its extra fields on the wire.
         if route_info.response_model is not None and not isinstance(result, Response):
             result = self._apply_response_model(result, route_info)
 
@@ -1352,8 +1350,8 @@ class DispatchMixin:
             # Adapt to the handler's signature rather than assuming it takes
             # only `request`. The same handler registered for a status code is
             # reachable from here and from `handle_http_exception`, which passes
-            # the exception; a `(request, exc)` handler used to raise
-            # `TypeError` on this path, and that TypeError escaped dispatch.
+            # the exception - so a `(request, exc)` handler must be callable on
+            # both paths, or the `TypeError` escapes dispatch itself.
             if exc is None:
                 exc = HTTPException(status_code=status_code)
             result = await self._call_exc_handler(handler, request, exc)
@@ -1367,12 +1365,13 @@ class DispatchMixin:
         matches any non-empty subdomain. What the request's subdomain *is* comes
         from `Request.subdomain`, which is the same question a handler asks.
 
-        The two used to derive it separately and disagreed: `Request.subdomain`
-        short-circuits an IP literal, because its dots are address structure and
-        not name labels, and this one did not. So a route declared
-        `subdomain="192"` matched a request to `192.168.1.1`, and the handler
-        that matched then asked the framework the same question and was told the
-        subdomain was empty.
+        Deriving it here separately would let the two disagree, and the way
+        they disagree is not benign: `Request.subdomain` short-circuits an IP
+        literal, because its dots are address structure and not name labels. A
+        second derivation without that rule matches a route declared
+        `subdomain="192"` against a request to `192.168.1.1` - and the handler
+        it matched then asks the framework the same question and is told the
+        subdomain is empty.
         """
         actual = request.subdomain
         if subdomain == "*":
@@ -1546,7 +1545,7 @@ class DispatchMixin:
 
     @staticmethod
     def _response_class_mismatch(response_class: Any, result: Any) -> str:
-        """The message for a return value the declared response class cannot render.
+        """Build the message for a return the declared response class cannot render.
 
         A text response class encodes what it is given, so a `dict` reached
         `.encode()` and produced `AttributeError: 'dict' object has no attribute
@@ -1582,7 +1581,7 @@ class DispatchMixin:
         return JSONResponse._from_encoded(body)
 
     def _json_dumps_override(self) -> Any:
-        """The configured serialiser, or `None` to take the direct path.
+        """Return the configured serialiser, or `None` to take the direct path.
 
         Resolved once and cached. `None` is the stock case - the default
         provider with no options set - where the direct path already emits

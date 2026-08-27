@@ -133,7 +133,7 @@ _STREAM_END = object()
 def _protocol_response(
     payload: Any, *, status_code: int = status.HTTP_200_OK, headers: dict[str, str] | None = None
 ) -> Response:
-    """A response carrying an MCP protocol document, encoded as protocol.
+    """Build a response carrying an MCP protocol document, encoded as protocol.
 
     `JSONResponse` resolves the application's JSON provider, which is right for
     application data and wrong for a JSON-RPC envelope - see `encode_envelope`.

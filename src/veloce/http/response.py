@@ -513,10 +513,10 @@ class Response:
         self._encoded = None
 
     def _append_set_cookie_header(self, raw_value: str) -> None:
-        """Append `raw_value` (already a serialised Set-Cookie line, or
-        a `\\r\\nSet-Cookie: `-joined multi-cookie blob) onto the response's
-        Set-Cookie header without overwriting earlier cookies. Single
-        canonical home for the multi-cookie join format.
+        """Append a serialised `Set-Cookie` line, keeping the earlier ones.
+
+        `raw_value` is one serialised line, or a `\\r\\nSet-Cookie: `-joined
+        multi-cookie blob. The single canonical home for that join format.
         """
         existing = self.headers.get(HEADER_SET_COOKIE)
         if existing:
@@ -779,13 +779,13 @@ class Response:
         # One scan serves both paths: it decides whether a `Vary` already exists
         # (under any casing) and, if so, names the key to read and clear.
         #
-        # The fast path used to probe only `Vary` and `vary`, on the reasoning
-        # that a third casing would merely produce two `Vary` field lines, which
-        # RFC 9110 Sec. 5.2 says a recipient combines. That reasoning was wrong:
-        # both emit paths fold duplicate field names and keep the last write
+        # Every casing, not just `Vary` and `vary`. It is tempting to argue
+        # that a third casing merely produces two `Vary` field lines, which RFC
+        # 9110 Sec. 5.2 says a recipient combines - but both emit paths fold
+        # duplicate field names and keep the last write
         # (`_build_asgi_headers`, `_encode_response_head`), so only one line is
-        # ever sent and the earlier value is dropped, not combined. A response
-        # carrying `VARY: Cookie` reached the wire as `Vary: Accept-Encoding`
+        # ever sent and the earlier value is dropped, not combined. Missing a
+        # casing puts `VARY: Cookie` on the wire as `Vary: Accept-Encoding`
         # alone - and a `Vary: Cookie` a shared cache never sees is how one
         # user's response gets served to another. The scan is short-circuited on
         # the canonical spelling inside `header_key`, so the ordinary case is one
@@ -1188,10 +1188,11 @@ class Response:
         return etag
 
     def make_conditional(self, request: Any) -> Response:
-        """Downgrade this response to 304 when the request's preconditions
-        match the response's ETag / Last-Modified.
+        """Downgrade this response to 304 on a precondition match.
 
-        Checks `If-None-Match` first (per RFC 9110 Sec. 13.2 precedence),
+        The request's preconditions are compared against the response's ETag
+        and Last-Modified. Checks `If-None-Match` first (per RFC 9110
+        Sec. 13.2 precedence),
         then `If-Modified-Since`. On a match, mutates `self` to status
         304 with no body. Returns `self` so callers can use it inline:
         `return resp.make_conditional(request)`.

@@ -317,13 +317,11 @@ ignore = [
     # A predicate reads better as a noun phrase ("True when the port is the
     # default for the scheme") than as "Return True when ...", and the codebase
     # uses that form consistently for properties and predicates. Enforcing
-    # imperative mood would rewrite 77 of them; that is a style decision for the
-    # maintainer rather than a review fix.
+    # The only docstrings left in non-imperative mood are predicates, which read
+    # better as the property they test ("True when the port is the default for
+    # the scheme") than as a command. `tests/test_docstring_mood.py` enforces
+    # that this stays the whole of the exemption.
     "D401",  # non-imperative mood
-    # Module docstrings open with an em-dash tagline that legitimately wraps to a
-    # second line; D205 wants the whole summary on one physical line, which would
-    # mean shortening every module tagline or exceeding the line limit.
-    "D205",  # blank line required between summary line and description
     # Escape sequences appear inside RFC quotations and regex documentation; a
     # raw docstring there would be noise.
     "D301",  # use raw string for backslashes

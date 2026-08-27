@@ -471,12 +471,11 @@ class RateLimitMiddleware(Middleware):
         has changed, which only happens once the app is already serving - so it
         reports rather than decides.
 
-        It used to raise here as well, and that turned the documented way of
-        accepting the finding into an outage: silencing
-        `ratelimit-overrides-unknown` let the boot succeed and then every
-        request hit this `ValueError`. A key that matches no route means an
-        override is inactive; refusing to answer any request at all is never the
-        proportionate response to that.
+        Raising here would turn the documented way of accepting the finding
+        into an outage: silencing `ratelimit-overrides-unknown` lets the boot
+        succeed, and every request would then hit the `ValueError` instead. A
+        key that matches no route means an override is inactive; refusing to
+        answer any request at all is never the proportionate response to that.
 
         Logged once per set of keys, not per request, because this runs whenever
         the route table generation changes.

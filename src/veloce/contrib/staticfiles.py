@@ -252,10 +252,11 @@ class StaticFiles:
         self._etag_cache: OrderedDict[str, tuple[str, float]] = OrderedDict()
 
     def _is_under_root(self, real_path: str) -> bool:
-        """True when `real_path` (already realpath-resolved) is inside the
-        served root. Uses `commonpath` so prefix-collisions (e.g.
-        `/srv/static_evil/...` against root `/srv/static`) are correctly
-        rejected. `ValueError` on Windows drive mismatches counts as out.
+        """True when `real_path` (already realpath-resolved) is inside the root.
+
+        Uses `commonpath` so prefix-collisions (e.g. `/srv/static_evil/...`
+        against root `/srv/static`) are correctly rejected. `ValueError` on
+        Windows drive mismatches counts as out.
         """
         try:
             return os.path.commonpath([real_path, self._real_root]) == self._real_root
@@ -359,7 +360,7 @@ class StaticFiles:
         return None
 
     def _cache_control_for(self, request: Any) -> str:
-        """The `Cache-Control` to send, from the handler or the app's default.
+        """Choose the `Cache-Control` to send, from the handler or the app default.
 
         An explicit `max_age=` on the handler wins; otherwise
         `SEND_FILE_MAX_AGE_DEFAULT` applies, which is what `send_file` already
@@ -782,8 +783,9 @@ class StaticFiles:
             await loop.run_in_executor(None, fh.close)
 
     def _compute_etag(self, path: str, size: int, mtime: float) -> str:
-        """Compute ETag - delegates to the shared `_file_etag` helper so the
-        StaticFiles handler and `FileResponse` validate against the same
+        """Compute the file's ETag through the shared `_file_etag` helper.
+
+        The `StaticFiles` handler and `FileResponse` validate against the same
         `If-None-Match` value for the same file.
         """
         return _file_etag(path, size, mtime)

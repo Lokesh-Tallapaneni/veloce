@@ -56,19 +56,20 @@ def _error(msg_id: Any, code: int, message: str, data: Any = None) -> dict[str, 
 
 
 def parse_error() -> dict[str, Any]:
-    """The JSON-RPC error for a body that could not be read as JSON at all.
+    """Build the JSON-RPC error for a body that is not readable as JSON at all.
 
     JSON-RPC keeps two failures apart: -32700 says the text could not be read,
     -32600 says what was read is not a Request object. Every transport frames
     its own bytes, but the two answers live here so a transport cannot invent a
-    third - the SSE POST used to report both as -32603, so a client with
-    per-code retry logic behaved differently purely by which wire it used.
+    third. A transport answering both with its own code - -32603, say -
+    would make a client with per-code retry logic behave differently purely by
+    which wire it came in on.
     """
     return _error(None, _JSONRPC_PARSE_ERROR, "Parse error")
 
 
 def invalid_request_error() -> dict[str, Any]:
-    """The JSON-RPC error for a readable body that is not a Request object.
+    """Build the JSON-RPC error for a readable body that is not a Request.
 
     A JSON array lands here too: the revisions this server speaks carry no
     batches. See `parse_error` for why the two are distinct.
@@ -77,7 +78,7 @@ def invalid_request_error() -> dict[str, Any]:
 
 
 def internal_error(msg_id: Any, message: str) -> dict[str, Any]:
-    """The JSON-RPC error for a failure the server owns, carrying the request's id.
+    """Build the JSON-RPC error for a server-owned failure, carrying the id.
 
     A transport that cannot put a reply on the wire must still answer with
     something: a dropped reply leaves the client waiting for the lifetime of the

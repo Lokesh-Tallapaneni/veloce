@@ -60,7 +60,7 @@ class OAuth2PasswordBearer(_OAuth2BearerScheme):
         self.scopes = scopes or {}
 
     def openapi_scheme(self) -> dict[str, Any] | None:
-        """The password flow, with the token endpoint and scopes it advertises."""
+        """Describe the password flow, with its token endpoint and scopes."""
         return {
             "type": "oauth2",
             "flows": {
@@ -110,7 +110,7 @@ class OAuth2AuthorizationCodeBearer(_OAuth2BearerScheme):
         self.auto_error = auto_error
 
     def openapi_scheme(self) -> dict[str, Any] | None:
-        """The authorization-code flow; `refreshUrl` is omitted when unset."""
+        """Describe the authorization-code flow; `refreshUrl` is omitted when unset."""
         flow: dict[str, Any] = {
             "authorizationUrl": self.authorizationUrl,
             "tokenUrl": self.tokenUrl,

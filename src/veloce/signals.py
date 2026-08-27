@@ -68,7 +68,7 @@ SignalResult = list[tuple[Callable, Any]]
 
 
 def _matches(subscribed: Any, sent: Any) -> bool:
-    """A receiver subscribed for `subscribed` should fire on `sent`."""
+    """True when a receiver subscribed for `subscribed` should fire on `sent`."""
     if subscribed is ANY_SENDER:
         return True
     if subscribed is sent:
@@ -478,9 +478,9 @@ class Namespace:
         the first call's `doc` is the one kept - a later call naming a different
         one does not rewrite a signal other code already holds.
 
-        `doc` is recorded on the signal as `Signal.doc`. It used to be accepted
-        and discarded, which made it a silent no-op for anyone porting code that
-        passed it.
+        `doc` is recorded on the signal as `Signal.doc`, not accepted and
+        discarded - which would make it a silent no-op for anyone porting code
+        that passes it.
         """
         existing = self._signals.get(name)
         if existing is not None:

@@ -33,9 +33,9 @@ _RESET_TOKEN_VERSION = 1
 class BadResetToken(VeloceError, TypeError):
     """Raised on programmer misuse; invalid tokens return False instead.
 
-    Also a `TypeError`, which is what the misuse used to raise - so the
-    documented `except BadResetToken` works without breaking a caller already
-    catching `TypeError`.
+    Also a `TypeError`, which is what the bare misuse raises - so the
+    documented `except BadResetToken` works without breaking a caller who
+    catches `TypeError` instead.
     """
 
 

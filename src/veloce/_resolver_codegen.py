@@ -89,11 +89,12 @@ class _NotCompilable(Exception):
 def _compile_resolver(source: str, kind: str, plan: HandlerPlan, ns: dict[str, Any]) -> Any:
     """Compile `source` into `ns` under a name a traceback can render.
 
-    Generated code has no file, so a frame from it used to print a bare
-    `File "<veloce-resolver>", line N` with no source line - and every resolver
-    in the process shared that one name, so the frame did not even say which
-    route it came from. The name here carries the handler, and the source is
-    registered in `linecache`, which is what the traceback machinery consults.
+    Generated code has no file, so a frame from it prints as
+    `File "<name>", line N` with no source line unless something supplies one -
+    and a fixed name would be shared by every resolver in the process, leaving
+    the frame unable to say which route it came from. The name here carries the
+    handler, and the source is registered in `linecache`, which is what the
+    traceback machinery consults.
 
     `mtime` is `None` by the `linecache` convention for source with no file on
     disk: `checkcache` skips such an entry instead of stat-ing a path that does

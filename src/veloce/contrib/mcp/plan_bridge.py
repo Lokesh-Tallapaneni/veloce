@@ -345,8 +345,9 @@ def _rewrite_refs(node: Any) -> set[str]:
 
 
 def _deepcopy_schema(node: Any) -> Any:
-    """Copy a JSON-Schema fragment so in-place ref rewriting never mutates the
-    shared component registry.
+    """Copy a JSON-Schema fragment before any in-place ref rewriting.
+
+    Keeps the shared component registry from being mutated.
     """
     if isinstance(node, dict):
         return {key: _deepcopy_schema(value) for key, value in node.items()}
@@ -687,7 +688,7 @@ def _scalar_str(value: Any) -> str | None:
 
 
 def _carrier_scope() -> dict[str, Any] | None:
-    """An ASGI-shaped scope carrying the calling peer, or `None` off-transport.
+    """Build an ASGI-shaped scope carrying the peer, or `None` off-transport.
 
     A replayed request has no socket of its own, so without this everything
     keyed on caller identity - rate limiting above all - saw an unknown peer and

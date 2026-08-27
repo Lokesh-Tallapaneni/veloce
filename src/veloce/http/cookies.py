@@ -166,13 +166,13 @@ def dump_cookie(
     if samesite is not None:
         _reject_header_crlf(samesite, MSG_LABEL_COOKIE_SAMESITE)
         # The whole rule lives here, in the one function that renders a
-        # `Set-Cookie`. Callers used to fix the value up on the way in - one
-        # dropped a whitespace-only value, one capitalised, one passed the raw
-        # string through - so a value this rejects reached it from one caller
-        # and not another: `samesite="  "` made the cookie backend raise on
-        # every response while the server-side one shipped a cookie with no
-        # `SameSite` at all. Normalising inside the serialiser means there is no
-        # "on the way in" for the copies to disagree about.
+        # `Set-Cookie`, so there is no "on the way in" for callers to disagree
+        # about. Fixing the value up per caller means a value this rejects
+        # reaches it from one caller and not another - one dropping a
+        # whitespace-only value, one capitalising, one passing the raw string
+        # through - and `samesite="  "` then raises on every response through
+        # one session backend while shipping a cookie with no `SameSite` at all
+        # through the next.
         normalised = samesite.strip().capitalize()
         if not normalised:
             return "; ".join(parts)

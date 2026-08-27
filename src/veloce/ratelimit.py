@@ -68,6 +68,7 @@ class RateLimitStrategy:
     def evaluate(
         self, state: RateLimitState | None, now: float
     ) -> tuple[RateLimitResult, RateLimitState, int]:
+        """Decide on this request, returning `(result, next state, TTL seconds)`."""
         raise NotImplementedError
 
     #: An optional Lua implementation of `evaluate`, run server-side by a backend
@@ -87,7 +88,7 @@ class RateLimitStrategy:
     lua_script: str | None = None
 
     def lua_argv(self, now: float) -> list[str]:
-        """The `ARGV` for `lua_script`. Unused when it is `None`."""
+        """Build the `ARGV` for `lua_script`. Unused when it is `None`."""
         raise NotImplementedError
 
 
@@ -121,6 +122,7 @@ class FixedWindow(RateLimitStrategy):
     def evaluate(
         self, state: RateLimitState | None, now: float
     ) -> tuple[RateLimitResult, RateLimitState, int]:
+        """Count this request against the fixed window `now` falls in."""
         window = int(now // self.window)
         count = int(state["count"]) + 1 if state is not None and state["window"] == window else 1
         allowed = count <= self.limit
@@ -151,6 +153,7 @@ return {allowed and 1 or 0, limit, remaining, retry_after, reset}
     )
 
     def lua_argv(self, now: float) -> list[str]:
+        """Build the `ARGV` the fixed-window Lua script reads."""
         return [repr(now), str(self.limit), str(self.window)]
 
 
@@ -175,6 +178,7 @@ class SlidingWindow(RateLimitStrategy):
     def evaluate(
         self, state: RateLimitState | None, now: float
     ) -> tuple[RateLimitResult, RateLimitState, int]:
+        """Weight the previous window's count by how much of it still overlaps."""
         window = int(now // self.window)
         fraction = (now % self.window) / self.window
         if state is not None and state["window"] == window:
@@ -222,6 +226,7 @@ return {allowed and 1 or 0, limit, remaining, retry_after, reset}
     )
 
     def lua_argv(self, now: float) -> list[str]:
+        """Build the `ARGV` the sliding-window Lua script reads."""
         return [repr(now), str(self.limit), str(self.window)]
 
 
@@ -251,6 +256,7 @@ class TokenBucket(RateLimitStrategy):
     def evaluate(
         self, state: RateLimitState | None, now: float
     ) -> tuple[RateLimitResult, RateLimitState, int]:
+        """Refill the bucket for the elapsed time, then spend one token."""
         if state is not None:
             tokens = min(self.burst, state["tokens"] + (now - state["ts"]) * self._refill)
         else:
@@ -295,6 +301,7 @@ return {allowed and 1 or 0, burst, math.floor(tokens), retry_after, reset}
     )
 
     def lua_argv(self, now: float) -> list[str]:
+        """Build the `ARGV` the token-bucket Lua script reads."""
         return [repr(now), str(self.burst), repr(self._refill)]
 
 
@@ -315,6 +322,7 @@ class RateLimitBackend:
         _require_slots(cls)
 
     async def evaluate(self, key: str, strategy: RateLimitStrategy, now: float) -> RateLimitResult:
+        """Load, run `strategy.evaluate` and persist for `key`, atomically."""
         raise NotImplementedError
 
 
@@ -336,6 +344,7 @@ class InMemoryRateLimitBackend(RateLimitBackend):
         self._max_keys = max_keys
 
     async def evaluate(self, key: str, strategy: RateLimitStrategy, now: float) -> RateLimitResult:
+        """Load, run `strategy.evaluate` and persist for `key` in this process."""
         # No `await` between read and write, so single-loop asyncio makes this an
         # atomic read-modify-write - two concurrent requests cannot interleave.
         entry = self._states.get(key)

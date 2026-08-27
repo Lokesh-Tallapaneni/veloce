@@ -55,7 +55,7 @@ class _APIKeyBase(SecurityScheme):
         self._challenge = self.challenge()
 
     def challenge(self) -> dict[str, str]:
-        """The `WWW-Authenticate` challenge sent on a 401.
+        """Build the `WWW-Authenticate` challenge sent on a 401.
 
         Returns `{WWW-Authenticate: APIKey realm="..."}` when a realm is
         configured, else the bare `APIKey` token, which still satisfies
@@ -73,7 +73,7 @@ class _APIKeyBase(SecurityScheme):
         return _extract_api_key(source, self.name, self.auto_error, self._challenge)
 
     def openapi_scheme(self) -> dict[str, Any] | None:
-        """An API key, in the location this subclass reads it from."""
+        """Describe an API key, in the location this subclass reads it from."""
         return {"type": "apiKey", "in": self._openapi_in, "name": self.name}
 
 

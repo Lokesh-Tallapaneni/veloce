@@ -1,4 +1,4 @@
-"""Path converters — match-time validation and coercion of URL segments.
+"""Path converters — segment coercion, and the rest of what a template says.
 
 Two segment syntaxes are accepted: the angle-bracket form
 (`<int:id>`, `<path:p>`, `<any(a,b):x>`) and the brace form
@@ -8,6 +8,13 @@ A converter:
   - `match(segment)` returns `(ok, coerced_value)`.
   - `greedy` is True for the `path` converter which consumes the remainder
     of the URL (including slashes) instead of one segment.
+
+Beyond match-time coercion the module owns the rest of what a route template
+says about itself: placeholder scanning (`_iter_placeholders`), the decision of
+whether a path is tree-expressible or needs a compiled regex (`is_regex_path`,
+`build_route_regex`, `extract_regex_converters`), and the JSON-Schema fragment
+each parameter contributes (`path_param_schemas`), which the OpenAPI and MCP
+packages both import.
 
 When a route declares `{name:converter}`, the radix node holding that param
 keeps the converter and applies it during the match traversal. A segment

@@ -47,7 +47,7 @@ _HTTP_METHODS = ("get", "post", "put", "patch", "delete", "head", "options")
 
 
 def _accepted_params(func: Callable) -> frozenset[str] | None:
-    """The keyword names `func` can accept, or None when it takes `**kwargs`.
+    """Return the keyword names `func` accepts, or None when it takes `**kwargs`.
 
     Computed once at class-definition time so dispatch never inspects a
     signature. A view may either declare its path parameters as arguments or
@@ -177,7 +177,7 @@ class View:
 
     @classmethod
     def _allowed_methods(cls) -> list[str]:
-        """The HTTP verbs this view advertises. Base `View` uses `methods`."""
+        """List the HTTP verbs this view advertises. Base `View` uses `methods`."""
         if cls.methods is not None:
             return [m.upper() for m in cls.methods]
         return [HTTP_METHOD_GET]

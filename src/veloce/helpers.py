@@ -410,11 +410,11 @@ def send_file(
     etag: bool | str = True,
     max_age: int | None = None,
 ) -> Response:
-    """Serve a file top-level helper.
+    """Serve a file from a filesystem path.
 
-    Accepts a filesystem path (str / PathLike) and returns a `FileResponse`
-    with conditional-GET headers already set (Last-Modified, ETag - both
-    were added by Q40/Q42). Optional knobs:
+    Accepts a `str` or `PathLike` and returns a `FileResponse` with the
+    conditional-GET headers (`Last-Modified` and `ETag`) already set. Optional
+    knobs:
 
     - `mimetype=` overrides the auto-guessed content type.
     - `as_attachment=True` sets `Content-Disposition: attachment;
@@ -594,10 +594,10 @@ def make_response(
         return JSONResponse(body, status_code=status_code, headers=headers)
     if isinstance(body, (str, bytes)):
         # `text/html` for both, matching `Veloce.make_response` and dispatch.
-        # This alone used to answer `application/octet-stream` for bytes, so the
-        # same value carried a different type depending on which entry point a
-        # caller reached for - the disagreement `Veloce.make_response`'s
-        # docstring says does not exist.
+        # Answering `application/octet-stream` for bytes here would give the
+        # same value a different type depending on which entry point a caller
+        # reached for - the disagreement `Veloce.make_response`'s docstring
+        # says does not exist.
         ct = content_type or MIME_HTML
         return Response(
             status_code=status_code,

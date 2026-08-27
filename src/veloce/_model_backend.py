@@ -82,7 +82,7 @@ def resolve_return_model(handler: Callable[..., Any]) -> Any:
 
 
 def _return_annotation(handler: Callable[..., Any]) -> Any:
-    """The handler's resolved `return` annotation, or `None` if unreadable.
+    """Read the handler's resolved `return` annotation, or `None` if unreadable.
 
     Resolved through `get_type_hints` so a `from __future__ import annotations`
     string annotation still yields the real class.
@@ -95,7 +95,7 @@ def _return_annotation(handler: Callable[..., Any]) -> Any:
 
 
 def _base_return_model(annotation: Any) -> Any:
-    """The model an annotation declares directly, or `None`.
+    """Return the model an annotation declares directly, or `None`.
 
     The checks both resolvers share, in one place: a Pydantic model, a msgspec
     struct, or an adaptable shape (a dataclass / `TypedDict`, which declares an

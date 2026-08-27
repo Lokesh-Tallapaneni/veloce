@@ -151,10 +151,11 @@ def _sync_app_jinja_helpers(env: Any) -> None:
 
 
 def _gather_context_processors(extra: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Run every `@app.context_processor` registered on the current app and
-    merge their returned dicts. With no app bound (rendering outside a request
-    context) there is nothing to run, so the caller's own `extra` is returned
-    unchanged rather than discarded.
+    """Run the current app's `@app.context_processor`s and merge the results.
+
+    With no app bound (rendering outside a request context) there is nothing to
+    run, so the caller's own `extra` is returned unchanged rather than
+    discarded.
 
     context-processor outputs are merged in registration order;
     the caller's explicit context (passed to `TemplateResponse`) wins over
@@ -320,9 +321,10 @@ class Jinja2Templates:
         self._resolved_cache: dict[tuple[int, tuple[str, ...]], str] = {}
 
     def _apply_auto_reload(self, env: Any) -> None:
-        """When `auto_reload` was left unset, track the bound app's
-        `debug` flag - production (`debug=False`) skips the per-render
-        template `stat`. Explicit settings are left untouched.
+        """Track the bound app's `debug` flag when `auto_reload` was left unset.
+
+        Production (`debug=False`) skips the per-render template `stat`.
+        Explicit settings are left untouched.
         """
         if self._auto_reload is not None:
             return
@@ -372,8 +374,9 @@ class Jinja2Templates:
         media_type: str | None = None,
         background: Any = None,
     ) -> Response:
-        """Render a template and return a response, optionally overriding the
-        content type and attaching a background task.
+        """Render a template and return a response.
+
+        The content type may be overridden and a background task attached.
         """
         self._apply_auto_reload(self.env)
         _sync_app_jinja_helpers(self.env)
@@ -464,8 +467,9 @@ class Jinja2Templates:
         return await template.render_async(merged)
 
     def get_template(self, name: str | Sequence[str]) -> Any:
-        """Get a raw Jinja2 template object, resolving a fallback list to the
-        first existing template.
+        """Return a raw Jinja2 template object.
+
+        A fallback list resolves to the first template that exists.
         """
         return self._resolve_template(self.env, name)
 

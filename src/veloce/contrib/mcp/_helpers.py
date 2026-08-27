@@ -659,8 +659,9 @@ class _ShortCircuit:
 
 
 class _RouteResponse:
-    """A route-backed tool's final `Response` (shaped + after_request-rewritten,
-    or built by an exception handler), returned in place of the raw value.
+    """A route-backed tool's final `Response`, returned instead of the raw value.
+
+    Shaped and `after_request`-rewritten, or built by an exception handler.
 
     `model_filtered` records whether the route's `response_model` filter ran over
     the value this response carries: `True` when `_build_response` built it from
@@ -678,7 +679,7 @@ class _RouteResponse:
 
 
 def transport_route_name(base: str, path: str) -> str:
-    """A route name unique to one mount of one transport.
+    """Build a route name unique to one mount of one transport.
 
     A transport's internal routes took their name from the handler function, so
     the name was fixed however many times the transport was mounted. Mounting at

@@ -183,10 +183,11 @@ class MiddlewareMixin:
             self._middlewares.append(instance)
 
     def add_http_middleware(self, middleware: Any) -> Any:
-        """Register a `BaseHTTPMiddleware`-style middleware on the
-        `(request, call_next) -> response` chain. Accepts an instance, a
-        bare callable, or a class (which is instantiated with no args).
-        Returns the registered object so it can be used as a decorator.
+        """Register a middleware on the `(request, call_next) -> response` chain.
+
+        Accepts a `BaseHTTPMiddleware` instance, a bare callable, or a class
+        (which is instantiated with no args). Returns the registered object so
+        it can be used as a decorator.
         """
         # Class -> instance.
         if isinstance(middleware, type):

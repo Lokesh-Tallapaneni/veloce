@@ -270,11 +270,12 @@ class StdioTransport:
         when the correlated reply arrives. Returns the reply's `result`; an error
         reply raises `MCPRequestError`.
 
-        This does not read the stream itself. It used to, which made the serve
-        loop and the calling handler two readers of one blocking stream - so it
-        had to be refused from a task-augmented call, where both are live at
-        once. The loop is now the sole reader, so there is nothing to refuse and
-        a task-augmented tool may sample, elicit and list roots like any other.
+        This does not read the stream itself: the serve loop is the sole
+        reader. Reading here would make the loop and the calling handler two
+        readers of one blocking stream, which cannot both be live - and both
+        are live during a task-augmented call. Because there is only one
+        reader, a task-augmented tool may sample, elicit and list roots like
+        any other.
         """
         request_id = f"{_SERVER_ID_PREFIX}{next(self._server_ids)}"
         future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()

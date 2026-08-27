@@ -19,7 +19,6 @@ Basic usage::
 
 from __future__ import annotations
 
-# Configuration
 from typing import TYPE_CHECKING, Any
 
 # Status codes
@@ -32,6 +31,8 @@ from veloce.audit import AuditContext, AuditFailed, Finding
 from veloce.background import BackgroundTask, BackgroundTasks
 from veloce.blueprints import Blueprint
 from veloce.cache import Cache, InMemoryCache, cached
+
+# Configuration
 from veloce.config import Config
 
 # MCP (Model Context Protocol) - the per-call context handle a tool handler
@@ -43,9 +44,10 @@ from veloce.config import Config
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.context import MCPContext
 
-# Static files
-# Event-loop watchdog
+# Parameter markers
 from veloce._params import Body, Cookie, File, Form, Header, Path, Query
+
+# Static files
 from veloce.contrib.staticfiles import StaticFiles
 
 # Templating - top-level shortcuts. The full Jinja2Templates
@@ -306,6 +308,8 @@ from veloce.testclient import AsyncTestClient, TestClient
 
 # Class-based views
 from veloce.views import MethodView, View
+
+# Event-loop watchdog
 from veloce.watchdog import EventLoopWatchdog
 
 # WebSocket

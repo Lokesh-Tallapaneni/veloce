@@ -321,6 +321,7 @@ class HttpProtocol(asyncio.Protocol):
     # ── httptools callbacks ───────────────────────────────
 
     def on_url(self, url: bytes) -> None:
+        """Accumulate the request target, which httptools may deliver in pieces."""
         if self._oversized:
             return
         # Appended, not assigned. `on_url` is an incremental callback like
@@ -338,6 +339,7 @@ class HttpProtocol(asyncio.Protocol):
             return
 
     def on_header(self, name: bytes, value: bytes) -> None:
+        """Record one header, refusing the request once the size budget is spent."""
         if self._oversized:
             return
         field_size = len(name) + len(value)
@@ -652,6 +654,7 @@ class HttpProtocol(asyncio.Protocol):
         self._emit_http_error(status_code, reason, extra=extra)
 
     def on_body(self, body: bytes) -> None:
+        """Feed a body chunk to the in-flight request's source."""
         # Feed the in-flight request's body source. The source is the single
         # source of truth for the running byte total: `feed` tracks it and
         # flips an overflow latch past MAX_CONTENT_LENGTH, so the handler's
@@ -666,6 +669,7 @@ class HttpProtocol(asyncio.Protocol):
             self._reject_413()
 
     def on_message_complete(self) -> None:
+        """Close out the message and reopen the header phase for a pipelined one."""
         # The message (incl. any chunked trailers) is over: the next on_url /
         # on_header callbacks belong to a pipelined follow-up, so reopen the
         # header phase and zero the size budget that trailers counted against.
@@ -685,6 +689,7 @@ class HttpProtocol(asyncio.Protocol):
     # ── asyncio.Protocol callbacks ────────────────────────
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
+        """Take the transport, admitting the connection against the concurrency cap."""
         # HTTP/WebSocket runs over a full-duplex transport; the Liskov-correct
         # signature widens to `BaseTransport`, so narrow back here. Check by
         # capability, not `isinstance(asyncio.Transport)`: uvloop's transport
@@ -762,6 +767,7 @@ class HttpProtocol(asyncio.Protocol):
         self._start_keep_alive_timer()
 
     def connection_lost(self, exc: Exception | None) -> None:
+        """Release everything the connection held and unwind any live handler."""
         if self._counted:
             with HttpProtocol._connections_lock:
                 HttpProtocol._active_connections -= 1
@@ -846,9 +852,10 @@ class HttpProtocol(asyncio.Protocol):
         _SHUTTING_DOWN = False
 
     def _arm_request_timer(self) -> None:
-        """Start the slowloris read budget when a request's bytes begin
-        arriving. The connection is no longer idle, so the keep-alive
-        timer is stood down in favour of the (shorter) request timer.
+        """Start the slowloris read budget as a request's bytes begin arriving.
+
+        The connection is no longer idle, so the keep-alive timer is stood down
+        in favour of the (shorter) request timer.
         """
         if self._keep_alive_handle is not None:
             self._keep_alive_handle.cancel()
@@ -1110,7 +1117,7 @@ class HttpProtocol(asyncio.Protocol):
             transport.close()
 
     def _request_timeout(self) -> None:
-        """A client took too long to send a complete request - drop it."""
+        """Drop a connection whose client took too long to send a full request."""
         self._request_timer = None
         self._emit_http_error(
             status.HTTP_408_REQUEST_TIMEOUT, b"Request Timeout", b"Request Timeout"
@@ -1130,7 +1137,7 @@ class HttpProtocol(asyncio.Protocol):
 
     @staticmethod
     def _task_done(task: asyncio.Task) -> None:
-        """Callback for completed dispatch tasks - log errors, remove reference."""
+        """Log any error from a completed dispatch task and drop the reference."""
         HttpProtocol._active_tasks.discard(task)
         if task.cancelled():
             return
@@ -1140,7 +1147,7 @@ class HttpProtocol(asyncio.Protocol):
 
     @staticmethod
     def _ws_task_done(ws: WebSocket, task: asyncio.Task) -> None:
-        """Callback for a completed WebSocket dispatch task.
+        """Retire a completed WebSocket dispatch task.
 
         A handler that raises closes with 1011 first, and that close awaits. A
         peer that has already gone brings `connection_lost` in to cancel this
@@ -1155,6 +1162,7 @@ class HttpProtocol(asyncio.Protocol):
             _logger.error("Unhandled error in websocket handler: %s", exc, exc_info=exc)
 
     def data_received(self, data: bytes) -> None:
+        """Feed inbound bytes to the HTTP parser, or to the frame parser once upgraded."""
         # Once the connection has diverted to WebSocket mode, every byte is a
         # frame (or part of one) - feed the frame parser, never the HTTP parser.
         # A close frame inside the buffer sets `_closed`, wakes any parked

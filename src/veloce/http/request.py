@@ -555,8 +555,9 @@ class Request:
 
     @property
     def is_form(self) -> bool:
-        """`True` when the body is `application/x-www-form-urlencoded`
-        or `multipart/form-data`.
+        """`True` when the body is form-encoded or multipart.
+
+        That is, `application/x-www-form-urlencoded` or `multipart/form-data`.
         """
         m = self.mimetype
         return m == MIME_FORM_URLENCODED or m.startswith("multipart/")
@@ -764,8 +765,9 @@ class Request:
 
     @property
     def range(self) -> RangeSpec | None:
-        """Parse `Range:` header per RFC 9110 Sec. 14.2. Returns `None` when
-        absent or unparseable.
+        """Parse the `Range:` header per RFC 9110 Sec. 14.2.
+
+        `None` when the header is absent or unparseable.
         """
         cached = self._range
         if cached is _UNSET:
@@ -851,15 +853,17 @@ class Request:
 
     @property
     def full_path(self) -> str:
-        """Path + `?` + query string. Always contains a `?` even when the
-        query string is empty.
+        """Path + `?` + query string.
+
+        Always contains a `?`, even when the query string is empty.
         """
         return f"{self.path}?{self.query_string}"
 
     @property
     def url_root(self) -> str:
-        """Root URL of the request: `scheme://host/` (with trailing slash,
-        no path or query string).
+        """Root URL of the request: `scheme://host/`.
+
+        Carries the trailing slash, and no path or query string.
         """
         url = self.url
         return f"{url.scheme}://{url.netloc}/"
@@ -1278,7 +1282,7 @@ class Request:
         return parsed
 
     def on_json_loading_failed(self, error: Exception) -> Any:
-        """Hook invoked when JSON parsing fails on a non-silent body.
+        """Handle a failure to parse the body as JSON on a non-silent request.
 
         Raises `BadRequest` (400) with a stable, body-independent message so a
         malformed body cannot leak decoder internals (byte offsets derived from
@@ -1504,7 +1508,7 @@ class Request:
         return self._files
 
     async def values(self) -> Any:
-        """Merged query string + form body - `request.values` shape.
+        """Merge the query string and form body - the `request.values` shape.
 
         Returns a fresh `MultiDict` with query-string entries first,
         then form-body entries appended. Both source `MultiDict`s

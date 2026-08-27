@@ -70,19 +70,18 @@ def test_neither_module_asserts_a_verb_based_gate():
     """The two doors: a docstring asserting a security control that does not
     exist is worse than no docstring.
 
-    The phrase may still appear where the corrected docstring *quotes* the old
-    wording to say it was wrong. What must not come back is the phrase as a
-    claim - so an occurrence is only allowed inside a sentence that disowns it.
+    Neither module may say a mutating route is protected from exposure by its
+    verb, because nothing implements that. Not even to quote and disown it -
+    the phrase is absent, so there is no sentence for a later edit to turn back
+    into a claim.
     """
     from veloce.contrib.mcp import registry, safety
 
     for module in (registry, safety):
         text = (module.__doc__ or "").lower()
-        for sentence in text.split("."):
-            if "never auto-exposed" in sentence:
-                assert "used to say" in sentence, (
-                    f"{module.__name__} asserts a verb-based gate: {sentence.strip()!r}"
-                )
+        assert "never auto-exposed" not in text, (
+            f"{module.__name__} names a verb-based gate that does not exist"
+        )
 
 
 def test_the_registry_docstring_says_exposure_is_verb_blind():

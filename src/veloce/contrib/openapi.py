@@ -114,7 +114,7 @@ def _handler_intro(handler: Any) -> tuple[Any, dict[str, Any]]:
 
 
 def _param_marker(param: Any, hints: dict[str, Any]) -> Any:
-    """The `Depends` / parameter marker for `param`, however it was spelled.
+    """Find the `Depends` / parameter marker for `param`, however it was spelled.
 
     A marker reaches a handler two ways: as the parameter default
     (`cred = Security(scheme)`) or as PEP 593 metadata
@@ -815,7 +815,7 @@ _FILTERED_NAME_LIMIT = 48
 
 
 def _filtered_response_model(model: Any, include: set[str] | None, exclude: set[str] | None) -> Any:
-    """A model carrying only the fields a route's include/exclude leaves.
+    """Build a model carrying only the fields a route's include/exclude leaves.
 
     `response_model_include` / `response_model_exclude` filter what the route
     *sends*, and the lowering knew nothing about them - so a route sending

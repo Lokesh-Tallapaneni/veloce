@@ -147,7 +147,7 @@ class SessionAuth(SecurityScheme):
         return principal
 
     def openapi_scheme(self) -> dict[str, Any] | None:
-        """The session credential, as a cookie-borne API key.
+        """Describe the session credential, as a cookie-borne API key.
 
         OpenAPI has no session-specific scheme type; a cookie credential is an
         `apiKey` read from `cookie`, which is how `APIKeyCookie` describes the

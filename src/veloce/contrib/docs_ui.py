@@ -148,7 +148,7 @@ def setup_openapi_routes(
     schema_path = html.escape(f"{app.prefix}{openapi_url}" if app.prefix else openapi_url)
 
     def _schema_url(request: Any) -> str:
-        """The URL a browser on `request` should fetch the schema from."""
+        """Return the URL a browser on `request` should fetch the schema from."""
         root = request.root_path
         return f"{html.escape(root)}{schema_path}" if root else schema_path
 

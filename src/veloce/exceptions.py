@@ -50,7 +50,7 @@ if TYPE_CHECKING:  # pragma: no cover
 
 
 def _error_handler_key_error(key: Any) -> str:
-    """The message for an error-handler key that is neither a status nor a class.
+    """Build the message for a handler key that is neither a status nor a class.
 
     Lives here rather than beside either registration site so the app-level and
     blueprint-level checks cannot drift: the blueprint one was missing entirely,
@@ -500,7 +500,7 @@ def exception_for_status(status_code: int) -> type[HTTPException]:
 
 
 def http_exception_payload(exc: Any) -> dict[str, Any]:
-    """The JSON body for an `HTTPException`, in one place.
+    """Build the JSON body for an `HTTPException`, in one place.
 
     Used by every path that renders one: the request cycle, the out-of-band
     `handle_http_exception`, and the public `http_exception_handler`. They were

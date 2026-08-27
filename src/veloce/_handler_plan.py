@@ -555,11 +555,11 @@ class HandlerPlan:
         # compiled fast path; a sentinel = tried and not compilable.
         self.compiled_graph_resolver: Any = None
         # Parallel-dependency grouping, derived once here so the resolver does
-        # not re-scan slot safety on every request. The contiguous-run map that
-        # used to be built alongside this was never read - the compat shim it
-        # named delegates to `parallel_group_end` instead - so every plan build
-        # paid for a map nothing consumed. `compute_parallel_groups` remains for
-        # direct callers.
+        # not re-scan slot safety on every request. The waves are the only
+        # projection built at plan time; `compute_parallel_groups` produces the
+        # contiguous-run map for direct callers, and is not called from here
+        # because nothing on the request path reads it - the compat shim that
+        # names it delegates to `parallel_group_end` instead.
         self.dep_waves = compute_dep_waves(slots)
         # Resolver-facing projection of the waves, built once here. Every batched
         # dependency is resolved at the earliest batched slot index
@@ -984,7 +984,7 @@ def build_route_dep_plans(route_dependencies: list[Any], *, websocket: bool = Fa
 
 
 def _dependency_entry_error(dep: Any) -> str:
-    """The message for a `dependencies=` entry that is not a `Depends`."""
+    """Build the message for a `dependencies=` entry that is not a `Depends`."""
     if callable(dep):
         name = getattr(dep, "__name__", None) or "the callable"
         return (

@@ -6,9 +6,6 @@ transport, where this does the RFC 6455 work itself: the handshake accept key,
 frame parsing and masking, fragmentation reassembly, incremental UTF-8
 validation of text payloads (RFC 6455 Sec. 5.6), the close handshake, and an
 opt-in heartbeat. `_is_asgi` is the branch between them.
-
-The docstring here used to read "basic implementation over raw asyncio", which
-described neither half.
 """
 
 from __future__ import annotations
@@ -829,12 +826,10 @@ class WebSocket:
 
         Records the chosen subprotocol on `accepted_subprotocol`.
 
-        Raises:
-            RuntimeError: if the connection is already accepted or already
-                closed, or if a ``subprotocol``/``headers`` argument is passed
-                on the native (``Veloce.run``) upgrade path, where the 101
-                response has already been sent and cannot be renegotiated.
-
+        `RuntimeError` when the connection is already accepted or already
+        closed, and when a `subprotocol` or `headers` argument is passed on the
+        native (`Veloce.run`) upgrade path, where the 101 response has already
+        been sent and cannot be renegotiated.
         """
         # Enforce the handshake state machine: accepting an already-accepted
         # or already-closed connection is a programming error - surface it
@@ -1577,7 +1572,7 @@ class WebSocket:
         return frame_len
 
     def _terminate_raw(self, code: int, *, record_close_code: bool) -> None:
-        """Synchronously send a close frame carrying `code`, then drop the transport.
+        """Send a close frame carrying `code` synchronously, then drop the transport.
 
         The single raw-mode teardown core. No `await` is available from inside
         the Protocol callback that drives `feed_data`, so the close is

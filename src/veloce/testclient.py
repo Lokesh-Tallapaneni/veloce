@@ -374,9 +374,10 @@ def _build_request_headers(
     cookies: dict[str, str],
     extra: dict[str, str] | None,
 ) -> dict[str, str]:
-    """Merge the test client's persistent base headers + cookie jar + the
-    per-call `extra` into one request-ready header dict. Single home for
-    the merge order so the sync and async test clients stay in lockstep.
+    """Merge base headers, the cookie jar and per-call `extra` into one dict.
+
+    The single home for the merge order, so the sync and async test clients
+    stay in lockstep.
     """
     merged = dict(base)
     if cookies:
@@ -387,9 +388,11 @@ def _build_request_headers(
 
 
 def _apply_set_cookie_to_jar(jar: dict[str, str], raw_headers: list[tuple[bytes, bytes]]) -> None:
-    """Update `jar` from `Set-Cookie` response headers. Honours `Max-Age=0`
-    as a deletion signal (RFC 6265 Sec. 5.2.2). Both test clients share this
-    so a fix to the cookie semantics applies to sync + async at once.
+    """Update `jar` from the response's `Set-Cookie` headers.
+
+    Honours `Max-Age=0` as a deletion signal (RFC 6265 Sec. 5.2.2). Both test
+    clients share this, so a fix to the cookie semantics applies to sync and
+    async at once.
     """
     for name_bytes, value_bytes in raw_headers:
         name = name_bytes.decode("latin-1")
@@ -476,9 +479,10 @@ def _encode_multipart(
         # Match `requests` / `httpx`: accept bytes / str, file-likes (any
         # object with `.read()` - BytesIO, open file handle, IO[bytes]),
         # 2-tuple `(filename, content_or_filelike)`, or 3-tuple
-        # `(filename, content_or_filelike, content_type)`. Tests
-        # migrating from `requests.post(files={"f": BytesIO(...)})`
-        # used to crash with a TypeError here.
+        # `(filename, content_or_filelike, content_type)`. The bare
+        # file-like form is what a test written against a client library's
+        # `files={"f": BytesIO(...)}` passes, so it is accepted directly
+        # rather than raising `TypeError` on the way in.
         if isinstance(spec, (bytes, str)):
             filename, content, ct = name, spec, MIME_OCTET_STREAM
         elif isinstance(spec, tuple) and len(spec) == 2:
@@ -811,8 +815,8 @@ class TestClient:
 
         # The signing key may still be waiting on `SECRET_KEY`: it is settled on
         # the first request, and seeding a session before one is exactly what
-        # this helper is for. Ask the middleware to settle it now, rather than
-        # repeating how - this used to carry its own copy of that resolution.
+        # this helper is for. Ask the middleware to settle it now rather than
+        # keeping a second copy of that resolution here.
         mw.bind_secret_key(self.app.config, hint="before session_transaction()")
 
         # The wire name, not `cookie_name`: a `cookie_prefix` puts `__Host-` or
@@ -945,9 +949,11 @@ class TestClient:
         follow_redirects: bool | None = None,
         stream: Any | None = None,
     ) -> TestResponse:
-        """Send a POST. `stream` feeds the body as multiple `http.request`
-        chunks (a sync `Iterable` or `AsyncIterable` of `bytes`/`str`); when
-        given it takes precedence over and excludes `json`/`data`/`content`/`files`.
+        """Send a POST.
+
+        `stream` feeds the body as multiple `http.request` chunks (a sync
+        `Iterable` or `AsyncIterable` of `bytes`/`str`); when given it takes
+        precedence over and excludes `json`/`data`/`content`/`files`.
         """
         return self._dispatch_body(
             HTTP_METHOD_POST,
@@ -1055,7 +1061,7 @@ class TestClient:
         follow_redirects: bool | None = None,
         stream: Any | None = None,
     ) -> TestResponse:
-        """Generic request dispatcher - httpx/test-client shape.
+        """Dispatch a request of any verb - httpx/test-client shape.
 
         `client.request("PATCH", "/x", json=...)` is the verb-agnostic
         form of `client.get` / `client.post` / .... Bodies (`json` /
@@ -1557,9 +1563,11 @@ class AsyncTestClient:
         follow_redirects: bool | None = None,
         stream: Any | None = None,
     ) -> TestResponse:
-        """Send a POST. `stream` feeds the body as multiple `http.request`
-        chunks (a sync `Iterable` or `AsyncIterable` of `bytes`/`str`); when
-        given it takes precedence over and excludes `json`/`data`/`content`/`files`.
+        """Send a POST.
+
+        `stream` feeds the body as multiple `http.request` chunks (a sync
+        `Iterable` or `AsyncIterable` of `bytes`/`str`); when given it takes
+        precedence over and excludes `json`/`data`/`content`/`files`.
         """
         return await self._dispatch_body(
             HTTP_METHOD_POST,
@@ -1667,7 +1675,7 @@ class AsyncTestClient:
         follow_redirects: bool | None = None,
         stream: Any | None = None,
     ) -> TestResponse:
-        """Generic verb-agnostic request dispatcher (see `TestClient.request`)."""
+        """Dispatch a request of any verb (see `TestClient.request`)."""
         verb = method.upper()
         if (
             json is not None

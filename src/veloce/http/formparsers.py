@@ -204,8 +204,10 @@ def parse_multipart_form(
     state = _PartState(field_size_cap)
 
     def _too_large(message: str) -> NoReturn:
-        """Always raises. Annotated `NoReturn` so its six call sites read as
-        terminating, and so mypy narrows what follows them.
+        """Raise `RequestEntityTooLarge`; never returns.
+
+        Annotated `NoReturn` so its six call sites read as terminating, and so
+        mypy narrows what follows them.
         """
         raise RequestEntityTooLarge(message)
 

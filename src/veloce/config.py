@@ -197,7 +197,7 @@ def _coerce_env_typed(value: str, kind: str, *, name: str) -> Any:
 
 
 def _env_type_error(name: str, kind: str, value: str) -> str:
-    """The message for a value that is not the type its key declares."""
+    """Build the message for a value that is not the type its key declares."""
     return f"{name} must be {_ENV_TYPE_NAMES[kind]}, got {value!r}"
 
 
@@ -238,7 +238,7 @@ class Config(dict[str, Any]):
 
     @staticmethod
     def default_config() -> dict[str, Any]:
-        """The documented default config keys with their values.
+        """Return the documented default config keys with their values.
 
         Seeded into `app.config` at construction so reads never raise
         `KeyError`. Values are the documented defaults; veloce-specific
@@ -324,7 +324,7 @@ class Config(dict[str, Any]):
 
     @staticmethod
     def _is_uppercase_key(name: str) -> bool:
-        """A valid config key: starts with A-Z, then A-Z/0-9/_."""
+        """True when `name` is a valid config key: A-Z, then A-Z/0-9/_."""
         if not name:
             return False
         if not ("A" <= name[0] <= "Z"):
@@ -462,10 +462,11 @@ class Config(dict[str, Any]):
         prefix: str = "VELOCE",
         loads: Callable[[str], Any] = orjson.loads,
     ) -> bool:
-        """Pull env vars starting with `<prefix>_`, strip the prefix, store
-        with JSON-decoded values (falling back to the raw string when JSON
-        parsing fails). Nested config via `__` separator: `VELOCE_MAIL__SERVER`
-        sets `config["MAIL"]["SERVER"]`.
+        """Load config from the env vars named `<prefix>_...`, less the prefix.
+
+        Values are JSON-decoded, falling back to the raw string when JSON
+        parsing fails. Nested config uses the `__` separator:
+        `VELOCE_MAIL__SERVER` sets `config["MAIL"]["SERVER"]`.
 
         Reads `os.environ` only. `from_env_file` reads a file and keeps each key
         verbatim, so the two name the same setting differently - see its note.

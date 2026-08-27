@@ -187,12 +187,10 @@ class CORSMiddleware(Middleware):
         )
         self._allow_headers_lower: frozenset[str] = frozenset(h.lower() for h in self.allow_headers)
         self._allow_headers_has_star = "*" in self.allow_headers
-        # Uppercased method set for the preflight requested-method check.
-        # HTTP methods are case-sensitive tokens; browsers send them in the
-        # canonical uppercase form, so an exact-set membership test is correct.
-        # Uppercased for the preflight check: browsers send the requested method
-        # in canonical case (`GET`) in `Access-Control-Request-Method`, so a
-        # lower-cased `allow_methods` config must still match.
+        # HTTP methods are case-sensitive tokens and browsers send the
+        # canonical uppercase form in `Access-Control-Request-Method`, so an
+        # exact-set membership test is correct - provided a lower-cased
+        # `allow_methods` config is folded up to meet it.
         self._allow_methods_set: frozenset[str] = frozenset(m.upper() for m in self.allow_methods)
         # Precompute the joined header strings - these are constant for
         # the middleware lifetime, so the per-response `", ".join(...)`

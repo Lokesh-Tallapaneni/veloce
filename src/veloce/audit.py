@@ -99,17 +99,16 @@ class AuditContext:
 
 
 def _response_contract_findings(app: Veloce) -> list[Finding]:
-    """Findings about what each route says it returns.
+    """Report findings about what each route says it returns.
 
-    These used to be a second audit returning bare strings. Its own docstring
-    distinguished two severities in prose - a `response_model` contradicting its
-    return annotation was "a contradiction", an undocumented route was
-    "informational rather than a failure" - and then flattened both into one
-    untyped list. So the contradiction never reached `veloce check`'s exit code,
-    could not be silenced, and was reported at startup only under `debug`.
-
-    Saying it with severity instead means one audit, one vocabulary, one exit
-    code and one silencing mechanism.
+    Reported as `Finding`s through the same audit as everything else, with
+    the severity carried in the type rather than described in prose. These
+    genuinely span two severities - a `response_model` contradicting its return
+    annotation is a contradiction, an undocumented route is informational - and
+    a second audit returning bare strings would flatten both into one untyped
+    list: the contradiction would not reach `veloce check`'s exit code, could
+    not be silenced, and would surface at startup only under `debug`. One
+    audit, one vocabulary, one exit code, one silencing mechanism.
     """
     findings: list[Finding] = []
     undocumented: list[str] = []
@@ -147,7 +146,7 @@ def _response_contract_findings(app: Veloce) -> list[Finding]:
 
 
 def _app_findings(app: Veloce) -> list[Finding]:
-    """Findings about the application itself rather than about a middleware."""
+    """Report findings about the application rather than about a middleware."""
     findings: list[Finding] = []
     if app.debug:
         findings.append(
@@ -211,11 +210,11 @@ def _unmatched_exclusions(app: Veloce) -> list[Finding]:
 def _registered(app: Veloce) -> Iterator[Any]:
     """Every registered component that could report on itself.
 
-    Veloce accepts middleware in three shapes and static handlers besides, and
-    the audit used to walk only `_middlewares`. A `BaseHTTPMiddleware` that
-    hardened every response was reported as absent; a `StaticFiles` pointed at a
-    directory that does not exist warned at construction and reached
-    `veloce check` not at all.
+    Veloce accepts middleware in three shapes and static handlers besides, so
+    walking `_middlewares` alone would miss most of them: a
+    `BaseHTTPMiddleware` hardening every response would be reported as absent,
+    and a `StaticFiles` pointed at a directory that does not exist would warn at
+    construction and never reach `veloce check`.
 
     The entries are heterogeneous by design - a plain function registered with
     `@app.middleware("http")` sits beside a class - so each is asked whether it

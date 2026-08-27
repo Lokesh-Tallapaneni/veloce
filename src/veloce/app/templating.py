@@ -25,7 +25,9 @@ class TemplatingMixin:
 
     def context_processor(self, func: Callable) -> Callable:
         """Register a template context processor.
-        The function should return a dict that merges into the template context.
+
+        The function should return a dict that merges into the template
+        context.
         """
         self._assert_mutable()
         self._context_processors.append(func)
@@ -54,8 +56,9 @@ class TemplatingMixin:
         return decorator
 
     def template_global(self, name: str | None = None) -> Callable:
-        """Register a callable as a Jinja global - accessible from any
-        template by name. Same shape as `template_filter`.
+        """Register a callable as a Jinja global, reachable by name in a template.
+
+        Same shape as `template_filter`.
         """
 
         def decorator(func: Callable) -> Callable:

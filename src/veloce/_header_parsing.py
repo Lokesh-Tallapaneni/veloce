@@ -1,13 +1,12 @@
 r"""Header parsing — quoted-string-aware walker for HTTP header parameter lists.
 
-Three different headers in the codebase used to ship near-identical
-ad-hoc tokenizers: `Content-Disposition` (`;`-separated, unescape on),
-RFC 7616 Digest field lists (`,`-separated, unescape on), and the
-fallback `Authorization` param split (`,`-separated, quotes preserved).
-The three drifted: only Content-Disposition and Digest honoured
-backslash escapes, so `name="a\\\"b"` round-tripped correctly for
-multipart parts and Digest credentials but corrupted in
-`Authorization.from_header`.
+Three headers in the codebase need the same walk with different settings:
+`Content-Disposition` (`;`-separated, unescape on), RFC 7616 Digest field lists
+(`,`-separated, unescape on), and the fallback `Authorization` param split
+(`,`-separated, quotes preserved). Parametrising one walker rather than writing
+three keeps them from drifting on the details that are easy to omit - a
+tokenizer that skips backslash escapes reads `name="a\\\"b"` correctly for
+two of the three and corrupts it for the third.
 
 `parse_header_params` is the single walker the three call sites now
 share. Semantics:
@@ -86,12 +85,11 @@ def parse_media_type_params(rest: str) -> Iterator[tuple[str, str]]:
 def unquote_value(value: str) -> str:
     """Trim surrounding whitespace then a single pair of double quotes.
 
-    The `.strip().strip('"')` idiom used to recover a header parameter
-    value (cookie value, Cache-Control directive value, a `charset=`/
-    `boundary=` parameter, a `Forwarded` element value). Whitespace is
-    removed first so a quoted value padded with spaces (` "v" `) unquotes
-    to `v`. Single source for the sites that do not need the full
-    quoted-string walker.
+    The `.strip().strip('"')` idiom for recovering a header parameter value
+    (a cookie value, a Cache-Control directive value, a `charset=` or
+    `boundary=` parameter, a `Forwarded` element value). Whitespace is removed
+    first so a quoted value padded with spaces (` "v" `) unquotes to `v`. The
+    single source for the sites that do not need the full quoted-string walker.
     """
     return value.strip().strip('"')
 

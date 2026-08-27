@@ -1,7 +1,7 @@
-"""ASGI transport — the `__call__` entry, request/websocket dispatch handoff,
-and the buffered/streaming response emit.
+"""ASGI transport — the `__call__` entry, dispatch handoff, and response emit.
 
-A mixin on `Veloce`. `__call__` resolves the compiled pipeline and either threads
+A mixin on `Veloce`, covering HTTP and websocket dispatch and the buffered and
+streaming emit paths. `__call__` resolves the compiled pipeline and either threads
 it into `_asgi_app` (the common no-wrapper case) or runs the ASGI wrapper stack;
 `_asgi_app` builds the `Request`, hands HTTP off to `handle_request` and websockets
 to `_run_websocket`, and writes the response bytes. The pre-encoded emit helpers
@@ -577,7 +577,7 @@ class AsgiMixin:
         send: Callable,
         cp: CompiledPipeline | None = None,
     ) -> None:
-        """The core ASGI application - HTTP / WebSocket / lifespan handling.
+        """Run the core ASGI application - HTTP, WebSocket and lifespan handling.
 
         `cp` is the compiled pipeline resolved by `__call__`; threading it in
         lets the HTTP path skip a redundant generation check. It is `None` when

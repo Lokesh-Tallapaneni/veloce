@@ -282,7 +282,7 @@ class Blueprint(Router):
     def url_value_preprocessor(self, func: Callable) -> Callable:
         """Register a `fn(endpoint, values)` URL preprocessor on this blueprint.
 
-        Mirrors `@app.url_value_preprocessor` (R20) - runs after route
+        Mirrors `@app.url_value_preprocessor` - runs after route
         match for blueprint-routed requests, mutating `values` in
         place. Use to pop a path-param into `g` (e.g. a lang segment)
         before the handler sees it.
@@ -293,14 +293,14 @@ class Blueprint(Router):
     def url_defaults(self, func: Callable) -> Callable:
         """Register a `fn(endpoint, values)` URL-defaults injector for `url_for`.
 
-        Mirrors `@app.url_defaults` (R21) - runs inside `url_for` /
+        Mirrors `@app.url_defaults` - runs inside `url_for` /
         `url_path_for` for endpoints belonging to this blueprint. Use
         `values.setdefault(...)` for caller-wins semantics.
         """
         self._url_default_funcs.append(func)
         return func
 
-    # ── Nested blueprints (R4) ────────────────────────────
+    # ── Nested blueprints ─────────────────────────────────
 
     def register_blueprint(
         self,

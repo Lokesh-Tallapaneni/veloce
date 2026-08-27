@@ -171,8 +171,9 @@ class SessionStore:
         _require_methods(cls, SessionStore, SessionStore._required)
 
     async def read(self, session_id: str) -> dict[str, Any] | None:
-        """Return the stored payload for `session_id`, or `None` when it
-        is absent, expired, or has been revoked.
+        """Return the stored payload for `session_id`, or `None`.
+
+        `None` when the session is absent, expired, or has been revoked.
         """
         raise NotImplementedError
 

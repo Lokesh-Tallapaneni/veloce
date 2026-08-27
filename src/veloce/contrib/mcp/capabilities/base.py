@@ -67,10 +67,10 @@ class Capability:
         task-capable tool advertises no tasks extension and a client will never
         offer one.
 
-        Declared here rather than probed for. The server used to resolve this by
-        `getattr(capability, "extensions", None)`, so the third member of the
-        contract was invisible to anyone reading the base class - and this class
-        is the documented seam an out-of-tree capability implements against.
+        Declared here rather than resolved by `getattr` on the server side,
+        which would leave the third member of the contract invisible to anyone
+        reading the base class - and this class is the documented seam an
+        out-of-tree capability implements against.
         """
         return None
 

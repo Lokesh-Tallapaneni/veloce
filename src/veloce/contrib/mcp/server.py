@@ -582,7 +582,7 @@ class MCPServer(TasksMixin, InvocationMixin):
 
     @staticmethod
     def current_request_id() -> Any:
-        """The JSON-RPC id of the request being dispatched, or None for a notification."""
+        """Return the JSON-RPC id being dispatched, or None for a notification."""
         return _request_id_var.get()
 
     @staticmethod
@@ -1030,9 +1030,11 @@ class MCPServer(TasksMixin, InvocationMixin):
         """Build the `resources/list` result.
 
         One implementation, called by the JSON-RPC handler and by
-        `MCPContext.list_resources`. The context method used to have its own,
-        which applied scope narrowing but not the connection's hidden set - so a
-        handler enumerating the catalogue contradicted the client's own listing.
+        `MCPContext.list_resources`, so a handler enumerating the catalogue
+        cannot contradict the client's own listing. A second implementation
+        would have to reproduce both narrowings - the caller's scopes and the
+        connection's hidden set - and dropping either is invisible until a
+        handler and a client disagree about what exists.
         """
         return self._listing(
             "resources",
@@ -1208,7 +1210,7 @@ class MCPServer(TasksMixin, InvocationMixin):
         }
 
     def _advertised_extensions(self) -> dict[str, Any]:
-        """The protocol extensions this server implements, for `server/discover`.
+        """List the protocol extensions this server implements, for `server/discover`.
 
         A capability contributes an entry only when the feature it names is
         actually available, so a server with no task-capable tool advertises no
@@ -1295,7 +1297,7 @@ class MCPServer(TasksMixin, InvocationMixin):
         return self._any_scoped_resources
 
     def _unnarrowed_tools(self) -> dict[str, MCPTool] | None:
-        """The registry's own name -> tool map when nothing can narrow it here.
+        """Return the registry's own name -> tool map when nothing narrows it here.
 
         Three things can narrow what a caller is shown: a declared scope, a
         configured `tool_filter`, and what this connection hid. When none of them
@@ -1314,7 +1316,7 @@ class MCPServer(TasksMixin, InvocationMixin):
         return self.registry.tools
 
     async def _visible_tools(self) -> list[MCPTool]:
-        """The tools `tools/list` reports to the calling principal.
+        """List the tools `tools/list` reports to the calling principal.
 
         The narrowed catalogue, unless the server publishes its catalogue through
         search - in which case the listing is the three search tools and every
@@ -1331,7 +1333,7 @@ class MCPServer(TasksMixin, InvocationMixin):
         return [tool for tool in await self._candidate_tools() if tool.name in search.names]
 
     async def _candidate_tools(self) -> list[MCPTool]:
-        """The tools the calling principal may see, in registration order.
+        """List the tools the calling principal may see, in registration order.
 
         Visibility is scoped by the *same* check `tools/call` performs, so a tool is
         never listed for a caller that cannot invoke it. What this connection hid

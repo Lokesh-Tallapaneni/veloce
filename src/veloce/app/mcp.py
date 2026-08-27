@@ -92,7 +92,7 @@ class MCPMixin:
         lifespan_context: Callable[..., Any]
 
     def _init_mcp_state(self) -> None:
-        """The registries `mcp_tool` / `mcp_prompt` / `mcp_completer` write into."""
+        """Set up the registries `mcp_tool` / `mcp_prompt` / `mcp_completer` write into."""
         # MCP-only tool registrations (contrib.mcp), recorded by
         # `@app.mcp_tool(...)` and consumed once at `mount_mcp` time when the
         # tool registry is assembled.
@@ -407,7 +407,7 @@ class MCPMixin:
         origin_allow_list = frozenset(allowed_origins) if allowed_origins is not None else None
 
         def _build_server() -> MCPServer:
-            """The server, built the same way for every transport.
+            """Build the server, the same way for every transport.
 
             Three branches constructed it with the same five arguments; a sixth
             option added to one of them and not the others is a transport that

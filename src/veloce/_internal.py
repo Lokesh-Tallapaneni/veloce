@@ -1,23 +1,28 @@
-"""Semi-public internal utilities — shared across subpackages, not part of the public API.
+"""Semi-public internal utilities — shared across subpackages, not public API.
 
 The codebase guardrail in ``.claude/rules/development-guardrails.md`` under
-"Cross-Subpackage Imports" forbids importing underscore-prefixed symbols
-across subpackage boundaries. This module is the documented carve-out:
-symbols defined here (``_reject_header_crlf``, ``_file_etag``, ``_b64encode``,
-``_is_async_callable``, ``_extract_host``, ``_ws_handshake_rejection``, and the
-MIME / status-phrase constants) ARE permitted to be imported from any subpackage -
-``http/``, ``middleware/``, ``security/``, ``serving/``, ``contrib/``,
-``routing/`` - because they are explicitly internal-to-the-framework
-helpers with a stable contract.
+"Cross-Subpackage Imports" forbids importing underscore-prefixed symbols across
+subpackage boundaries. This module is the documented carve-out: everything
+defined here may be imported from any subpackage - ``app/``, ``http/``,
+``middleware/``, ``security/``, ``serving/``, ``contrib/``, ``routing/`` -
+because it is internal-to-the-framework with a stable contract. The residents
+are not enumerated here; that list went stale the first time one was added.
 
-The leading underscore signals "not for users"; this module's existence
-and docstring signal "stable for internal use across the framework".
-External users must not depend on these symbols - they are not in
-``veloce/__init__.py``'s ``__all__`` and may change in any release.
+The leading underscore signals "not for users"; this module's existence and
+docstring signal "stable for internal use across the framework". External users
+must not depend on these symbols - they are not in ``veloce/__init__.py``'s
+``__all__`` and may change in any release.
 
-When adding a new helper here, it must be (a) genuinely needed by two
-or more subpackages, and (b) small enough that promoting it to the
-public API would be premature. Otherwise prefer a public utility or
+A helper earns a place here by being needed **outside the subpackage that would
+otherwise own it**, and by being small enough that promoting it to the public
+API would be premature. Two or more consumers is the usual case; one is
+accepted when the single consumer is in a different subpackage from the concern
+(``_ws_handshake_rejection`` is written for ``serving/`` but is HTTP framing,
+``_bearer_token_from`` for ``security/`` but is header parsing) - keeping those
+in the consumer would put the definition where the next consumer will not look.
+Anything used only by another resident of this module (``_check_async``,
+``_iscoro_cache``, ``_NETLOC_DEFAULT_PORTS``) is a private detail of the helper
+above it, not a resident in its own right. Otherwise prefer a public utility, or
 keep it inside the owning subpackage.
 """
 
@@ -287,12 +292,11 @@ def _encode_response_head(
     lock-step.
 
     ``keep_alive`` says whether the connection survives this response. It is
-    required rather than defaulted: each head used to hardcode
-    ``Connection: keep-alive`` while the protocol took the actual decision, so
-    an HTTP/1.0 request, or one asking for ``Connection: close``, was answered
-    by a server that closed the socket and a header saying it had not. Making
-    it required means a response type added later cannot inherit a default that
-    contradicts its transport. ``default_headers`` are framework defaults applied
+    required rather than defaulted, because the protocol takes the actual
+    decision: a head that hardcodes ``Connection: keep-alive`` answers an
+    HTTP/1.0 request, or one asking for ``Connection: close``, with a closed
+    socket and a header saying otherwise. Required means a response type added
+    later cannot inherit a default that contradicts its transport. ``default_headers`` are framework defaults applied
     in their given order; each is emitted only when the caller has not
     supplied a header of the same name (case-insensitive), so a
     lower-cased ``content-type`` override does not produce a duplicate.
@@ -314,9 +318,9 @@ def _encode_response_head(
     # per header per response.
     lowered = [(key, str(key).lower(), value) for key, value in headers.items()]
     user_keys_lc = {key_lower for _key, key_lower, _value in lowered}
-    # The transport decides whether the connection survives; every head used to
-    # state `keep-alive` regardless, so a socket the server was about to close
-    # was described as reusable.
+    # The transport decides whether the connection survives, so the caller
+    # passes that decision in. Stating `keep-alive` regardless would describe a
+    # socket the server is about to close as reusable.
     if HEADER_CONNECTION_LC not in user_keys_lc:
         parts.append(
             f"{HEADER_CONNECTION}: "
@@ -642,13 +646,13 @@ def _decode_basic_credentials(payload: str) -> tuple[str, str] | None:
 
     Surrounding whitespace is trimmed here. RFC 9110 Sec. 11.6.1 allows more
     than one SP between the auth-scheme and the token68, and field values carry
-    optional whitespace, so it is not part of the credential. Only one of the two
-    callers used to trim - `request.authorization` reported credentials that
-    `HTTPBasic` then refused with a 401.
+    optional whitespace, so it is not part of the credential - and a caller
+    that skips the trim reports credentials the other refuses with a 401.
 
     Shared by `Authorization.from_header` and `HTTPBasic` so the two cannot
-    disagree about what a valid payload is; they each carried a copy, and the
-    copies had already differed on the colon-less case and on whitespace.
+    disagree about what a valid payload is. Held as two copies they differ on
+    exactly the edges that are easy to miss: the colon-less case, and this
+    whitespace.
     """
     try:
         decoded = base64.b64decode(payload.strip(), validate=True).decode("utf-8")
@@ -666,7 +670,7 @@ _BEARER_PREFIX_LEN = len(_BEARER_PREFIX)
 
 
 def _bearer_token_from(auth: str, scheme: str = AUTH_SCHEME_BEARER) -> str | None:
-    """The bearer token in an `Authorization` value, or `None`.
+    """Return the bearer token in an `Authorization` value, or `None`.
 
     Pure extraction: no exception, no challenge. `security/_utils` wraps it with
     the `auto_error` behaviour a security scheme needs, and the MCP HTTP

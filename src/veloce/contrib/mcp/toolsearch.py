@@ -329,7 +329,7 @@ class ToolSearch:
             server.registry.add(tool)
 
     async def _reachable(self) -> dict[str, MCPTool]:
-        """The tools this caller may see, by name.
+        """Return the tools this caller may see, by name.
 
         The same set `tools/list` reports, so a scope, a visibility policy or a
         name this connection hid narrows discovery exactly as it narrows the

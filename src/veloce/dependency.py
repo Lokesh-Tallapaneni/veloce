@@ -257,9 +257,11 @@ def _coerce_scalar(value: Any, target_type: Any, param_name: str, loc: str) -> A
 
 
 def _err_missing_marker(loc: str, name: str) -> RequestValidationError:
-    """Build the missing-required error for a `Query`/`Header`/`Cookie`/`Form`
-    marker. The list and scalar branches of `_resolve_marker` raise the same
-    `value_error.missing` shape, so it is constructed in one place. (A bare
+    """Build the missing-required error for a parameter marker.
+
+    Covers `Query`, `Header`, `Cookie` and `Form`. The list and scalar branches
+    of `_resolve_marker` raise the same `value_error.missing` shape, so it is
+    constructed in one place. (A bare
     `K_QUERY` slot uses the distinct `'missing'` / `MSG_FIELD_REQUIRED` contract;
     that intentional difference is preserved.)
     """
@@ -669,8 +671,9 @@ class DependencyResolver:
         path_params: dict[str, str],
         route_dependencies: list[Depends] | None = None,
     ) -> dict[str, Any]:
-        """Back-compat path - build a plan on demand. Tests and direct
-        callers that did not pre-plan land here.
+        """Build a plan on demand, for a caller that did not pre-plan.
+
+        The back-compat path: tests and direct callers land here.
         """
         plan = build_plan(handler)
         rdp = build_route_dep_plans(route_dependencies) if route_dependencies else None

@@ -94,7 +94,7 @@ class _SSEConnection:
         self.principal = principal
 
     async def send(self, message: dict[str, Any]) -> None:
-        """The `Transport.send` for this connection: queue a message for the stream."""
+        """Queue a message for this connection's stream - the `Transport.send`."""
         await self.queue.put(message)
 
 

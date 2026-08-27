@@ -875,7 +875,7 @@ def _first_positional(tokens: list[str]) -> str | None:
 
 @functools.cache
 def _builtin_command_names() -> frozenset[str]:
-    """The built-in subcommand names, read once from the plugin-free parser.
+    """Read the built-in subcommand names once from the plugin-free parser.
 
     Cached because the built-in command set is fixed for the process - the
     plugin-free parser always has the same shape, so there is nothing to

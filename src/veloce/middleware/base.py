@@ -34,9 +34,9 @@ class Auditable:
 
     Mixed into every middleware shape rather than owned by one of them: Veloce
     accepts `Middleware` instances, `BaseHTTPMiddleware` dispatch objects and
-    ASGI middleware classes, and the audit used to walk only the first. A
-    dispatch-shape middleware that hardened every response was reported as
-    absent, because it had no way to say otherwise.
+    ASGI middleware classes, and an audit that reaches only one shape reports a
+    middleware in either of the others as absent - it would have no way to say
+    otherwise.
     """
 
     __slots__ = ()
@@ -92,11 +92,11 @@ class Middleware(Auditable):
         return self.name or type(self).__name__
 
     async def process_request(self, request: Request) -> Response | None:
-        """Called before route handler. Return a Response to short-circuit."""
+        """Run before the route handler; return a `Response` to short-circuit."""
         return None
 
     async def process_response(self, request: Request, response: Response) -> Response:
-        """Called after route handler. Can modify the response."""
+        """Run after the route handler; may modify the response."""
         return response
 
     def __repr__(self) -> str:

@@ -151,17 +151,15 @@ _CODECS: dict[str, _Codec | None] = {
 # filtered against what is installed, and gzip is always there.
 _DEFAULT_ALGORITHMS = ("zstd", "br", "gzip")
 
-# Package to install for each optional coding, for the error a caller sees when
-# the only coding they asked for has none.
-# The package name for each coding, for the error raised when none is
-# installed. `_Codec` used to carry a `package` field as well - set by every
-# factory, read by nothing - so the names were maintained twice and only this
-# copy was ever shown to an operator.
+# The package to install for each optional coding, for the error a caller sees
+# when the only coding they asked for has none. The single copy: a `package`
+# field on `_Codec` as well would be set by every factory, read by nothing, and
+# maintained in parallel with the one an operator is actually shown.
 _CODECS_PACKAGE = {"zstd": "zstandard", "br": "brotli", "gzip": "gzip (stdlib)"}
 
 
 def _quality(pieces: list[str]) -> float:
-    """The `q` weight of one media range, defaulting to 1 (RFC 9110 Sec. 12.4.2).
+    """Read the `q` weight of one media range, defaulting to 1 (RFC 9110 Sec. 12.4.2).
 
     Both spellings, since RFC 5234 Sec. 2.3 makes the ABNF literal
     case-insensitive. A malformed weight is ignored rather than fatal - a header
@@ -341,14 +339,14 @@ class CompressionMiddleware(Middleware):
         return available, resolved
 
     async def process_response(self, request: Request, response: Response) -> Response:
-        """Compress the response body with gzip if the client accepts it."""
+        """Compress the response body with the coding the client accepts."""
         # This middleware negotiates content on Accept-Encoding, so every
         # response it touches varies on that header - including the ones it
-        # leaves uncompressed (no gzip in Accept-Encoding, below `minimum_size`,
-        # a 206 / Content-Range, an incompressible type, an already-encoded
-        # body). Declaring `Vary: Accept-Encoding` up front, before any
-        # short-circuit, keeps the encoding dimension visible to every cache
-        # layer end-to-end (RFC 9110 Sec. 12.5.5) rather than only on the
+        # leaves uncompressed (no offered coding in Accept-Encoding, below
+        # `minimum_size`, a 206 / Content-Range, an incompressible type, an
+        # already-encoded body). Declaring `Vary: Accept-Encoding` up front,
+        # before any short-circuit, keeps the encoding dimension visible to
+        # every cache layer end-to-end (RFC 9110 Sec. 12.5.5) rather than only on the
         # compressed path. The streamed path is reached via the delegation
         # below, so it inherits this marker too; `add_vary` de-duplicates, so
         # the success path does not re-add it.
@@ -420,7 +418,7 @@ class CompressionMiddleware(Middleware):
         return response
 
     def _process_stream(self, request: Request, response: Response, coding: str) -> Response:
-        """Wrap a streaming response's body in a lazy gzip compressor.
+        """Wrap a streaming response's body in a lazy compressor.
 
         Mirrors the buffered guards (compressible type, no pre-existing
         encoding, no 206 / Content-Range) but skips real-time latency-sensitive
@@ -450,7 +448,7 @@ class CompressionMiddleware(Middleware):
         return response
 
     def _skip_for_type_or_encoding(self, response: Response) -> bool:
-        """Return True when the response must not be gzipped on type/encoding grounds.
+        """True when the response must not be compressed, on type or encoding grounds.
 
         Shared by the buffered and streaming paths: a non-compressible content
         type, or a response that already declares a non-identity

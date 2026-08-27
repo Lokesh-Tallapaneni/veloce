@@ -16,11 +16,10 @@ it is exposed **whatever its HTTP method** - a `DELETE` becomes a tool exactly
 as a `GET` does. What the registry enforces is the one registration-time rule
 in `safety.py`: every exposed handler must carry a non-empty description.
 
-This docstring used to say "a mutating route is never auto-exposed". That is
-true only in the sense that *nothing* is auto-exposed, and it read as a
-verb-based gate protecting mutating routes. There is no such gate, and
-`safety.py` says so; an author exposing a `DELETE` is taking that decision
-themselves.
+There is no verb-based gate here: the HTTP method a route is registered for has
+no bearing on whether it can be exposed. Exposure is per-route and explicit, so
+an author exposing a `DELETE` is taking that decision themselves - `safety.py`
+holds the checks that do apply.
 """
 
 from __future__ import annotations

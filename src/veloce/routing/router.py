@@ -275,12 +275,12 @@ class RadixNode:
 class MCPRouteOptions:
     """Everything a route declares for `contrib.mcp`, in one record.
 
-    These eleven fields used to be eleven slots on `RouteInfo`. The router never
-    reads any of them - they exist for an optional integration - and carried
-    flat they had to be enumerated in five places: `RouteInfo.__slots__`, its
-    `__init__` signature, its assignment block, the copy-construction in
-    `_merge_node`, and `_ROUTE_IDENTITY_SLOTS`. Adding a twelfth meant editing
-    all five, and missing one was silent.
+    Eleven fields in one record rather than eleven slots on `RouteInfo`. The
+    router reads none of them - they exist for an optional integration - and
+    carried flat each has to be enumerated in five places: `RouteInfo.__slots__`,
+    its `__init__` signature, its assignment block, the copy-construction in
+    `_merge_node`, and `_ROUTE_IDENTITY_SLOTS`. A twelfth would mean editing all
+    five, and missing one is silent.
 
     `RouteInfo.mcp` is `None` for a route that declares no MCP exposure, which
     is almost every route, so an app that never mounts MCP carries one slot
@@ -477,7 +477,7 @@ class RouteInfo:
         # this route's OpenAPI operation object (lets users inject
         # vendor extensions, custom requestBody examples, etc.).
         self.openapi_extra = openapi_extra
-        # the routing-rule `defaults` - fixed values merged into
+        # The routing-rule `defaults`: fixed values merged into
         # `path_params` at dispatch (without overriding URL-matched
         # params), so two rules can share one handler with one rule
         # supplying a default for a segment the other carries in the URL.
@@ -656,7 +656,7 @@ class RegexRoute:
         self.template = template
         self.pattern = pattern
         self.param_names = param_names
-        # method -> RouteInfo, mirroring RadixNode.handlers so the regex
+        # Method -> RouteInfo, mirroring RadixNode.handlers so the regex
         # path returns the same shape as the tree path.
         self.handlers: dict[str, RouteInfo] = {}
         # Built-in converter per placeholder name, so matched groups are
@@ -758,9 +758,8 @@ class Router:
         # Copied, not aliased: `router.tags` is appended to as routes register,
         # which would otherwise mutate the list the caller still holds.
         self.tags = list(tags or [])
-        # a Response subclass used when a registered route
-        # doesn't pick its own `response_class=`. Routes still override
-        # per-call. Once set it is the class every return value goes to - a text
+        # The Response subclass used when a registered route does not pick
+        # its own `response_class=`. Routes still override per-call. Once set it is the class every return value goes to - a text
         # class given a `dict` raises rather than falling back to JSON, since a
         # route declaring HTML and returning a mapping has stated two things that
         # cannot both hold. Unset, dict/list returns take `JSONResponse`.
@@ -793,7 +792,7 @@ class Router:
         # case; `match()` guards on `if self._regex_routes:` so the radix
         # fast path pays nothing when no regex route is registered.
         self._regex_routes: list[RegexRoute] = []
-        # template -> RegexRoute, so a second method on the same regex path
+        # Template -> RegexRoute, so a second method on the same regex path
         # reuses one compiled pattern instead of appending a duplicate.
         self._regex_route_index: dict[str, RegexRoute] = {}
 
@@ -1578,8 +1577,8 @@ class Router:
                 # Nothing has been mutated yet, so a raise here leaves the router
                 # unchanged.
                 self._on_duplicate_route(full_path, mkey, existing, route_info)
-                # warn/override allowed the replace - remember the displaced
-                # route so pass 2 can drop its reverse entry after the check.
+                # `warn` and `override` allow the replace, so remember the
+                # displaced route: pass 2 drops its reverse entry after the check.
                 replaceable.append((mkey, existing))
         for mkey, existing in replaceable:
             # Drop the displaced route's reverse entry when it had a different
@@ -1802,7 +1801,7 @@ class Router:
         for child in param_children:
             converter = child.converter
             if converter is None:
-                # add_route always populates this slot; a bare param child
+                # `add_route` always populates this slot; a bare param child
                 # with no converter is a routing-tree corruption, not a
                 # client error. Loud failure beats a `'NoneType' is not
                 # callable` two frames deeper.
@@ -2039,7 +2038,7 @@ class Router:
             _DOC_STREAM,
         ] = False,
     ) -> Callable:
-        """Generic route decorator.
+        """Register a route for any set of HTTP methods.
 
         `exclude_middleware=["CSRFMiddleware"]` opts this route out of the
         named middleware (matched against each middleware's `name`), so a
@@ -2166,7 +2165,7 @@ class Router:
         on_connect: RouteHandler | Callable[..., Any] | None = None,
         on_disconnect: RouteHandler | Callable[..., Any] | None = None,
     ) -> Callable:
-        """Declarative WebSocket route - wrap a per-message callback.
+        """Register a WebSocket route wrapping a per-message callback.
 
         The decorated callback handles one message at a time; the framework
         owns the accept handshake, the receive loop, and the clean close on
