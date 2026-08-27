@@ -52,6 +52,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `app.register_auditable(component)` reports a non-middleware component to `veloce check` and `security_audit()`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `unregister_converter(name)` removes a converter added with `register_converter`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `MCPServer(capabilities=[...])` serves an out-of-tree `Capability`; `MethodHandler` is exported to annotate its handler map. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `TestResponse` is exported from `veloce` and documented; it is what every test-client call returns. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `veloce.contrib.mcp` publishes all seven capability classes, not three. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
 - `app.wait_for_background_tasks()`, and the same on both test clients, waits for spawned background work to finish. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 - `MCPServer.capabilities` exposes the capabilities a server was built with. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
@@ -100,6 +106,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `veloce check` reports an `exclude_middleware` name that matches no registered middleware. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `Signal.doc` records the description given to `Namespace.signal(name, doc=...)`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A second route taking an existing `name=` logs a warning naming both paths. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
+- `app.register_auditable(component)` reports a non-middleware component to `veloce check` and `security_audit()`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `unregister_converter(name)` removes a converter added with `register_converter`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `MCPServer(capabilities=[...])` serves an out-of-tree `Capability`; `MethodHandler` is exported to annotate its handler map. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `TestResponse` is exported from `veloce` and documented; it is what every test-client call returns. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `veloce.contrib.mcp` publishes all seven capability classes, not three. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Changed
 
@@ -327,6 +339,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An MCP tool schema publishes a parameter marker's constraints, matching the OpenAPI document. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `CORSMiddleware`'s usage example lists `allow_headers`, which credentials require. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - Mounting an MCP transport twice no longer leaves the first mount unreachable by `url_for`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
+- Fix the order of grouped lifespan-teardown failures; an expanded exception group's members were reported backwards. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `request.is_disconnected()` reports `True` on the built-in server when a client vanishes mid-body; the disconnect was signalled as an ordinary end-of-body. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `veloce mcp run --transport http` says which server it fell back to when uvicorn is absent, as `veloce run` already did. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ## [0.17.1] - 2026-08-23
 
