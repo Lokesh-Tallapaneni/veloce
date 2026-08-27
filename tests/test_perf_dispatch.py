@@ -38,4 +38,9 @@ class TestPerformance:
             times.append(time.perf_counter_ns() - start)
 
         avg_us = sum(times) / len(times) / 1000
-        assert avg_us < 100, f"Average request time {avg_us:.1f}us exceeds 100us budget"
+        # The name, the docstring and this number used to disagree: both said
+        # 50us and the assertion allowed 100. Measured here, dispatch averages
+        # ~9us, so the documented 50us budget holds with 5x headroom - and the
+        # module is `perf`-marked and deselected by default precisely so the
+        # number can mean something on a quiet machine.
+        assert avg_us < 50, f"Average request time {avg_us:.1f}us exceeds the 50us budget"

@@ -15,6 +15,7 @@ to the modules named for them.
 import pytest
 from pydantic import BaseModel
 
+from tests.conftest import make_request
 from veloce import Depends, HTMLResponse, HTTPException, JSONResponse, Request, Router, Veloce
 from veloce.http.response import RedirectResponse, Response
 from veloce.middleware import CORSMiddleware
@@ -23,16 +24,6 @@ from veloce.middleware import CORSMiddleware
 @pytest.fixture
 def app():
     return Veloce(debug=True)
-
-
-def make_request(method="GET", path="/", headers=None, body=b"", query_string="") -> Request:
-    return Request(
-        method=method,
-        path=path,
-        query_string=query_string,
-        headers=headers or {},
-        body=body,
-    )
 
 
 class TestBasicRoutes:

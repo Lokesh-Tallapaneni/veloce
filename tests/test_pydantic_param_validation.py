@@ -13,23 +13,14 @@ from decimal import Decimal
 from enum import Enum
 from typing import Literal
 
-from veloce import Cookie, Header, Query, Request, Veloce
+from tests.conftest import make_request
+from veloce import Cookie, Header, Query, Veloce
 from veloce.contrib.openapi import get_openapi_schema
 
 
 class Color(str, Enum):
     red = "red"
     green = "green"
-
-
-def make_request(method="GET", path="/", headers=None, body=b"", query_string="") -> Request:
-    return Request(
-        method=method,
-        path=path,
-        query_string=query_string,
-        headers=headers or {},
-        body=body,
-    )
 
 
 # ── runtime coercion: query parameters ────────────────────────────────
