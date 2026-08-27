@@ -19,12 +19,20 @@ from veloce import Request, Response, SecurityHeadersMiddleware, Veloce
 from veloce.http.response import header_present
 from veloce.testclient import TestClient
 
-REQUEST = Request(method="GET", path="/", query_string="", headers={}, body=b"")
+
+def _request() -> Request:
+    """A fresh request per call.
+
+    One module-level instance shared by every test is state a test can leave a
+    mark on - `Request` carries `state` and cached-property slots - and the
+    next failure would look like the middleware's.
+    """
+    return Request(method="GET", path="/", query_string="", headers={}, body=b"")
 
 
 async def _applied(middleware: SecurityHeadersMiddleware, headers: dict | None = None) -> dict:
     response = Response(body=b"x", headers=dict(headers or {}))
-    return (await middleware.process_response(REQUEST, response)).headers
+    return (await middleware.process_response(_request(), response)).headers
 
 
 # ── the defaults ─────────────────────────────────────────────────────

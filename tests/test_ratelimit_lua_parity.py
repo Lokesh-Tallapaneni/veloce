@@ -79,21 +79,21 @@ async def _run_python(strategy: RateLimitStrategy, times: list[float]) -> list[t
 # ── the two forms agree, step for step ───────────────────────────────
 
 
-@pytest.mark.parametrize(("seq_name", "times"), SEQUENCES, ids=[s[0] for s in SEQUENCES])
-@pytest.mark.parametrize(("name", "factory"), STRATEGIES, ids=[s[0] for s in STRATEGIES])
-async def test_lua_and_python_decide_identically(name, factory, seq_name, times):
+@pytest.mark.parametrize("times", [s[1] for s in SEQUENCES], ids=[s[0] for s in SEQUENCES])
+@pytest.mark.parametrize("factory", [s[1] for s in STRATEGIES], ids=[s[0] for s in STRATEGIES])
+async def test_lua_and_python_decide_identically(factory, times):
     """The guard on the duplication: a drift fails here."""
     assert await _run_lua(factory(), times) == await _run_python(factory(), times)
 
 
-@pytest.mark.parametrize(("name", "factory"), STRATEGIES, ids=[s[0] for s in STRATEGIES])
-async def test_the_first_request_agrees(name, factory):
+@pytest.mark.parametrize("factory", [s[1] for s in STRATEGIES], ids=[s[0] for s in STRATEGIES])
+async def test_the_first_request_agrees(factory):
     """The `state is None` branch, which the two forms express differently."""
     assert await _run_lua(factory(), [1000.0]) == await _run_python(factory(), [1000.0])
 
 
-@pytest.mark.parametrize(("name", "factory"), STRATEGIES, ids=[s[0] for s in STRATEGIES])
-async def test_a_long_idle_gap_agrees(name, factory):
+@pytest.mark.parametrize("factory", [s[1] for s in STRATEGIES], ids=[s[0] for s in STRATEGIES])
+async def test_a_long_idle_gap_agrees(factory):
     """State expiry and refill after a gap far larger than the window."""
     times = [1000.0, 1000.1, 100_000.0, 100_000.1]
     assert await _run_lua(factory(), times) == await _run_python(factory(), times)
@@ -118,8 +118,8 @@ async def test_the_sequence_contains_an_allow(name, factory):
 # ── the Lua path is actually taken ───────────────────────────────────
 
 
-@pytest.mark.parametrize(("name", "factory"), STRATEGIES, ids=[s[0] for s in STRATEGIES])
-def test_every_built_in_declares_a_script(name, factory):
+@pytest.mark.parametrize("factory", [s[1] for s in STRATEGIES], ids=[s[0] for s in STRATEGIES])
+def test_every_built_in_declares_a_script(factory):
     strategy = factory()
     assert isinstance(strategy.lua_script, str)
     assert strategy.lua_argv(1000.0)
@@ -191,8 +191,8 @@ async def test_a_custom_strategy_agrees_with_the_in_memory_backend():
 # ── state written by Lua is readable by the Python path ──────────────
 
 
-@pytest.mark.parametrize(("name", "factory"), STRATEGIES, ids=[s[0] for s in STRATEGIES])
-async def test_state_written_by_lua_has_the_shape_python_expects(name, factory):
+@pytest.mark.parametrize("factory", [s[1] for s in STRATEGIES], ids=[s[0] for s in STRATEGIES])
+async def test_state_written_by_lua_has_the_shape_python_expects(factory):
     """A rolling upgrade runs both forms against one key; the state must interop."""
     import orjson
 
@@ -206,8 +206,8 @@ async def test_state_written_by_lua_has_the_shape_python_expects(name, factory):
     strategy.evaluate(state, 1000.5)
 
 
-@pytest.mark.parametrize(("name", "factory"), STRATEGIES, ids=[s[0] for s in STRATEGIES])
-async def test_lua_reads_state_python_wrote(name, factory):
+@pytest.mark.parametrize("factory", [s[1] for s in STRATEGIES], ids=[s[0] for s in STRATEGIES])
+async def test_lua_reads_state_python_wrote(factory):
     """The other direction of the same upgrade."""
     import orjson
 
