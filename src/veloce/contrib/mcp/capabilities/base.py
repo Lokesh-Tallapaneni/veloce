@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from veloce._internal import _require_slots
+
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.server import MCPServer, MethodHandler
 
@@ -36,8 +38,7 @@ class Capability:
         # A slotted base whose subclass forgets `__slots__` silently regains a
         # per-instance `__dict__`; fail loudly so the discipline is structural.
         super().__init_subclass__(**kwargs)
-        if "__slots__" not in cls.__dict__:
-            raise TypeError(f"{cls.__name__} must declare __slots__")
+        _require_slots(cls)
 
     def advertise(self, *, modern: bool = False) -> dict[str, Any] | None:
         """Return this capability's entry for the `initialize` capabilities object.

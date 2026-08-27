@@ -109,6 +109,22 @@ def guess_content_type(path: str) -> str:
     return mimetypes.guess_type(path)[0] or MIME_OCTET_STREAM
 
 
+def _require_slots(cls: type) -> None:
+    """Raise unless `cls` declares its own `__slots__`.
+
+    A slotted base whose subclass forgets `__slots__` silently regains a
+    per-instance `__dict__`, undoing the memory saving the base established -
+    and failing silently, which is why the guardrails call for a structural
+    check rather than review.
+
+    Called from each slotted base's `__init_subclass__`. One implementation
+    because there were five, carrying **three different messages** for the same
+    condition, so what a user was told depended on which base they subclassed.
+    """
+    if "__slots__" not in cls.__dict__:
+        raise TypeError(f"{cls.__name__} must declare __slots__ (use () if it adds no fields)")
+
+
 # `BaseExceptionGroup` is a builtin only from Python 3.11 (PEP 654); on 3.10 the
 # name is absent. Resolved once here so the lifespan-unwind, debug, and
 # dependency-teardown paths share one platform shim: callers group multiple
@@ -196,19 +212,6 @@ def _coerce_bool(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in ("1", "true", "yes", "on")
     return bool(value)
-
-
-def _coerce_int(value: Any, *, name: str) -> int:
-    """Interpret a config value as an int, including dotenv-style strings.
-
-    `from_env_file` stores values as plain strings, so `MAX_COOKIE_SIZE=2048`
-    arrives as `"2048"`. A real int passes through; an unparseable value raises a
-    clear error naming the config key rather than crashing later on `<` / `max()`.
-    """
-    try:
-        return int(value)
-    except (TypeError, ValueError) as err:
-        raise ValueError(f"{name} must be an integer, got {value!r}") from err
 
 
 def _header_value_has_crlf(value: str) -> bool:

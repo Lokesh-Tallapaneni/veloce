@@ -351,6 +351,13 @@ class WebSocketDisconnect(VeloceError):
     """WebSocket connection closed."""
 
     def __init__(self, code: int = WS_1000_NORMAL_CLOSURE) -> None:
+        # Through `super()`, so the message does not depend on how the caller
+        # spelled the call. `BaseException.__new__` populates `args` from
+        # *positional* arguments only, so without this
+        # `WebSocketDisconnect(1006)` stringified as "1006" while
+        # `WebSocketDisconnect(code=1006)` and the default stringified as "" -
+        # the same close code logging differently depending on the call site.
+        super().__init__(code)
         self.code = code
 
 

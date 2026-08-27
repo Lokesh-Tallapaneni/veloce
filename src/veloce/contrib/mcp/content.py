@@ -25,6 +25,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from veloce._internal import _require_slots
+
 
 class ContentBlock:
     """Base MCP content block: its `type` payload plus optional annotations."""
@@ -35,8 +37,7 @@ class ContentBlock:
         # A subclass without its own __slots__ silently regains a per-instance
         # __dict__, defeating the slotted base; fail at class creation instead.
         super().__init_subclass__(**kwargs)
-        if "__slots__" not in cls.__dict__:
-            raise TypeError(f"{cls.__name__} must declare __slots__")
+        _require_slots(cls)
 
     def __init__(self, *, annotations: dict[str, Any] | None = None) -> None:
         self.annotations = annotations

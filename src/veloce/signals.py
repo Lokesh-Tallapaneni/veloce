@@ -4,12 +4,25 @@ Provides a lightweight `Signal` class that exposes a
 `signal.connect(receiver)` / `signal.send(sender, **kwargs)` API, so
 signal-based application code stays small.
 
-Veloce ships four standard signals:
+Veloce ships eight standard signals. Four fire around a request:
 
 - `request_started(sender=app, request=...)`
 - `request_finished(sender=app, request=..., response=...)`
 - `request_tearing_down(sender=app, exc=...)`
 - `got_request_exception(sender=app, exception=...)`
+
+three around an application context:
+
+- `appcontext_pushed(sender=app)`
+- `appcontext_popped(sender=app)`
+- `appcontext_tearing_down(sender=app, exc=...)`
+
+and one for flashed messages:
+
+- `message_flashed(sender=app, message=..., category=...)`
+
+This list said "four" and named the first group only, so the other four read as
+undocumented internals.
 
 Receivers are stored as weakrefs by default so handlers don't pin
 their owners alive. Pass `weak=False` to keep a strong reference

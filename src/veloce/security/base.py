@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from veloce._internal import _require_slots
 from veloce.security._utils import _extract_bearer_token
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -38,8 +39,7 @@ class SecurityScheme:
         # a subclass that omits `__slots__` would regain a per-instance
         # `__dict__`, defeating the slotted layout the base establishes.
         super().__init_subclass__(**kwargs)
-        if "__slots__" not in cls.__dict__:
-            raise TypeError(f"{cls.__name__} must declare __slots__ (use () if it adds no fields)")
+        _require_slots(cls)
 
     def __call__(self, request: Request) -> Any:
         """Extract the credential from the request, or 401 when `auto_error`."""

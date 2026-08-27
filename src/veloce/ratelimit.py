@@ -22,6 +22,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TypeVar
 
+from veloce._internal import _require_slots
+
 # Per-client algorithm state persisted between requests. It round-trips through
 # the backend as JSON, so its values are plain numbers (ints widen to float).
 RateLimitState = dict[str, float]
@@ -61,8 +63,7 @@ class RateLimitStrategy:
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
-        if "__slots__" not in cls.__dict__:
-            raise TypeError(f"{cls.__name__} must declare __slots__ (even __slots__ = ())")
+        _require_slots(cls)
 
     def evaluate(
         self, state: RateLimitState | None, now: float
@@ -311,8 +312,7 @@ class RateLimitBackend:
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
-        if "__slots__" not in cls.__dict__:
-            raise TypeError(f"{cls.__name__} must declare __slots__ (even __slots__ = ())")
+        _require_slots(cls)
 
     async def evaluate(self, key: str, strategy: RateLimitStrategy, now: float) -> RateLimitResult:
         raise NotImplementedError
