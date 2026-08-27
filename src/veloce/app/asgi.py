@@ -104,6 +104,22 @@ _CT_BYTES_CACHE: dict[str, bytes] = {
 _CL_BYTES_SMALL: tuple[bytes, ...] = tuple(str(i).encode("ascii") for i in range(2048))
 
 
+# Encoded `(name, value) -> (name_bytes, value_bytes)` pairs, memoised across
+# responses. A response header is overwhelmingly one a middleware precomputed
+# once - the security headers, a CORS policy - so the same two `str` objects
+# arrive on every request and the per-header scan collapses to one dict hit.
+# CPython caches a string's hash on the object, so the tuple key costs two
+# cached hashes and a pointer comparison for those identical objects.
+#
+# Bounded because a value CAN differ per response (an `ETag`, a `Location`, a
+# request id). Those miss, refill, and eventually trip the cap; clearing outright
+# rather than evicting one entry keeps the miss path to a single branch, and a
+# miss is still cheaper than the previous code because the CRLF scan below is
+# inline either way.
+_ENCODED_HEADER_PAIRS: dict[tuple[str, str], tuple[bytes, bytes]] = {}
+_MAX_ENCODED_PAIRS = 512
+
+
 def _build_asgi_headers(headers: Any) -> tuple[list[tuple[bytes, bytes]], bool, bool]:
     """Build ASGI `(name, value)` header tuples from a response header map.
 
@@ -128,6 +144,7 @@ def _build_asgi_headers(headers: Any) -> tuple[list[tuple[bytes, bytes]], bool, 
     # appending beside it. `Set-Cookie` is excluded: it is legitimately
     # multi-valued, so every entry is emitted.
     slot_by_name: dict[str, int] = {}
+    encoded_pairs = _ENCODED_HEADER_PAIRS
     for k, v in headers.items():
         k_lower = k.lower()
         if k_lower == "set-cookie":
@@ -141,26 +158,37 @@ def _build_asgi_headers(headers: Any) -> tuple[list[tuple[bytes, bytes]], bool, 
                 asgi_headers.append(
                     (RAW_HEADER_SET_COOKIE, _encode_header_value(cookie).encode("latin-1"))
                 )
-        else:
-            if k_lower == "content-type":
-                has_ct = True
-            elif k_lower == "content-length":
-                has_cl = True
-            _reject_header_crlf(k, MSG_LABEL_HEADER_NAME)
+            continue
+        if k_lower == "content-type":
+            has_ct = True
+        elif k_lower == "content-length":
+            has_cl = True
+        entry = encoded_pairs.get((k, v))
+        if entry is None:
+            # The CRLF test is three C-level substring scans. Running them inline
+            # and entering `_reject_header_crlf` only when one hits keeps four
+            # Python-level calls per header off the emit path, while the helper
+            # still owns the message so there is exactly one wording.
+            if "\r" in k or "\n" in k or "\x00" in k:
+                _reject_header_crlf(k, MSG_LABEL_HEADER_NAME)
             # The label is joined only when raising; building `f"{k} header
             # value"` here made a string per header per response that almost
             # every call discards.
-            _reject_header_crlf(v, k, _LABEL_HEADER_VALUE_SUFFIX)
+            if "\r" in v or "\n" in v or "\x00" in v:
+                _reject_header_crlf(v, k, _LABEL_HEADER_VALUE_SUFFIX)
             encoded_name = _ENCODED_HEADER_NAMES.get(k_lower)
             if encoded_name is None:
                 encoded_name = k_lower.encode("latin-1")
             entry = (encoded_name, _encode_header_value(v).encode("latin-1"))
-            slot = slot_by_name.get(k_lower)
-            if slot is None:
-                slot_by_name[k_lower] = len(asgi_headers)
-                asgi_headers.append(entry)
-            else:
-                asgi_headers[slot] = entry
+            if len(encoded_pairs) >= _MAX_ENCODED_PAIRS:
+                encoded_pairs.clear()
+            encoded_pairs[(k, v)] = entry
+        slot = slot_by_name.get(k_lower)
+        if slot is None:
+            slot_by_name[k_lower] = len(asgi_headers)
+            asgi_headers.append(entry)
+        else:
+            asgi_headers[slot] = entry
     return asgi_headers, has_ct, has_cl
 
 
