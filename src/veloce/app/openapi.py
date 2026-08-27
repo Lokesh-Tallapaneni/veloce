@@ -33,7 +33,7 @@ class OpenAPIMixin:
             # `app/` is core and `contrib/` is optional, so this is deferred to keep the
             # layering: importing the optional integration eagerly would make every
             # `import veloce` pay for machinery most apps never mount.
-            from veloce.contrib.openapi import setup_openapi_routes
+            from veloce.contrib.docs_ui import setup_openapi_routes
 
             # Pass the configured URLs through unchanged - `None` means
             # "do not register that UI", and must not be replaced by a

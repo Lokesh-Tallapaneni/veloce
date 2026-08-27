@@ -204,8 +204,8 @@ UNEXPORTED: dict[str, str] = {
     "routing.converters.path_param_schemas": "implementation behind the Converter base / register_converter seam",
     # ── remaining leaf internals ─────────────────────────────────
     "contrib.openapi.SchemaRegistry": "internal accumulator for one schema build",
-    "contrib.openapi.SWAGGER_HTML": "template body for the built-in docs route",
-    "contrib.openapi.REDOC_HTML": "template body for the built-in docs route",
+    "contrib.docs_ui.SWAGGER_HTML": "template body for the built-in docs route",
+    "contrib.docs_ui.REDOC_HTML": "template body for the built-in docs route",
     "exceptions.http_exception_payload": "shared error-body builder for the in-tree emit paths",
     "http.cookies.iter_cookies": "the single cookie parser; users read request.cookies",
     "http.cookies.parse_cookie": "header-level helper behind Request.cookies",

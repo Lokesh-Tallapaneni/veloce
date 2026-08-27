@@ -51,7 +51,6 @@ KNOWN_UNDOCUMENTED: frozenset[str] = frozenset(
         "app/testing.py::veloce.testclient",
         "cli.py::veloce._scaffold",
         "cli.py::veloce.contrib.mcp.server",
-        "contrib/openapi.py::veloce.middleware.security",
         "contrib/staticfiles.py::veloce.audit",
         "exceptions.py::veloce.helpers",
         "testclient.py::veloce.middleware.sessions",

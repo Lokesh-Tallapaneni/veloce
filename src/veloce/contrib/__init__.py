@@ -15,7 +15,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover
-    from veloce.contrib.openapi import get_openapi_schema, setup_openapi_routes
+    from veloce.contrib.docs_ui import setup_openapi_routes
+    from veloce.contrib.openapi import get_openapi_schema
     from veloce.contrib.redis import RedisCache, RedisRateLimitBackend, RedisSessionStore
     from veloce.contrib.staticfiles import StaticFiles
     from veloce.contrib.templating import (
@@ -36,7 +37,7 @@ _EXPORTS: dict[str, str] = {
     "get_openapi_schema": "veloce.contrib.openapi",
     "render_template": "veloce.contrib.templating",
     "render_template_string": "veloce.contrib.templating",
-    "setup_openapi_routes": "veloce.contrib.openapi",
+    "setup_openapi_routes": "veloce.contrib.docs_ui",
     "stream_template": "veloce.contrib.templating",
 }
 
