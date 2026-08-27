@@ -1241,12 +1241,12 @@ class DispatchMixin:
         # Run after_request hooks - app-level then matched blueprint.
         for hook in reversed(self._after_request_hooks):
             hook_result = await self._call_after_hook(hook, request, response)
-            if hook_result is not None and isinstance(hook_result, Response):
+            if isinstance(hook_result, Response):
                 response = hook_result
         if self._bp_after_hooks and bp_name is not None:
             for hook in reversed(self._bp_after_hooks.get(bp_name, ())):
                 hook_result = await self._call_after_hook(hook, request, response)
-                if hook_result is not None and isinstance(hook_result, Response):
+                if isinstance(hook_result, Response):
                     response = hook_result
 
         # Drain one-shot `after_this_request(fn)` callbacks. These run
@@ -1256,7 +1256,7 @@ class DispatchMixin:
         if one_shot:
             for fn in one_shot:
                 fn_result = await self._call_after_hook(fn, request, response)
-                if fn_result is not None and isinstance(fn_result, Response):
+                if isinstance(fn_result, Response):
                     response = fn_result
         return response
 
@@ -1274,13 +1274,9 @@ class DispatchMixin:
         teardown; the caller uses this to decide which.
         """
         # Response-attached background task (shape:
-        # `Response(content=..., background=BackgroundTask(fn))`). Read through
-        # `getattr` rather than `response.background`: the attribute is a
-        # `Response` slot every construction path in this tree initialises, but a
-        # user subclass whose `__init__` skips `super()` would turn a direct read
-        # into an `AttributeError` on the response path.
+        # `Response(content=..., background=BackgroundTask(fn))`).
         injected = request._background_tasks
-        attached_bg = getattr(response, "background", None)
+        attached_bg = response.background
         # Both sources checked before anything is allocated: almost every
         # response has neither, and used to build a list only to discard it.
         if injected is None and attached_bg is None:
