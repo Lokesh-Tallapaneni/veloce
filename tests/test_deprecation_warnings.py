@@ -167,3 +167,45 @@ def test_the_guard_actually_reads_the_package():
 
     root = pathlib.Path(__file__).resolve().parent.parent / "src" / "veloce"
     assert len(list(root.rglob("*.py"))) > 50
+
+
+# ── the retired event-registration API ────────────────────────
+#
+# Moved here from `test_polish_e2e.py`, a module named for a fix wave rather
+# than a subject.
+
+
+def test_on_event_decorator_emits_deprecation_warning():
+    app = Veloce(openapi_url=None)
+    with pytest.warns(VeloceDeprecationWarning, match="on_startup"):
+
+        @app.on_event("startup")
+        async def boot() -> None:
+            return None
+
+    assert boot in app._on_startup
+    assert callable(boot)
+
+
+def test_add_event_handler_emits_deprecation_warning():
+    app = Veloce(openapi_url=None)
+
+    async def boot() -> None:
+        return None
+
+    with pytest.warns(VeloceDeprecationWarning, match="on_startup"):
+        app.add_event_handler("startup", boot)
+
+    assert boot in app._on_startup
+
+
+def test_on_startup_decorator_does_not_warn():
+    app = Veloce(openapi_url=None)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+
+        @app.on_startup
+        async def boot() -> None:
+            return None
+
+    assert boot in app._on_startup

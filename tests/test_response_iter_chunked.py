@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncIterator, Iterator
+
 import pytest
 
 from veloce import Response
@@ -74,3 +77,46 @@ async def test_stream_to_skips_empty_chunks():
     assert b"5\r\nworld\r\n" in body
     assert body.endswith(b"0\r\n\r\n")
     assert body.count(b"0\r\n\r\n") == 1
+
+
+# ── iter_encoded is sync for a buffered body, async for a stream ─
+#
+# Moved here from `test_polish_e2e.py`, a module named for a fix wave rather
+# than a subject.
+
+
+def test_iter_encoded_returns_sync_iterator_for_buffered_response():
+    resp = Response(body=b"hello")
+    assert resp.is_streamed is False
+
+    iterator = resp.iter_encoded()
+
+    assert not asyncio.iscoroutine(iterator)
+    assert not hasattr(iterator, "__aiter__"), "buffered iter must be sync"
+    assert isinstance(iterator, Iterator)
+    chunks = list(iterator)
+    assert chunks == [b"hello"]
+
+
+def test_iter_encoded_returns_async_iterator_for_streaming_response():
+    async def gen() -> AsyncIterator[bytes]:
+        yield b"a"
+        yield b"b"
+
+    resp = StreamingResponse(gen())
+    assert resp.is_streamed is True
+
+    iterator = resp.iter_encoded()
+
+    assert not asyncio.iscoroutine(iterator)
+    assert hasattr(iterator, "__aiter__"), "streaming iter must be async"
+
+    async def _drain() -> list[bytes]:
+        return [chunk async for chunk in iterator]
+
+    loop = asyncio.new_event_loop()
+    try:
+        chunks = loop.run_until_complete(_drain())
+    finally:
+        loop.close()
+    assert chunks == [b"a", b"b"]

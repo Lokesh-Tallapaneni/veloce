@@ -1,4 +1,4 @@
-"""End-to-end tests for polish-wave-2 helper changes (#45, #47, #51).
+"""The OpenAPI document, fetched over the client rather than built directly.
 
 Fetches `/openapi.json` over the TestClient instead of calling
 `get_openapi_schema(app)` directly, so the helper-split + form-body

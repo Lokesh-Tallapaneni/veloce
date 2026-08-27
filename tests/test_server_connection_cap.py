@@ -1,22 +1,15 @@
-"""End-to-end regression tests for the polish-wave-2 fixes.
+"""`MAX_CONCURRENT_CONNECTIONS`: refusing a connection over the cap, and
+releasing the slot when one disconnects.
 
-Covers:
-- #36m: HttpProtocol MAX_CONCURRENT_CONNECTIONS cap and slot release.
-- #36: deprecation warnings on `on_event` / `add_event_handler`.
-- #60: `Response.iter_encoded()` sync vs async duality.
+Split out of `test_polish_e2e.py`, a module named for a fix wave.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
-import warnings
-from collections.abc import AsyncIterator, Iterator
 
-import pytest
-
-from veloce import Veloce, VeloceDeprecationWarning
-from veloce.http.response import Response, StreamingResponse
+from veloce import Veloce
 from veloce.serving.protocol import HttpProtocol
 
 
@@ -42,9 +35,6 @@ def _reset_connection_counter() -> None:
     """Pin the class counter to 0 so test ordering doesn't leak state."""
     with HttpProtocol._connections_lock:
         HttpProtocol._active_connections = 0
-
-
-# ── #36m: connection limit ──────────────────────────────────────────
 
 
 def test_third_concurrent_connection_gets_503_and_closed():
@@ -114,82 +104,3 @@ def test_disconnect_releases_slot_for_new_connection():
             proto_d.connection_lost(None)
         _reset_connection_counter()
         loop.close()
-
-
-# ── #36: lifecycle hook deprecation warnings ────────────────────────
-
-
-def test_on_event_decorator_emits_deprecation_warning():
-    app = Veloce(openapi_url=None)
-    with pytest.warns(VeloceDeprecationWarning, match="on_startup"):
-
-        @app.on_event("startup")
-        async def boot() -> None:
-            return None
-
-    assert boot in app._on_startup
-    assert callable(boot)
-
-
-def test_add_event_handler_emits_deprecation_warning():
-    app = Veloce(openapi_url=None)
-
-    async def boot() -> None:
-        return None
-
-    with pytest.warns(VeloceDeprecationWarning, match="on_startup"):
-        app.add_event_handler("startup", boot)
-
-    assert boot in app._on_startup
-
-
-def test_on_startup_decorator_does_not_warn():
-    app = Veloce(openapi_url=None)
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", DeprecationWarning)
-
-        @app.on_startup
-        async def boot() -> None:
-            return None
-
-    assert boot in app._on_startup
-
-
-# ── #60: iter_encoded duality ───────────────────────────────────────
-
-
-def test_iter_encoded_returns_sync_iterator_for_buffered_response():
-    resp = Response(body=b"hello")
-    assert resp.is_streamed is False
-
-    iterator = resp.iter_encoded()
-
-    assert not asyncio.iscoroutine(iterator)
-    assert not hasattr(iterator, "__aiter__"), "buffered iter must be sync"
-    assert isinstance(iterator, Iterator)
-    chunks = list(iterator)
-    assert chunks == [b"hello"]
-
-
-def test_iter_encoded_returns_async_iterator_for_streaming_response():
-    async def gen() -> AsyncIterator[bytes]:
-        yield b"a"
-        yield b"b"
-
-    resp = StreamingResponse(gen())
-    assert resp.is_streamed is True
-
-    iterator = resp.iter_encoded()
-
-    assert not asyncio.iscoroutine(iterator)
-    assert hasattr(iterator, "__aiter__"), "streaming iter must be async"
-
-    async def _drain() -> list[bytes]:
-        return [chunk async for chunk in iterator]
-
-    loop = asyncio.new_event_loop()
-    try:
-        chunks = loop.run_until_complete(_drain())
-    finally:
-        loop.close()
-    assert chunks == [b"a", b"b"]

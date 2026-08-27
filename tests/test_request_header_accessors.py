@@ -1,4 +1,8 @@
-"""Request.content_language / pragma / max_forwards — header accessors."""
+"""`Request.content_language` / `pragma` / `max_forwards` header accessors.
+
+Was `test_request_misc_headers.py`: "misc" names nothing, and a module that
+can absorb anything will.
+"""
 
 from __future__ import annotations
 
