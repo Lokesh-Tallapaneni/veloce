@@ -13,9 +13,15 @@ gets the behaviour they asked for or not depending on how deeply the model
 happens to be nested. These tests state the property once - the filter's effect
 does not depend on depth or on container shape - and check it across the
 product of both, so a site that stops forwarding fails here.
+
+The other two thirds of `veloce/encoders.py` are in
+`test_jsonable_encoder.py` (what each type coerces to) and
+`test_encoder_registry.py` (dispatch and the registry).
 """
 
 from __future__ import annotations
+
+from typing import Any
 
 import pytest
 from pydantic import BaseModel
@@ -146,6 +152,23 @@ def test_a_filters_effect_does_not_depend_on_depth(value, kwargs):
     for shape in SHAPES:
         encoded = jsonable_encoder(_nest(value, shape), **kwargs)
         assert _unwrap(encoded, shape) == bare, shape
+
+
+def test_a_model_field_holding_a_dict_is_filtered_too():
+    """Re-encoding a model applies the filter to a plain-dict field as well.
+
+    The shapes above nest values in plain containers; a dict reached as a model
+    *field* goes through the model re-encoding branch instead, which is where
+    the forwarding was missing.
+    """
+
+    class Wrapper(BaseModel):
+        top: str | None = None
+        meta: dict[str, Any]
+
+    result = jsonable_encoder(Wrapper(top=None, meta={"x": None, "y": 1}), exclude_none=True)
+    assert "top" not in result
+    assert result["meta"] == {"y": 1}
 
 
 # ── the negatives: no filter means no filtering ──────────────────────

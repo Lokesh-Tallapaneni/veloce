@@ -1,4 +1,16 @@
-"""jsonable_encoder — Pydantic/scalar/collection coercion to JSON-able types."""
+"""jsonable_encoder — Pydantic/scalar/collection coercion to JSON-able types.
+
+`veloce/encoders.py` is covered by three modules, split by question rather than
+by accident: this one is what each *type* coerces to, `test_encoder_registry.py`
+is dispatch and the `register_encoder` registry, and
+`test_encoder_filter_depth.py` is whether a filter behaves the same at every
+nesting depth.
+
+Five filter tests that lived here asserted that second property against
+hand-built nested payloads, one shape each; the depth module asserts it across
+five container shapes and both directions. They are gone rather than kept in
+parallel.
+"""
 
 from __future__ import annotations
 
@@ -6,7 +18,6 @@ import datetime
 import enum
 import uuid
 from decimal import Decimal
-from typing import Any
 
 from pydantic import BaseModel
 
@@ -29,27 +40,6 @@ class TestJsonableEncoder:
     def test_dict(self):
         result = jsonable_encoder({"a": 1, "b": 2}, exclude={"b"})
         assert result == {"a": 1}
-
-    def test_exclude_recurses_into_nested_dicts(self):
-        """`exclude` strips matching keys at every depth — not only the
-        top level. Catches a regression where nested calls dropped the
-        filter and let `password` leak through inner dicts."""
-        payload = {
-            "user": {"name": "alice", "password": "p1"},
-            "audit": [{"actor": "alice", "password": "p2"}],
-            "password": "p0",
-        }
-        result = jsonable_encoder(payload, exclude={"password"})
-        assert result == {"user": {"name": "alice"}, "audit": [{"actor": "alice"}]}
-
-    def test_include_recurses_into_nested_dicts(self):
-        """`include` keeps the same keys at every depth too."""
-        payload = {"a": 1, "b": {"a": 2, "c": 3}, "d": 4}
-        result = jsonable_encoder(payload, include={"a", "b"})
-        # Top level keeps a and b; the nested dict under b also keeps
-        # only the keys named in `include` (a). c at the inner level is
-        # dropped because it is not in the include set.
-        assert result == {"a": 1, "b": {"a": 2}}
 
     def test_datetime(self):
         dt = datetime.datetime(2024, 1, 15, 12, 30, 0)
@@ -179,37 +169,3 @@ class TestJsonableEncoder:
         result = jsonable_encoder(item, exclude_unset=True)
         assert "name" in result
         assert "description" not in result
-
-    def test_exclude_none_plain_dict(self):
-        """`exclude_none` drops None-valued keys from a plain dict, not
-        only from a BaseModel."""
-        result = jsonable_encoder({"a": None, "b": 1}, exclude_none=True)
-        assert result == {"b": 1}
-
-    def test_exclude_none_recurses_into_nested_dicts(self):
-        """`exclude_none` applies at every depth of a plain structure."""
-        payload = {
-            "a": None,
-            "b": {"c": None, "d": 2},
-            "e": [{"f": None, "g": 3}],
-        }
-        result = jsonable_encoder(payload, exclude_none=True)
-        assert result == {"b": {"d": 2}, "e": [{"g": 3}]}
-
-    def test_exclude_none_nested_dict_field_in_model(self):
-        """A model field that is a plain dict has `exclude_none` applied
-        during re-encoding, not just the model's own scalar fields."""
-
-        class Wrapper(BaseModel):
-            top: str | None = None
-            meta: dict[str, Any]
-
-        wrapper = Wrapper(top=None, meta={"x": None, "y": 1})
-        result = jsonable_encoder(wrapper, exclude_none=True)
-        assert "top" not in result
-        assert result["meta"] == {"y": 1}
-
-    def test_exclude_none_off_keeps_none(self):
-        """Default behaviour is unchanged: None values are preserved."""
-        result = jsonable_encoder({"a": None, "b": 1})
-        assert result == {"a": None, "b": 1}

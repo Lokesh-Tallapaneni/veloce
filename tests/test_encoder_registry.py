@@ -1,5 +1,10 @@
-"""Tests for jsonable_encoder MRO-walk dispatch, per-call custom_encoder, and
-the process-level register_encoder registry."""
+"""jsonable_encoder dispatch: the MRO walk, per-call `custom_encoder`, and the
+process-level `register_encoder` registry.
+
+The other two thirds of `veloce/encoders.py` are in
+`test_jsonable_encoder.py` (what each type coerces to) and
+`test_encoder_filter_depth.py` (a filter behaves the same at every depth).
+"""
 
 import base64
 import datetime
