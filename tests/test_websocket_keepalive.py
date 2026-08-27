@@ -347,23 +347,6 @@ async def test_raw_mode_silent_after_frame_still_idle_closes():
 # through, so a transport added later inherits it.
 
 
-def _idle_app(**config):
-    from veloce import Veloce
-
-    app = Veloce(openapi_url=None)
-    app.config.update(config)
-
-    @app.websocket("/ws")
-    async def handler(ws):
-        await ws.accept()
-        try:
-            await ws.receive_text()
-        except WebSocketDisconnect:
-            return
-
-    return app
-
-
 def _observed_timeout(**config) -> float | None:
     """The idle timeout the socket actually carries once dispatch has begun."""
     from veloce import Veloce

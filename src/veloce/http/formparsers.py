@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import tempfile
-from typing import Any
+from typing import Any, NoReturn
 
 from python_multipart import MultipartParser
 from python_multipart.exceptions import FormParserError
@@ -203,7 +203,10 @@ def parse_multipart_form(
     result = FormData()
     state = _PartState(field_size_cap)
 
-    def _too_large(message: str) -> None:
+    def _too_large(message: str) -> NoReturn:
+        """Always raises. Annotated `NoReturn` so its six call sites read as
+        terminating, and so mypy narrows what follows them.
+        """
         raise RequestEntityTooLarge(message)
 
     def on_part_begin() -> None:

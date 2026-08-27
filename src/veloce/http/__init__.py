@@ -31,10 +31,12 @@ from veloce.http.response import (
     UJSONResponse,
     header_get,
     header_key,
+    header_pop,
     header_present,
 )
 
 __all__ = [
+    "header_pop",
     "AcceptHeader",
     "Address",
     "Authorization",

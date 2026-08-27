@@ -58,7 +58,17 @@ def _native(target: str) -> str:
         transport = _Transport()
         proto.connection_made(transport)
         proto.data_received(f"GET {target} HTTP/1.1\r\nHost: x\r\n\r\n".encode())
-        loop.run_until_complete(asyncio.sleep(0.05))
+        # Drain the protocol's own server loop rather than sleeping a fixed
+        # 50ms: what has to finish is that task, and waiting on it is both
+        # exact and immediate. Every test in this module comes through here.
+        server_loop = proto._server_loop
+        if server_loop is not None:
+            loop.run_until_complete(asyncio.wait_for(asyncio.shield(server_loop), 5))
+        else:
+            for _ in range(200):
+                if transport.writes:
+                    break
+                loop.run_until_complete(asyncio.sleep(0))
         return b"".join(transport.writes).partition(b"\r\n\r\n")[2].decode("utf-8", "replace")
     finally:
         for task in asyncio.all_tasks(loop):

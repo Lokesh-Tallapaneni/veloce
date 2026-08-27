@@ -158,12 +158,6 @@ def _format_content_disposition(disposition: str, filename: str) -> str:
     return f"{disposition}; {param}"
 
 
-def _read_file_bytes(path: str) -> bytes:
-    """Read a whole file's bytes - run in an executor for large reads."""
-    with open(path, "rb") as f:
-        return f.read()
-
-
 async def _stream_file(path: str, loop: Any) -> Any:
     """Yield a file's bytes in chunks, each read in the executor.
 
@@ -522,7 +516,7 @@ class Response:
         """Append `raw_value` (already a serialised Set-Cookie line, or
         a `\\r\\nSet-Cookie: `-joined multi-cookie blob) onto the response's
         Set-Cookie header without overwriting earlier cookies. Single
-        canonical home for the Q44 multi-cookie join format.
+        canonical home for the multi-cookie join format.
         """
         existing = self.headers.get(HEADER_SET_COOKIE)
         if existing:
@@ -646,7 +640,7 @@ class Response:
     def cookies(self) -> dict[str, str]:
         """Parsed cookie jar from this response's `Set-Cookie` header(s).
 
-        Walks every `Set-Cookie` entry (Q44 separator `\\r\\nSet-Cookie: `
+        Walks every `Set-Cookie` entry (separator `\\r\\nSet-Cookie: `
         respected) and returns `{name: value}`. Values are percent-decoded,
         so a cookie reads back as the string `set_cookie()` was given rather
         than its wire form. Multiple cookies with the same name resolve to
@@ -658,7 +652,7 @@ class Response:
         existing = header_get(self.headers, HEADER_SET_COOKIE) or ""
         if not existing:
             return out
-        # Q44 emits multi-cookies as `cookie1\r\nSet-Cookie: cookie2...`. Only
+        # Multi-cookies are emitted as `cookie1\r\nSet-Cookie: cookie2...`. Only
         # the leading `name=value` segment of each entry is the cookie; the
         # rest are attributes. `iter_cookies` is the inverse of `dump_cookie`'s
         # percent-quoting, and the same parser `Request.cookies` reads with.
@@ -670,7 +664,7 @@ class Response:
     def headerlist(self) -> list[tuple[str, str]]:
         """Headers flattened to the `(name, value)` tuple list the wire emit sends.
 
-        Each `Set-Cookie` (Q44 multi-cookie join) expands to its own tuple, so
+        Each `Set-Cookie` (multi-cookie join) expands to its own tuple, so
         the caller gets the per-cookie view ASGI requires. Two spellings of one
         field name collapse to a single entry carrying the last name and value
         seen, at the position of the first (RFC 9110 Sec. 5.1 makes field names

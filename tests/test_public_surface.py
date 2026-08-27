@@ -272,6 +272,7 @@ SUBPACKAGE_ALL = {
         "header_get",
         "header_key",
         "header_present",
+        "header_pop",
         "parse_multipart_form",
     },
     "veloce.routing": {

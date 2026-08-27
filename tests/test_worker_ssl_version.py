@@ -22,7 +22,7 @@ import ssl
 
 import pytest
 
-from veloce.workers import _apply_ssl_version, build_ssl_context
+from veloce.workers import _apply_ssl_version, _warn_if_chain_expired, build_ssl_context
 
 
 def _context() -> ssl.SSLContext:
@@ -131,8 +131,6 @@ def _decode_as(monkeypatch, **fields):
 
 def test_an_expired_certificate_is_warned_about(monkeypatch, caplog):
     """`load_cert_chain` accepts it, so nothing else says why handshakes fail."""
-    from veloce.workers import _warn_if_chain_expired
-
     _decode_as(monkeypatch, notAfter="Jan  1 00:00:00 2000 GMT")
     with caplog.at_level("WARNING"):
         _warn_if_chain_expired("/any/cert.pem")
@@ -141,8 +139,6 @@ def test_an_expired_certificate_is_warned_about(monkeypatch, caplog):
 
 
 def test_a_not_yet_valid_certificate_is_warned_about(monkeypatch, caplog):
-    from veloce.workers import _warn_if_chain_expired
-
     _decode_as(monkeypatch, notBefore="Jan  1 00:00:00 2999 GMT")
     with caplog.at_level("WARNING"):
         _warn_if_chain_expired("/any/cert.pem")
@@ -151,8 +147,6 @@ def test_a_not_yet_valid_certificate_is_warned_about(monkeypatch, caplog):
 
 def test_a_current_certificate_is_silent(monkeypatch, caplog):
     """A healthy deployment must not log a warning on every worker start."""
-    from veloce.workers import _warn_if_chain_expired
-
     _decode_as(
         monkeypatch,
         notBefore="Jan  1 00:00:00 2000 GMT",
@@ -164,8 +158,6 @@ def test_a_current_certificate_is_silent(monkeypatch, caplog):
 
 
 def test_an_unparseable_date_is_passed_over(monkeypatch, caplog):
-    from veloce.workers import _warn_if_chain_expired
-
     _decode_as(monkeypatch, notAfter="whenever")
     with caplog.at_level("WARNING"):
         _warn_if_chain_expired("/any/cert.pem")
@@ -174,8 +166,6 @@ def test_an_unparseable_date_is_passed_over(monkeypatch, caplog):
 
 def test_an_unreadable_file_produces_no_bogus_warning(tmp_path, caplog):
     """OpenSSL already accepted the chain; do not invent an expiry claim."""
-    from veloce.workers import _warn_if_chain_expired
-
     junk = tmp_path / "junk.pem"
     junk.write_text("not a certificate", encoding="utf-8")
     with caplog.at_level("WARNING"):
@@ -185,8 +175,6 @@ def test_an_unreadable_file_produces_no_bogus_warning(tmp_path, caplog):
 
 def test_a_missing_file_is_passed_over(caplog):
     """Start-up already failed for a missing chain; do not double-report it."""
-    from veloce.workers import _warn_if_chain_expired
-
     with caplog.at_level("WARNING"):
         _warn_if_chain_expired("/nonexistent/cert.pem")
     assert caplog.text == ""

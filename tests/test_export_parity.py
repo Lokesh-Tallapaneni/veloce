@@ -54,6 +54,7 @@ SUBPACKAGE_ONLY: dict[str, str] = {
     "header_key": "raw ASGI header-list helper, used when building responses",
     "header_get": "raw ASGI header-list helper, used when building responses",
     "header_present": "raw ASGI header-list helper, used when building responses",
+    "header_pop": "raw ASGI header-list helper, used when building responses",
     "parse_multipart_form": "standalone parser; `request.form` is the normal entry point",
     # `veloce.routing` — route-table introspection types. Returned by the
     # router, never constructed by application code.

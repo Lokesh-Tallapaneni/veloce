@@ -257,6 +257,12 @@ async def test_the_task_is_dropped_from_the_active_set_either_way():
     task = _cancelled_task()
     with pytest.raises(asyncio.CancelledError):
         await task
+    # `_active_tasks` is a process-wide class-level set. Adding to it without
+    # removing leaks a dead task into every later test in the run, so the add
+    # is undone whatever this test does.
     HttpProtocol._active_tasks.add(task)
-    HttpProtocol._ws_task_done(_native_ws(), task)
-    assert task not in HttpProtocol._active_tasks
+    try:
+        HttpProtocol._ws_task_done(_native_ws(), task)
+        assert task not in HttpProtocol._active_tasks
+    finally:
+        HttpProtocol._active_tasks.discard(task)
