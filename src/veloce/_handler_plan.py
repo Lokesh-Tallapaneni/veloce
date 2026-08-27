@@ -654,6 +654,47 @@ def _subgraph_reads_scopes(plan: HandlerPlan | None, seen_plans: set[int]) -> bo
     return False
 
 
+def _inspect_handler(handler: Callable) -> tuple[inspect.Signature, dict[str, Any]] | None:
+    """Return `handler`'s signature and resolved type hints, or `None`.
+
+    `None` means the callable has no inspectable signature - a builtin, or a C
+    function - and the caller returns an empty plan for it.
+
+    The two halves have to agree on *which object* they describe, and they do
+    not follow the same indirection to find it. `inspect.signature`
+    transparently follows class -> `__init__`, callable-instance -> `__call__`
+    and `functools.partial` -> wrapped function; `get_type_hints` does not - on
+    a class it returns the *class-level* annotations rather than `__init__`'s.
+    So the same resolution is done by hand here before the hints are read, and
+    doing it in one place is why it cannot come apart.
+
+    `include_extras=True` keeps PEP 593 `Annotated[T, Depends(...)]` metadata in
+    the result, so a dependency marker is detectable without the user writing
+    the default-value form. A failure to resolve hints at all - forward
+    references, private modules - degrades to `{}` rather than raising: slots
+    that need an annotation then fall back to the parameter default.
+    """
+    try:
+        sig = inspect.signature(handler)
+    except (TypeError, ValueError):
+        return None
+
+    real: Any = handler
+    while isinstance(real, functools.partial):
+        real = real.func
+    if inspect.isclass(real):
+        hint_target: Any = real.__init__
+    elif not inspect.isfunction(real) and not inspect.ismethod(real) and callable(real):
+        hint_target = type(real).__call__
+    else:
+        hint_target = real
+
+    try:
+        return sig, get_type_hints(hint_target, include_extras=True)
+    except Exception:
+        return sig, {}
+
+
 def build_plan(
     handler: Callable, *, websocket: bool = False, _seen: list | None = None
 ) -> HandlerPlan:
@@ -697,35 +738,10 @@ def build_plan(
     if websocket:
         ws_type = WebSocket
 
-    try:
-        sig = inspect.signature(handler)
-    except (TypeError, ValueError):
+    inspected = _inspect_handler(handler)
+    if inspected is None:
         return HandlerPlan(handler, [], [])
-
-    # `inspect.signature` transparently follows the class -> `__init__`,
-    # callable-instance -> `__call__`, and `functools.partial` -> wrapped
-    # function indirection, but `get_type_hints` does not - on a class it
-    # returns the *class-level* annotations, not `__init__`'s. Resolve the
-    # same object `signature` did so dependencies keep their parameter types.
-    real: Any = handler
-    while isinstance(real, functools.partial):
-        real = real.func
-    if inspect.isclass(real):
-        hint_target: Any = real.__init__
-    elif not inspect.isfunction(real) and not inspect.ismethod(real) and callable(real):
-        hint_target = type(real).__call__
-    else:
-        hint_target = real
-
-    try:
-        # `include_extras=True` keeps PEP 593 `Annotated[T, Depends(...)]`
-        # metadata in the result so we can detect dependency markers
-        # without forcing users to use the default-value form.
-        hints = get_type_hints(hint_target, include_extras=True)
-    except Exception:
-        # get_type_hints chokes on forward refs / private modules; degrade
-        # gracefully - slots that need annotations fall back to defaults.
-        hints = {}
+    sig, hints = inspected
 
     slots: list[_Slot] = []
 
