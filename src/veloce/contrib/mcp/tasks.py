@@ -42,14 +42,14 @@ from veloce.contrib.mcp.errors import InvalidParamsError, ResourceNotFoundError
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.server import MethodHandler
 
-# The task status values the spec defines. `working` is the only non-terminal
-# state the framework drives a task into on its own; `input_required` is modelled
-# for a tool that needs client follow-up but is never entered automatically.
 # The extension the modern revision moves tasks into. A client declares it in the
 # `extensions` block of its per-request capabilities; a server advertises the same
 # key in `server/discover`. A task is never returned to a client that did not.
 TASKS_EXTENSION = "io.modelcontextprotocol/tasks"
 
+# The task status values the spec defines. `working` is the only non-terminal
+# state the framework drives a task into on its own; `input_required` is modelled
+# for a tool that needs client follow-up but is never entered automatically.
 STATUS_WORKING = "working"
 STATUS_INPUT_REQUIRED = "input_required"
 STATUS_COMPLETED = "completed"

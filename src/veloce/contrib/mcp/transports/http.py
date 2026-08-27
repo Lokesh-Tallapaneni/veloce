@@ -60,7 +60,7 @@ from collections.abc import Sequence
 from itertools import count
 from typing import TYPE_CHECKING, Any, cast
 
-from veloce import status
+import veloce.status as status
 from veloce.contrib.mcp._helpers import encode_envelope, transport_route_name
 from veloce.contrib.mcp._posture import record_endpoint
 from veloce.contrib.mcp.auth import PROTECTED_RESOURCE_METADATA_PATH, MCPAuth
@@ -97,8 +97,6 @@ if TYPE_CHECKING:  # pragma: no cover
     from veloce.http.request import Request
 
 _logger = logging.getLogger(__name__)
-
-# JSON-RPC 2.0 Sec. 5.1 parse error - a body that is not a single JSON object.
 
 # Header carrying the session id when session management is enabled (MCP
 # 2025-06-18 Streamable HTTP transport: the server assigns it on the initialize
@@ -296,14 +294,6 @@ async def _handle_http(
         # what was read is not a Request object.
         return _protocol_response(invalid_request_error(), status_code=status.HTTP_400_BAD_REQUEST)
 
-    # When session management is on, every request except `initialize` must echo a
-    # live session id (HTTP 400 if missing, 404 once terminated); `initialize`
-    # mints a new id returned on its response. Each id owns a real `MCPSession`, so
-    # the connection is a first-class server connection (capabilities, in-flight
-    # scope, subscriptions, lifecycle). The stateless default uses a fresh
-    # per-request session instead: it carries no id and lives only for this POST,
-    # which still isolates the in-flight registry so a colliding JSON-RPC id from a
-    # concurrent POST cannot cancel this one.
     # The standard headers label the body a proxy forwarded without parsing, so
     # they are cross-checked before anything acts on either one.
     try:

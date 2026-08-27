@@ -400,17 +400,16 @@ def build_registry(app: Any) -> ToolRegistry:
     #
     # A route declared with several methods (`methods=["GET", "POST"]`) shares a
     # single `RouteInfo` object across its method entries, so the walk yields it
-    # once per method. Deduplicate by `RouteInfo` identity to expose that one
-    # route a single time - never by the handler callable, which would silently
-    # drop a function intentionally mounted as two distinct named routes (or on
-    # two blueprints). Two distinct routes that derive the same tool name still
-    # collide at `registry.add`, preserving duplicate-tool-name detection.
-    # Group the yielded methods by `RouteInfo` identity, preserving first-seen
-    # order, so the route is exposed once: its leading verb drives the synthetic
-    # request method and its full verb set drives the conservative annotation
-    # hints. Dedup by identity, never by handler callable - that would drop a
+    # once per method. Group by `RouteInfo` identity, preserving first-seen
+    # order, to expose that one route a single time: its leading verb drives the
+    # synthetic request method and its full verb set drives the conservative
+    # annotation hints.
+    #
+    # By identity, never by the handler callable - that would silently drop a
     # function intentionally mounted as two distinct named routes (or on two
-    # blueprints). Exposure stays default-closed (`expose_as_mcp_tool=True`).
+    # blueprints). Two distinct routes deriving the same tool name still collide
+    # at `registry.add`, so duplicate-tool-name detection is unaffected.
+    # Exposure stays default-closed (`expose_as_mcp_tool=True`).
     exposed: dict[int, Any] = {}
     methods_by_route: dict[int, list[str]] = {}
     for method, _path, info in app.iter_routes(include_hidden=True):

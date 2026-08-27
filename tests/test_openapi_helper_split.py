@@ -2,7 +2,7 @@
 
 The schema produced by the orchestrator must match a known-good byte
 sequence captured from a representative fixture app (path/query/header
-params with constraints, JSON body, form fields with files, OAuth-less
+inputs.parameters with constraints, JSON body, form fields with files, OAuth-less
 HTTP bearer security, custom status code, extra response models,
 deprecated route, and a webhook). Any byte-level drift means the
 refactor leaked a behavior change.
@@ -124,10 +124,10 @@ def test_get_openapi_schema_helpers_assemble_same_operation() -> None:
     routes = list(app._collect_all_routes())
     method, path, info = next((m, p, i) for m, p, i in routes if p == "/items" and m == "POST")
     schemas_registry = SchemaRegistry()
-    params, body_schema, form_fields, body_fields, scalar_body = _extract_parameters(
-        info, schemas_registry
+    inputs = _extract_parameters(info, schemas_registry)
+    request_body = _extract_request_body(
+        inputs.request_body_schema, inputs.form_fields, inputs.body_fields, inputs.scalar_body
     )
-    request_body = _extract_request_body(body_schema, form_fields, body_fields, scalar_body)
     # Mirror the orchestrator's argument exactly. This copy used to omit the
     # `_dependency_graph_has_validatable` disjunct, so it agreed only for routes
     # whose 422 comes from their own parameters or body - the case this fixture
@@ -135,7 +135,9 @@ def test_get_openapi_schema_helpers_assemble_same_operation() -> None:
     # been compared against the wrong expectation, which is the whole thing this
     # parity test exists to rule out.
     has_validatable_params = (
-        bool(params) or request_body is not None or _dependency_graph_has_validatable(info)
+        bool(inputs.parameters)
+        or request_body is not None
+        or _dependency_graph_has_validatable(info)
     )
     responses = _extract_responses(info, schemas_registry, has_validatable_params)
     # `_walk_webhooks` appends each webhook's auto operationId to `auto_ops` for
@@ -158,7 +160,7 @@ def test_get_openapi_schema_helpers_assemble_same_operation() -> None:
     op = full["paths"]["/items"][method.lower()]
     assert document["requestBody"] == op["requestBody"]
     assert document["responses"] == op["responses"]
-    assert params == op.get("parameters", [])
+    assert inputs.parameters == op.get("parameters", [])
     assert document["webhooks"] == full["webhooks"]
 
 
@@ -202,9 +204,11 @@ def test_only_the_third_disjunct_fires_for_a_hidden_parameter():
     app = _hidden_param_app()
     _m, _p, info = next((m, p, i) for m, p, i in app._collect_all_routes() if p == "/hidden")
     registry = SchemaRegistry()
-    params, body_schema, form_fields, body_fields, scalar_body = _extract_parameters(info, registry)
-    request_body = _extract_request_body(body_schema, form_fields, body_fields, scalar_body)
-    assert params == []
+    inputs = _extract_parameters(info, registry)
+    request_body = _extract_request_body(
+        inputs.request_body_schema, inputs.form_fields, inputs.body_fields, inputs.scalar_body
+    )
+    assert inputs.parameters == []
     assert request_body is None
     assert _dependency_graph_has_validatable(info) is True
 
@@ -226,9 +230,11 @@ def test_the_dropped_disjunct_changes_the_answer():
     app = _hidden_param_app()
     _m, _p, info = next((m, p, i) for m, p, i in app._collect_all_routes() if p == "/hidden")
     registry = SchemaRegistry()
-    params, body_schema, form_fields, body_fields, scalar_body = _extract_parameters(info, registry)
-    request_body = _extract_request_body(body_schema, form_fields, body_fields, scalar_body)
-    dropped = bool(params) or request_body is not None
+    inputs = _extract_parameters(info, registry)
+    request_body = _extract_request_body(
+        inputs.request_body_schema, inputs.form_fields, inputs.body_fields, inputs.scalar_body
+    )
+    dropped = bool(inputs.parameters) or request_body is not None
     correct = dropped or _dependency_graph_has_validatable(info)
     assert dropped is False
     assert correct is True
@@ -240,9 +246,15 @@ def test_the_helpers_and_the_orchestrator_agree_on_that_route():
     full = get_openapi_schema(app)
     _m, _p, info = next((m, p, i) for m, p, i in app._collect_all_routes() if p == "/hidden")
     registry = SchemaRegistry()
-    params, body_schema, form_fields, body_fields, scalar_body = _extract_parameters(info, registry)
-    request_body = _extract_request_body(body_schema, form_fields, body_fields, scalar_body)
-    flag = bool(params) or request_body is not None or _dependency_graph_has_validatable(info)
+    inputs = _extract_parameters(info, registry)
+    request_body = _extract_request_body(
+        inputs.request_body_schema, inputs.form_fields, inputs.body_fields, inputs.scalar_body
+    )
+    flag = (
+        bool(inputs.parameters)
+        or request_body is not None
+        or _dependency_graph_has_validatable(info)
+    )
     responses = _extract_responses(info, registry, flag)
     document = {"responses": responses}
     registry.finalize(document)

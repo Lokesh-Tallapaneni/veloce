@@ -20,7 +20,7 @@ from urllib.parse import unquote
 
 import httptools
 
-from veloce import status
+import veloce.status as status
 from veloce._constants import (
     MIME_JSON,
     MIME_TEXT_PLAIN,

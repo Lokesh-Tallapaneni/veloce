@@ -22,11 +22,15 @@ The scan is module-level imports only. A deferred import inside a function is a
 different thing with its own guard in `test_deferred_import_discipline.py`.
 
 It also excludes edges into the top-level `veloce` gateway. A submodule doing
-`from veloce import Request` closes a loop with `veloce/__init__.py`, and 22
-such loops exist - but that is the package-gateway pattern, not a defect: the
-gateway imports its submodules in a deliberate order and every name is bound
-before a submodule reads it. Unwinding it means every submodule importing from
-leaf paths, which is a different change with a different justification.
+`from veloce import Request` closes a loop with `veloce/__init__.py` - the
+package-gateway pattern, not a defect: the gateway imports its submodules in a
+deliberate order and every name is bound before a submodule reads it.
+
+That exclusion used to cover 22 loops across 12 modules. Eleven of those modules
+were reaching the gateway for `status` alone - a leaf that imports nothing - so
+they say `import veloce.status as status` now, and `test_the_gateway_loops_stay_bounded`
+holds the remainder at the one the gateway cannot avoid: naming its own
+submodule.
 
 **With those excluded the graph has zero cycles**, which is what makes this a
 guard rather than a wish: the one the finding named was the only leaf-to-leaf
@@ -106,6 +110,40 @@ def _cycles(graph: dict[str, set[str]]) -> list[list[str]]:
 def test_no_module_level_import_cycle():
     cycles = _cycles(_graph())
     assert cycles == [], "module-level import cycles: " + "; ".join(" -> ".join(c) for c in cycles)
+
+
+def test_the_gateway_loops_stay_bounded():
+    """The excluded class of edge is measured, not waved through.
+
+    A submodule reaching the gateway for a name a leaf module owns declares a
+    dependency on the whole package to get at something with none. That was 22
+    loops across 12 modules; it is one now - `veloce -> veloce`, the gateway
+    naming its own submodule, which no arrangement removes.
+    """
+    cycles = _cycles(_graph(include_gateway=True))
+    offending = [c for c in cycles if set(c) != {GATEWAY}]
+    assert offending == [], (
+        "a submodule closes a new loop with the package gateway: "
+        + "; ".join(" -> ".join(c) for c in offending)
+        + ". Import from the leaf that owns the name instead."
+    )
+
+
+def test_no_module_reaches_the_gateway_for_status():
+    """`veloce/status.py` imports nothing, so nothing needs the gateway to reach it."""
+    offenders = [
+        _module_name(path)
+        for path in ROOT.rglob("*.py")
+        if path.name != "__init__.py"
+        and path.name != "status.py"
+        and "from veloce import status" in path.read_text(encoding="utf-8")
+    ]
+    assert offenders == [], f"these import status through the gateway: {offenders}"
+
+
+def test_status_itself_depends_on_nothing():
+    """The premise: it is a leaf, so importing it can never close a loop."""
+    assert _module_level_imports(ROOT / "status.py") == set()
 
 
 def test_datastructures_does_not_import_formparsers():

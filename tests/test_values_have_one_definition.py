@@ -253,8 +253,45 @@ def test_the_meta_keys_still_have_their_wire_values():
     assert META_CLIENT_CAPABILITIES == "io.modelcontextprotocol/clientCapabilities"
 
 
+def test_the_session_module_does_not_import_the_dispatch_core():
+    """The five `_meta` keys live in `_helpers`, which both leaves may import.
+
+    `session.py` is a 148-line per-connection state object; `server.py` is the
+    1,675-line dispatch core, and it imports `session` only under
+    `TYPE_CHECKING`. Importing `server` from `session` for two string constants
+    made the one runtime edge between them run leaf to core.
+    """
+    source = (SRC / "contrib" / "mcp" / "session.py").read_text(encoding="utf-8")
+    assert "from veloce.contrib.mcp.server import" not in source, (
+        "session imports the dispatch core at runtime again"
+    )
+    assert "from veloce.contrib.mcp._helpers import" in source
+
+
+def test_every_meta_key_has_one_definition():
+    """All five, not just the two `session` reads."""
+    from veloce.contrib.mcp import _helpers
+
+    keys = {
+        "META_PROTOCOL_VERSION": "io.modelcontextprotocol/protocolVersion",
+        "META_CLIENT_INFO": "io.modelcontextprotocol/clientInfo",
+        "META_CLIENT_CAPABILITIES": "io.modelcontextprotocol/clientCapabilities",
+        "META_LOG_LEVEL": "io.modelcontextprotocol/logLevel",
+        "META_SERVER_INFO": "io.modelcontextprotocol/serverInfo",
+    }
+    for name, wire in keys.items():
+        assert getattr(_helpers, name) == wire
+
+    defining = [
+        path.name
+        for path in (SRC / "contrib" / "mcp").rglob("*.py")
+        if any(f'= "{wire}"' in path.read_text(encoding="utf-8") for wire in keys.values())
+    ]
+    assert defining == ["_helpers.py"], f"the wire values are spelled in {defining}"
+
+
 def test_the_session_module_imports_on_its_own():
-    """The removed comment claimed `server` imports it; that is TYPE_CHECKING only."""
+    """It must not need the dispatch core to be importable."""
     import subprocess
     import sys
 

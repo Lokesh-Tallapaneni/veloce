@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING, Annotated, Any
 
 from typing_extensions import Doc
 
-from veloce import status
+import veloce.status as status
 from veloce.http.response import JSONResponse
 
 if TYPE_CHECKING:  # pragma: no cover

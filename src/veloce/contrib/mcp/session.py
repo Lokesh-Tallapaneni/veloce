@@ -21,11 +21,7 @@ import itertools
 import secrets
 from typing import Any
 
-# `server` imports this module only under `TYPE_CHECKING`, so there is no
-# runtime edge to break. The two keys were duplicated here with a comment
-# claiming otherwise ("imported from `server`, which imports this module"),
-# which is true only of the type-checking import.
-from veloce.contrib.mcp.server import META_CLIENT_CAPABILITIES, META_CLIENT_INFO
+from veloce.contrib.mcp._helpers import META_CLIENT_CAPABILITIES, META_CLIENT_INFO
 
 # Monotonic source of per-session connection ids. A connection id is a stable
 # identity for the session's lifetime and is never reused, unlike `id(session)`

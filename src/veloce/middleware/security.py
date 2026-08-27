@@ -19,7 +19,7 @@ from collections import deque
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
-from veloce import status
+import veloce.status as status
 from veloce._constants import (
     HEADER_CONTENT_SECURITY_POLICY,
     HEADER_CONTENT_SECURITY_POLICY_REPORT_ONLY,

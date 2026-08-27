@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from veloce import status
+import veloce.status as status
 from veloce._constants import (
     HEADER_ALLOW,
     MIME_TEXT_PLAIN,

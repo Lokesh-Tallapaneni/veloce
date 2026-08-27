@@ -66,7 +66,7 @@ import secrets
 from collections.abc import Callable
 from urllib.parse import urlsplit
 
-from veloce import status
+import veloce.status as status
 from veloce._constants import (
     HEADER_CONTENT_TYPE,
     HEADER_ORIGIN,

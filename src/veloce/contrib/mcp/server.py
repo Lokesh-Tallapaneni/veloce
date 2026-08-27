@@ -24,11 +24,14 @@ import time
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
-from veloce import status
+import veloce.status as status
 from veloce._internal import _is_async_callable, offload
 from veloce._model_backend import shape_through_model
 from veloce.contrib.mcp._helpers import (
     _DEFERRED_RESPONSE,
+    META_LOG_LEVEL,
+    META_PROTOCOL_VERSION,
+    META_SERVER_INFO,
     _attach_result_meta,
     _binary_result,
     _declared_mime_type,
@@ -163,15 +166,6 @@ SERVED_PROTOCOL_VERSIONS: tuple[str, ...] = (
     PRIOR_PROTOCOL_VERSION,
 )
 
-# `_meta` keys the modern revision reserves. Prefixed per the spec's naming
-# rules, so an application's own `_meta` entries cannot collide with them.
-META_PROTOCOL_VERSION = "io.modelcontextprotocol/protocolVersion"
-META_CLIENT_INFO = "io.modelcontextprotocol/clientInfo"
-META_CLIENT_CAPABILITIES = "io.modelcontextprotocol/clientCapabilities"
-# The modern revision sets the log level per request rather than per connection. A
-# request that omits it gets no `notifications/message` at all.
-META_LOG_LEVEL = "io.modelcontextprotocol/logLevel"
-META_SERVER_INFO = "io.modelcontextprotocol/serverInfo"
 
 # Every modern result carries this discriminator. `"complete"` is an ordinary
 # result; `"input_required"` marks a multi-round-trip interim result, which this
@@ -436,6 +430,10 @@ class MCPServer(TasksMixin, InvocationMixin):
         # constructor guarantees both, so a fallback here is a duplicated default.
         self.server_name = app.title
         self.server_version = app.version
+        # The application's serialiser, resolved once. `resolve_dumps` returns
+        # `None` when nothing is configured and the direct encoder already emits
+        # the same bytes, so an app with no dialect pays nothing per tool call.
+        self._result_dumps = resolve_dumps(app)
         # Human-facing display name and client-facing usage guidance for the
         # `initialize` result, read from the same app metadata the OpenAPI
         # document uses so the two doors describe the server identically. The
@@ -443,10 +441,6 @@ class MCPServer(TasksMixin, InvocationMixin):
         # declares one title and it serves as both. Instructions prefer the
         # longer `description`, then the one-line `summary`, and are omitted when
         # neither is set.
-        # The application's serialiser, resolved once. `resolve_dumps` returns
-        # `None` when nothing is configured and the direct encoder already emits
-        # the same bytes, so an app with no dialect pays nothing per tool call.
-        self._result_dumps = resolve_dumps(app)
         self.server_title = app.title
         # Identity the spec lets a server publish about itself beyond its name:
         # icons a client can render beside it, and a page describing it. Both come

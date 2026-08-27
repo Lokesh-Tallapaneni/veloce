@@ -15,7 +15,7 @@ import traceback
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from veloce import status
+import veloce.status as status
 from veloce._constants import (
     MIME_TEXT_PLAIN_UTF8,
     MSG_INVALID_QUERY_STRING,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import collections.abc
 import contextlib
 import copy
+import dataclasses
 import datetime
 import enum
 import functools
@@ -966,26 +967,54 @@ def _apply_marker_constraints(param_schema: dict[str, Any], marker: Any) -> None
         param_schema["examples"] = list(marker.examples or [])
 
 
-def _extract_parameters(
-    info: Any, schemas_registry: SchemaRegistry
-) -> tuple[
-    list[dict],
-    dict | None,
-    list[tuple[str, dict, bool, bool]],
-    list[tuple[str, dict, bool]],
-    tuple[dict, bool] | None,
-]:
+@dataclasses.dataclass(frozen=True, slots=True)
+class _FormField:
+    """One `Form()` / `File()` parameter, as the request body will describe it."""
+
+    alias: str
+    schema: dict
+    required: bool
+    is_file: bool
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _BodyField:
+    """One `Body(embed=True)` parameter - a named key of the JSON object body."""
+
+    alias: str
+    schema: dict
+    required: bool
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _ScalarBody:
+    """A non-embedded `Body()` over a non-model: the whole JSON body."""
+
+    schema: dict
+    required: bool
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _RouteParameters:
+    """What lowering a route's handler plan says about its inputs.
+
+    The fields were a 5-tuple whose meanings lived in prose, unpacked
+    positionally at the single call site - so `form_fields[0][3]` was `is_file`
+    only if you had read the docstring. Naming them puts that in the type.
+    """
+
+    parameters: list[dict]
+    request_body_schema: dict | None
+    form_fields: list[_FormField]
+    body_fields: list[_BodyField]
+    scalar_body: _ScalarBody | None
+
+
+def _extract_parameters(info: Any, schemas_registry: SchemaRegistry) -> _RouteParameters:
     """Classify every parameter by lowering the route's handler plan.
 
-    Returns `(parameters, request_body_schema, form_fields, body_fields, scalar_body)`:
-    - `parameters` - OpenAPI parameter objects for path/query/header/cookie.
-    - `request_body_schema` - schema of the request body model (or None).
-    - `form_fields` - `(alias, schema, required, is_file)` tuples for
-      `Form()` / `File()` params, consumed by `_extract_request_body`.
-    - `body_fields` - `(alias, schema, required)` tuples for `Body(embed=True)`
-      params, which the resolver reads as named keys of a JSON object body.
-    - `scalar_body` - `(schema, required)` for a non-embedded `Body()` over a
-      non-model, which the resolver fills from the whole JSON body.
+    Each field of the returned `_RouteParameters` is documented on the record
+    itself; `_extract_request_body` consumes the three body-shaped ones.
 
     Walks the same `HandlerPlan` the resolver executes (via
     `iter_param_descriptors`), so the documented contract matches the one the
@@ -994,9 +1023,9 @@ def _extract_parameters(
     """
     parameters: list[dict] = []
     request_body_schema: dict | None = None
-    form_fields: list[tuple[str, dict, bool, bool]] = []
-    body_fields: list[tuple[str, dict, bool]] = []
-    scalar_body: tuple[dict, bool] | None = None
+    form_fields: list[_FormField] = []
+    body_fields: list[_BodyField] = []
+    scalar_body: _ScalarBody | None = None
 
     for d in iter_param_descriptors(RouteContract.from_route_info(info)):
         marker = d.marker
@@ -1031,9 +1060,9 @@ def _extract_parameters(
                 body_alias = d.name
                 embedded = False
             if embedded:
-                body_fields.append((body_alias, body_schema, body_required))
+                body_fields.append(_BodyField(body_alias, body_schema, body_required))
             elif scalar_body is None:
-                scalar_body = (body_schema, body_required)
+                scalar_body = _ScalarBody(body_schema, body_required)
             continue
 
         if location == "form":
@@ -1054,7 +1083,7 @@ def _extract_parameters(
                 # the handler default applies, so the field is not required.
                 field_required = not (d.has_default or d.is_optional)
                 field_alias = d.name
-            form_fields.append((field_alias, field_schema, field_required, d.is_file))
+            form_fields.append(_FormField(field_alias, field_schema, field_required, d.is_file))
             continue
 
         # path / query / header / cookie parameter.
@@ -1116,7 +1145,7 @@ def _extract_parameters(
         parameters.append(param_info)
 
     _declare_undocumented_path_params(info, parameters)
-    return parameters, request_body_schema, form_fields, body_fields, scalar_body
+    return _RouteParameters(parameters, request_body_schema, form_fields, body_fields, scalar_body)
 
 
 def _declare_undocumented_path_params(info: Any, parameters: list[dict]) -> None:
@@ -1140,9 +1169,9 @@ def _declare_undocumented_path_params(info: Any, parameters: list[dict]) -> None
 
 def _extract_request_body(
     request_body_schema: dict | None,
-    form_fields: list[tuple[str, dict, bool, bool]],
-    body_fields: list[tuple[str, dict, bool]] | None = None,
-    scalar_body: tuple[dict, bool] | None = None,
+    form_fields: list[_FormField],
+    body_fields: list[_BodyField] | None = None,
+    scalar_body: _ScalarBody | None = None,
 ) -> dict | None:
     """Build the OpenAPI `requestBody` object, or `None` when no body params exist.
 
@@ -1166,7 +1195,10 @@ def _extract_request_body(
     if body_fields:
         embed_properties: dict[str, Any] = {}
         embed_required: list[str] = []
-        for bname, bschema, breq in body_fields:
+        for body_field in body_fields:
+            bname = body_field.alias
+            bschema = body_field.schema
+            breq = body_field.required
             embed_properties[bname] = bschema
             if breq:
                 embed_required.append(bname)
@@ -1180,18 +1212,18 @@ def _extract_request_body(
     # A non-embedded `Body()` over a non-model receives the whole JSON body, so
     # the body schema is that value's own schema rather than an object wrapper.
     if scalar_body is not None:
-        schema, required = scalar_body
+        schema, required = scalar_body.schema, scalar_body.required
         return {"required": required, "content": {MIME_JSON: {"schema": schema}}}
     if not form_fields:
         return None
-    has_file = any(is_file for _, _, _, is_file in form_fields)
+    has_file = any(form_field.is_file for form_field in form_fields)
     media_type = MIME_MULTIPART_FORM_DATA if has_file else MIME_FORM_URLENCODED
     properties: dict[str, Any] = {}
     required_fields: list[str] = []
-    for fname, fschema, freq, _ in form_fields:
-        properties[fname] = fschema
-        if freq:
-            required_fields.append(fname)
+    for form_field in form_fields:
+        properties[form_field.alias] = form_field.schema
+        if form_field.required:
+            required_fields.append(form_field.alias)
     body_schema: dict[str, Any] = {"type": "object", "properties": properties}
     if required_fields:
         body_schema["required"] = required_fields
@@ -1559,13 +1591,13 @@ def _build_operation(
     if info.callbacks:
         operation["callbacks"] = info.callbacks
 
-    parameters, request_body_schema, form_fields, body_fields, scalar_body = _extract_parameters(
-        info, schemas_registry
-    )
-    if parameters:
-        operation["parameters"] = parameters
+    inputs = _extract_parameters(info, schemas_registry)
+    if inputs.parameters:
+        operation["parameters"] = inputs.parameters
 
-    request_body = _extract_request_body(request_body_schema, form_fields, body_fields, scalar_body)
+    request_body = _extract_request_body(
+        inputs.request_body_schema, inputs.form_fields, inputs.body_fields, inputs.scalar_body
+    )
     if request_body is not None:
         operation["requestBody"] = request_body
 
@@ -1581,7 +1613,9 @@ def _build_operation(
     # with none of these never raises `RequestValidationError`, so it must not
     # advertise a 422.
     has_validatable_params = (
-        bool(parameters) or request_body is not None or _dependency_graph_has_validatable(info)
+        bool(inputs.parameters)
+        or request_body is not None
+        or _dependency_graph_has_validatable(info)
     )
     operation["responses"] = _extract_responses(info, schemas_registry, has_validatable_params)
 

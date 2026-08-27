@@ -27,7 +27,7 @@ from __future__ import annotations
 import re
 from re import Pattern
 
-from veloce import status
+import veloce.status as status
 from veloce._constants import (
     HEADER_ACCESS_CONTROL_ALLOW_CREDENTIALS,
     HEADER_ACCESS_CONTROL_ALLOW_HEADERS,

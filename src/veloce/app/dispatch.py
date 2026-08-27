@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any, get_args, get_origin
 import orjson
 from pydantic import BaseModel as _PydanticBaseModel
 
-from veloce import status
+import veloce.status as status
 from veloce._constants import (
     HEADER_ACCEPT,
     HEADER_ALLOW,

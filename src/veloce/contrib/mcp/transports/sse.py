@@ -25,11 +25,12 @@ carries them.
 from __future__ import annotations
 
 import asyncio
+import logging
 import secrets
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
-from veloce import status
+import veloce.status as status
 from veloce._protocol_constants import HTTP_METHOD_GET, HTTP_METHOD_POST
 from veloce.contrib.mcp._helpers import (
     _notifier_var,
@@ -51,7 +52,6 @@ from veloce.contrib.mcp.session import MCPSession
 from veloce.contrib.mcp.transports.http import (
     _SSE_RETRY_MS,
     _authenticate,
-    _logger,
     _protocol_response,
     _validate_origin,
     register_metadata_route,
@@ -66,6 +66,8 @@ if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.auth import MCPAuth
     from veloce.contrib.mcp.server import MCPServer
     from veloce.http.request import Request
+
+_logger = logging.getLogger(__name__)
 
 # Bytes of entropy in a session id. The id appears in the endpoint URL the client
 # is told to POST to, and it is the only thing tying a POST to the stream that

@@ -55,6 +55,20 @@ if TYPE_CHECKING:  # pragma: no cover
 # progress / log notifications reach the right client. A ContextVar (not an
 # instance attribute) keeps concurrent calls isolated on the Streamable HTTP
 # transport, where many requests share one `MCPServer`; the serial stdio transport
+# `_meta` keys the modern revision reserves. Prefixed per the spec's naming
+# rules, so an application's own `_meta` entries cannot collide with them. They
+# live here rather than in `server` because `session` and the HTTP transport
+# read them too, and importing the dispatch core from a leaf for two string
+# constants is the wrong direction for the dependency to run.
+META_PROTOCOL_VERSION = "io.modelcontextprotocol/protocolVersion"
+META_CLIENT_INFO = "io.modelcontextprotocol/clientInfo"
+META_CLIENT_CAPABILITIES = "io.modelcontextprotocol/clientCapabilities"
+# The modern revision sets the log level per request rather than per connection. A
+# request that omits it gets no `notifications/message` at all.
+META_LOG_LEVEL = "io.modelcontextprotocol/logLevel"
+META_SERVER_INFO = "io.modelcontextprotocol/serverInfo"
+
+
 # sets it once per serve task. `None` means no channel is wired (off-transport).
 _notifier_var: ContextVar[Callable[[dict[str, Any]], Awaitable[None]] | None] = ContextVar(
     "_mcp_notifier", default=None

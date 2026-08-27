@@ -362,17 +362,7 @@ class InvocationMixin:
             response = self.app._build_response(request, match, result)
             response = await self.app._run_after_hooks(request, response, bp_name)
 
-            # Background work: the handler's injected queue plus any task it
-            # attached to its own `Response`. Awaited inline (the stdio path has
-            # no response to flush first); a task error is logged, never allowed
-            # to fail the produced tool result.
-            tasks = request._background_tasks
-            if tasks is not None:
-                try:
-                    await tasks.run_all()
-                except Exception:
-                    _logger.exception("MCP background task failed")
-            await self._run_response_background(response)
+            await self._run_background(request, response)
             return _RouteResponse(response, model_filtered)
         except MCPError:
             # Not a handled application failure: an error the author raised to
@@ -418,13 +408,7 @@ class InvocationMixin:
         surfaced in-band by `_tools_call`.
         """
         result = await self._bind_and_call(tool, arguments, context, resolver, request)
-        tasks = request._background_tasks
-        if tasks is not None:
-            try:
-                await tasks.run_all()
-            except Exception:
-                _logger.exception("MCP background task failed")
-        await self._run_response_background(result)
+        await self._run_background(request, result)
         return result
 
     async def _bind_and_call(
@@ -476,6 +460,22 @@ class InvocationMixin:
         # loop - the same offload the HTTP path applies; `offload` preserves
         # request-scoped ContextVars.
         return await offload(handler, **kwargs)
+
+    async def _run_background(self, request: Any, result: Any) -> None:
+        """Run everything this call scheduled: the injected queue, then the response's.
+
+        Both invocation paths reach here - the route path with its `Response`,
+        the pure-tool path with the handler's raw return. Awaited inline (the
+        stdio path has no response to flush first); a task error is logged,
+        never allowed to fail the produced tool result.
+        """
+        tasks = request._background_tasks
+        if tasks is not None:
+            try:
+                await tasks.run_all()
+            except Exception:
+                _logger.exception("MCP background task failed")
+        await self._run_response_background(result)
 
     @staticmethod
     async def _run_response_background(result: Any) -> None:
