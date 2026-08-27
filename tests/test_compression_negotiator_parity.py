@@ -1,7 +1,7 @@
 """The compression negotiator answers like `AcceptHeader`, or deliberately not.
 
 `CompressionMiddleware` carries its own RFC 9110 Sec. 12.4.2 q-value parser and
-negotiator (`_refuses`, `_quality`, `_negotiate`) although
+negotiator (`_quality`, `_negotiate`) although
 `http/datastructures.AcceptHeader` implements the same rules and
 `Request.accept_encodings` already exposes a cached parsed instance.
 
@@ -33,7 +33,7 @@ from __future__ import annotations
 import pytest
 
 from veloce.http.datastructures import AcceptHeader
-from veloce.middleware.compression import _negotiate, _quality, _refuses
+from veloce.middleware.compression import _negotiate, _quality
 
 OFFERED = ("br", "gzip", "deflate")
 
@@ -112,9 +112,16 @@ def test_accept_header_would_have_compressed():
         (["gzip", "q=bad"], False),
     ],
 )
-def test_refuses_reads_both_spellings(pieces, refused):
-    """RFC 5234 Sec. 2.3 makes the ABNF literal case-insensitive."""
-    assert _refuses(pieces) is refused
+def test_a_refusal_reads_both_spellings(pieces, refused):
+    """RFC 5234 Sec. 2.3 makes the ABNF literal case-insensitive.
+
+    Asserted through `_quality`, because that is what `_negotiate` relies on: a
+    refused coding gets weight 0.0, and the selection loop's `weight >
+    best_weight` (starting at 0.0) can never pick it. There used to be a
+    separate `_refuses` predicate saying the same thing, with no caller in
+    `src/` - only this test - so it was dead code kept alive by its own test.
+    """
+    assert (_quality(pieces) == 0) is refused
 
 
 @pytest.mark.parametrize(

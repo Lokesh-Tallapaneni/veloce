@@ -57,7 +57,6 @@ class _Codec:
     """
 
     name: str
-    package: str
     default_level: int
     compress: Callable[[bytes, int], bytes]
     stream: Callable[[int], Any]
@@ -82,7 +81,7 @@ class _ZlibStream:
 
 
 def _gzip_codec() -> _Codec:
-    return _Codec("gzip", "", 6, lambda data, level: gzip.compress(data, level), _ZlibStream)
+    return _Codec("gzip", 6, lambda data, level: gzip.compress(data, level), _ZlibStream)
 
 
 def _brotli_codec() -> _Codec | None:
@@ -110,9 +109,7 @@ def _brotli_codec() -> _Codec | None:
     # orders of magnitude of CPU for a few percent of ratio - a setting for
     # assets compressed once at build time, not for a response being produced
     # now. Around 4 it is competitive with gzip on speed and better on ratio.
-    return _Codec(
-        "br", "brotli", 4, lambda data, level: brotli.compress(data, quality=level), _BrotliStream
-    )
+    return _Codec("br", 4, lambda data, level: brotli.compress(data, quality=level), _BrotliStream)
 
 
 def _zstd_codec() -> _Codec | None:
@@ -135,7 +132,6 @@ def _zstd_codec() -> _Codec | None:
 
     return _Codec(
         "zstd",
-        "zstandard",
         3,
         lambda data, level: zstandard.ZstdCompressor(level=level).compress(data),
         _ZstdStream,
@@ -157,26 +153,11 @@ _DEFAULT_ALGORITHMS = ("zstd", "br", "gzip")
 
 # Package to install for each optional coding, for the error a caller sees when
 # the only coding they asked for has none.
+# The package name for each coding, for the error raised when none is
+# installed. `_Codec` used to carry a `package` field as well - set by every
+# factory, read by nothing - so the names were maintained twice and only this
+# copy was ever shown to an operator.
 _CODECS_PACKAGE = {"zstd": "zstandard", "br": "brotli", "gzip": "gzip (stdlib)"}
-
-
-def _refuses(pieces: list[str]) -> bool:
-    """True when a media-range's parameters carry `q=0`.
-
-    Both spellings: RFC 9110 Sec. 12.4.2's `weight` rule is written with an ABNF
-    string literal, and RFC 5234 Sec. 2.3 makes those case-insensitive, so `Q=0`
-    is as much a refusal as `q=0`. `AcceptHeader` already reads both; this is the
-    same rule, applied once for the explicit media range and the wildcard.
-    """
-    for param in pieces[1:]:
-        param = param.strip()
-        if param[:2] in ("q=", "Q="):
-            try:
-                if float(param[2:]) == 0:
-                    return True
-            except ValueError:
-                pass
-    return False
 
 
 def _quality(pieces: list[str]) -> float:

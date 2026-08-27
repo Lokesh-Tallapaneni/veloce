@@ -473,6 +473,28 @@ class Jinja2Templates:
 # ── Module-level helpers ──────────────────────────────────
 
 
+def _templates_for(caller: str) -> Any:
+    """Return the current app's `Jinja2Templates`, or raise saying which is missing.
+
+    Both module-level helpers need the same two things and raised the same two
+    messages, differing only in the verb naming the caller - so the messages had
+    two places to be edited and one of them would eventually be missed.
+    """
+    app = _current_app_var.get()
+    if app is None:
+        raise RuntimeError(
+            f"{caller} requires an active application context "
+            "(use it inside a request handler or `app.app_context()`)."
+        )
+    templates = getattr(app, "_templates", None)
+    if templates is None:
+        raise RuntimeError(
+            f"{caller} requires templates, which the app does not have. "
+            'Construct it with a template folder: Veloce(template_folder="templates").'
+        )
+    return templates
+
+
 def render_template(template_name: str | Sequence[str], **context: Any) -> str:
     """Render a named template against the current app.
 
@@ -482,19 +504,7 @@ def render_template(template_name: str | Sequence[str], **context: Any) -> str:
     Returns the rendered string; callers wrap in a `Response` themselves
     if they need one.
     """
-    app = _current_app_var.get()
-    if app is None:
-        raise RuntimeError(
-            "render_template requires an active application context "
-            "(use it inside a request handler or `app.app_context()`)."
-        )
-    templates = getattr(app, "_templates", None)
-    if templates is None:
-        raise RuntimeError(
-            "render_template requires templates, which the app does not have. "
-            'Construct it with a template folder: Veloce(template_folder="templates").'
-        )
-    return templates.render(template_name, context)
+    return _templates_for("render_template").render(template_name, context)
 
 
 def stream_template(template_name: str | Sequence[str], **context: Any) -> Any:
@@ -513,19 +523,7 @@ def stream_template(template_name: str | Sequence[str], **context: Any) -> Any:
         async def big(request):
             return StreamingResponse(stream_template("big.html", rows=rows))
     """
-    app = _current_app_var.get()
-    if app is None:
-        raise RuntimeError(
-            "stream_template requires an active application context "
-            "(use it inside a request handler or `app.app_context()`)."
-        )
-    templates = getattr(app, "_templates", None)
-    if templates is None:
-        raise RuntimeError(
-            "stream_template requires templates, which the app does not have. "
-            'Construct it with a template folder: Veloce(template_folder="templates").'
-        )
-    return templates.stream(template_name, context)
+    return _templates_for("stream_template").stream(template_name, context)
 
 
 def render_template_string(source: str, **context: Any) -> str:

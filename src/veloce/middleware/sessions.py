@@ -120,12 +120,6 @@ def _reassemble_chunks(cookies: Any, base_name: str, max_chunks: int) -> str | N
     return "".join(parts)
 
 
-def _cfg_or(cfg: Any, key: str, fallback: Any) -> Any:
-    """The config value for `key` when set (non-None), else `fallback`."""
-    value = cfg.get(key)
-    return fallback if value is None else value
-
-
 def _build_signer(secret_key: str | list[str]) -> Signer:
     """Build the session signer; a list rotates secrets (the first one signs)."""
     keys = [secret_key] if isinstance(secret_key, str) else list(secret_key)

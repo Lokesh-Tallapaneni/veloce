@@ -568,6 +568,29 @@ def _iter_dicts(node: Any) -> collections.abc.Iterator[dict]:
             stack.extend(current)
 
 
+def _warn_schema_fallback(subject: str, exc: Exception) -> None:
+    """Report a schema-generation failure, then let the caller fall back.
+
+    Degrading silently to `{type: object}` hides real model bugs, so the failure
+    is logged at WARNING and `/docs` still renders - an underspecified schema
+    beats a 500.
+
+    One message because there were four, and they had already drifted: the
+    msgspec copy omitted the "inspect the model / attach a debugger" guidance
+    the other three carried, so the operator least likely to guess the cause got
+    the least help.
+    """
+    _logger.warning(
+        "OpenAPI schema generation failed for %s: %s. "
+        "Falling back to {type: object}. "
+        "Inspect the model definition or attach a debugger to "
+        "veloce.contrib.openapi to see the full traceback.",
+        subject,
+        exc,
+        exc_info=_logger.isEnabledFor(logging.DEBUG),
+    )
+
+
 def _rewrite_byte_format(node: Any) -> None:
     """Rewrite bytes string fields from OpenAPI `format: binary` to `format: byte`.
 
@@ -617,19 +640,7 @@ class _SchemaEntry:
             else:
                 schema = self.model.model_json_schema(mode=self.mode)  # type: ignore[arg-type]
         except Exception as exc:
-            # Degrading silently to `{type: object}` hides real model bugs.
-            # Log at WARNING so the failure surfaces, then fall back so /docs
-            # still renders (an underspecified schema beats a 500).
-            _logger.warning(
-                "OpenAPI schema generation failed for %s (%s mode): %s. "
-                "Falling back to {type: object}. "
-                "Inspect the model definition or attach a debugger to "
-                "veloce.contrib.openapi to see the full traceback.",
-                self.model.__name__,
-                self.mode,
-                exc,
-                exc_info=_logger.isEnabledFor(logging.DEBUG),
-            )
+            _warn_schema_fallback(f"{self.model.__name__} ({self.mode} mode)", exc)
             self.body = {"type": "object"}
             return
         # Realign bytes fields with veloce's base64 JSON encoding (binary -> byte).
@@ -654,13 +665,7 @@ class _SchemaEntry:
                 [self.model], ref_template="#/$defs/{name}"
             )
         except Exception as exc:
-            _logger.warning(
-                "OpenAPI schema generation failed for %s (msgspec): %s. "
-                "Falling back to {type: object}.",
-                self.model.__name__,
-                exc,
-                exc_info=_logger.isEnabledFor(logging.DEBUG),
-            )
+            _warn_schema_fallback(f"{self.model.__name__} (msgspec)", exc)
             self.body = {"type": "object"}
             return
         # msgspec returns the model's own schema inside `components` and a
@@ -758,12 +763,7 @@ def _adapted_to_schema(model: Any, registry: dict[str, dict]) -> dict:
         try:
             _register_schema(name, adapter_for(model).json_schema(), registry)
         except Exception as exc:
-            _logger.warning(
-                "JSON Schema generation failed for %s: %s. Falling back to {type: object}.",
-                name,
-                exc,
-                exc_info=_logger.isEnabledFor(logging.DEBUG),
-            )
+            _warn_schema_fallback(name, exc)
             registry[name] = {"type": "object"}
     return {"$ref": f"#/components/schemas/{name}"}
 
@@ -793,15 +793,7 @@ def _pydantic_to_schema(
             schema = model.model_json_schema(mode=mode, by_alias=by_alias)  # type: ignore[arg-type]
             _register_schema(name, schema, registry)
         except Exception as exc:
-            _logger.warning(
-                "OpenAPI schema generation failed for %s: %s. "
-                "Falling back to {type: object}. "
-                "Inspect the model definition or attach a debugger to "
-                "veloce.contrib.openapi to see the full traceback.",
-                name,
-                exc,
-                exc_info=_logger.isEnabledFor(logging.DEBUG),
-            )
+            _warn_schema_fallback(name, exc)
             registry[name] = {"type": "object"}
     return {"$ref": f"#/components/schemas/{name}"}
 
