@@ -164,27 +164,27 @@ def test_security_scopes_in_veloce_exports():
     assert SS is SecurityScopes
 
 
-class TestSecurityDependency:
-    async def test_security_with_scopes(self):
-        import orjson
+async def test_security_with_scopes():
+    import orjson
 
-        app = Veloce(openapi_url=None)
-        oauth2 = OAuth2PasswordBearer(token_url="/token")
+    app = Veloce(openapi_url=None)
+    oauth2 = OAuth2PasswordBearer(token_url="/token")
 
-        @app.get("/users/me")
-        async def me(token=Security(oauth2, scopes=["users:read"])):
-            return {"token": token}
+    @app.get("/users/me")
+    async def me(token=Security(oauth2, scopes=["users:read"])):
+        return {"token": token}
 
-        resp = await app.handle_request(
-            make_request(path="/users/me", headers={"authorization": "Bearer mytoken"})
-        )
-        assert resp.status_code == 200
-        data = orjson.loads(resp.body)
-        assert data["token"] == "mytoken"
+    resp = await app.handle_request(
+        make_request(path="/users/me", headers={"authorization": "Bearer mytoken"})
+    )
+    assert resp.status_code == 200
+    data = orjson.loads(resp.body)
+    assert data["token"] == "mytoken"
 
-    async def test_security_inherits_depends(self):
-        # Security is a subclass of Depends
-        security = HTTPBearer()
-        dep = Security(security, scopes=["admin"])
-        assert isinstance(dep, Depends)
-        assert dep.scopes == ["admin"]
+
+async def test_security_inherits_depends():
+    # Security is a subclass of Depends
+    security = HTTPBearer()
+    dep = Security(security, scopes=["admin"])
+    assert isinstance(dep, Depends)
+    assert dep.scopes == ["admin"]

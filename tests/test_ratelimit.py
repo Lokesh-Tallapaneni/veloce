@@ -548,88 +548,90 @@ def test_explicit_override_wins_over_decorator():
         assert tc.get("/strict", headers=_UA).status_code == 429
 
 
-class TestRateLimitMiddlewareE2E:
-    async def test_rate_limit(self):
-        app = Veloce(openapi_url=None)
-        app.add_middleware(RateLimitMiddleware(max_requests=2, window_seconds=60))
+async def test_rate_limit():
+    app = Veloce(openapi_url=None)
+    app.add_middleware(RateLimitMiddleware(max_requests=2, window_seconds=60))
 
-        @app.get("/")
-        async def index(request: Request):
-            return {"ok": True}
+    @app.get("/")
+    async def index(request: Request):
+        return {"ok": True}
 
-        # Stable UA → all three requests bucket together (no client_host
-        # in these synthetic Requests; UA hash is the next fallback).
-        ua = {"user-agent": "rate-limit-test/1.0"}
+    # Stable UA → all three requests bucket together (no client_host
+    # in these synthetic Requests; UA hash is the next fallback).
+    ua = {"user-agent": "rate-limit-test/1.0"}
 
-        # First two requests should pass
-        for _ in range(2):
-            resp = await app.handle_request(make_request(headers=ua))
-            assert resp.status_code == 200
-
-        # Third should be rate limited
-        resp = await app.handle_request(make_request(headers=ua))
-        assert resp.status_code == 429
-
-    async def test_rate_limit_headers_on_success(self):
-        """Successful responses carry X-RateLimit-Limit/Remaining/Reset."""
-        app = Veloce(openapi_url=None)
-        app.add_middleware(RateLimitMiddleware(max_requests=5, window_seconds=60))
-
-        @app.get("/")
-        async def index(request: Request):
-            return {"ok": True}
-
-        ua = {"user-agent": "rl-headers-success/1.0"}
+    # First two requests should pass
+    for _ in range(2):
         resp = await app.handle_request(make_request(headers=ua))
         assert resp.status_code == 200
-        assert resp.headers["X-RateLimit-Limit"] == "5"
-        assert resp.headers["X-RateLimit-Remaining"] == "4"
-        # Pin the seconds-remaining form — a unix epoch would also satisfy
-        # >= 0 and silently regress the header semantics. The upper bound is
-        # window + 1: `_reset_after` ceils a sub-second remainder, so a fresh
-        # window can momentarily round up to `window_seconds + 1`.
-        assert 0 <= int(resp.headers["X-RateLimit-Reset"]) <= 61
 
-        resp = await app.handle_request(make_request(headers=ua))
-        assert resp.headers["X-RateLimit-Remaining"] == "3"
+    # Third should be rate limited
+    resp = await app.handle_request(make_request(headers=ua))
+    assert resp.status_code == 429
 
-    async def test_rate_limit_headers_on_429(self):
-        """A 429 carries X-RateLimit-* plus Retry-After."""
-        app = Veloce(openapi_url=None)
-        app.add_middleware(RateLimitMiddleware(max_requests=1, window_seconds=60))
 
-        @app.get("/")
-        async def index(request: Request):
-            return {"ok": True}
+async def test_rate_limit_headers_on_success():
+    """Successful responses carry X-RateLimit-Limit/Remaining/Reset."""
+    app = Veloce(openapi_url=None)
+    app.add_middleware(RateLimitMiddleware(max_requests=5, window_seconds=60))
 
-        ua = {"user-agent": "rl-headers-429/1.0"}
-        ok = await app.handle_request(make_request(headers=ua))
-        assert ok.status_code == 200
+    @app.get("/")
+    async def index(request: Request):
+        return {"ok": True}
 
-        rejected = await app.handle_request(make_request(headers=ua))
-        assert rejected.status_code == 429
-        assert rejected.headers["X-RateLimit-Limit"] == "1"
-        assert rejected.headers["X-RateLimit-Remaining"] == "0"
-        # Pin the seconds-remaining form — a unix epoch would also satisfy
-        # >= 0 and silently regress the header semantics.
-        assert 0 <= int(rejected.headers["X-RateLimit-Reset"]) <= 60
-        assert "Retry-After" in rejected.headers
+    ua = {"user-agent": "rl-headers-success/1.0"}
+    resp = await app.handle_request(make_request(headers=ua))
+    assert resp.status_code == 200
+    assert resp.headers["X-RateLimit-Limit"] == "5"
+    assert resp.headers["X-RateLimit-Remaining"] == "4"
+    # Pin the seconds-remaining form — a unix epoch would also satisfy
+    # >= 0 and silently regress the header semantics. The upper bound is
+    # window + 1: `_reset_after` ceils a sub-second remainder, so a fresh
+    # window can momentarily round up to `window_seconds + 1`.
+    assert 0 <= int(resp.headers["X-RateLimit-Reset"]) <= 61
 
-    async def test_clientless_requests_do_not_share_bucket(self):
-        """Two anonymous requests with no shared signals must not collide."""
-        app = Veloce(openapi_url=None)
-        app.add_middleware(RateLimitMiddleware(max_requests=1, window_seconds=60))
+    resp = await app.handle_request(make_request(headers=ua))
+    assert resp.headers["X-RateLimit-Remaining"] == "3"
 
-        @app.get("/")
-        async def index(request: Request):
-            return {"ok": True}
 
-        # Distinct scope identity per request + no UA + no XFF → distinct
-        # buckets. The legacy "unknown" key would 429 the second call.
-        r1 = await app.handle_request(make_request())
-        assert r1.status_code == 200
-        r2 = await app.handle_request(make_request())
-        assert r2.status_code == 200
+async def test_rate_limit_headers_on_429():
+    """A 429 carries X-RateLimit-* plus Retry-After."""
+    app = Veloce(openapi_url=None)
+    app.add_middleware(RateLimitMiddleware(max_requests=1, window_seconds=60))
+
+    @app.get("/")
+    async def index(request: Request):
+        return {"ok": True}
+
+    ua = {"user-agent": "rl-headers-429/1.0"}
+    ok = await app.handle_request(make_request(headers=ua))
+    assert ok.status_code == 200
+
+    rejected = await app.handle_request(make_request(headers=ua))
+    assert rejected.status_code == 429
+    assert rejected.headers["X-RateLimit-Limit"] == "1"
+    assert rejected.headers["X-RateLimit-Remaining"] == "0"
+    # Pin the seconds-remaining form — a unix epoch would also satisfy
+    # >= 0 and silently regress the header semantics.
+    assert 0 <= int(rejected.headers["X-RateLimit-Reset"]) <= 60
+    assert "Retry-After" in rejected.headers
+
+
+async def test_clientless_requests_do_not_share_bucket():
+    """Two anonymous requests with no shared signals must not collide."""
+    app = Veloce(openapi_url=None)
+    app.add_middleware(RateLimitMiddleware(max_requests=1, window_seconds=60))
+
+    @app.get("/")
+    async def index(request: Request):
+        return {"ok": True}
+
+    # Distinct scope identity per request + no UA + no XFF → distinct
+    # buckets. The legacy "unknown" key would 429 the second call.
+    r1 = await app.handle_request(make_request())
+    assert r1.status_code == 200
+    r2 = await app.handle_request(make_request())
+    assert r2.status_code == 200
 
 
 async def test_rate_limit_middleware_evicts_stale_buckets():

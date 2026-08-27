@@ -126,54 +126,56 @@ def test_save_can_be_called_multiple_times():
     assert a.getvalue() == b.getvalue() == b"abc"
 
 
-class TestUploadFile:
-    async def test_upload_file_read(self):
-        f = UploadFile(filename="test.txt", file=io.BytesIO(b"hello"))
-        data = await f.read()
-        assert data == b"hello"
+async def test_upload_file_read():
+    f = UploadFile(filename="test.txt", file=io.BytesIO(b"hello"))
+    data = await f.read()
+    assert data == b"hello"
 
-    async def test_upload_file_content(self):
-        f = UploadFile(filename="test.txt", file=io.BytesIO(b"content"))
-        assert f.content == b"content"
 
-    def test_upload_file_repr(self):
-        f = UploadFile(filename="photo.jpg", content_type="image/jpeg", size=1024)
-        assert "photo.jpg" in repr(f)
+async def test_upload_file_content():
+    f = UploadFile(filename="test.txt", file=io.BytesIO(b"content"))
+    assert f.content == b"content"
 
-    async def test_multipart_file_upload(self):
-        app = Veloce(openapi_url=None)
 
-        @app.post("/upload")
-        async def upload(request: Request):
-            form = await request.form()
-            file = form.get("file")
-            if isinstance(file, UploadFile):
-                content = await file.read()
-                return {"filename": file.filename, "size": len(content)}
-            return {"error": "no file"}
+def test_upload_file_repr():
+    f = UploadFile(filename="photo.jpg", content_type="image/jpeg", size=1024)
+    assert "photo.jpg" in repr(f)
 
-        # Build multipart body
-        body = (
-            b"------TestBoundary\r\n"
-            b'Content-Disposition: form-data; name="file"; filename="test.txt"\r\n'
-            b"Content-Type: text/plain\r\n"
-            b"\r\n"
-            b"Hello World\r\n"
-            b"------TestBoundary--\r\n"
-        )
 
-        req = make_request(
-            method="POST",
-            path="/upload",
-            body=body,
-            headers={"content-type": "multipart/form-data; boundary=----TestBoundary"},
-        )
-        resp = await app.handle_request(req)
-        import orjson
+async def test_multipart_file_upload():
+    app = Veloce(openapi_url=None)
 
-        data = orjson.loads(resp.body)
-        assert data["filename"] == "test.txt"
-        assert data["size"] == 11
+    @app.post("/upload")
+    async def upload(request: Request):
+        form = await request.form()
+        file = form.get("file")
+        if isinstance(file, UploadFile):
+            content = await file.read()
+            return {"filename": file.filename, "size": len(content)}
+        return {"error": "no file"}
+
+    # Build multipart body
+    body = (
+        b"------TestBoundary\r\n"
+        b'Content-Disposition: form-data; name="file"; filename="test.txt"\r\n'
+        b"Content-Type: text/plain\r\n"
+        b"\r\n"
+        b"Hello World\r\n"
+        b"------TestBoundary--\r\n"
+    )
+
+    req = make_request(
+        method="POST",
+        path="/upload",
+        body=body,
+        headers={"content-type": "multipart/form-data; boundary=----TestBoundary"},
+    )
+    resp = await app.handle_request(req)
+    import orjson
+
+    data = orjson.loads(resp.body)
+    assert data["filename"] == "test.txt"
+    assert data["size"] == 11
 
 
 class TestUploadFileContextManager:

@@ -76,130 +76,138 @@ class _PostJSONItem(BaseModel):
     price: float
 
 
-class TestTestClient:
-    def test_get(self):
-        app = Veloce(openapi_url=None)
+def test_get():
+    app = Veloce(openapi_url=None)
 
-        @app.get("/")
-        async def index(request: Request):
-            return {"hello": "world"}
+    @app.get("/")
+    async def index(request: Request):
+        return {"hello": "world"}
 
-        client = TestClient(app)
-        resp = client.get("/")
-        assert resp.status_code == 200
-        assert resp.json()["hello"] == "world"
+    client = TestClient(app)
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert resp.json()["hello"] == "world"
 
-    def test_post_json(self):
-        app = Veloce(openapi_url=None)
 
-        @app.post("/items")
-        async def create(item: _PostJSONItem):
-            return {"id": 1, "name": item.name}
+def test_post_json():
+    app = Veloce(openapi_url=None)
 
-        client = TestClient(app)
-        resp = client.post("/items", json={"name": "Widget", "price": 9.99})
-        assert resp.status_code == 200
-        assert resp.json()["name"] == "Widget"
+    @app.post("/items")
+    async def create(item: _PostJSONItem):
+        return {"id": 1, "name": item.name}
 
-    def test_post_form_data(self):
-        app = Veloce(openapi_url=None)
+    client = TestClient(app)
+    resp = client.post("/items", json={"name": "Widget", "price": 9.99})
+    assert resp.status_code == 200
+    assert resp.json()["name"] == "Widget"
 
-        @app.post("/login")
-        async def login(request: Request):
-            form = await request.form()
-            return {"user": form.get("username")}
 
-        client = TestClient(app)
-        resp = client.post("/login", data={"username": "admin", "password": "secret"})
-        assert resp.status_code == 200
-        assert resp.json()["user"] == "admin"
+def test_post_form_data():
+    app = Veloce(openapi_url=None)
 
-    def test_put(self):
-        app = Veloce(openapi_url=None)
+    @app.post("/login")
+    async def login(request: Request):
+        form = await request.form()
+        return {"user": form.get("username")}
 
-        @app.put("/items/{id}")
-        async def update(request: Request, id: int):
-            return {"id": id, "updated": True}
+    client = TestClient(app)
+    resp = client.post("/login", data={"username": "admin", "password": "secret"})
+    assert resp.status_code == 200
+    assert resp.json()["user"] == "admin"
 
-        client = TestClient(app)
-        resp = client.put("/items/42", json={"name": "Updated"})
-        assert resp.status_code == 200
-        assert resp.json()["id"] == 42
 
-    def test_delete(self):
-        app = Veloce(openapi_url=None)
+def test_put():
+    app = Veloce(openapi_url=None)
 
-        @app.delete("/items/{id}")
-        async def delete(id: int):
-            return {"deleted": id}
+    @app.put("/items/{id}")
+    async def update(request: Request, id: int):
+        return {"id": id, "updated": True}
 
-        client = TestClient(app)
-        resp = client.delete("/items/5")
-        assert resp.status_code == 200
-        assert resp.json()["deleted"] == 5
+    client = TestClient(app)
+    resp = client.put("/items/42", json={"name": "Updated"})
+    assert resp.status_code == 200
+    assert resp.json()["id"] == 42
 
-    def test_query_params(self):
-        app = Veloce(openapi_url=None)
 
-        @app.get("/search")
-        async def search(q: str = "", page: int = 1):
-            return {"q": q, "page": page}
+def test_delete():
+    app = Veloce(openapi_url=None)
 
-        client = TestClient(app)
-        resp = client.get("/search", params={"q": "test", "page": "3"})
-        assert resp.json()["q"] == "test"
+    @app.delete("/items/{id}")
+    async def delete(id: int):
+        return {"deleted": id}
 
-    def test_query_params_in_url(self):
-        app = Veloce(openapi_url=None)
+    client = TestClient(app)
+    resp = client.delete("/items/5")
+    assert resp.status_code == 200
+    assert resp.json()["deleted"] == 5
 
-        @app.get("/search")
-        async def search(q: str = ""):
-            return {"q": q}
 
-        client = TestClient(app)
-        resp = client.get("/search?q=hello")
-        assert resp.json()["q"] == "hello"
+def test_query_params():
+    app = Veloce(openapi_url=None)
 
-    def test_custom_headers(self):
-        app = Veloce(openapi_url=None)
+    @app.get("/search")
+    async def search(q: str = "", page: int = 1):
+        return {"q": q, "page": page}
 
-        @app.get("/echo-header")
-        async def echo(request: Request):
-            # Try both cases since headers may come in as-is from TestClient
-            return {"ua": request.headers.get("user-agent", request.headers.get("User-Agent", ""))}
+    client = TestClient(app)
+    resp = client.get("/search", params={"q": "test", "page": "3"})
+    assert resp.json()["q"] == "test"
 
-        client = TestClient(app)
-        resp = client.get("/echo-header", headers={"user-agent": "TestBot"})
-        assert resp.json()["ua"] == "TestBot"
 
-    def test_cookie_tracking(self):
-        app = Veloce(openapi_url=None)
+def test_query_params_in_url():
+    app = Veloce(openapi_url=None)
 
-        @app.get("/set-cookie")
-        async def set_cookie(request: Request):
-            resp = JSONResponse({"ok": True})
-            resp.set_cookie("token", "abc123")
-            return resp
+    @app.get("/search")
+    async def search(q: str = ""):
+        return {"q": q}
 
-        @app.get("/read-cookie")
-        async def read_cookie(request: Request):
-            return {"token": request.cookies.get("token", "")}
+    client = TestClient(app)
+    resp = client.get("/search?q=hello")
+    assert resp.json()["q"] == "hello"
 
-        client = TestClient(app)
-        client.get("/set-cookie")
-        resp = client.get("/read-cookie")
-        assert resp.json()["token"] == "abc123"
 
-    def test_text_response(self):
-        app = Veloce(openapi_url=None)
+def test_custom_headers():
+    app = Veloce(openapi_url=None)
 
-        @app.get("/text")
-        async def text(request: Request):
-            return "hello"
+    @app.get("/echo-header")
+    async def echo(request: Request):
+        # Try both cases since headers may come in as-is from TestClient
+        return {"ua": request.headers.get("user-agent", request.headers.get("User-Agent", ""))}
 
-        client = TestClient(app)
-        resp = client.get("/text")
-        assert resp.text == "hello"
+    client = TestClient(app)
+    resp = client.get("/echo-header", headers={"user-agent": "TestBot"})
+    assert resp.json()["ua"] == "TestBot"
+
+
+def test_cookie_tracking():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/set-cookie")
+    async def set_cookie(request: Request):
+        resp = JSONResponse({"ok": True})
+        resp.set_cookie("token", "abc123")
+        return resp
+
+    @app.get("/read-cookie")
+    async def read_cookie(request: Request):
+        return {"token": request.cookies.get("token", "")}
+
+    client = TestClient(app)
+    client.get("/set-cookie")
+    resp = client.get("/read-cookie")
+    assert resp.json()["token"] == "abc123"
+
+
+def test_text_response():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/text")
+    async def text(request: Request):
+        return "hello"
+
+    client = TestClient(app)
+    resp = client.get("/text")
+    assert resp.text == "hello"
 
 
 class TestTestClientNoWarning:

@@ -131,64 +131,64 @@ def test_decorator_and_imperative_equivalent():
     assert first.json() == second.json() == {"via": "handler"}
 
 
-class TestRegisterErrorHandler:
-    async def test_register_by_status_code(self):
-        app = Veloce(openapi_url=None)
+async def test_register_by_status_code():
+    app = Veloce(openapi_url=None)
 
-        async def handle_404(request, exc):
-            return JSONResponse({"custom": "not found"}, status_code=404)
+    async def handle_404(request, exc):
+        return JSONResponse({"custom": "not found"}, status_code=404)
 
-        app.register_error_handler(404, handle_404)
+    app.register_error_handler(404, handle_404)
 
-        resp = await app.handle_request(make_request(path="/nonexistent"))
-        assert resp.status_code == 404
-        assert b"custom" in resp.body
-
-    async def test_register_by_exception_class(self):
-        app = Veloce(openapi_url=None)
-
-        class CustomError(Exception):
-            pass
-
-        async def handle_custom(request, exc):
-            return JSONResponse({"error": "custom"}, status_code=500)
-
-        app.register_error_handler(CustomError, handle_custom)
-
-        @app.get("/fail")
-        async def fail(request: Request):
-            raise CustomError("boom")
-
-        resp = await app.handle_request(make_request(path="/fail"))
-        assert b"custom" in resp.body
+    resp = await app.handle_request(make_request(path="/nonexistent"))
+    assert resp.status_code == 404
+    assert b"custom" in resp.body
 
 
-class TestStatusCodeHandlers:
-    async def test_custom_404_handler(self):
-        app = Veloce(openapi_url=None)
+async def test_register_by_exception_class():
+    app = Veloce(openapi_url=None)
 
-        @app.exception_handler(404)
-        async def custom_404(request: Request):
-            return HTMLResponse("<h1>Custom 404</h1>", status_code=404)
+    class CustomError(Exception):
+        pass
 
-        resp = await app.handle_request(make_request(path="/nonexistent"))
-        assert resp.status_code == 404
-        assert b"Custom 404" in resp.body
+    async def handle_custom(request, exc):
+        return JSONResponse({"error": "custom"}, status_code=500)
 
-    async def test_custom_500_handler(self):
-        app = Veloce(openapi_url=None)
+    app.register_error_handler(CustomError, handle_custom)
 
-        @app.exception_handler(500)
-        async def custom_500(request: Request):
-            return JSONResponse({"error": "custom 500"}, status_code=500)
+    @app.get("/fail")
+    async def fail(request: Request):
+        raise CustomError("boom")
 
-        @app.get("/crash")
-        async def crash(request: Request):
-            raise RuntimeError("boom")
+    resp = await app.handle_request(make_request(path="/fail"))
+    assert b"custom" in resp.body
 
-        resp = await app.handle_request(make_request(path="/crash"))
-        assert resp.status_code == 500
-        assert b"custom 500" in resp.body
+
+async def test_custom_404_handler():
+    app = Veloce(openapi_url=None)
+
+    @app.exception_handler(404)
+    async def custom_404(request: Request):
+        return HTMLResponse("<h1>Custom 404</h1>", status_code=404)
+
+    resp = await app.handle_request(make_request(path="/nonexistent"))
+    assert resp.status_code == 404
+    assert b"Custom 404" in resp.body
+
+
+async def test_custom_500_handler():
+    app = Veloce(openapi_url=None)
+
+    @app.exception_handler(500)
+    async def custom_500(request: Request):
+        return JSONResponse({"error": "custom 500"}, status_code=500)
+
+    @app.get("/crash")
+    async def crash(request: Request):
+        raise RuntimeError("boom")
+
+    resp = await app.handle_request(make_request(path="/crash"))
+    assert resp.status_code == 500
+    assert b"custom 500" in resp.body
 
 
 def test_exception_handler_decorator_invalidates_mro_cache():

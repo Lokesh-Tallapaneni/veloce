@@ -75,7 +75,7 @@ async def test_this_coroutine_test_runs_with_no_marker():
     await asyncio.sleep(0)
 
 
-def test_the_scan_covers_the_suite():
+def test_the_marker_scan_covers_the_suite():
     assert len(_modules()) > 400
 
 

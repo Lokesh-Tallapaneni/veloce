@@ -157,19 +157,18 @@ def test_a_required_field_that_survives_filtering_stays_required():
 # ── unrelated route options this module also covers ──────────────────
 
 
-class TestResponseModelFiltering:
-    async def test_include_in_schema_false(self):
-        app = Veloce(openapi_url=None)
+async def test_include_in_schema_false():
+    app = Veloce(openapi_url=None)
 
-        @app.get("/internal", include_in_schema=False)
-        async def internal(request: Request):
-            return {"secret": True}
+    @app.get("/internal", include_in_schema=False)
+    async def internal(request: Request):
+        return {"secret": True}
 
-        from veloce.contrib.openapi import get_openapi_schema
+    from veloce.contrib.openapi import get_openapi_schema
 
-        schema = get_openapi_schema(app)
-        assert "/internal" not in schema["paths"]
+    schema = get_openapi_schema(app)
+    assert "/internal" not in schema["paths"]
 
-        # But route still works
-        resp = await app.handle_request(make_request(path="/internal"))
-        assert resp.status_code == 200
+    # But route still works
+    resp = await app.handle_request(make_request(path="/internal"))
+    assert resp.status_code == 200

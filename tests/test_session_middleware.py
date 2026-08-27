@@ -9,51 +9,51 @@ from veloce import Request, SessionMiddleware, Veloce
 from veloce.testclient import TestClient
 
 
-class TestSessions:
-    async def test_session_set_and_read(self):
-        app = Veloce(openapi_url=None)
-        app.add_middleware(SessionMiddleware(secret_key="test-secret-key"))
+async def test_session_set_and_read():
+    app = Veloce(openapi_url=None)
+    app.add_middleware(SessionMiddleware(secret_key="test-secret-key"))
 
-        @app.get("/set")
-        async def set_session(request: Request):
-            request.state["session"]["username"] = "alice"
-            return {"ok": True}
+    @app.get("/set")
+    async def set_session(request: Request):
+        request.state["session"]["username"] = "alice"
+        return {"ok": True}
 
-        @app.get("/get")
-        async def get_session(request: Request):
-            return {"username": request.state.get("session", {}).get("username", "")}
+    @app.get("/get")
+    async def get_session(request: Request):
+        return {"username": request.state.get("session", {}).get("username", "")}
 
-        # Set session
-        resp = await app.handle_request(make_request(path="/set"))
-        assert resp.status_code == 200
-        assert "Set-Cookie" in resp.headers
+    # Set session
+    resp = await app.handle_request(make_request(path="/set"))
+    assert resp.status_code == 200
+    assert "Set-Cookie" in resp.headers
 
-        # Extract cookie
-        cookie = resp.headers["Set-Cookie"]
-        cookie_val = cookie.split(";")[0].split("=", 1)[1]
+    # Extract cookie
+    cookie = resp.headers["Set-Cookie"]
+    cookie_val = cookie.split(";")[0].split("=", 1)[1]
 
-        # Read session
-        resp2 = await app.handle_request(
-            make_request(path="/get", headers={"cookie": f"session={cookie_val}"})
-        )
-        import orjson
+    # Read session
+    resp2 = await app.handle_request(
+        make_request(path="/get", headers={"cookie": f"session={cookie_val}"})
+    )
+    import orjson
 
-        data = orjson.loads(resp2.body)
-        assert data["username"] == "alice"
+    data = orjson.loads(resp2.body)
+    assert data["username"] == "alice"
 
-    def test_session_signing(self):
-        from veloce.middleware.sessions import SessionMiddleware
 
-        mw = SessionMiddleware(secret_key="test")
+def test_session_signing():
+    from veloce.middleware.sessions import SessionMiddleware
 
-        # Sign and verify via the underlying Signer.
-        encoded = mw.encode_cookie({"user": "alice"})
-        decoded = mw.decode_cookie(encoded)
-        assert decoded["user"] == "alice"
+    mw = SessionMiddleware(secret_key="test")
 
-        # A tampered cookie is refused.
-        tampered = encoded[:-5] + "xxxxx"
-        assert mw.decode_cookie(tampered) is None
+    # Sign and verify via the underlying Signer.
+    encoded = mw.encode_cookie({"user": "alice"})
+    decoded = mw.decode_cookie(encoded)
+    assert decoded["user"] == "alice"
+
+    # A tampered cookie is refused.
+    tampered = encoded[:-5] + "xxxxx"
+    assert mw.decode_cookie(tampered) is None
 
 
 # ── end to end through a client ───────────────────────────────

@@ -85,7 +85,7 @@ def test_no_in_body_import_repeats_a_module_top_one(path):
 # ── the guard is not vacuous ─────────────────────────────────────────
 
 
-def test_the_scan_covers_the_suite():
+def test_the_import_scan_covers_the_suite():
     assert len(_modules()) > 400
 
 

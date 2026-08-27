@@ -57,20 +57,20 @@ def test_add_url_rule_with_view_func_still_works():
         assert client.get("/normal").json() == {"ok": True}
 
 
-class TestAddUrlRule:
-    async def test_add_url_rule(self):
-        app = Veloce(openapi_url=None)
+async def test_add_url_rule():
+    app = Veloce(openapi_url=None)
 
-        async def hello(request: Request):
-            return {"hello": "world"}
+    async def hello(request: Request):
+        return {"hello": "world"}
 
-        app.add_url_rule("/hello", endpoint="hello", view_func=hello)
+    app.add_url_rule("/hello", endpoint="hello", view_func=hello)
 
-        resp = await app.handle_request(make_request(path="/hello"))
-        assert resp.status_code == 200
-        assert b"hello" in resp.body
+    resp = await app.handle_request(make_request(path="/hello"))
+    assert resp.status_code == 200
+    assert b"hello" in resp.body
 
-    def test_add_url_rule_no_func_raises(self):
-        app = Veloce(openapi_url=None)
-        with pytest.raises(ValueError):
-            app.add_url_rule("/nope")
+
+def test_add_url_rule_no_func_raises():
+    app = Veloce(openapi_url=None)
+    with pytest.raises(ValueError):
+        app.add_url_rule("/nope")

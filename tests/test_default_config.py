@@ -73,25 +73,26 @@ def test_the_session_lifetime_default_lives_on_the_middleware():
     assert SessionMiddleware(secret_key="k" * 32).permanent_lifetime == 2678400
 
 
-class TestAppConfig:
-    def test_config_dict(self):
-        app = Veloce(openapi_url=None)
-        app.config["DATABASE_URL"] = "postgres://localhost/db"
-        app.config["DEBUG"] = True
-        assert app.config["DATABASE_URL"] == "postgres://localhost/db"
+def test_config_dict():
+    app = Veloce(openapi_url=None)
+    app.config["DATABASE_URL"] = "postgres://localhost/db"
+    app.config["DEBUG"] = True
+    assert app.config["DATABASE_URL"] == "postgres://localhost/db"
 
-    def test_config_update(self):
-        app = Veloce(openapi_url=None)
-        app.config.update(
-            SECRET_KEY="my-secret",
-            MAX_CONTENT_LENGTH=16 * 1024 * 1024,
-        )
-        assert app.config["SECRET_KEY"] == "my-secret"
 
-    def test_secret_key(self):
-        app = Veloce(openapi_url=None)
-        app.secret_key = "super-secret"
-        assert app.secret_key == "super-secret"
+def test_config_update():
+    app = Veloce(openapi_url=None)
+    app.config.update(
+        SECRET_KEY="my-secret",
+        MAX_CONTENT_LENGTH=16 * 1024 * 1024,
+    )
+    assert app.config["SECRET_KEY"] == "my-secret"
+
+
+def test_secret_key():
+    app = Veloce(openapi_url=None)
+    app.secret_key = "super-secret"
+    assert app.secret_key == "super-secret"
 
 
 class TestConfigAndExtensions:

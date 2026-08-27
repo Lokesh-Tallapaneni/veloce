@@ -113,26 +113,27 @@ def test_jsonify_list_passthrough():
     assert resp.body == b"[1,2,3]"
 
 
-class TestJsonify:
-    def test_jsonify_kwargs(self):
-        resp = jsonify(name="alice", age=30)
-        assert resp.status_code == 200
-        import orjson
+def test_jsonify_kwargs():
+    resp = jsonify(name="alice", age=30)
+    assert resp.status_code == 200
+    import orjson
 
-        data = orjson.loads(resp.body)
-        assert data["name"] == "alice"
+    data = orjson.loads(resp.body)
+    assert data["name"] == "alice"
 
-    def test_jsonify_dict(self):
-        resp = jsonify({"x": 1})
-        import orjson
 
-        assert orjson.loads(resp.body) == {"x": 1}
+def test_jsonify_dict():
+    resp = jsonify({"x": 1})
+    import orjson
 
-    def test_jsonify_list(self):
-        resp = jsonify([1, 2, 3])
-        import orjson
+    assert orjson.loads(resp.body) == {"x": 1}
 
-        assert orjson.loads(resp.body) == [1, 2, 3]
+
+def test_jsonify_list():
+    resp = jsonify([1, 2, 3])
+    import orjson
+
+    assert orjson.loads(resp.body) == [1, 2, 3]
 
 
 def test_jsonify_via_testclient():

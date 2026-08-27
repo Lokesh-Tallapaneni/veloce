@@ -159,12 +159,11 @@ def test_render_string_also_picks_up_processors(tmpl_dir: Path):
     assert resp.body == b"Welcome to Veloce"
 
 
-class TestContextProcessor:
-    def test_context_processor_registration(self):
-        app = Veloce(openapi_url=None)
+def test_context_processor_registration():
+    app = Veloce(openapi_url=None)
 
-        @app.context_processor
-        def inject_version():
-            return {"app_version": "1.0.0"}
+    @app.context_processor
+    def inject_version():
+        return {"app_version": "1.0.0"}
 
-        assert len(app._context_processors) == 1
+    assert len(app._context_processors) == 1

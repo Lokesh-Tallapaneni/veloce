@@ -61,23 +61,24 @@ def test_app_aborter_settable():
     assert app.aborter is custom
 
 
-class TestAbort:
-    def test_abort_raises(self):
-        with pytest.raises(HTTPException) as exc_info:
-            abort(404)
-        assert exc_info.value.status_code == 404
+def test_abort_raises():
+    with pytest.raises(HTTPException) as exc_info:
+        abort(404)
+    assert exc_info.value.status_code == 404
 
-    def test_abort_with_detail(self):
-        with pytest.raises(HTTPException) as exc_info:
-            abort(403, "Forbidden")
-        assert exc_info.value.detail == "Forbidden"
 
-    async def test_abort_in_handler(self):
-        app = Veloce(openapi_url=None)
+def test_abort_with_detail():
+    with pytest.raises(HTTPException) as exc_info:
+        abort(403, "Forbidden")
+    assert exc_info.value.detail == "Forbidden"
 
-        @app.get("/fail")
-        async def fail(request: Request):
-            abort(418, "I'm a teapot")
 
-        resp = await app.handle_request(make_request(path="/fail"))
-        assert resp.status_code == 418
+async def test_abort_in_handler():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/fail")
+    async def fail(request: Request):
+        abort(418, "I'm a teapot")
+
+    resp = await app.handle_request(make_request(path="/fail"))
+    assert resp.status_code == 418

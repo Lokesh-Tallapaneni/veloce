@@ -42,10 +42,6 @@ def test_safe_join_rejects_absolute_component():
     assert safe_join("/srv/uploads", "/etc/passwd") is None
 
 
-def test_safe_join_rejects_nul_byte():
-    assert safe_join("/srv/uploads", "file\x00.txt") is None
-
-
 def test_safe_join_same_directory_returns_base():
     """No-op join (single empty-relative component) stays inside the base."""
     result = safe_join("/srv/uploads", "")

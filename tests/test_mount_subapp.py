@@ -10,22 +10,21 @@ from veloce.contrib.staticfiles import StaticFiles
 from veloce.testclient import TestClient
 
 
-class TestMountSubApps:
-    async def test_mount(self):
-        main = Veloce(openapi_url=None)
-        sub = Veloce(openapi_url=None)
+async def test_mount():
+    main = Veloce(openapi_url=None)
+    sub = Veloce(openapi_url=None)
 
-        @sub.get("/items")
-        async def items(request: Request):
-            return [{"id": 1}]
+    @sub.get("/items")
+    async def items(request: Request):
+        return [{"id": 1}]
 
-        main.mount("/api", sub)
+    main.mount("/api", sub)
 
-        resp = await main.handle_request(make_request(path="/api/items"))
-        assert resp.status_code == 200
-        import orjson
+    resp = await main.handle_request(make_request(path="/api/items"))
+    assert resp.status_code == 200
+    import orjson
 
-        assert orjson.loads(resp.body) == [{"id": 1}]
+    assert orjson.loads(resp.body) == [{"id": 1}]
 
 
 class TestMountedRequestCarriesTheConnection:

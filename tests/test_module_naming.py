@@ -126,7 +126,7 @@ def test_a_module_is_named_for_its_subject(path):
 # ── the checks are not vacuous ───────────────────────────────────────
 
 
-def test_the_scan_covers_the_suite():
+def test_the_naming_scan_covers_the_suite():
     assert len(_modules()) > 400
 
 
