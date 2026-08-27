@@ -78,17 +78,98 @@ def test_every_mounted_app_has_both_methods():
         assert callable(sub.handle_request)
 
 
-def test_mount_has_exactly_one_append_site():
+def _mounted_apps_writes(module: str) -> list[int]:
+    """Line numbers where `self._mounted_apps` is handed somewhere that writes.
+
+    Read off the AST rather than by counting a substring. The old form asserted
+    `source.count("self._mounted_apps, entry") == 1`, so renaming `entry` or
+    letting the formatter wrap the call broke a green suite while the invariant
+    held, and a second write spelled any other way slipped past.
+    """
+    tree = ast.parse((SRC / "app" / module).read_text(encoding="utf-8"))
+    writes = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        # `x._mounted_apps.append(...)` / `.insert(...)` / `.extend(...)`
+        func = node.func
+        if (
+            isinstance(func, ast.Attribute)
+            and func.attr in {"append", "insert", "extend"}
+            and isinstance(func.value, ast.Attribute)
+            and func.value.attr == "_mounted_apps"
+        ):
+            writes.append(node.lineno)
+            continue
+        # `self._register_feature_state(self._mounted_apps, entry)` - the list
+        # passed to something that appends to it.
+        if any(isinstance(arg, ast.Attribute) and arg.attr == "_mounted_apps" for arg in node.args):
+            writes.append(node.lineno)
+    return writes
+
+
+def test_mount_has_exactly_one_write_site():
     """Two would let a non-Veloce in through the second one."""
-    source = (SRC / "app" / "mounting.py").read_text(encoding="utf-8")
-    assert source.count("self._mounted_apps, entry") == 1
-    assert "_mounted_apps.append" not in source
+    writes = _mounted_apps_writes("mounting.py")
+    assert len(writes) == 1, f"expected one write to `_mounted_apps`, found {writes}"
+
+
+def test_the_write_scan_would_find_a_second_one(tmp_path):
+    """A scan that matched nothing would make the assertion above vacuous."""
+    tree = ast.parse(
+        "class A:\n"
+        "    def f(self):\n"
+        "        self._mounted_apps.append(1)\n"
+        "        self._register_feature_state(self._mounted_apps, 2)\n"
+    )
+    found = [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and (
+            (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr in {"append", "insert", "extend"}
+                and isinstance(node.func.value, ast.Attribute)
+                and node.func.value.attr == "_mounted_apps"
+            )
+            or any(
+                isinstance(arg, ast.Attribute) and arg.attr == "_mounted_apps" for arg in node.args
+            )
+        )
+    ]
+    assert found == [3, 4]
+
+
+def _hasattr_probes(module: str) -> list[tuple[int, str]]:
+    """Every `hasattr(_, "name")` call in `module`, by line and attribute name.
+
+    The old form searched for the exact text `hasattr(sub_app, "match")`, which
+    a rename of the variable or a line wrap would have hidden.
+    """
+    tree = ast.parse((SRC / "app" / module).read_text(encoding="utf-8"))
+    return [
+        (node.lineno, node.args[1].value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "hasattr"
+        and len(node.args) == 2
+        and isinstance(node.args[1], ast.Constant)
+        and isinstance(node.args[1].value, str)
+    ]
 
 
 def test_the_probes_are_gone():
-    source = (SRC / "app" / "dispatch.py").read_text(encoding="utf-8")
-    assert 'hasattr(sub_app, "match")' not in source
-    assert 'hasattr(sub_app, "handle_request")' not in source
+    """Dispatch no longer asks a mounted app whether it is one."""
+    probed = {name for _line, name in _hasattr_probes("dispatch.py")}
+    assert "match" not in probed
+    assert "handle_request" not in probed
+
+
+def test_the_probe_scan_finds_the_ones_that_remain():
+    """Not a scan that matches nothing: dispatch does probe other names."""
+    assert _hasattr_probes("dispatch.py")
 
 
 # ── the mounted path still works ─────────────────────────────────────

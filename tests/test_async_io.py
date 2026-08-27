@@ -1,5 +1,12 @@
 """Tests verifying all I/O is async — no sync file reads blocking the event loop."""
 
+import builtins
+import contextlib
+import io
+import os
+import pathlib
+import time
+
 import pytest
 
 from tests.conftest import make_request
@@ -148,31 +155,108 @@ class TestGZipAsync:
         assert "Content-Encoding" not in result.headers
 
 
-@pytest.mark.perf
-class TestNoSyncIOInHotPath:
-    """Verify the hot path (simple JSON route) has no sync I/O calls.
+# ── The hot path touches no filesystem ─────────────────────
 
-    Marked `perf`: the lone test in this class asserts a hard-coded
-    wall-clock budget, which is flaky under full-suite CPU contention.
-    Opt in with `pytest -m perf` on a quiet machine.
+
+def _fast_app() -> Veloce:
+    app = Veloce(openapi_url=None)
+
+    @app.get("/fast")
+    async def fast(request: Request):
+        return {"speed": "pure_async"}
+
+    return app
+
+
+# Every entry point that reaches the filesystem. `builtins.open` alone is not
+# enough: `pathlib.Path.open` resolves `io.open` on the `io` module, so a patch
+# on `builtins` never sees it.
+_FILESYSTEM_ENTRY_POINTS = [(builtins, "open"), (io, "open"), (os, "open"), (os, "stat")]
+
+
+@contextlib.contextmanager
+def _watching_the_filesystem():
+    """Yield a list that records every filesystem call made inside the block."""
+    calls: list[str] = []
+    originals = [(module, name, getattr(module, name)) for module, name in _FILESYSTEM_ENTRY_POINTS]
+
+    def spy(module_name: str, attr: str, original):
+        def probe(*args, **kwargs):
+            calls.append(f"{module_name}.{attr}")
+            return original(*args, **kwargs)
+
+        return probe
+
+    for module, name, original in originals:
+        setattr(module, name, spy(module.__name__, name, original))
+    try:
+        yield calls
+    finally:
+        for module, name, original in originals:
+            setattr(module, name, original)
+
+
+async def test_a_json_route_opens_nothing():
+    """The claim the old name made, asserted directly.
+
+    It used to time 500 dispatches against a 100us budget - a proxy for
+    "something is blocking", which passes on a fast machine that *does* open a
+    file and fails on a slow one that does not.
+
+    One dispatch runs before the watch starts: the first request through a
+    fresh app resolves lazy imports, and an import legitimately reads from
+    disk. What the hot path must not do is read on *every* request.
     """
+    app = _fast_app()
+    await app.handle_request(make_request(path="/fast"))
 
-    async def test_json_route_is_pure_async(self):
-        """A simple JSON route should never touch the filesystem or block."""
-        app = Veloce(openapi_url=None)
-
-        @app.get("/fast")
-        async def fast(request: Request):
-            return {"speed": "pure_async"}
-
-        # If this takes > 1ms on avg, something is blocking
-        import time
-
-        times = []
-        for _ in range(500):
-            start = time.perf_counter_ns()
+    with _watching_the_filesystem() as calls:
+        for _ in range(3):
             await app.handle_request(make_request(path="/fast"))
-            times.append(time.perf_counter_ns() - start)
 
-        avg_us = sum(times) / len(times) / 1000
-        assert avg_us < 100, f"JSON route averaged {avg_us:.1f}us — possible sync blocking"
+    assert calls == [], f"the dispatch path touched the filesystem: {calls}"
+
+
+def test_the_watch_notices_a_read():
+    """A watch that never fires would make the test above vacuous."""
+    # The `open` is evaluated after the watch is entered, which is what makes
+    # it visible to the spies.
+    with (
+        _watching_the_filesystem() as calls,
+        pathlib.Path(__file__).open(encoding="utf-8") as handle,
+    ):
+        handle.readline()
+    assert calls, "the filesystem watch missed a `Path.open`"
+
+
+def test_the_watch_notices_a_stat():
+    """The other half: existence checks are filesystem work too."""
+    with _watching_the_filesystem() as calls:
+        pathlib.Path(__file__).stat()
+    assert calls, "the filesystem watch missed a `stat`"
+
+
+def test_the_watch_restores_what_it_patched():
+    """Leaving a spy installed would slow and confuse every later test."""
+    before = [getattr(module, name) for module, name in _FILESYSTEM_ENTRY_POINTS]
+    with _watching_the_filesystem():
+        pass
+    assert [getattr(module, name) for module, name in _FILESYSTEM_ENTRY_POINTS] == before
+
+
+@pytest.mark.perf
+async def test_a_json_route_stays_within_a_wall_clock_budget():
+    """Marked `perf`: a hard-coded budget is flaky under suite CPU contention.
+
+    Opt in with `pytest -m perf` on a quiet machine. This is a timing check and
+    says so; what it used to be *named* for is the test above.
+    """
+    app = _fast_app()
+    times = []
+    for _ in range(500):
+        start = time.perf_counter_ns()
+        await app.handle_request(make_request(path="/fast"))
+        times.append(time.perf_counter_ns() - start)
+
+    avg_us = sum(times) / len(times) / 1000
+    assert avg_us < 100, f"JSON route averaged {avg_us:.1f}us — possible sync blocking"

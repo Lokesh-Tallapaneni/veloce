@@ -66,7 +66,13 @@ def _seen(app: Veloce) -> dict:
 
 
 def test_a_sync_handler_write_is_visible_after_the_request():
-    """The defect: this read `<LOST>`."""
+    """The defect: this read `<LOST>`.
+
+    This and `test_an_async_handler_write_is_still_visible` are the agreement
+    between the two handler kinds: each pins its own value, so one failing says
+    which kind broke. A third test re-running both and asserting the results
+    match could not fail while these pass, and *could* pass while both were
+    equally wrong."""
     app = Veloce(openapi_url=None)
     seen = _seen(app)
 
@@ -91,30 +97,6 @@ def test_an_async_handler_write_is_still_visible():
 
     TestClient(app).get("/x")
     assert seen["marker"] == "set-in-async"
-
-
-def test_the_two_handler_kinds_agree():
-    """The property: how the handler was declared must not decide this."""
-    results = {}
-    for label, make in (("sync", False), ("async", True)):
-        app = Veloce(openapi_url=None)
-        seen = _seen(app)
-        if make:
-
-            @app.get("/x")
-            async def x() -> dict:
-                g.marker = "written"
-                return {}
-        else:
-
-            @app.get("/x")
-            def x() -> dict:  # type: ignore[misc]
-                g.marker = "written"
-                return {}
-
-        TestClient(app).get("/x")
-        results[label] = seen["marker"]
-    assert results["sync"] == results["async"] == "written"
 
 
 def test_an_unrelated_hook_touching_g_first_does_not_change_the_outcome():
@@ -156,19 +138,15 @@ def _dep_app(offload: bool) -> tuple[Veloce, dict]:
 
 @pytest.mark.parametrize("offload", [False, True])
 def test_a_sync_dependency_write_survives_either_way(offload):
-    """`offload=True` turned a working sync dependency into a broken one."""
+    """`offload=True` turned a working sync dependency into a broken one.
+
+    The parametrization *is* the statement that the knob does not decide the
+    outcome. A separate test collecting both outcomes and asserting they match
+    was strictly weaker: it passed whenever they agreed, including when both
+    were `<LOST>`."""
     app, seen = _dep_app(offload)
     TestClient(app).get("/x")
     assert seen["marker"] == "set-in-dependency"
-
-
-def test_the_offload_knob_does_not_change_the_outcome():
-    outcomes = []
-    for offload in (False, True):
-        app, seen = _dep_app(offload)
-        TestClient(app).get("/x")
-        outcomes.append(seen["marker"])
-    assert outcomes[0] == outcomes[1]
 
 
 # ── g still behaves as before in every other respect ─────────────────
