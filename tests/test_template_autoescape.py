@@ -90,38 +90,25 @@ def test_safe_filter_opts_out(tmpl_dir: Path):
 def test_auto_reload_tracks_app_debug(tmpl_dir: Path):
     """With `auto_reload` left unset, it follows the bound app's `debug`:
     off in production (no per-render template stat), on in development."""
-    from veloce.helpers import _current_app_var
-
     templates = Jinja2Templates(directory=str(tmpl_dir))
 
     prod = Veloce(openapi_url=None)  # debug defaults to False
-    token = _current_app_var.set(prod)
-    try:
+    with prod.app_context():
         templates._apply_auto_reload(templates.env)
         assert templates.env.auto_reload is False
-    finally:
-        _current_app_var.reset(token)
 
     dev = Veloce(debug=True, openapi_url=None)
-    token = _current_app_var.set(dev)
-    try:
+    with dev.app_context():
         templates._apply_auto_reload(templates.env)
         assert templates.env.auto_reload is True
-    finally:
-        _current_app_var.reset(token)
 
 
 def test_explicit_auto_reload_is_respected(tmpl_dir: Path):
     """An explicit `auto_reload=` is never overridden by the app's debug."""
-    from veloce.helpers import _current_app_var
-
     templates = Jinja2Templates(directory=str(tmpl_dir), auto_reload=False)
     assert templates.env.auto_reload is False
 
     dev = Veloce(debug=True, openapi_url=None)
-    token = _current_app_var.set(dev)
-    try:
+    with dev.app_context():
         templates._apply_auto_reload(templates.env)
         assert templates.env.auto_reload is False  # explicit wins over debug
-    finally:
-        _current_app_var.reset(token)

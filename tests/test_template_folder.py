@@ -10,18 +10,6 @@ from veloce import Veloce
 from veloce.contrib.templating import Jinja2Templates, render_template
 
 
-def _bind(app: Veloce):
-    from veloce.helpers import _current_app_var
-
-    return _current_app_var.set(app)
-
-
-def _unbind(token):
-    from veloce.helpers import _current_app_var
-
-    _current_app_var.reset(token)
-
-
 def test_no_template_folder_leaves_templates_none():
     app = Veloce(openapi_url=None)
     assert app.template_folder is None
@@ -33,11 +21,8 @@ def test_absolute_template_folder_binds_jinja2templates(tmp_path):
     app = Veloce(openapi_url=None, template_folder=str(tmp_path))
     assert isinstance(app._templates, Jinja2Templates)
 
-    token = _bind(app)
-    try:
+    with app.app_context():
         assert render_template("hello.html", name="alice") == "Hi alice!"
-    finally:
-        _unbind(token)
 
 
 def test_relative_template_folder_resolves_under_package_root(tmp_path, monkeypatch):
@@ -69,11 +54,8 @@ def test_relative_template_folder_resolves_under_package_root(tmp_path, monkeypa
     assert not os.path.isabs(app.template_folder)
     assert app._templates is not None
 
-    token = _bind(app)
-    try:
+    with app.app_context():
         assert render_template("x.html", x=7) == "X=7"
-    finally:
-        _unbind(token)
 
 
 def test_a_relative_template_folder_does_not_resolve_against_the_cwd(tmp_path, monkeypatch):
@@ -96,11 +78,8 @@ def test_a_relative_template_folder_does_not_resolve_against_the_cwd(tmp_path, m
         import_name="template_folder_demo2",
         template_folder="templates",
     )
-    token = _bind(app)
-    try:
+    with app.app_context():
         assert render_template("x.html") == "RIGHT"
-    finally:
-        _unbind(token)
 
 
 def test_an_absolute_template_folder_is_used_as_is(tmp_path):
@@ -112,8 +91,5 @@ def test_an_absolute_template_folder_is_used_as_is(tmp_path):
     assert os.path.isabs(app.template_folder)
     assert app._templates is not None
 
-    token = _bind(app)
-    try:
+    with app.app_context():
         assert render_template("x.html", x=7) == "X=7"
-    finally:
-        _unbind(token)
