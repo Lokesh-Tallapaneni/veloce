@@ -962,7 +962,7 @@ class Veloce(
         message instead of a hard-import crash on environments that
         don't need the CLI.
         """
-        if getattr(self, "_cli_group", None) is None:
+        if self._cli_group is None:
             try:
                 import click
             except ImportError as err:  # pragma: no cover
@@ -970,7 +970,7 @@ class Veloce(
                     "app.cli requires `click`. Install it with: pip install veloceframework[cli]"
                 ) from err
             self._cli_group = click.Group(
-                name=getattr(self, "title", "app").lower().replace(" ", "-"),
+                name=self.title.lower().replace(" ", "-"),
                 help=f"Custom CLI for {self.title}.",
             )
         return self._cli_group

@@ -192,7 +192,7 @@ def _marker_kind(marker: ParamBase) -> int:
 
 
 def _raise_kwarg_ambiguity(
-    handler: Callable, param_name: str, marker: Any, seen: list | None
+    handler: Callable[..., Any], param_name: str, marker: Any, seen: list[Any] | None
 ) -> None:
     """Raise on a by-name magic parameter that also carries a value marker.
 
@@ -535,7 +535,7 @@ class HandlerPlan:
 
     def __init__(
         self,
-        handler: Callable,
+        handler: Callable[..., Any],
         slots: list[_Slot],
         route_dep_plans: list[_Slot],
     ) -> None:
@@ -654,7 +654,9 @@ def _subgraph_reads_scopes(plan: HandlerPlan | None, seen_plans: set[int]) -> bo
     return False
 
 
-def _inspect_handler(handler: Callable) -> tuple[inspect.Signature, dict[str, Any]] | None:
+def _inspect_handler(
+    handler: Callable[..., Any],
+) -> tuple[inspect.Signature, dict[str, Any]] | None:
     """Return `handler`'s signature and resolved type hints, or `None`.
 
     `None` means the callable has no inspectable signature - a builtin, or a C
@@ -696,7 +698,7 @@ def _inspect_handler(handler: Callable) -> tuple[inspect.Signature, dict[str, An
 
 
 def build_plan(
-    handler: Callable, *, websocket: bool = False, _seen: list | None = None
+    handler: Callable[..., Any], *, websocket: bool = False, _seen: list[Any] | None = None
 ) -> HandlerPlan:
     """Inspect `handler` and freeze a resolution plan.
 

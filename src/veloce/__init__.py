@@ -341,7 +341,6 @@ __all__ = [
     "RedirectResponse",
     "StreamingResponse",
     "FileResponse",
-    "Finding",
     "EventSourceResponse",
     # Middleware
     "Middleware",
@@ -498,6 +497,7 @@ __all__ = [
     "Aborter",
     "AuditContext",
     "AuditFailed",
+    "Finding",
     "abort",
     "after_this_request",
     "async_send_file",

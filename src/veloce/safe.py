@@ -143,6 +143,12 @@ def safe_join(directory: str, *paths: str) -> str | None:
     base = os.path.abspath(directory)
 
     for component in paths:
+        # `*paths: str` says this cannot be `None`, and no in-tree caller
+        # passes one. This is exported from `veloce` and documented in the
+        # security reference, though, so it is reachable from code the type
+        # checker never saw - and a path-traversal guard answering
+        # `TypeError` instead of its documented `None` is the wrong failure
+        # for a caller to meet.
         if component is None:
             return None
         if "\x00" in component:

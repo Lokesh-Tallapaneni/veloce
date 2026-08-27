@@ -940,7 +940,3 @@ class WebSocketOriginMiddleware(Middleware):
         if not origin:
             return self._allow_missing
         return origin.rstrip("/").lower() in self._allowed
-
-    async def process_request(self, request: Request) -> Response | None:
-        # HTTP traffic is out of scope - pass through untouched.
-        return None

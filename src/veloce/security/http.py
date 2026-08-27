@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import secrets
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from veloce._constants import HEADER_AUTHORIZATION, HEADER_WWW_AUTHENTICATE, MSG_NOT_AUTHENTICATED
@@ -25,14 +26,12 @@ _DIGEST_PREFIX = (AUTH_SCHEME_DIGEST + " ").lower()
 _DIGEST_PREFIX_LEN = len(_DIGEST_PREFIX)
 
 
+@dataclass(slots=True)
 class HTTPBasicCredentials:
     """HTTP Basic auth credentials."""
 
-    __slots__ = ("username", "password")
-
-    def __init__(self, username: str, password: str) -> None:
-        self.username = username
-        self.password = password
+    username: str
+    password: str
 
 
 class HTTPBasic(SecurityScheme):
@@ -94,45 +93,20 @@ class HTTPBasic(SecurityScheme):
         return {"type": "http", "scheme": "basic"}
 
 
+@dataclass(slots=True)
 class HTTPDigestCredentials:
     """Parsed Digest auth challenge response - RFC 7616 Sec. 3.4."""
 
-    __slots__ = (
-        "username",
-        "realm",
-        "nonce",
-        "uri",
-        "response",
-        "qop",
-        "nc",
-        "cnonce",
-        "opaque",
-        "algorithm",
-    )
-
-    def __init__(
-        self,
-        username: str = "",
-        realm: str = "",
-        nonce: str = "",
-        uri: str = "",
-        response: str = "",
-        qop: str = "",
-        nc: str = "",
-        cnonce: str = "",
-        opaque: str = "",
-        algorithm: str = "",
-    ) -> None:
-        self.username = username
-        self.realm = realm
-        self.nonce = nonce
-        self.uri = uri
-        self.response = response
-        self.qop = qop
-        self.nc = nc
-        self.cnonce = cnonce
-        self.opaque = opaque
-        self.algorithm = algorithm
+    username: str = ""
+    realm: str = ""
+    nonce: str = ""
+    uri: str = ""
+    response: str = ""
+    qop: str = ""
+    nc: str = ""
+    cnonce: str = ""
+    opaque: str = ""
+    algorithm: str = ""
 
 
 class HTTPDigest(SecurityScheme):

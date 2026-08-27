@@ -23,6 +23,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from veloce.middleware.base import Middleware
+
 if TYPE_CHECKING:  # pragma: no cover
     from collections.abc import Callable
 
@@ -128,7 +130,7 @@ class CompiledPipeline:
     # url-value preprocessors, no middleware. Rides the same generation counter,
     # so hook/middleware registration must bump `_gen` to keep it fresh.
     is_bare: bool
-    bp_url_procs: dict[str, list] | None
+    bp_url_procs: dict[str, list[Any]] | None
 
 
 # Phase id -> the `CompiledPipeline` slot it fuses into. Kept beside the phase
@@ -228,6 +230,20 @@ def flatten_asgi_wrap(slot: object) -> list[AsgiWrapPair]:
     return flat
 
 
+def _implements(mw: Any, hook: str) -> bool:
+    """True when `mw` supplies `hook` rather than inheriting `Middleware`'s no-op.
+
+    The base hooks exist so a middleware can implement one phase and ignore the
+    other. Left in the compiled chain they are an awaited coroutine per request
+    that returns `None` - and most middleware implements one phase: compression
+    and conditional-GET are response-only, `ProxyFix` and the rate limiter are
+    request-only. Filtering here is registration-time work removing per-request
+    work, and is behaviour-preserving because what is dropped is exactly the
+    no-op.
+    """
+    return getattr(type(mw), hook, None) is not getattr(Middleware, hook)
+
+
 def build_response_middleware(app: Veloce) -> tuple[Callable, ...]:
     """Build the response-phase chain: `process_response` bound methods, reversed.
 
@@ -236,7 +252,11 @@ def build_response_middleware(app: Veloce) -> tuple[Callable, ...]:
     response. Used only when a request carries no per-route exclusion chain; a
     route with `exclude_middleware` falls back to the dynamic filtered walk.
     """
-    return tuple(mw.process_response for mw in reversed(app._middlewares))
+    return tuple(
+        mw.process_response
+        for mw in reversed(app._middlewares)
+        if _implements(mw, "process_response")
+    )
 
 
 def build_request_middleware(app: Veloce) -> tuple[Callable, ...]:
@@ -246,7 +266,9 @@ def build_request_middleware(app: Veloce) -> tuple[Callable, ...]:
     same sequence as before. Used only when a request carries no per-route
     exclusion chain; an excluded route uses the dynamic filtered chain.
     """
-    return tuple(mw.process_request for mw in app._middlewares)
+    return tuple(
+        mw.process_request for mw in app._middlewares if _implements(mw, "process_request")
+    )
 
 
 def build_ws_handshake_checks(app: Veloce) -> WsHandshakeChecks:

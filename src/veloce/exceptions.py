@@ -535,7 +535,7 @@ async def http_exception_handler(request: Any, exc: HTTPException) -> Response:
     return JSONResponse(
         payload,
         status_code=payload["status_code"],
-        headers=dict(exc.headers) if getattr(exc, "headers", None) else None,
+        headers=dict(exc.headers) if exc.headers else None,
     )
 
 
