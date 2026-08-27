@@ -94,10 +94,6 @@ from veloce.signals import (
     request_tearing_down,
 )
 
-if TYPE_CHECKING:  # pragma: no cover
-    pass
-
-
 # ── Dispatch-scoped module state ───────────────────────────
 
 

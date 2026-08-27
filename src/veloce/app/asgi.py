@@ -112,7 +112,7 @@ def _build_asgi_headers(headers: Any) -> tuple[list[tuple[bytes, bytes]], bool, 
     `Response.encode()`, so the response-splitting CRLF guard must be applied
     here. Each header becomes its own tuple; `Set-Cookie` is split back into
     per-cookie tuples (`Response.set_cookie` joins them with a
-    `\r\nSet-Cookie: ` literal for the raw HTTP/1.1 wire path). Returns the
+    `SET_COOKIE_JOINER` literal for the raw HTTP/1.1 wire path). Returns the
     tuples plus whether the response already carried content-type /
     content-length, so the caller can decide on framework defaults.
     """
