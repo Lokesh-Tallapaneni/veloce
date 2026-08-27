@@ -152,6 +152,23 @@ class MiddlewareMixin:
                 "Register a BaseHTTPMiddleware via add_http_middleware()."
             )
 
+    def add_http_middleware(self, middleware: Any) -> Any:
+        """Register a middleware on the `(request, call_next) -> response` chain.
+
+        Accepts a `BaseHTTPMiddleware` instance, a bare callable, or a class
+        (which is instantiated with no args). Returns the registered object so
+        it can be used as a decorator.
+        """
+        # Class -> instance.
+        if isinstance(middleware, type):
+            middleware = middleware()
+        if not callable(middleware):
+            raise TypeError(
+                f"add_http_middleware expects a callable / instance / class, got {middleware!r}"
+            )
+        self._register_feature_state(self._http_middleware_funcs, middleware)
+        return middleware
+
     def _register_middleware(self, instance: Middleware, priority: int) -> None:
         """Record a built `Middleware` instance and refresh the ordered chain.
 
@@ -181,23 +198,6 @@ class MiddlewareMixin:
             self._middlewares = [rec[2] for rec in ordered]
         else:
             self._middlewares.append(instance)
-
-    def add_http_middleware(self, middleware: Any) -> Any:
-        """Register a middleware on the `(request, call_next) -> response` chain.
-
-        Accepts a `BaseHTTPMiddleware` instance, a bare callable, or a class
-        (which is instantiated with no args). Returns the registered object so
-        it can be used as a decorator.
-        """
-        # Class -> instance.
-        if isinstance(middleware, type):
-            middleware = middleware()
-        if not callable(middleware):
-            raise TypeError(
-                f"add_http_middleware expects a callable / instance / class, got {middleware!r}"
-            )
-        self._register_feature_state(self._http_middleware_funcs, middleware)
-        return middleware
 
     def middleware(
         self, middleware_class_or_type: type | str, **kwargs: Any

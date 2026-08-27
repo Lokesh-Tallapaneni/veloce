@@ -31,8 +31,6 @@ if TYPE_CHECKING:  # pragma: no cover
 class ServingMixin:
     """Run and gracefully stop the built-in development server."""
 
-    __slots__ = ()
-
     if TYPE_CHECKING:  # pragma: no cover
         # Attributes / methods the host application (`Veloce`) provides.
         config: Any

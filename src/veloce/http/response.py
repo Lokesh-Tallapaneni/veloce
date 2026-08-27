@@ -273,13 +273,12 @@ class Response:
     def body(self, value: bytes) -> None:
         """Set the response body, keeping any `Content-Length` in step.
 
-        `data` is documented as an alias for this attribute, but only
-        `set_data` refreshed the header - so a middleware that rewrote
-        `response.body` (the obvious spelling) advertised the old length and
-        desynchronised a keep-alive connection. The refresh lives here, on the
-        single assignment both spellings go through, rather than being repeated
-        by each caller. The constructor assigns `_body` directly, so a response
-        that never reassigns its body pays nothing.
+        The refresh lives here, on the single assignment `body`, `data` and
+        `set_data` all go through, so every spelling keeps the header in step:
+        one that refreshed on `set_data` alone would let a middleware rewriting
+        `response.body` - the obvious spelling - advertise the old length and
+        desynchronise a keep-alive connection. The constructor assigns `_body`
+        directly, so a response that never reassigns its body pays nothing.
         """
         self._body = value
         stored = header_key(self.headers, HEADER_CONTENT_LENGTH)
@@ -708,23 +707,22 @@ class Response:
         """Body bytes alias for `Response.body`.
 
         Read returns the current body; writing through the setter
-        replaces the body, invalidates any cached HTTP/1.1 encoded
-        bytes (`_encoded`), and updates `Content-Length` on the
-        headers if it was previously set.
+        replaces the body, invalidates any cached HTTP/1.1 encoded bytes
+        (`_encoded`), and updates `Content-Length` when the headers carry one.
         """
         return self.body
 
     @data.setter
     def data(self, value: bytes | str) -> None:
-        """Set the data."""
+        """Set the response body; alias for `set_data`."""
         self.set_data(value)
 
     def set_data(self, value: bytes | str) -> None:
         """Replace the response body.
 
         Accepts `bytes` or `str` (UTF-8 encoded). Invalidates the cached
-        HTTP/1.1 encode so the new body wire-out on the next emit, and
-        refreshes `Content-Length` when previously set - assigning
+        HTTP/1.1 encoding so the new body goes on the wire at the next emit,
+        and refreshes `Content-Length` when the headers carry one. Assigning
         `response.body` directly does the same.
         """
         if isinstance(value, str):
@@ -1143,10 +1141,6 @@ class Response:
                 for chunk in it:
                     ...
 
-        The return shape is mode-dependent: a buffered response yields a
-        synchronous iterator of `bytes`, a streaming response yields the
-        underlying `AsyncIterator[bytes]`. Branch on `response.is_streamed`
-        to drain with the right loop.
         """
         stream = self._stream
         if stream is not None:
@@ -1177,8 +1171,7 @@ class Response:
                 for chunk in it:
                     ...
 
-        `size` must be positive. The return shape is mode-dependent: branch
-        on `response.is_streamed` to drain with the right loop.
+        `size` must be positive.
         """
         if size <= 0:
             raise ValueError("iter_chunked size must be positive")

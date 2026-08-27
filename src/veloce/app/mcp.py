@@ -79,8 +79,6 @@ class MCPCompleterRegistration:
 class MCPMixin:
     """Register MCP tools, prompts, completers and hooks, and mount a server."""
 
-    __slots__ = ()
-
     if TYPE_CHECKING:  # pragma: no cover
         # Attributes the host application (`Veloce`) provides.
         _mcp_tools: Any
@@ -333,66 +331,90 @@ class MCPMixin:
         route flagged `expose_as_mcp_tool=True`, the resource registry from every
         read-only route flagged `expose_as_mcp_resource=True`, and the prompt
         registry from `@app.mcp_prompt` registrations, then serves them over the
-        chosen transport.
+        chosen transport. Call this after the tool / resource / prompt routes are
+        registered.
+
+        **Transports**
 
         `transport="stdio"` (the default) serves JSON-RPC 2.0 on stdin/stdout for
         subprocess use and returns an awaitable serve coroutine that runs until
         stdin closes, inside the app's `lifespan_context()` - so every
         `on_startup` handler runs before the first tool is served. Schedule it
-        explicitly (`asyncio.run(app.mount_mcp())`). A local subprocess is trusted,
-        so authentication is from the environment: pass a `principal` (a
-        `veloce.Principal`) to establish the identity / scopes the served tools run
-        under.
+        explicitly (`asyncio.run(app.mount_mcp())`).
 
         `transport="http"` mounts the Streamable HTTP transport as a `POST` route
         at `path` (default `/mcp`) on this app and returns `None`; serve the app
-        with any ASGI server (or `app.run()`) as usual. Pass `auth` (a
-        `veloce.contrib.mcp.MCPAuth`) to make the endpoint an OAuth 2.1 resource
-        server - validating the bearer token on every request and serving the
-        RFC 9728 metadata. `allowed_origins` enables `Origin` validation
-        (DNS-rebinding defense); `exclude_middleware` names app middleware the
-        transport routes opt out of (an app-wide auth middleware `auth` replaces).
-        `sessions` opts into `Mcp-Session-Id` lifecycle: the server assigns a
-        session id on `initialize`, requires it on later requests (400 missing,
-        404 once terminated), and accepts a `DELETE` to terminate it.
-        `resumable` opts into SSE resumability: each streamed event gets an id
-        encoding its stream, and a `GET` carrying `Last-Event-ID` replays only that
-        stream's missed events so a client can reconnect after a dropped connection.
-        `tool_filter` narrows what `tools/list` reports per caller beyond the
-        declared scopes: a callable `(tool, principal) -> bool` (sync or async) that
-        hides tools an agent has no business seeing, so its context is not spent on
-        tools it cannot invoke. Declared scopes are applied first, whether or not a
-        filter is set - every list omits what this caller would be refused - so a
-        filter can only hide further, never reveal; hiding a primitive does not
-        change what happens if it is called anyway.
-        `cache_ttl_ms` sets the freshness hint sent with cacheable results
-        (`tools/list`, `prompts/list`, `resources/list`, `resources/read` and
-        `server/discover`) on the modern protocol revision; `0` marks them
-        immediately stale. A list that can differ between callers is additionally
-        marked private so a shared proxy cannot serve one caller's answer to another.
-        `transport="sse"` mounts the deprecated split-endpoint wire of MCP revision
-        2024-11-05, for a client that speaks only that: a `GET` at `path`
+        with any ASGI server (or `app.run()`) as usual.
+
+        `transport="sse"` mounts the deprecated split-endpoint wire of MCP
+        revision 2024-11-05, for a client that speaks only that: a `GET` at `path`
         (defaulting to `/sse`) opens a stream that names `message_path` as the URL
         to POST to, each POST is acknowledged `202` and its JSON-RPC response
         arrives on the stream. Prefer `transport="http"` for anything new - one
         endpoint, and a dropped connection can be resumed.
+
+        **Arguments**, in signature order:
+
+        `path` is where an HTTP or SSE transport mounts; ignored on stdio.
+
+        `auth` (a `veloce.contrib.mcp.MCPAuth`) makes an HTTP endpoint an
+        OAuth 2.1 resource server - validating the bearer token on every request
+        and serving the RFC 9728 metadata.
+
+        `principal` (a `veloce.Principal`) establishes the identity and scopes the
+        served tools run under. A local subprocess is trusted, so this is how a
+        stdio server takes its identity from the environment.
+
+        `allowed_origins` enables `Origin` validation - the DNS-rebinding defense.
+
+        `exclude_middleware` names app middleware the transport routes opt out of
+        (an app-wide auth middleware that `auth` replaces, for instance).
+
+        `sessions` opts into the `Mcp-Session-Id` lifecycle: the server assigns a
+        session id on `initialize`, requires it on later requests (400 missing,
+        404 once terminated), and accepts a `DELETE` to terminate it.
+
+        `resumable` opts into SSE resumability: each streamed event gets an id
+        encoding its stream, and a `GET` carrying `Last-Event-ID` replays only
+        that stream's missed events, so a client can reconnect after a dropped
+        connection.
+
+        `tool_filter` narrows what `tools/list` reports per caller beyond the
+        declared scopes: a callable `(tool, principal) -> bool` (sync or async)
+        that hides tools an agent has no business seeing, so its context is not
+        spent on tools it cannot invoke. Declared scopes are applied first,
+        whether or not a filter is set - every list omits what this caller would
+        be refused - so a filter can only hide further, never reveal. Hiding a
+        primitive does not change what happens if it is called anyway.
+
+        `cache_ttl_ms` sets the freshness hint sent with cacheable results
+        (`tools/list`, `prompts/list`, `resources/list`, `resources/read` and
+        `server/discover`) on the modern protocol revision; `0` marks them
+        immediately stale. A list that can differ between callers is additionally
+        marked private, so a shared proxy cannot serve one caller's answer to
+        another.
+
+        `page_size` opts the list methods into cursor pagination: each answers
+        with at most that many entries plus a `nextCursor` while more remain, so
+        a large catalogue reaches the agent a page at a time instead of filling
+        its context in one response. Left unset, every list is answered in full -
+        a client may ignore `nextCursor`, so paginating uninvited would hide the
+        rest of the catalogue from one that does.
+
+        `tool_search` publishes three tools in place of the catalogue -
+        `search_tools`, `describe_tools` and `run_tools` - so a server with a
+        large catalogue spends the agent's context on the tools it turns out to
+        need rather than on every tool it has. `run_tools` executes declared
+        calls, not code: each step names a registered tool and its arguments, and
+        a step's argument may reference an earlier step's result.
+
         `session_backend` shares HTTP sessions between workers - any object with
         async `read` / `write` / `delete` methods over a `SessionRecord`. Without
         one a session lives in the worker that minted it, so a request reaching a
         different worker is answered 404 and the client starts a new session.
-        `page_size` opts the list methods into cursor pagination: each answers with
-        at most that many entries plus a `nextCursor` while more remain, so a large
-        catalogue reaches the agent a page at a time instead of filling its context
-        in one response. Left unset, every list is answered in full - a client may
-        ignore `nextCursor`, so paginating uninvited would hide the rest of the
-        catalogue from one that does.
-        `tool_search` publishes three tools in place of the catalogue -
-        `search_tools`, `describe_tools` and `run_tools` - so a server with a large
-        catalogue spends the agent's context on the tools it turns out to need
-        rather than on every tool it has. `run_tools` executes declared calls, not
-        code: each step names a registered tool and its arguments, and a step's
-        argument may reference an earlier step's result.
-        Call this after the tool / resource / prompt routes are registered.
+
+        `message_path` is the URL an SSE stream names for the client to POST to;
+        ignored on the other transports.
         """
         # `app/` is core and `contrib/` is optional, so this is deferred to keep the
         # layering: importing the optional integration eagerly would make every

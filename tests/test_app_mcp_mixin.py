@@ -55,9 +55,38 @@ def test_the_mixin_defines_nothing_another_app_mixin_also_defines():
     assert not collisions, f"MCPMixin methods also defined elsewhere: {collisions}"
 
 
-def test_the_mixin_is_slotted_like_its_siblings():
-    """A base without `__slots__` would give every app a `__dict__`."""
-    assert MCPMixin.__slots__ == ()
+def test_no_mixin_declares_slots():
+    """`Veloce` is unslotted by design, so a mixin's `__slots__` says nothing.
+
+    Four of the thirteen mixins declared `__slots__ = ()` and nine did not, and
+    a test here asserted the four were right - behind a docstring claiming a
+    mixin without it "would give every app a `__dict__`". That is not what
+    happens: `Router` and most of the mixins are unslotted, so an app has a
+    `__dict__` either way, which the last assertion below shows. Nor could the
+    nine adopt it: they assign to `self` (they write the host's state), which a
+    slotted class refuses.
+    """
+    import importlib
+    import pkgutil
+
+    import veloce.app as app_package
+
+    mixins: list[type] = []
+    for info in pkgutil.iter_modules(app_package.__path__):
+        module = importlib.import_module(f"veloce.app.{info.name}")
+        mixins += [
+            obj
+            for _name, obj in inspect.getmembers(module, inspect.isclass)
+            if obj.__name__.endswith("Mixin") and obj.__module__ == module.__name__
+        ]
+    assert len(mixins) >= 13, f"the scan found only {len(mixins)} mixins - it is not running"
+
+    declaring = sorted(m.__name__ for m in mixins if "__slots__" in m.__dict__)
+    assert declaring == [], f"these mixins declare a __slots__ that has no effect: {declaring}"
+
+    app = Veloce(openapi_url=None)
+    app.an_attribute_no_slot_declares = 1
+    assert app.an_attribute_no_slot_declares == 1
 
 
 def test_the_mcp_registries_are_initialised_on_a_plain_app():

@@ -11,6 +11,11 @@ This gateway re-exports the `veloce.app` surface by name, so every
 to name five of them as though it were complete, which is how it read after the
 split it describes added the rest.
 
+None of the mixins declares `__slots__`. `Veloce` is deliberately unslotted -
+an application sets its own attributes on it - so a mixin's `__slots__ = ()`
+would have no effect, and most of them could not declare one anyway: they write
+the host's state, which a slotted class refuses.
+
 The private names below are re-exported deliberately: tests and internal
 modules reach them through the module path, so an internal split must not move
 them out from under those callers.

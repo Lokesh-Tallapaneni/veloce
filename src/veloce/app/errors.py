@@ -79,6 +79,128 @@ class ErrorsMixin:
             # already-cached subclasses.
             self._exc_handler_cache.clear()
 
+    def exception_handler(self, exc_class_or_status: type | int) -> Callable:
+        """Register a custom exception handler by exception type or status code."""
+
+        def decorator(func: Callable) -> Callable:
+            self.register_error_handler(exc_class_or_status, func)
+            return func
+
+        return decorator
+
+    # A one-word spelling of the same decorator, for code that reads better
+    # without the underscore. Semantics are identical - this is an alias, not a
+    # second implementation.
+    errorhandler = exception_handler
+
+    def add_exception_handler(self, exc_class_or_status: type | int, handler: Callable) -> None:
+        """Imperative exception-handler registration - ASGI shape.
+
+        The non-decorator form of `@app.exception_handler(...)`.
+        Accepts an exception class (matched by MRO at dispatch time) or
+        an int HTTP status code.
+        """
+        self.register_error_handler(exc_class_or_status, handler)
+
+    def log_exception(self, exc: BaseException, request: Request | None = None) -> None:
+        """Log an exception with traceback.
+
+        Routes the exception through the app logger at ERROR level. Used
+        internally before falling back to a 500 response; exposed publicly so
+        error-handler code can re-log via the same path.
+
+        `request` names the request that failed, which is most of the value of
+        the record: a traceback with no path is hard to place in a live log.
+        Callers with no request in hand (a background task, a CLI hook) omit it.
+
+        Silencing this is `logging.getLogger(app.import_name).setLevel(...)` or
+        any other ordinary logging configuration - it is the app's own logger,
+        deliberately, so an operator turns it down the way they turn down
+        anything else.
+        """
+        if request is not None:
+            self.logger.error("Exception on %s [%s]", request.path, request.method, exc_info=exc)
+        else:
+            self.logger.error("Exception on request", exc_info=exc)
+
+    def make_default_options_response(
+        self, path: str, allowed_methods: list[str] | None = None
+    ) -> Response:
+        """Build the auto-OPTIONS response for `path`.
+
+        Returns a 200 response with an empty body and an `Allow` header
+        listing every method registered for `path`, augmented with
+        `HEAD` (whenever `GET` is supported) and `OPTIONS` itself per
+        RFC 9110 Sec. 9.3.7. Callers that register an explicit OPTIONS
+        handler can use this to compose the default `Allow` set. Pass
+        `allowed_methods` when the registered set is already known to skip
+        the redundant `get_allowed_methods` lookup.
+        """
+        allowed = allowed_methods if allowed_methods is not None else self.get_allowed_methods(path)
+        advertised = list(allowed)
+        if HTTP_METHOD_GET in advertised and HTTP_METHOD_HEAD not in advertised:
+            advertised.append(HTTP_METHOD_HEAD)
+        if HTTP_METHOD_OPTIONS not in advertised:
+            advertised.append(HTTP_METHOD_OPTIONS)
+        return Response(
+            status_code=status.HTTP_200_OK,
+            body=b"",
+            content_type=MIME_TEXT_PLAIN,
+            headers={HEADER_ALLOW: ", ".join(advertised)},
+        )
+
+    async def handle_http_exception(
+        self, exc: HTTPException, request: Request | None = None
+    ) -> Response:
+        """Build the response for an `HTTPException`.
+
+        Walks registered status-code + class handlers first (matching
+        `abort()` semantics), falling back to JSON
+        `{"detail": exc.detail, "status_code": exc.status_code}` with
+        `exc.headers` applied - byte-identical to what the request cycle
+        emits for the same exception, so a handler reached over MCP or from
+        a background task reports the error exactly as it does over HTTP.
+
+        Pass `request=` when calling from inside a request scope so the
+        registered error handler receives the real failing request
+        (with the actual `path`, `method`, `path_params`, `state`, etc.)
+        instead of a synthetic `GET /`. Callers without a request (the
+        original out-of-band use case) can omit it.
+        """
+        handler = self._find_scoped_status_handler(
+            exc.status_code, request
+        ) or self._find_scoped_exception_handler(type(exc), request)
+        if handler is not None:
+            return await self._run_exc_handler(handler, exc, request)
+        return JSONResponse(
+            http_exception_payload(exc),
+            status_code=exc.status_code,
+            headers=exc.headers,
+        )
+
+    async def handle_user_exception(
+        self, exc: BaseException, request: Request | None = None
+    ) -> Response:
+        """Dispatch an arbitrary exception.
+
+        `HTTPException` -> `handle_http_exception`. Otherwise walks
+        registered class handlers (MRO); on no match, logs via
+        `log_exception` and returns 500. Pass `request=` to propagate
+        the real failing request to the registered handler; omit to
+        get a synthetic `GET /` for out-of-band callers (background
+        tasks, CLI hooks).
+        """
+        if isinstance(exc, HTTPException):
+            return await self.handle_http_exception(exc, request=request)
+        handler = self._find_scoped_exception_handler(type(exc), request)
+        if handler is not None:
+            return await self._run_exc_handler(handler, exc, request)
+        self.log_exception(exc, request)
+        return JSONResponse(
+            {"detail": MSG_INTERNAL_SERVER_ERROR},
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
     def _should_propagate_exceptions(self) -> bool:
         """Whether unhandled exceptions should re-raise out of dispatch.
 
@@ -147,50 +269,6 @@ class ErrorsMixin:
                         return handler
         return self._status_handlers.get(code)
 
-    def exception_handler(self, exc_class_or_status: type | int) -> Callable:
-        """Register a custom exception handler by exception type or status code."""
-
-        def decorator(func: Callable) -> Callable:
-            self.register_error_handler(exc_class_or_status, func)
-            return func
-
-        return decorator
-
-    # A one-word spelling of the same decorator, for code that reads better
-    # without the underscore. Semantics are identical - this is an alias, not a
-    # second implementation.
-    errorhandler = exception_handler
-
-    def add_exception_handler(self, exc_class_or_status: type | int, handler: Callable) -> None:
-        """Imperative exception-handler registration - ASGI shape.
-
-        The non-decorator form of `@app.exception_handler(...)`.
-        Accepts an exception class (matched by MRO at dispatch time) or
-        an int HTTP status code.
-        """
-        self.register_error_handler(exc_class_or_status, handler)
-
-    def log_exception(self, exc: BaseException, request: Request | None = None) -> None:
-        """Log an exception with traceback.
-
-        Routes the exception through the app logger at ERROR level. Used
-        internally before falling back to a 500 response; exposed publicly so
-        error-handler code can re-log via the same path.
-
-        `request` names the request that failed, which is most of the value of
-        the record: a traceback with no path is hard to place in a live log.
-        Callers with no request in hand (a background task, a CLI hook) omit it.
-
-        Silencing this is `logging.getLogger(app.import_name).setLevel(...)` or
-        any other ordinary logging configuration - it is the app's own logger,
-        deliberately, so an operator turns it down the way they turn down
-        anything else.
-        """
-        if request is not None:
-            self.logger.error("Exception on %s [%s]", request.path, request.method, exc_info=exc)
-        else:
-            self.logger.error("Exception on request", exc_info=exc)
-
     async def _run_exc_handler(
         self, handler: Callable, exc: BaseException, request: Request | None
     ) -> Response:
@@ -212,81 +290,3 @@ class ErrorsMixin:
         if isinstance(result, Response):
             return result
         return self._coerce_response(result)
-
-    async def handle_http_exception(
-        self, exc: HTTPException, request: Request | None = None
-    ) -> Response:
-        """Build the response for an `HTTPException`.
-
-        Walks registered status-code + class handlers first (matching
-        `abort()` semantics), falling back to JSON
-        `{"detail": exc.detail, "status_code": exc.status_code}` with
-        `exc.headers` applied - byte-identical to what the request cycle
-        emits for the same exception, so a handler reached over MCP or from
-        a background task reports the error exactly as it does over HTTP.
-
-        Pass `request=` when calling from inside a request scope so the
-        registered error handler receives the real failing request
-        (with the actual `path`, `method`, `path_params`, `state`, etc.)
-        instead of a synthetic `GET /`. Callers without a request (the
-        original out-of-band use case) can omit it.
-        """
-        handler = self._find_scoped_status_handler(
-            exc.status_code, request
-        ) or self._find_scoped_exception_handler(type(exc), request)
-        if handler is not None:
-            return await self._run_exc_handler(handler, exc, request)
-        return JSONResponse(
-            http_exception_payload(exc),
-            status_code=exc.status_code,
-            headers=exc.headers,
-        )
-
-    def make_default_options_response(
-        self, path: str, allowed_methods: list[str] | None = None
-    ) -> Response:
-        """Build the auto-OPTIONS response for `path`.
-
-        Returns a 200 response with an empty body and an `Allow` header
-        listing every method registered for `path`, augmented with
-        `HEAD` (whenever `GET` is supported) and `OPTIONS` itself per
-        RFC 9110 Sec. 9.3.7. Callers that register an explicit OPTIONS
-        handler can use this to compose the default `Allow` set. Pass
-        `allowed_methods` when the registered set is already known to skip
-        the redundant `get_allowed_methods` lookup.
-        """
-        allowed = allowed_methods if allowed_methods is not None else self.get_allowed_methods(path)
-        advertised = list(allowed)
-        if HTTP_METHOD_GET in advertised and HTTP_METHOD_HEAD not in advertised:
-            advertised.append(HTTP_METHOD_HEAD)
-        if HTTP_METHOD_OPTIONS not in advertised:
-            advertised.append(HTTP_METHOD_OPTIONS)
-        return Response(
-            status_code=status.HTTP_200_OK,
-            body=b"",
-            content_type=MIME_TEXT_PLAIN,
-            headers={HEADER_ALLOW: ", ".join(advertised)},
-        )
-
-    async def handle_user_exception(
-        self, exc: BaseException, request: Request | None = None
-    ) -> Response:
-        """Dispatch an arbitrary exception.
-
-        `HTTPException` -> `handle_http_exception`. Otherwise walks
-        registered class handlers (MRO); on no match, logs via
-        `log_exception` and returns 500. Pass `request=` to propagate
-        the real failing request to the registered handler; omit to
-        get a synthetic `GET /` for out-of-band callers (background
-        tasks, CLI hooks).
-        """
-        if isinstance(exc, HTTPException):
-            return await self.handle_http_exception(exc, request=request)
-        handler = self._find_scoped_exception_handler(type(exc), request)
-        if handler is not None:
-            return await self._run_exc_handler(handler, exc, request)
-        self.log_exception(exc, request)
-        return JSONResponse(
-            {"detail": MSG_INTERNAL_SERVER_ERROR},
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        )

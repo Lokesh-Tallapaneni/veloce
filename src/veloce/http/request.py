@@ -814,8 +814,7 @@ class Request:
     def url(self) -> Any:
         """Full URL object - lazy construction."""
         if self._url is None:
-            scope = getattr(self, "scope", None)
-            scope_scheme = scope.get("scheme") if isinstance(scope, dict) else None
+            scope_scheme = self.scope.get("scheme")
             # The raw transport carries no ASGI scope, so nothing else can
             # tell this request it arrived over TLS: `app.run(ssl_context=)`
             # and the gunicorn worker both terminate TLS on the connection
@@ -915,7 +914,7 @@ class Request:
 
         Returns the empty string when the app is at root.
         """
-        scope_root = self.scope.get("root_path", "") if isinstance(self.scope, dict) else ""
+        scope_root = self.scope.get("root_path", "")
         if scope_root:
             return scope_root
         app = self.app
@@ -997,7 +996,7 @@ class Request:
         scope is the analogue. Returns the live dict so middleware can
         introspect (mutation goes through framework APIs, not this).
         """
-        return self.scope if isinstance(self.scope, dict) else {}
+        return self.scope
 
     # ── Matched route and reverse URLs ─────────────────────
 
@@ -1552,7 +1551,7 @@ class Request:
         flag the body source records rather than probing the transport.
         """
         source = self._body_source
-        return bool(source is not None and getattr(source, "_disconnected", False))
+        return source is not None and source.disconnected
 
     async def stream(self) -> Any:
         """Async-iterate the request body in chunks - ASGI shape.

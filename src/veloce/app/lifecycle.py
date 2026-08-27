@@ -41,9 +41,10 @@ def _collect_chained(exc: BaseException) -> list[BaseException]:
 
     `AsyncExitStack.aclose()` runs every teardown, chaining each failure onto
     the previous through `__context__` and re-raising the last. Walking that
-    chain recovers all teardown failures (oldest last), and an interior
-    `BaseExceptionGroup` is expanded so its members are surfaced individually.
-    A cycle guard keeps the walk bounded even on a self-referential chain.
+    chain recovers all teardown failures, and an interior `BaseExceptionGroup`
+    is expanded so its members are surfaced individually and in their own order.
+    The result is in run order - the first teardown that failed leads. A cycle
+    guard keeps the walk bounded even on a self-referential chain.
     """
     out: list[BaseException] = []
     seen: set[int] = set()
@@ -51,7 +52,11 @@ def _collect_chained(exc: BaseException) -> list[BaseException]:
     while current is not None and id(current) not in seen:
         seen.add(id(current))
         if _BaseExceptionGroup is not None and isinstance(current, _BaseExceptionGroup):
-            out.extend(current.exceptions)  # type: ignore[attr-defined]
+            # Reversed, because the whole list is reversed at the end to turn
+            # the `__context__` walk (newest first) into run order. A group's
+            # members are siblings rather than a chain, so without this they
+            # come out backwards relative to each other.
+            out.extend(reversed(current.exceptions))  # type: ignore[attr-defined]
         else:
             out.append(current)
         current = current.__context__
@@ -271,21 +276,6 @@ class LifecycleMixin:
 
     # ── Lifecycle events ──────────────────────────────────
 
-    def _register_lifecycle_event(self, event: str, func: Callable) -> None:
-        """Validate an event name and append the handler to its bucket.
-
-        Shared by `on_event` and `add_event_handler` so the two register
-        identically; raises the same `ValueError` for an unknown event name.
-        """
-        if event == LIFECYCLE_STARTUP:
-            self._on_startup.append(func)
-        elif event == LIFECYCLE_SHUTDOWN:
-            self._on_shutdown.append(func)
-        else:
-            raise ValueError(
-                f"event must be {LIFECYCLE_STARTUP!r} or {LIFECYCLE_SHUTDOWN!r}, got {event!r}"
-            )
-
     def on_event(self, event: str) -> Callable:
         """Register startup/shutdown event handlers.
 
@@ -381,7 +371,37 @@ class LifecycleMixin:
         """Register a coroutine to run once at app shutdown. Alias of `on_shutdown`."""
         return self.on_shutdown(func)
 
+    def _register_lifecycle_event(self, event: str, func: Callable) -> None:
+        """Validate an event name and append the handler to its bucket.
+
+        Shared by `on_event` and `add_event_handler` so the two register
+        identically; raises the same `ValueError` for an unknown event name.
+        """
+        if event == LIFECYCLE_STARTUP:
+            self._on_startup.append(func)
+        elif event == LIFECYCLE_SHUTDOWN:
+            self._on_shutdown.append(func)
+        else:
+            raise ValueError(
+                f"event must be {LIFECYCLE_STARTUP!r} or {LIFECYCLE_SHUTDOWN!r}, got {event!r}"
+            )
+
     # ── Lifespan engine ───────────────────────────────────
+
+    def lifespan_context(self) -> _LifespanManager:
+        """Return an async context manager driving the lifespan cycle.
+
+        `async with app.lifespan_context(): ...` runs the full startup
+        sequence (lifespan CM enter + `on_startup` handlers) on entry
+        and the shutdown sequence on exit - independent of any request.
+        Useful for tests and for embedding the app where you want
+        startup/shutdown without an ASGI server in the loop.
+        """
+        # Lazy to keep the context machinery off `import veloce`; there is no
+        # app->_contexts->http cycle, and hoisting this imports cleanly.
+        from veloce.app.contexts import _LifespanManager
+
+        return _LifespanManager(cast("Veloce", self))
 
     async def _run_handler(self, handler: Callable[..., Any]) -> None:
         """Invoke a lifecycle handler, offloading sync ones to a thread.
@@ -583,18 +603,3 @@ class LifecycleMixin:
         if self._watchdog is not None:
             self._watchdog.stop()
             self._watchdog = None
-
-    def lifespan_context(self) -> _LifespanManager:
-        """Return an async context manager driving the lifespan cycle.
-
-        `async with app.lifespan_context(): ...` runs the full startup
-        sequence (lifespan CM enter + `on_startup` handlers) on entry
-        and the shutdown sequence on exit - independent of any request.
-        Useful for tests and for embedding the app where you want
-        startup/shutdown without an ASGI server in the loop.
-        """
-        # Lazy to keep the context machinery off `import veloce`; there is no
-        # app->_contexts->http cycle, and hoisting this imports cleanly.
-        from veloce.app.contexts import _LifespanManager
-
-        return _LifespanManager(cast("Veloce", self))

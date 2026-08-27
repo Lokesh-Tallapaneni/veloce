@@ -31,6 +31,7 @@ from collections.abc import Callable
 from typing import Any
 
 from veloce._constants import MSG_REQUEST_BODY_EXCEEDS_MAX
+from veloce._internal import _require_methods
 from veloce._protocol_constants import (
     ASGI_EVENT_HTTP_DISCONNECT,
     ASGI_EVENT_HTTP_REQUEST,
@@ -78,7 +79,51 @@ def too_large_payload(limit: int | None) -> dict[str, Any]:
     }
 
 
-class RequestBodySource:
+class BodySource:
+    """The consumer interface a request body source presents, on any transport.
+
+    `Request` is transport-agnostic: it holds whichever source built it and
+    consumes through this interface alone. The two implementations arrive at it
+    from opposite directions - the native one is push-fed by the HTTP/1.1 parser,
+    the ASGI one pulls from a `receive` channel - so what they have in common is
+    stated here rather than left for a consumer to probe for.
+
+    `disconnected` is the part that is easy to leave half-implemented: it is
+    `False` for a body that completed and `True` for one cut short by the peer
+    going away, and a source that cannot tell them apart makes
+    `request.is_disconnected()` answer `False` for a client that is gone.
+    """
+
+    __slots__ = ()
+
+    #: What a source must supply. Checked at definition rather than left to
+    #: fail on the first streamed request: a source missing one of these works
+    #: until a handler reaches for it, and then fails mid-body.
+    _required = ("__aiter__", "__anext__", "read", "disconnected")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        _require_methods(cls, BodySource, BodySource._required)
+
+    def __aiter__(self) -> BodySource:
+        """Iterate the body chunk by chunk, as the transport delivers it."""
+        raise NotImplementedError
+
+    async def __anext__(self) -> bytes:
+        """Return the next chunk, or raise `StopAsyncIteration` at EOF."""
+        raise NotImplementedError
+
+    async def read(self) -> bytes:
+        """Pull every remaining chunk to EOF and return the joined bytes."""
+        raise NotImplementedError
+
+    @property
+    def disconnected(self) -> bool:
+        """`True` when the stream ended because the peer went away."""
+        raise NotImplementedError
+
+
+class RequestBodySource(BodySource):
     """Async producer/consumer queue for one request's body bytes.
 
     The protocol calls `feed(chunk)` from `on_body` and `feed_eof()` from
@@ -116,6 +161,7 @@ class RequestBodySource:
         "_resume",
         "_paused",
         "_draining",
+        "_disconnected",
     )
 
     def __init__(
@@ -145,6 +191,8 @@ class RequestBodySource:
         # never re-pauses while this is set, otherwise a re-pause mid-drain
         # would stop the remaining body (and EOF) from ever arriving.
         self._draining = False
+        # Set only by `feed_eof(disconnected=True)`; see that method.
+        self._disconnected = False
 
     def set_flow_control(self, pause: Callable[[], None], resume: Callable[[], None]) -> None:
         """Wire pause/resume callbacks (the transport's flow control).
@@ -205,10 +253,23 @@ class RequestBodySource:
             self._paused = True
             self._pause()
 
-    def feed_eof(self) -> None:
-        """Signal that no more body bytes will arrive."""
+    def feed_eof(self, *, disconnected: bool = False) -> None:
+        """Signal that no more body bytes will arrive.
+
+        `disconnected=True` says the peer went away rather than the body
+        completing. Both end the stream for a consumer, but only the second is
+        an ordinary end - `request.is_disconnected()` is the difference, and
+        without the distinction it answers `False` for a client that is gone.
+        """
         self._eof = True
+        if disconnected:
+            self._disconnected = True
         self._event.set()
+
+    @property
+    def disconnected(self) -> bool:
+        """`True` when the stream ended because the peer went away."""
+        return self._disconnected
 
     def _maybe_resume(self) -> None:
         """Resume socket reading once the buffer drains to the low-water mark."""
@@ -222,6 +283,7 @@ class RequestBodySource:
             raise body_too_large(self._max)
 
     def __aiter__(self) -> RequestBodySource:
+        """Iterate the fed chunks, waiting when the queue is empty."""
         return self
 
     async def __anext__(self) -> bytes:
@@ -272,7 +334,7 @@ class RequestBodySource:
         self._chunks.clear()
 
 
-class ASGIBodySource:
+class ASGIBodySource(BodySource):
     """Pull-based body source over an ASGI `receive` channel.
 
     The native `RequestBodySource` is push-fed by the HTTP/1.1 parser; under an
@@ -300,6 +362,11 @@ class ASGIBodySource:
         # the second apart so `Request.is_disconnected()` can answer truthfully
         # for a streaming route, where the client really can go away mid-handler.
         self._disconnected = False
+
+    @property
+    def disconnected(self) -> bool:
+        """`True` when the stream ended because the peer went away."""
+        return self._disconnected
 
     def __aiter__(self) -> ASGIBodySource:
         return self

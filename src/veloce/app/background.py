@@ -18,8 +18,6 @@ from typing import TYPE_CHECKING, Any
 class BackgroundTasksMixin:
     """Spawn, name, supervise, and drain application background tasks."""
 
-    __slots__ = ()
-
     if TYPE_CHECKING:  # pragma: no cover
         # Attributes the host application (`Veloce.__init__`) provides.
         _spawned_named: Any

@@ -802,7 +802,7 @@ class HttpProtocol(asyncio.Protocol):
         # loop is cancelled below; signalling EOF here makes a streaming read
         # end cleanly even on the cancellation race.
         if self._current_source is not None:
-            self._current_source.feed_eof()
+            self._current_source.feed_eof(disconnected=True)
             self._current_source = None
         if self._server_loop is not None and not self._server_loop.done():
             self._server_loop.cancel()

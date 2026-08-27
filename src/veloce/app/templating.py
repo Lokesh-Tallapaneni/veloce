@@ -13,8 +13,6 @@ from typing import TYPE_CHECKING, Any
 class TemplatingMixin:
     """Register Jinja filters, globals, tests, and context processors."""
 
-    __slots__ = ()
-
     if TYPE_CHECKING:  # pragma: no cover
         # Attributes the host application (`Veloce`) provides.
         _template_filters: Any
