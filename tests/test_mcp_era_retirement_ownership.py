@@ -237,12 +237,21 @@ def test_a_capability_retiring_a_method_has_it_refused():
 
             return {"extra/legacy": legacy}
 
-    rebuilt = MCPServer(_app())
-    rebuilt._capabilities = (*rebuilt._capabilities, Extra(rebuilt))
-    rebuilt._handshake_only = _CORE_HANDSHAKE_ONLY_METHODS.union(
-        *(c.handshake_only_methods for c in rebuilt._capabilities)
-    )
+    # Handed to the constructor, so the server performs its own union. The
+    # check this replaces recomputed that union in the test and assigned the
+    # result back, which asserted the test's arithmetic and not the server's.
+    plain = MCPServer(_app())
+    rebuilt = MCPServer(_app(), capabilities=[Extra(plain)])
+
     assert "extra/legacy" in rebuilt._handshake_only
+    assert "extra/legacy" not in plain._handshake_only, (
+        "the method is retired only because the capability declared it"
+    )
+    # The core retirements survive the addition.
+    assert rebuilt._handshake_only >= _CORE_HANDSHAKE_ONLY_METHODS
+    # And the method it declares is dispatchable, which is what makes the
+    # retirement meaningful rather than a name in a set.
+    assert "extra/legacy" in rebuilt._methods
 
 
 def test_a_capability_retiring_nothing_adds_nothing():

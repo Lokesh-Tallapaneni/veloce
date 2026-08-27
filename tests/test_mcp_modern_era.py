@@ -11,9 +11,8 @@ from __future__ import annotations
 import orjson
 import pytest
 
-from veloce import Veloce
+from veloce import TestClient, Veloce
 from veloce.contrib.mcp.server import (
-    _SERVED_VERSION_SET,
     MODERN_PROTOCOL_VERSION,
     SERVED_PROTOCOL_VERSIONS,
     MCPServer,
@@ -179,13 +178,54 @@ async def test_a_modern_notification_with_a_bad_version_gets_no_response():
     assert out == []
 
 
-def test_the_http_transport_accepts_the_modern_version_header():
-    """On HTTP the version also travels in `MCP-Protocol-Version`; rejecting the
-    modern value there would block a modern client before dispatch."""
+@pytest.mark.parametrize("version", SERVED_PROTOCOL_VERSIONS)
+def test_the_http_transport_accepts_a_served_version_header(version):
+    """On HTTP the version also travels in `MCP-Protocol-Version`.
 
-    assert MODERN_PROTOCOL_VERSION in _SERVED_VERSION_SET
-    for version in SERVED_PROTOCOL_VERSIONS:
-        assert version in _SERVED_VERSION_SET
+    Rejecting a served value there would block the client before dispatch. The
+    check this used to make - that each served version is in the frozenset the
+    source builds *from those versions* - could not fail; this drives the
+    transport.
+    """
+    app = _app()
+    app.mount_mcp(transport="http", path="/mcp")
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/mcp",
+            json={"jsonrpc": "2.0", "id": 1, "method": "ping"},
+            headers={
+                "MCP-Protocol-Version": version,
+                # The modern revision cross-checks the method against the body
+                # as an anti-smuggling measure, so it travels too.
+                "MCP-Method": "ping",
+                "Accept": "application/json, text/event-stream",
+            },
+        )
+
+    assert response.status_code == 200, response.body
+    # The reply may be a bare JSON body or an SSE frame depending on what the
+    # client accepts; either way it must not carry a JSON-RPC error.
+    assert b'"error"' not in response.body, response.body
+
+
+def test_the_http_transport_refuses_an_unserved_version_header():
+    """The other side of the gate, which nothing was covering."""
+    app = _app()
+    app.mount_mcp(transport="http", path="/mcp")
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/mcp",
+            json={"jsonrpc": "2.0", "id": 1, "method": "ping"},
+            headers={
+                "MCP-Protocol-Version": "1999-01-01",
+                "MCP-Method": "ping",
+                "Accept": "application/json, text/event-stream",
+            },
+        )
+
+    assert response.status_code >= 400 or b'"error"' in response.body, response.body
 
 
 # ── Argument validation is a tool execution error ─────────────────

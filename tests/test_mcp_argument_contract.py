@@ -595,8 +595,17 @@ async def test_a_declared_bool_refuses_a_non_boolean_behind_depends(value):
 
 @pytest.mark.parametrize("value", ["yes", "1", "true", 1, 0, "maybe"])
 async def test_both_doors_agree_on_every_rejected_value(value):
+    """Agreement is half of it; the other half is *what* they agree on.
+
+    Asserting only that the two answers match passes just as well if both
+    doors accept the value, which is the failure this module exists to rule
+    out.
+    """
     server = MCPServer(_both_doors_app())
-    assert await _call_flag(server, "top", value) == await _call_flag(server, "nested", value)
+    top = await _call_flag(server, "top", value)
+    nested = await _call_flag(server, "nested", value)
+    assert top == nested
+    assert top == "refused", f"{value!r} was accepted by both doors"
 
 
 @pytest.mark.parametrize("value", [True, False])

@@ -13,6 +13,8 @@ unaffected.
 
 from __future__ import annotations
 
+import pathlib
+
 import pytest
 
 from veloce import Veloce
@@ -204,6 +206,22 @@ def test_the_unproduced_interim_result_is_not_advertised():
 
 
 def test_the_result_discriminators_that_are_advertised_can_all_be_produced():
+    """Every `resultType` the dispatcher can emit is one of the two constants.
 
-    produced = {RESULT_TYPE_COMPLETE, RESULT_TYPE_TASK}
-    assert "input_required" not in produced
+    The check this replaces built a two-element literal set and asserted a
+    third string was absent from it, which is true by construction. This reads
+    the dispatcher's source for the values it actually assigns.
+    """
+    import re
+
+    # By module object: the test reads the dispatcher's *source* for the
+    # `resultType` values it assigns, so it needs the file rather than the
+    # names.
+    from veloce.contrib.mcp import server as server_module
+
+    source = pathlib.Path(server_module.__file__).read_text(encoding="utf-8")
+    emitted = set(re.findall(r'"resultType":\s*([A-Za-z_][A-Za-z0-9_]*)', source))
+    assert emitted == {"RESULT_TYPE_TASK", "RESULT_TYPE_COMPLETE"}, (
+        f"the dispatcher emits a resultType this test does not know about: {emitted}"
+    )
+    assert {RESULT_TYPE_COMPLETE, RESULT_TYPE_TASK} == {"complete", "task"}

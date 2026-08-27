@@ -4,8 +4,8 @@ import logging
 
 import pytest
 
-from veloce import Veloce
-from veloce.routing.router import Router
+from veloce import Blueprint, Veloce
+from veloce.routing.router import RadixNode, Router
 from veloce.testclient import TestClient
 
 
@@ -210,8 +210,6 @@ def test_include_router_rejects_greedy_with_trailing_segments():
     sub.add_route("/{files:path}", handler, ["GET"])
     # Tack on a static child after the greedy param to fabricate the
     # invalid shape that _merge_node must reject when re-walking.
-    from veloce.routing.router import RadixNode
-
     greedy_node = sub._root.param_children[0]
     tail = RadixNode("info")
     greedy_node.static_children["info"] = tail
@@ -370,8 +368,6 @@ def test_both_routes_still_serve():
 
 def test_a_blueprint_name_is_still_namespaced(caplog):
     """The merge path was already protected and must stay silent."""
-    from veloce import Blueprint
-
     app = Veloce(openapi_url=None)
 
     @app.get("/users", name="listing")
