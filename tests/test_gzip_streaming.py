@@ -177,15 +177,24 @@ async def test_streaming_delivers_decodable_frame_per_chunk():
 
     decompressor = zlib.decompressobj(zlib.MAX_WBITS | 16)
     delivered = bytearray()
-    frames = 0
+    recovered_after_each_frame: list[bytes] = []
     async for out in response._stream:
         assert out, "every yielded frame must carry bytes"
         delivered += decompressor.decompress(out)
-        frames += 1
-        # Before the stream ends, each input chunk's plaintext is recoverable
-        # from the frames seen so far - proving incremental delivery.
-        if frames <= len(chunks):
-            assert delivered == b"".join(chunks[:frames])
+        recovered_after_each_frame.append(bytes(delivered))
+
+    # Recorded rather than asserted inside the loop: the check used to sit
+    # behind `if frames <= len(chunks)`, so a middleware that coalesced
+    # everything into one frame ran the loop once, satisfied the guard, and
+    # passed - the outcome the test exists to rule out.
+    assert len(recovered_after_each_frame) > len(chunks) // 2, (
+        f"{len(recovered_after_each_frame)} frames for {len(chunks)} chunks - "
+        "the stream was coalesced rather than delivered incrementally"
+    )
+    for index, recovered in enumerate(recovered_after_each_frame[: len(chunks)], start=1):
+        assert recovered == b"".join(chunks[:index]), (
+            f"after frame {index} the recoverable plaintext was {recovered!r}"
+        )
 
     # The final frame carries the gzip trailer; the full plaintext round-trips.
     assert delivered == b"".join(chunks)

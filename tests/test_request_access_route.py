@@ -1,4 +1,9 @@
-"""Request.access_route tests."""
+"""`Request.access_route` - the client chain, from `X-Forwarded-For` or the peer.
+
+Named for its subject: the module was `test_header_utils.py` and contained no
+header-utility tests at all, so a reader looking for header parsing found route
+tests and a reader looking for these could not guess the file.
+"""
 
 from __future__ import annotations
 

@@ -9,6 +9,8 @@ and the method reported otherwise.
 
 from __future__ import annotations
 
+import inspect
+
 from tests.conftest import make_request
 from veloce import Request
 from veloce.http._body import ASGIBodySource
@@ -19,14 +21,16 @@ def _req() -> Request:
 
 
 async def test_is_disconnected_returns_false():
-    # Body is fully buffered before dispatch — never disconnected.
-    assert await _req().is_disconnected() is False
+    """A buffered request's body is complete before dispatch, so never disconnected.
 
-
-async def test_is_disconnected_is_awaitable():
+    Also the awaitability check: `is_disconnected` is `async def`, so calling it
+    returns a coroutine that has to be awaited - a caller who forgets gets a
+    truthy coroutine object and reads every request as disconnected. A separate
+    test asserting the same `False` did not add that, so it is asserted here.
+    """
     coro = _req().is_disconnected()
-    result = await coro
-    assert result is False
+    assert inspect.iscoroutine(coro), "is_disconnected must be awaited, not read"
+    assert await coro is False
 
 
 async def test_is_disconnected_usable_in_handler_poll_pattern():

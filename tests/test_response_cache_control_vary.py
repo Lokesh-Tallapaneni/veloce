@@ -17,8 +17,8 @@ def test_max_age_only():
 def test_public_max_age_combined():
     resp = Response()
     val = resp.set_cache_control(max_age=600, public=True)
-    assert val == "public, max-age=3600".replace("3600", "600")
     assert val == "public, max-age=600"
+    assert resp.headers["Cache-Control"] == "public, max-age=600"
 
 
 def test_no_store_overrides_caching():

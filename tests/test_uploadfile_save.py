@@ -7,6 +7,8 @@ import io
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from tests.conftest import make_request
 from veloce import Request, Veloce
 from veloce.http.datastructures import UploadFile
@@ -31,26 +33,17 @@ def test_save_writes_full_content_to_path(tmp_path: Path):
     assert target.read_bytes() == b"hello world"
 
 
-def test_save_to_path_creates_parent_only_if_user_did():
+def test_save_to_path_creates_parent_only_if_user_did(tmp_path):
     """`save` does not auto-create missing directories; the caller must."""
     upload = _upload(b"x")
-    import os
+    missing = tmp_path / "missing" / "x.bin"
 
-    tmpdir = tempfile.mkdtemp()
-    try:
-        missing = os.path.join(tmpdir, "missing", "x.bin")
-        try:
-            upload.save(missing)
-        except OSError:
-            pass  # expected
-        else:
-            raise AssertionError("expected OSError for missing parent")
-    finally:
-        # Clean up the outer tmpdir; the missing subdir was never created.
-        os.rmdir(tmpdir)
+    with pytest.raises(OSError):
+        upload.save(str(missing))
 
-
-# ── Save to a file-like ──────────────────────────────────────────────
+    missing.parent.mkdir()
+    upload.save(str(missing))
+    assert missing.read_bytes() == b"x"
 
 
 def test_save_to_open_file_handle():

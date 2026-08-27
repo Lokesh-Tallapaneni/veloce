@@ -55,15 +55,37 @@ def _native_ws() -> WebSocket:
     return WebSocket(_FakeTransport(), {"sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ=="})
 
 
-async def _run(handler) -> WebSocket:
-    """Drive `handler` through the shared dispatch core on a native socket."""
+def _wired(handler) -> tuple[Veloce, WebSocket, object]:
+    """An app with `handler` on `/ws`, a native socket, and the matched route.
+
+    The five lines this returns were copied into six tests, each of which then
+    did something different with them - awaited and expected a raise, awaited
+    and expected none, or drove the dispatch as a task it could cancel. So the
+    wiring is shared and the exit shape stays per-test, which is the part that
+    actually differs.
+    """
     app = Veloce(openapi_url=None)
     app.add_route("/ws", handler, methods=[ROUTE_METHOD_WEBSOCKET])
     route_info = app.match(ROUTE_METHOD_WEBSOCKET, "/ws").route_info
     ws = _native_ws()
     ws.path_params = {}
-    with pytest.raises(BaseException):  # noqa: B017 - the exit shape is per-test
+    return app, ws, route_info
+
+
+async def _run(handler) -> WebSocket:
+    """Drive `handler` to a raise through the shared dispatch core."""
+    app, ws, route_info = _wired(handler)
+    # Broad on purpose: which exception escapes is what the caller asserts on
+    # `ws._handler_exc`, and it differs per test.
+    with pytest.raises(BaseException):  # noqa: B017 - see above
         await app._run_websocket(ws, route_info)
+    return ws
+
+
+async def _run_to_completion(handler) -> WebSocket:
+    """Drive `handler` where the dispatch is expected to return normally."""
+    app, ws, route_info = _wired(handler)
+    await app._run_websocket(ws, route_info)
     return ws
 
 
@@ -92,11 +114,7 @@ async def test_the_exception_survives_a_cancellation_during_the_close():
         await ws.accept()
         raise RuntimeError("ws-kaboom-marker")
 
-    app = Veloce(openapi_url=None)
-    app.add_route("/ws", boom, methods=[ROUTE_METHOD_WEBSOCKET])
-    route_info = app.match(ROUTE_METHOD_WEBSOCKET, "/ws").route_info
-    ws = _native_ws()
-    ws.path_params = {}
+    app, ws, route_info = _wired(boom)
 
     task = asyncio.get_event_loop().create_task(app._run_websocket(ws, route_info))
     # Let it raise and reach the close handshake, which waits for a peer close
@@ -118,11 +136,7 @@ async def test_that_cancelled_task_is_then_reported(caplog):
         await ws.accept()
         raise RuntimeError("ws-kaboom-marker")
 
-    app = Veloce(openapi_url=None)
-    app.add_route("/ws", boom, methods=[ROUTE_METHOD_WEBSOCKET])
-    route_info = app.match(ROUTE_METHOD_WEBSOCKET, "/ws").route_info
-    ws = _native_ws()
-    ws.path_params = {}
+    app, ws, route_info = _wired(boom)
 
     task = asyncio.get_event_loop().create_task(app._run_websocket(ws, route_info))
     await asyncio.sleep(0.05)
@@ -139,12 +153,7 @@ async def test_a_clean_exit_records_nothing():
     async def fine(ws: WebSocket):
         await ws.accept()
 
-    app = Veloce(openapi_url=None)
-    app.add_route("/ws", fine, methods=[ROUTE_METHOD_WEBSOCKET])
-    route_info = app.match(ROUTE_METHOD_WEBSOCKET, "/ws").route_info
-    ws = _native_ws()
-    ws.path_params = {}
-    await app._run_websocket(ws, route_info)
+    ws = await _run_to_completion(fine)
     assert ws._handler_exc is None
 
 
@@ -155,12 +164,7 @@ async def test_an_application_driven_close_records_nothing():
         await ws.accept()
         raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION, reason="nope")
 
-    app = Veloce(openapi_url=None)
-    app.add_route("/ws", closing, methods=[ROUTE_METHOD_WEBSOCKET])
-    route_info = app.match(ROUTE_METHOD_WEBSOCKET, "/ws").route_info
-    ws = _native_ws()
-    ws.path_params = {}
-    await app._run_websocket(ws, route_info)
+    ws = await _run_to_completion(closing)
     assert ws._handler_exc is None
 
 
@@ -169,12 +173,7 @@ async def test_a_validation_failure_records_nothing():
         await ws.accept()
         raise WebSocketRequestValidationError([])
 
-    app = Veloce(openapi_url=None)
-    app.add_route("/ws", bad, methods=[ROUTE_METHOD_WEBSOCKET])
-    route_info = app.match(ROUTE_METHOD_WEBSOCKET, "/ws").route_info
-    ws = _native_ws()
-    ws.path_params = {}
-    await app._run_websocket(ws, route_info)
+    ws = await _run_to_completion(bad)
     assert ws._handler_exc is None
 
 
