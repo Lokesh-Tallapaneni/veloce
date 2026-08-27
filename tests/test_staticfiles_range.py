@@ -19,11 +19,26 @@ def _req(path: str, headers: dict | None = None) -> Request:
     )
 
 
+_CONTENT = b"0123456789" * 10
+_SIZE = len(_CONTENT)
+
+
 @pytest.fixture()
 def static(tmp_path):
     f = tmp_path / "blob.bin"
-    f.write_bytes(b"0123456789" * 10)  # 100 bytes
+    f.write_bytes(_CONTENT)
     return StaticFiles(directory=str(tmp_path), prefix="/static"), str(f)
+
+
+def test_the_fixture_is_the_size_the_range_literals_assume():
+    """The `Content-Range` values below spell the size out on the wire.
+
+    They stay literal - `bytes 10-99/100` is what a client sees, and deriving
+    it would make every assertion harder to read than the header it checks.
+    Changing the fixture instead fails here, once, with a message that says so,
+    rather than in six string comparisons that each look like a range bug.
+    """
+    assert _SIZE == 100
 
 
 # ── Plain GET emits Accept-Ranges ────────────────────────────────────
@@ -34,7 +49,7 @@ async def test_plain_get_advertises_accept_ranges(static):
     resp = await sf.handle(_req("/static/blob.bin"))
     assert resp.status_code == 200
     assert resp.headers["Accept-Ranges"] == "bytes"
-    assert len(resp.body) == 100
+    assert len(resp.body) == _SIZE
 
 
 # ── Open-ended ranges ────────────────────────────────────────────────
@@ -109,7 +124,7 @@ async def test_if_range_weak_etag_serves_full_200(static):
     assert etag.startswith("W/")  # the server's file ETags are weak
     resp = await sf.handle(_req("/static/blob.bin", {"Range": "bytes=0-9", "If-Range": etag}))
     assert resp.status_code == 200
-    assert len(resp.body) == 100
+    assert len(resp.body) == _SIZE
     assert "Content-Range" not in resp.headers
 
 
@@ -132,7 +147,7 @@ async def test_if_range_stale_etag_serves_full_200(static):
         _req("/static/blob.bin", {"Range": "bytes=0-9", "If-Range": '"stale-different-version"'})
     )
     assert resp.status_code == 200
-    assert len(resp.body) == 100
+    assert len(resp.body) == _SIZE
     assert "Content-Range" not in resp.headers
 
 
@@ -146,7 +161,7 @@ async def test_if_range_stale_date_serves_full_200(static):
         )
     )
     assert resp.status_code == 200
-    assert len(resp.body) == 100
+    assert len(resp.body) == _SIZE
 
 
 # ── If-Range strong comparison (RFC 9110 Sec. 8.8.3.1) ────────────────
@@ -195,7 +210,7 @@ async def test_if_range_strong_etag_mismatch_serves_full_200(strong_static):
         _req("/static/blob.bin", {"Range": "bytes=0-9", "If-Range": '"strong-v2"'})
     )
     assert resp.status_code == 200
-    assert len(resp.body) == 100
+    assert len(resp.body) == _SIZE
 
 
 async def test_if_range_weak_client_token_against_strong_server_serves_200(strong_static):
@@ -204,7 +219,7 @@ async def test_if_range_weak_client_token_against_strong_server_serves_200(stron
         _req("/static/blob.bin", {"Range": "bytes=0-9", "If-Range": 'W/"strong-v1"'})
     )
     assert resp.status_code == 200
-    assert len(resp.body) == 100
+    assert len(resp.body) == _SIZE
 
 
 async def test_if_range_lowercase_w_prefix_is_not_an_entity_tag(strong_static):

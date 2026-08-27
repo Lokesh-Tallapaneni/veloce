@@ -87,10 +87,6 @@ KNOWN_SHARED = {
         "test_context_processor.py",
         "test_update_template_context.py",
     },
-    "test_from_bytes_does_not_re_encode": {
-        "test_json_dialect_reaches_every_surface.py",
-        "test_json_response_classes.py",
-    },
     "test_head_falls_back_to_get": {"test_hybrid_router.py", "test_router.py"},
     "test_headers_case_insensitive": {"test_datastructures.py", "test_multidict_semantics.py"},
     "test_if_none_match_supersedes_if_modified_since": {

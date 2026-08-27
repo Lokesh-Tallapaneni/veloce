@@ -54,7 +54,7 @@ async def test_session_mutations_are_visible_via_state():
     @app.get("/x")
     async def x(request: Request):
         request.session["k"] = "v"
-        captured["state"] = dict(request._state.get("session", {}))
+        captured["state"] = dict(request.state.get("session", {}))
         return {}
 
     await app.handle_request(_req("/x"))

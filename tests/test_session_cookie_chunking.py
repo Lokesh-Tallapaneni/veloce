@@ -19,7 +19,7 @@ async def test_chunking_off_by_default_drops_oversized_cookie(caplog):
     request = _req()
     session = Session({"blob": "x" * 8192})
     session.modified = True
-    request._state["session"] = session
+    request.state["session"] = session
     response = Response(200, b"ok")
 
     with caplog.at_level(logging.WARNING, logger="veloce.sessions"):
@@ -37,7 +37,7 @@ async def test_oversized_session_splits_into_chunks():
     request = _req()
     session = Session({"blob": "x" * 8192})
     session.modified = True
-    request._state["session"] = session
+    request.state["session"] = session
     response = Response(200, b"ok")
 
     await mw.process_response(request, response)
@@ -64,13 +64,13 @@ def test_chunked_session_round_trips_over_4kb():
 
     @app.post("/write")
     async def write(request: Request) -> Response:
-        request._state["session"]["blob"] = big_value
-        request._state["session"].modified = True
+        request.state["session"]["blob"] = big_value
+        request.state["session"].modified = True
         return Response(200, b"ok")
 
     @app.get("/read")
     async def read(request: Request) -> Response:
-        return Response(200, request._state["session"].get("blob", "MISSING").encode())
+        return Response(200, request.state["session"].get("blob", "MISSING").encode())
 
     with TestClient(app) as client:
         resp = client.post("/write")
@@ -94,7 +94,7 @@ async def test_shrinking_session_clears_stale_chunks():
     request = _req()
     session = Session({"user": "alice"})
     session.modified = True
-    request._state["session"] = session
+    request.state["session"] = session
     response = Response(200, b"ok")
 
     await mw.process_response(request, response)
@@ -114,7 +114,7 @@ async def test_deleted_session_clears_base_and_all_chunks():
     session = Session({"user": "alice"})
     session.clear()  # empties; marks modified
     session.modified = True
-    request._state["session"] = session
+    request.state["session"] = session
     response = Response(200, b"ok")
 
     await mw.process_response(request, response)
@@ -133,7 +133,7 @@ async def test_chunk_request_reassembly_requires_contiguous_chunks():
     request = _req()
     session = Session({"blob": "z" * 8192})
     session.modified = True
-    request._state["session"] = session
+    request.state["session"] = session
     response = Response(200, b"ok")
     await mw.process_response(request, response)
 
@@ -151,8 +151,8 @@ async def test_chunk_request_reassembly_requires_contiguous_chunks():
     await mw.process_request(read_req)
     # Reassembly stops at the gap, so the truncated token fails the signature
     # and the session is treated as new (empty).
-    assert read_req._state["session"].new is True
-    assert dict(read_req._state["session"]) == {}
+    assert read_req.state["session"].new is True
+    assert dict(read_req.state["session"]) == {}
 
 
 async def test_exceeding_max_chunks_drops_with_warning(caplog):
@@ -162,7 +162,7 @@ async def test_exceeding_max_chunks_drops_with_warning(caplog):
     request = _req()
     session = Session({"blob": "q" * 20000})
     session.modified = True
-    request._state["session"] = session
+    request.state["session"] = session
     response = Response(200, b"ok")
 
     with caplog.at_level(logging.WARNING, logger="veloce.sessions"):
@@ -198,7 +198,7 @@ async def test_exceeding_max_chunks_clears_stale_base_and_chunks():
     request = _req()
     session = Session({"blob": "q" * 20000})
     session.modified = True
-    request._state["session"] = session
+    request.state["session"] = session
     response = Response(200, b"ok")
 
     await mw.process_response(request, response)

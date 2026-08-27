@@ -52,7 +52,7 @@ def test_client_tuple_unpacking():
 
 def test_client_honours_proxy_fix():
     req = Request(method="GET", path="/", query_string="", headers={}, body=b"")
-    req._state["proxy_fix_client"] = "198.51.100.9"
+    req.state["proxy_fix_client"] = "198.51.100.9"
     # client_host returns the trusted IP; port falls back to 0.
     assert req.client == Address("198.51.100.9", 0)
 

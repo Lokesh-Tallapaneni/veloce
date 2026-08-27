@@ -291,7 +291,7 @@ async def test_compiled_and_interpreted_paths_store_under_the_same_key():
     for handler in (compiled, interpreted):
         request = _req()
         kwargs = await resolver.resolve_plan(build_plan(handler), request, {})
-        assert request._state[STATE_INJECTED_RESPONSE] is kwargs["response"]
+        assert request.state[STATE_INJECTED_RESPONSE] is kwargs["response"]
         assert kwargs["response"].status_code == 0  # the "handler never set it" sentinel
 
     # ...and the compiled path really was the compiled path.

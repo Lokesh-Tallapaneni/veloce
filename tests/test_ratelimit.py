@@ -812,7 +812,7 @@ async def test_distinct_clients_keep_distinct_tagged_buckets():
     async def call(agent: str):
         request = make_request(path="/login", headers={"User-Agent": agent})
         request.app = app
-        request._state["url_rule"] = "/login"
+        request.state["url_rule"] = "/login"
         return await middleware.process_request(request)
 
     assert await call("first") is None

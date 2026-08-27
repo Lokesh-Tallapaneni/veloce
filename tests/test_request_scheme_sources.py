@@ -109,14 +109,14 @@ def test_the_header_is_honoured_when_no_proxyfix_ran():
 def test_the_header_is_ignored_once_proxyfix_has_run():
     """The bypass: ProxyFix refused the hop, the raw header won anyway."""
     request = _request(headers={"host": "example.com", "x-forwarded-proto": "https"})
-    request._state["proxy_fix_applied"] = True
+    request.state["proxy_fix_applied"] = True
     assert request.scheme == "http", "an untrusted hop set the scheme after ProxyFix refused it"
 
 
 def test_a_trusted_proxyfix_scheme_still_applies():
     """Refusing the raw header must not break the trusted path."""
     request = _request(headers={"host": "example.com", "x-forwarded-proto": "https"})
-    request._state["proxy_fix_applied"] = True
+    request.state["proxy_fix_applied"] = True
     request.scope["scheme"] = "https"
     request._url = None
     assert request.scheme == "https"

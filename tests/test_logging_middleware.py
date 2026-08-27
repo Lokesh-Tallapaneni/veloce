@@ -30,7 +30,7 @@ async def test_request_id_rejects_malformed_inbound():
     mw = RequestIDMiddleware()
     req = _request(headers={"x-request-id": "ok\r\nX-Evil: 1"})
     await mw.process_request(req)
-    rid = req._state["request_id"]
+    rid = req.state["request_id"]
     assert "\r" not in rid
     assert "\n" not in rid
     assert rid != "ok\r\nX-Evil: 1"
@@ -40,7 +40,7 @@ async def test_request_id_preserves_valid_inbound():
     mw = RequestIDMiddleware()
     req = _request(headers={"x-request-id": "abc-123"})
     await mw.process_request(req)
-    assert req._state["request_id"] == "abc-123"
+    assert req.state["request_id"] == "abc-123"
 
 
 @pytest.fixture
@@ -205,14 +205,14 @@ async def test_request_id_uses_incoming_header():
     mw = RequestIDMiddleware()
     request = _request({HEADER_X_REQUEST_ID: "abc-123"})
     await mw.process_request(request)
-    assert request._state["request_id"] == "abc-123"
+    assert request.state["request_id"] == "abc-123"
 
 
 async def test_request_id_generated_when_header_missing():
     mw = RequestIDMiddleware()
     request = _request()
     await mw.process_request(request)
-    assert request._state["request_id"]
+    assert request.state["request_id"]
 
 
 async def test_request_id_generated_when_header_empty():
@@ -221,7 +221,7 @@ async def test_request_id_generated_when_header_empty():
     mw = RequestIDMiddleware()
     request = _request({HEADER_X_REQUEST_ID: ""})
     await mw.process_request(request)
-    assert request._state["request_id"]
+    assert request.state["request_id"]
 
 
 async def test_logging_middleware_does_not_leak_on_handler_exception(caplog):
@@ -237,7 +237,7 @@ async def test_logging_middleware_does_not_leak_on_handler_exception(caplog):
     # start time lives on the request itself, which is GC-able once the
     # request goes out of scope.
     assert not hasattr(mw, "_request_times")
-    assert "__veloce_logging_start" in req._state
+    assert "__veloce_logging_start" in req.state
 
 
 async def test_logging_middleware_durations_are_per_request():
@@ -253,11 +253,11 @@ async def test_logging_middleware_durations_are_per_request():
     # timestamps - what this used to close on - is clock monotonicity, which
     # holds under every implementation including the shared-dict collision the
     # test is named for: both would read the same value, and `>=` allows that.
-    assert r1._state is not r2._state
-    assert "__veloce_logging_start" in r1._state
-    assert "__veloce_logging_start" in r2._state
-    s1 = r1._state["__veloce_logging_start"]
-    s2 = r2._state["__veloce_logging_start"]
+    assert r1.state is not r2.state
+    assert "__veloce_logging_start" in r1.state
+    assert "__veloce_logging_start" in r2.state
+    s1 = r1.state["__veloce_logging_start"]
+    s2 = r2.state["__veloce_logging_start"]
     # Ordering still holds, with `>=` rather than `>` because a coarse clock
     # (Windows' wall clock is ~15 ms) can return the same value twice 10 ms
     # apart.
@@ -266,10 +266,10 @@ async def test_logging_middleware_durations_are_per_request():
     # `process_response` clears its own request's entry and must not reach the
     # other's - which a shared dict keyed by `id(request)` could not promise.
     await mw.process_response(r1, Response(status_code=200))
-    assert "__veloce_logging_start" not in r1._state
-    assert r2._state["__veloce_logging_start"] == s2
+    assert "__veloce_logging_start" not in r1.state
+    assert r2.state["__veloce_logging_start"] == s2
     await mw.process_response(r2, Response(status_code=200))
-    assert "__veloce_logging_start" not in r2._state
+    assert "__veloce_logging_start" not in r2.state
 
 
 def test_logging_middleware_sets_level_when_handler_preconfigured() -> None:

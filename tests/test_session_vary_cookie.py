@@ -241,7 +241,7 @@ def test_cookie_session_tolerates_non_session_state_object():
 
     @app.get("/replace")
     async def replace(request: Request):
-        request._state["session"] = {"user": "alice"}
+        request.state["session"] = {"user": "alice"}
         return {"ok": True}
 
     resp = app.test_client().get("/replace")
@@ -260,7 +260,7 @@ def test_server_session_tolerates_non_session_state_object():
 
     @app.get("/replace")
     async def replace(request: Request):
-        request._state["session"] = {"user": "alice"}
+        request.state["session"] = {"user": "alice"}
         return {"ok": True}
 
     resp = app.test_client().get("/replace")

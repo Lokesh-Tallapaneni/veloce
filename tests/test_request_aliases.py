@@ -14,7 +14,7 @@ def _req(headers: dict | None = None, state: dict | None = None) -> Request:
         body=b"",
     )
     if state:
-        r._state.update(state)
+        r.state.update(state)
     return r
 
 

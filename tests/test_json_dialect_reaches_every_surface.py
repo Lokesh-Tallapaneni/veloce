@@ -210,10 +210,28 @@ def test_only_a_mapping_becomes_a_json_data_field():
     assert "data: 42" in body
 
 
-def test_from_bytes_does_not_re_encode():
-    """The provider's own response path must not double-encode."""
-    response = JSONResponse.from_bytes(b'{"already":"encoded"}')
-    assert response.body == b'{"already":"encoded"}'
+def test_from_bytes_bypasses_the_configured_dialect():
+    """`from_bytes` is the escape hatch: pre-encoded bytes go out as given.
+
+    The no-dialect case, with the stronger assertions, is
+    `test_json_response_classes.py::test_from_bytes_does_not_re_encode`. This
+    is the half that belongs in a module about one app having one dialect:
+    every *other* surface here is asserted to pick the dialect up, so the one
+    that must not has to be stated too, or "reaches every surface" would read
+    as covering this one.
+    """
+    app = Veloce(openapi_url=None)
+    app.config["JSON_SORT_KEYS"] = True
+    app.json_provider_class = ShoutingProvider
+    app.json = ShoutingProvider(app)
+
+    @app.get("/x")
+    async def x():
+        return JSONResponse.from_bytes(b'{"b":1,"a":2}')
+
+    body = TestClient(app).get("/x").body
+    assert body == b'{"b":1,"a":2}'
+    assert b"dialect" not in body
 
 
 def test_an_app_with_no_dialect_configured_is_byte_identical():

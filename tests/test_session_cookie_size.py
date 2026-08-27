@@ -20,7 +20,7 @@ async def test_oversized_session_logs_and_drops_cookie(caplog):
     request = _req()
     session = Session({"blob": "x" * 8192})
     session.modified = True
-    request._state["session"] = session
+    request.state["session"] = session
     response = Response(200, b"ok")
 
     with caplog.at_level(logging.WARNING, logger="veloce.sessions"):
@@ -42,7 +42,7 @@ async def test_oversized_session_honours_custom_limit(caplog):
     request = _req()
     session = Session({"blob": "x" * 8192})
     session.modified = True
-    request._state["session"] = session
+    request.state["session"] = session
     response = Response(200, b"ok")
 
     with caplog.at_level(logging.WARNING, logger="veloce.sessions"):
@@ -58,7 +58,7 @@ async def test_small_session_stays_under_default_limit():
     request = _req()
     session = Session({"user": "alice"})
     session.modified = True
-    request._state["session"] = session
+    request.state["session"] = session
     response = Response(200, b"ok")
 
     result = await mw.process_response(request, response)
@@ -80,8 +80,8 @@ def test_oversized_session_end_to_end_returns_200_no_cookie(caplog):
 
     @app.get("/big")
     async def big(request: Request) -> Response:
-        request._state["session"]["blob"] = "x" * 8192
-        request._state["session"].modified = True
+        request.state["session"]["blob"] = "x" * 8192
+        request.state["session"].modified = True
         return Response(200, b"ok")
 
     with (

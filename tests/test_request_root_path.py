@@ -17,7 +17,7 @@ def _req(scope: dict | None = None, state: dict | None = None) -> Request:
         scope=scope,
     )
     if state:
-        r._state.update(state)
+        r.state.update(state)
     return r
 
 

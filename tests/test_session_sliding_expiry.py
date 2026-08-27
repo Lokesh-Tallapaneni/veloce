@@ -212,7 +212,7 @@ async def test_renew_clears_cookie_when_revoked_under_us():
     store = InMemorySessionStore()
     mw = ServerSessionMiddleware(store=store, renew_on_access=True)
     request = Request("GET", "/", "", [], b"")
-    request._state["_session_id"] = "ghost"  # id with no store entry
+    request.state["_session_id"] = "ghost"  # id with no store entry
     response = Response()
     await mw._renew(request, response)
     rendered = response.headers.get("Set-Cookie", "")

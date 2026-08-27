@@ -179,7 +179,7 @@ def test_a_proxy_fix_prefix_still_wins_for_script_root():
 
     @app.get("/proxied")
     async def proxied(request: Request):
-        request._state["proxy_fix_prefix"] = "/edge"
+        request.state["proxy_fix_prefix"] = "/edge"
         return {"script_root": request.script_root}
 
     assert TestClient(app).get("/proxied").json()["script_root"] == "/edge"
