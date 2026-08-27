@@ -84,8 +84,10 @@ def test_multiple_of_positive_construction_ok():
     assert q.multiple_of == 2
 
 
-def test_multiple_of_negative_construction_allowed():
+def test_a_negative_multiple_of_is_rejected_at_construction():
     # JSON Schema draft 2020-12 §6.2.1 / OpenAPI 3.1 require multipleOf > 0,
-    # so negatives are now rejected at declaration time.
+    # so negatives are rejected at declaration time. The name used to read
+    # `..._negative_construction_allowed`, which claims the opposite of what
+    # the body asserts - so a reader scanning names learned the wrong rule.
     with pytest.raises(ValueError, match="multiple_of must be positive"):
         Query(multiple_of=-3)

@@ -15,6 +15,7 @@ from __future__ import annotations
 import sys
 import types
 
+import pytest
 from pydantic import BaseModel, computed_field
 
 from veloce import Veloce
@@ -30,10 +31,26 @@ def _model_component_names(schema: dict) -> set[str]:
     return set(schema["components"]["schemas"]) - _VALIDATION_ENVELOPE_NAMES
 
 
+#: Modules this file fabricated, so the autouse fixture below can take them
+#: back out. Importing this module used to inject three of them into
+#: `sys.modules` permanently - for the rest of the process, affecting every
+#: later test - because the models need a resolvable `__module__`.
+_FABRICATED: list[str] = []
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _remove_fabricated_modules():
+    """Drop the fabricated modules again once this module's tests are done."""
+    yield
+    for module in _FABRICATED:
+        sys.modules.pop(module, None)
+
+
 def _make_named_model(cls_name: str, module: str, fields: dict[str, type]) -> type[BaseModel]:
     """Build a fresh BaseModel subclass with an explicit name and module."""
     if module not in sys.modules:
         sys.modules[module] = types.ModuleType(module)
+        _FABRICATED.append(module)
     model = type(cls_name, (BaseModel,), {"__annotations__": dict(fields)})
     model.__module__ = module
     model.__qualname__ = cls_name
