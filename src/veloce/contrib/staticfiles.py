@@ -399,7 +399,21 @@ class StaticFiles:
         )
 
     async def handle(self, request: Request) -> Response | None:
-        """Handle a static file request - file I/O offloaded to thread pool."""
+        """Serve one static file, from resolving the target to emitting the body.
+
+        Eight jobs in sequence, each marked with a rule below: resolve the
+        target traversal-safely, confirm symlink containment, negotiate a
+        precompressed sibling, compute or reuse the ETag, apply write-side
+        preconditions, answer a conditional GET, honour a Range, and emit.
+
+        Each step can answer the request outright, and every one after the first
+        reads what the ones before it settled - the resolved path, the stat, the
+        chosen variant, the ETag. That is why it reads as one sequence rather
+        than eight methods: the alternative threads six accumulating values
+        through eight signatures, on the path every static request takes.
+
+        All filesystem work is offloaded to the thread pool.
+        """
         # A probe the filesystem refuses is a 403, not a 500, and the rule is
         # the same at every point this method probes - the file, the `.html`
         # variant, a directory's index, the `404.html` page, and each
@@ -414,6 +428,7 @@ class StaticFiles:
             if not relative and self.html:
                 relative = "index.html"
 
+            # ── Resolve the target, traversal-safe ────────────────────
             # Security: traversal-safe via safe_join (rejects `..`, absolute
             # components, and NUL bytes - returns None on any escape attempt).
             # Pure string arithmetic; actual filesystem I/O is offloaded below.
@@ -479,6 +494,7 @@ class StaticFiles:
                 if not is_file:
                     return None
 
+            # ── Symlink containment ───────────────────────────────────
             # Symlink safety: `safe_join` blocks `..` traversal but does not
             # resolve symlinks. Dereference the real path and confirm it is
             # still inside the served root - a symlink planted in the served
@@ -496,6 +512,7 @@ class StaticFiles:
             # downstream bookkeeping (ETag, 304/412, Range, body) to the
             # compressed file so revalidation keys off the bytes actually sent.
             content_encoding: str | None = None
+            # ── Precompressed negotiation ─────────────────────────────
             variant = await self._select_precompressed(request, file_path, loop)
             if variant is not None:
                 variant_path, content_encoding, variant_stat = variant
@@ -537,6 +554,7 @@ class StaticFiles:
 
             last_modified = http_date(mtime)
 
+            # ── Write-side preconditions (RFC 9110 Sec. 13.2.2) ───────
             # Write-side preconditions first (RFC 9110 Sec. 13.2.2): If-Match,
             # then If-Unmodified-Since, both ahead of the read-side 304 checks.
             # Veloce emits weak file ETags, so a concrete If-Match always fails
@@ -548,6 +566,7 @@ class StaticFiles:
                     headers={HEADER_ETAG: etag, HEADER_LAST_MODIFIED: last_modified},
                 )
 
+            # ── Conditional GET (RFC 9110 Sec. 13.2) ──────────────────
             # Conditional GET. Per RFC 9110 Sec. 13.2 precedence: If-None-Match
             # supersedes If-Modified-Since when both are present.
             # Read the parsed property rather than re-splitting the raw header:
@@ -570,6 +589,7 @@ class StaticFiles:
                 if ims_ts is not None and int(mtime) <= int(ims_ts):
                     return _not_modified(etag, last_modified)
 
+            # ── Range (RFC 9110 Sec. 14.2) ────────────────────────────
             # Range request - RFC 9110 Sec. 14.2. Single-range only; multi-range
             # would require multipart/byteranges which we don't ship yet.
             range_spec = request.range
