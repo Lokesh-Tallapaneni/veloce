@@ -888,86 +888,104 @@ class AsgiMixin:
             )
 
         elif scope["type"] == ASGI_SCOPE_WEBSOCKET:
-            # ASGI WS dispatch (W1). Match the route table for a
-            # WEBSOCKET-method handler and run it with a WebSocket built
-            # from the ASGI receive/send pair. Path params are coerced
-            # the same way they are for HTTP. The app context
-            # (`_current_app_var` / `g`) is bound inside `_run_websocket`,
-            # shared with the native upgrade path; the host/Origin checks
-            # below do not read it.
-
-            # Host and Origin validation for WebSocket handshakes - an HTTP
-            # middleware such as TrustedHostMiddleware or
-            # WebSocketOriginMiddleware never sees a `websocket` scope, so
-            # apply any host allow-list and Origin allow-list directly here.
-            # The compiled pipeline pre-filters the `(is_host_allowed,
-            # is_websocket_origin_allowed)` pairs from the middleware once, so
-            # the per-connect path iterates a frozen tuple instead of probing
-            # every middleware. `None` (no middleware) skips the gate entirely.
-            ws_checks: WsHandshakeChecks | None = cp.ws_handshake
-            if ws_checks is not None:
-                ws_host = ""
-                ws_origin = ""
-                _host_seen = False
-                _origin_seen = False
-                for _hk, _hv in scope.get("headers", []):
-                    # First occurrence of each header wins - a duplicate
-                    # `Origin` must not be able to shadow the real one.
-                    if _hk == b"host" and not _host_seen:
-                        ws_host = _extract_host(_hv.decode("latin-1"))
-                        _host_seen = True
-                    elif _hk == b"origin" and not _origin_seen:
-                        ws_origin = _hv.decode("latin-1")
-                        _origin_seen = True
-                for _host_check, _origin_check in ws_checks:
-                    if _host_check is not None and not _host_check(ws_host):
-                        await _refuse_websocket(receive, send)
-                        return
-                    if _origin_check is not None and not _origin_check(ws_origin):
-                        await _refuse_websocket(receive, send)
-                        return
-
-            ws_match = self.match(ROUTE_METHOD_WEBSOCKET, scope.get("path", "/"))
-            if ws_match is None:
-                # No handler. A 404 says so where the server can carry one,
-                # matching the built-in server; otherwise the spec's close.
-                await _refuse_websocket(receive, send, scope, status.HTTP_404_NOT_FOUND)
-                return
-
-            ws = WebSocket.from_asgi(scope, receive, send)
-            ws.path_params = ws_match.path_params
-            route_info = ws_match.route_info
-            await self._run_websocket(ws, route_info)
+            await self._asgi_websocket(scope, receive, send, cp)
 
         elif scope["type"] == ASGI_SCOPE_LIFESPAN:
-            while True:
-                message = await receive()
-                if message["type"] == ASGI_EVENT_LIFESPAN_STARTUP:
-                    try:
-                        await self._run_lifecycle(LIFECYCLE_STARTUP)
-                        await send({"type": ASGI_EVENT_LIFESPAN_STARTUP_COMPLETE})
-                    except Exception as exc:
-                        await send(
-                            {"type": ASGI_EVENT_LIFESPAN_STARTUP_FAILED, "message": str(exc)}
-                        )
-                        return
-                elif message["type"] == ASGI_EVENT_LIFESPAN_SHUTDOWN:
-                    # Mirror the startup branch: a teardown that raises (an
-                    # `on_shutdown` handler, the lifespan CM `__aexit__`, or a
-                    # drained spawned task) is reported via the spec's
-                    # `lifespan.shutdown.failed` message with a full traceback,
-                    # rather than escaping `__call__` and leaving the server to
-                    # drain on an unhandled exception. `_run_lifecycle` already
-                    # runs every teardown before re-raising, so the failed
-                    # signal does not skip remaining cleanups.
-                    try:
-                        await self._run_lifecycle(LIFECYCLE_SHUTDOWN)
-                        await send({"type": ASGI_EVENT_LIFESPAN_SHUTDOWN_COMPLETE})
-                    except BaseException:
-                        await send(
-                            {
-                                "type": ASGI_EVENT_LIFESPAN_SHUTDOWN_FAILED,
-                                "message": traceback.format_exc(),
-                            }
-                        )
+            await self._asgi_lifespan(receive, send)
+
+    async def _asgi_websocket(
+        self, scope: Any, receive: Any, send: Any, cp: CompiledPipeline
+    ) -> None:
+        """Serve one ASGI `websocket` scope.
+
+        Out of line from `_asgi_app` deliberately. Everything the HTTP branch
+        does is inline because it runs per request; this runs **once per
+        connection**, before any frame moves, so the call costs nothing that can
+        be measured and the HTTP path is 200 lines shorter to read.
+        """
+        # ASGI WS dispatch (W1). Match the route table for a
+        # WEBSOCKET-method handler and run it with a WebSocket built
+        # from the ASGI receive/send pair. Path params are coerced
+        # the same way they are for HTTP. The app context
+        # (`_current_app_var` / `g`) is bound inside `_run_websocket`,
+        # shared with the native upgrade path; the host/Origin checks
+        # below do not read it.
+
+        # Host and Origin validation for WebSocket handshakes - an HTTP
+        # middleware such as TrustedHostMiddleware or
+        # WebSocketOriginMiddleware never sees a `websocket` scope, so
+        # apply any host allow-list and Origin allow-list directly here.
+        # The compiled pipeline pre-filters the `(is_host_allowed,
+        # is_websocket_origin_allowed)` pairs from the middleware once, so
+        # the per-connect path iterates a frozen tuple instead of probing
+        # every middleware. `None` (no middleware) skips the gate entirely.
+        ws_checks: WsHandshakeChecks | None = cp.ws_handshake
+        if ws_checks is not None:
+            ws_host = ""
+            ws_origin = ""
+            _host_seen = False
+            _origin_seen = False
+            for _hk, _hv in scope.get("headers", []):
+                # First occurrence of each header wins - a duplicate
+                # `Origin` must not be able to shadow the real one.
+                if _hk == b"host" and not _host_seen:
+                    ws_host = _extract_host(_hv.decode("latin-1"))
+                    _host_seen = True
+                elif _hk == b"origin" and not _origin_seen:
+                    ws_origin = _hv.decode("latin-1")
+                    _origin_seen = True
+            for _host_check, _origin_check in ws_checks:
+                if _host_check is not None and not _host_check(ws_host):
+                    await _refuse_websocket(receive, send)
                     return
+                if _origin_check is not None and not _origin_check(ws_origin):
+                    await _refuse_websocket(receive, send)
+                    return
+
+        ws_match = self.match(ROUTE_METHOD_WEBSOCKET, scope.get("path", "/"))
+        if ws_match is None:
+            # No handler. A 404 says so where the server can carry one,
+            # matching the built-in server; otherwise the spec's close.
+            await _refuse_websocket(receive, send, scope, status.HTTP_404_NOT_FOUND)
+            return
+
+        ws = WebSocket.from_asgi(scope, receive, send)
+        ws.path_params = ws_match.path_params
+        route_info = ws_match.route_info
+        await self._run_websocket(ws, route_info)
+
+    async def _asgi_lifespan(self, receive: Any, send: Any) -> None:
+        """Serve the ASGI `lifespan` scope: the startup/shutdown message loop.
+
+        Runs **twice per process**. Inline it bought nothing and cost the reader
+        of the HTTP branch thirty lines.
+        """
+        while True:
+            message = await receive()
+            if message["type"] == ASGI_EVENT_LIFESPAN_STARTUP:
+                try:
+                    await self._run_lifecycle(LIFECYCLE_STARTUP)
+                    await send({"type": ASGI_EVENT_LIFESPAN_STARTUP_COMPLETE})
+                except Exception as exc:
+                    await send({"type": ASGI_EVENT_LIFESPAN_STARTUP_FAILED, "message": str(exc)})
+                    return
+            elif message["type"] == ASGI_EVENT_LIFESPAN_SHUTDOWN:
+                # Mirror the startup branch: a teardown that raises (an
+                # `on_shutdown` handler, the lifespan CM `__aexit__`, or a
+                # drained spawned task) is reported via the spec's
+                # `lifespan.shutdown.failed` message with a full traceback,
+                # rather than escaping `__call__` and leaving the server to
+                # drain on an unhandled exception. `_run_lifecycle` already
+                # runs every teardown before re-raising, so the failed
+                # signal does not skip remaining cleanups.
+                try:
+                    await self._run_lifecycle(LIFECYCLE_SHUTDOWN)
+                    await send({"type": ASGI_EVENT_LIFESPAN_SHUTDOWN_COMPLETE})
+                except BaseException:
+                    await send(
+                        {
+                            "type": ASGI_EVENT_LIFESPAN_SHUTDOWN_FAILED,
+                            "message": traceback.format_exc(),
+                        }
+                    )
+                return
