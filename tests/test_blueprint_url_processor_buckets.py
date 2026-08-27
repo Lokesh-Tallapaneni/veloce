@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import Blueprint, Veloce
+from veloce import Blueprint, BuildError, Veloce
 from veloce._pipeline import compile_pipeline
 from veloce.testclient import TestClient
 
@@ -396,7 +396,7 @@ def test_a_blueprint_url_default_does_not_apply_to_another_endpoint():
         return {}
 
     app.register_blueprint(bp)
-    with pytest.raises(Exception):
+    with pytest.raises(BuildError, match="plain"):
         app.url_for("plain")
 
 

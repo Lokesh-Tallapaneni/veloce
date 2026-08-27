@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import Request
+from veloce import BadRequest, Request
 
 
 def _json_req(body: bytes) -> Request:
@@ -19,7 +19,7 @@ def _json_req(body: bytes) -> Request:
 
 def test_default_hook_reraises_decode_error():
     req = _json_req(b"{not valid json")
-    with pytest.raises(Exception):
+    with pytest.raises(BadRequest):
         req.get_json()
 
 

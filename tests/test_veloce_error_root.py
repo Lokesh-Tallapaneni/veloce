@@ -76,8 +76,9 @@ def test_except_veloce_error_catches_each_family():
 def test_veloce_error_is_an_exception_not_a_base_exception():
     assert issubclass(VeloceError, Exception)
     # A bare `except Exception` in user code must still catch framework errors.
-    with pytest.raises(Exception):
+    with pytest.raises(Exception) as excinfo:  # noqa: B017 - the point is the base
         raise NotFound()
+    assert isinstance(excinfo.value, NotFound)
 
 
 # ── Back-compat: the stdlib bases that were already there stay there ──

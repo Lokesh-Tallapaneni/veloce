@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import Blueprint, JSONResponse, Veloce
+from veloce import Blueprint, BuildError, JSONResponse, Veloce
 from veloce.testclient import TestClient
 
 _ORDER: list[str] = []
@@ -150,7 +150,7 @@ def test_a_childs_url_defaults_does_not_run_on_a_sibling():
     # The child's default fills in its own route's missing parameter...
     assert app.url_for("parent.child.c") == "/p/child/fr/c"
     # ...and does not reach the sibling's, which still requires the value.
-    with pytest.raises(Exception):
+    with pytest.raises(BuildError, match="parent.sib.s"):
         app.url_for("parent.sib.s")
 
 

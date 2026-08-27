@@ -172,7 +172,9 @@ def test_the_shaper_coerces_onto_the_declared_shape():
 
 
 def test_the_shaper_rejects_a_value_that_does_not_conform():
-    with pytest.raises(Exception):
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
         shape_through_model({"rows": 1}, Report)
 
 

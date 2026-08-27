@@ -176,7 +176,11 @@ async def test_run_teardowns_runs_all_then_raises():
         next(gen)
         r._teardowns.append(("sync", gen))
 
-    with pytest.raises(BaseException) as ei:
+    # Broad by necessity: 3.11+ aggregates several teardown failures into a
+    # `BaseExceptionGroup` and 3.10 raises the first with the rest chained,
+    # so the type differs by interpreter. The assertions below pin the
+    # content on both.
+    with pytest.raises(BaseException) as ei:  # noqa: B017 - see above
         await r.run_teardowns()
 
     # Reverse order, and every teardown ran despite the failures.
@@ -244,7 +248,9 @@ async def test_run_teardowns_chains_from_request_error():
     next(gen)
     r._teardowns.append(("sync", gen))
 
-    with pytest.raises(BaseException) as ei:
+    # Broad by necessity, as above: the aggregate's type differs by
+    # interpreter. The `__cause__` assertion below is the contract.
+    with pytest.raises(BaseException) as ei:  # noqa: B017 - see above
         await r.run_teardowns(req_exc)
     assert ei.value.__cause__ is req_exc
 

@@ -100,7 +100,7 @@ def test_a_builtin_route_still_matches():
 
 def test_registering_still_refuses_to_shadow_a_builtin():
     """Restoring must not reopen the door the registration guard closes."""
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError, match="built-in"):
         register_converter("int", _ShoutConverter)
 
 

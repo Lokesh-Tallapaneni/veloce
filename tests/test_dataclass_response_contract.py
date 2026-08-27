@@ -140,16 +140,20 @@ def test_the_shaper_still_filters_a_mapping():
 
 def test_the_shaper_still_refuses_a_non_conforming_value():
     """Filtering must not become "accept anything"."""
+    from pydantic import ValidationError
+
     from veloce._model_backend import shape_through_model
 
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         shape_through_model({"nope": 1}, Public)
 
 
 def test_the_shaper_refuses_a_value_of_the_wrong_type():
+    from pydantic import ValidationError
+
     from veloce._model_backend import shape_through_model
 
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         shape_through_model({"id": "not-an-int"}, Public)
 
 

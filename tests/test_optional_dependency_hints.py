@@ -99,6 +99,6 @@ def test_a_missing_optional_dependency_raises_with_its_hint():
 
     if "ujson" in sys.modules:
         pytest.skip("ujson is installed in this environment")
-    with pytest.raises(Exception) as excinfo:
+    with pytest.raises(ImportError) as excinfo:
         UJSONResponse({"a": 1})
     assert "Install it with: pip install ujson" in str(excinfo.value)

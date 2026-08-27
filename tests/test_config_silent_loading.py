@@ -67,6 +67,10 @@ def test_an_error_from_the_loader_itself_is_not_swallowed(tmp_path: pathlib.Path
     """`silent=` covers a missing file, not a malformed one."""
     js = tmp_path / "bad.json"
     js.write_bytes(b"{not json")
-    with pytest.raises(Exception) as excinfo:
+    # Deliberately broad: the loader is the caller's callable, so *what* it
+    # raises on malformed input is not this module's contract. What is, and
+    # is asserted below, is that it is not an `OSError` - the class `silent=`
+    # swallows.
+    with pytest.raises(Exception) as excinfo:  # noqa: B017 - see above
         Config().from_file(str(js), silent=True)
     assert not isinstance(excinfo.value, OSError)

@@ -189,9 +189,11 @@ def test_the_shaper_filters_a_dataclass():
 
 
 def test_the_shaper_raises_on_a_non_conforming_value():
+    import msgspec
+
     from veloce._model_backend import shape_through_model
 
-    with pytest.raises(Exception):
+    with pytest.raises(msgspec.ValidationError):
         shape_through_model({"nope": 1}, Public)
 
 
