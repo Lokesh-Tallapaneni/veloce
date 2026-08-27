@@ -283,13 +283,13 @@ class SubscriptionsCapability(_ServerCapability):
 
     async def _subscribe(self, params: dict[str, Any]) -> dict[str, Any]:
         """Record this connection's interest in a resource URI (`resources/subscribe`)."""
-        session = self._require_session()
+        session = self._require_session("resources/subscribe")
         session.subscriptions.add(_subscription_uri(params))
         return {}
 
     async def _unsubscribe(self, params: dict[str, Any]) -> dict[str, Any]:
         """Drop this connection's interest in a resource URI (`resources/unsubscribe`)."""
-        session = self._require_session()
+        session = self._require_session("resources/unsubscribe")
         session.subscriptions.discard(_subscription_uri(params))
         return {}
 
@@ -312,7 +312,7 @@ class SubscriptionsCapability(_ServerCapability):
             )
         return session
 
-    def _require_session(self, method: str = "resources/subscribe") -> MCPSession:
+    def _require_session(self, method: str) -> MCPSession:
         """Return the dispatching connection's session, or reject a sessionless call.
 
         Subscriptions are per-connection state, so a subscribe / unsubscribe is

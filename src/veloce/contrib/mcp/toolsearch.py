@@ -63,7 +63,7 @@ _STEP_ID_PREFIX = "step"
 
 def _tokenize(text: str) -> list[str]:
     """Split text into lowercase terms, breaking camelCase into words."""
-    return [word.lower() for chunk in _WORD.findall(_CAMEL.sub(" ", text)) for word in (chunk,)]
+    return [chunk.lower() for chunk in _WORD.findall(_CAMEL.sub(" ", text))]
 
 
 class _Bm25Index:

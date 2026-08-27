@@ -86,7 +86,7 @@ from veloce.contrib.mcp.server import (
     is_modern_version,
 )
 from veloce.contrib.mcp.session import MCPSession
-from veloce.contrib.mcp.transports.event_store import SSEEventStore
+from veloce.contrib.mcp.transports.event_store import _EVENT_ID_SEP, SSEEventStore
 from veloce.contrib.mcp.transports.session_store import HttpSessionStore, SessionBackend
 from veloce.http.response import JSONResponse, Response
 from veloce.principal import Principal, current_principal, set_principal
@@ -730,7 +730,10 @@ def _stream_response(
         # gives the first frame an id, before any notification or the response. A
         # resumable stream's priming id encodes the stream (sequence 0) so a resume
         # from it replays the whole tail.
-        prime_id = f"{stream_id}.0" if stream_id is not None else str(next(_event_id))
+        # The separator belongs to `SSEEventStore`, which parses these ids back
+        # apart with `rpartition`. Spelling it here made two modules own one
+        # wire format.
+        prime_id = f"{stream_id}{_EVENT_ID_SEP}0" if stream_id is not None else str(next(_event_id))
         try:
             yield ServerSentEvent(data="", id=prime_id)
             while True:
