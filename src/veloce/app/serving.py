@@ -198,6 +198,75 @@ class ServingMixin:
                 return
         instrument_access_log(cast("Veloce", self))
 
+    @staticmethod
+    def _install_shutdown_signals(
+        loop: asyncio.AbstractEventLoop, on_shutdown: Callable[[], None]
+    ) -> tuple[bool, list[tuple[int, Any]]]:
+        """Arrange for `on_shutdown` to run when the process is asked to stop.
+
+        Returns `(loop_owns_the_handlers, handlers_to_restore)`. The first
+        decides how `_serve` waits: with loop-installed handlers the wait can
+        block indefinitely, because the handler runs on the loop thread and
+        wakes it. The second is non-empty only on the fallback path, and must be
+        restored when serving ends.
+
+        POSIX installs through the loop. Windows does not support
+        `loop.add_signal_handler`, and without a handler Ctrl+C / Ctrl+Break
+        raise `KeyboardInterrupt` straight out of the loop, tearing down
+        in-flight connections before the graceful drain can run - so the
+        fallback uses `signal.signal` (which replaces the default
+        KeyboardInterrupt-raising handler) and bounces the cooperative shutdown
+        onto the loop thread, letting an in-flight request drain at its own
+        boundary.
+
+        `signal.signal` installs a PROCESS-WIDE handler, which is why the
+        previous ones are returned to be restored: a handler closing over this
+        (soon-closed) loop would otherwise outlive `run()`, and a later Ctrl+C
+        would schedule onto a dead loop.
+        """
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, on_shutdown)
+            except NotImplementedError:
+                break
+        else:
+            return True, []
+
+        def _os_signal_handler(signum: int, frame: Any) -> None:
+            # A late console control event can arrive once the loop is already
+            # closing/closed; ignore it rather than raising on a closed loop.
+            if not loop.is_closed():
+                loop.call_soon_threadsafe(on_shutdown)
+
+        restore: list[tuple[int, Any]] = []
+        win_signals = [signal.SIGINT]
+        if hasattr(signal, "SIGBREAK"):
+            win_signals.append(signal.SIGBREAK)
+        for sig in win_signals:
+            previous = signal.getsignal(sig)
+            try:
+                signal.signal(sig, _os_signal_handler)
+            except (ValueError, OSError):
+                # `signal.signal` only works on the main thread; if `run()` is
+                # driven from another thread, skip it (shutdown then relies on
+                # the main thread / explicit stop).
+                continue
+            restore.append((sig, previous))
+        return False, restore
+
+    @staticmethod
+    def _restore_shutdown_signals(restore: list[tuple[int, Any]]) -> None:
+        """Put back the process-wide handlers the fallback path replaced.
+
+        Empty on the loop-installed path, which owns its handlers and drops them
+        with the loop. Failures are suppressed: restoration runs while the
+        process is already shutting down, and a handler that can no longer be
+        installed must not become the reason `run()` raises.
+        """
+        for sig_num, previous in restore:
+            with contextlib.suppress(ValueError, OSError):
+                signal.signal(sig_num, previous)
+
     async def _serve(self, host: str, port: int, ssl_context: Any = None) -> None:
         """Create the server and run forever."""
         # Deferred for import cost, not for a cycle: hoisting this import was
@@ -226,55 +295,13 @@ class ServingMixin:
             reuse_port=reuse_port,
             ssl=ssl_context,
         )
-        # Handle signals for graceful shutdown
         shutdown_event = asyncio.Event()
 
         def _signal_handler() -> None:
             server.close()
             shutdown_event.set()
 
-        # POSIX: the loop installs the handler and runs it on the loop thread.
-        native_signals = True
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            try:
-                loop.add_signal_handler(sig, _signal_handler)
-            except NotImplementedError:
-                # Windows: `loop.add_signal_handler` is unsupported. Without a
-                # handler, Ctrl+C / Ctrl+Break raise `KeyboardInterrupt` straight
-                # out of the loop, tearing down in-flight connections before the
-                # graceful drain can run. Fall back to `signal.signal` (which
-                # replaces the default KeyboardInterrupt-raising handler) and
-                # bounce the cooperative shutdown onto the loop thread, so an
-                # in-flight request drains at its own boundary.
-                native_signals = False
-                break
-
-        # Windows fallback: `signal.signal` installs a PROCESS-WIDE handler, so
-        # the previous handlers are saved and restored after serving - otherwise a
-        # handler closing over this (soon-closed) loop leaks past `run()` and a
-        # later Ctrl+C would schedule onto a dead loop.
-        restore_signals: list[tuple[int, Any]] = []
-        if not native_signals:
-
-            def _os_signal_handler(signum: int, frame: Any) -> None:
-                # A late console control event can arrive once the loop is already
-                # closing/closed; ignore it rather than raising on a closed loop.
-                if not loop.is_closed():
-                    loop.call_soon_threadsafe(_signal_handler)
-
-            win_signals = [signal.SIGINT]
-            if hasattr(signal, "SIGBREAK"):
-                win_signals.append(signal.SIGBREAK)
-            for sig in win_signals:
-                previous = signal.getsignal(sig)
-                try:
-                    signal.signal(sig, _os_signal_handler)
-                except (ValueError, OSError):
-                    # `signal.signal` only works on the main thread; if `run()` is
-                    # driven from another thread, skip it (shutdown then relies on
-                    # the main thread / explicit stop).
-                    continue
-                restore_signals.append((sig, previous))
+        native_signals, restore_signals = self._install_shutdown_signals(loop, _signal_handler)
 
         try:
             async with server:
@@ -295,9 +322,7 @@ class ServingMixin:
                 # `_graceful_shutdown` ever got the chance to drain it.
                 HttpProtocol.start_graceful_drain()
         finally:
-            for sig_num, previous in restore_signals:
-                with contextlib.suppress(ValueError, OSError):
-                    signal.signal(sig_num, previous)
+            self._restore_shutdown_signals(restore_signals)
 
     async def _graceful_shutdown(self, loop: asyncio.AbstractEventLoop) -> None:
         """Two-phase graceful shutdown, then run the shutdown lifecycle.

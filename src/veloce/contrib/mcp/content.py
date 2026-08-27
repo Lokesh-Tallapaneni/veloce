@@ -14,8 +14,8 @@ The base owns the optional `annotations` field (audience / priority /
 lastModified per the MCP spec) and merges it into every block's payload, so the
 metadata is added in one place rather than re-threaded through each call site.
 `annotations` defaults to `None` and is omitted from the payload when unset, so a
-block built without annotations serialises to exactly the dict the call sites
-built by hand before this family existed.
+block built without annotations serialises to exactly the bare tagged dict the
+wire format calls for - the family adds a field, never a wrapper.
 
 Each block is slotted with an `__init_subclass__` guard so a subclass that
 forgets `__slots__` fails loudly instead of silently regaining a `__dict__`.
