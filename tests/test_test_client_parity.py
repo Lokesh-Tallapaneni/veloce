@@ -170,19 +170,76 @@ def test_both_clients_offer_the_same_verbs():
 # ── no call site passes the body helpers positionally ────────────────
 
 
-def test_the_body_helpers_are_called_by_keyword():
+def test_the_body_helper_is_called_by_keyword():
     """The structural half: positional passing is what allowed the drift.
 
-    Both helpers are private and take the same nine arguments in *different*
-    orders. Keyword passing makes the order irrelevant, which is stronger than
-    aligning the two orders and hoping they stay aligned.
+    The helper used to be `_json_or_form` on one client and `_dispatch_body` on
+    the other, taking the same nine arguments in *different* orders. It is one
+    name and one order now, and keyword passing keeps the order irrelevant -
+    stronger than aligning two orders and hoping they stay aligned.
     """
     source = inspect.getsource(inspect.getmodule(TestClient))
-    for helper in ("_json_or_form", "_dispatch_body"):
-        for call in _call_bodies(source, f"self.{helper}("):
-            assert "json=json" in call, f"{helper} is called positionally: {call!r}"
-            assert "headers=headers" in call, f"{helper} is called positionally: {call!r}"
-            assert "content=content" in call, f"{helper} is called positionally: {call!r}"
+    calls = _call_bodies(source, "self._dispatch_body(")
+    assert calls, "no `_dispatch_body` call found - has the helper been renamed?"
+    for call in calls:
+        assert "json=json" in call, f"called positionally: {call!r}"
+        assert "headers=headers" in call, f"called positionally: {call!r}"
+        assert "content=content" in call, f"called positionally: {call!r}"
+
+
+@pytest.mark.parametrize("verb", _ALL_VERBS)
+def test_both_clients_order_their_parameters_the_same(verb):
+    """Names matching is not enough: positional order is part of the contract,
+    since `client.get(path, headers)` is a supported call."""
+
+    def positional(cls):
+        return [
+            p.name
+            for p in inspect.signature(getattr(cls, verb)).parameters.values()
+            if p.kind is p.POSITIONAL_OR_KEYWORD
+        ]
+
+    assert positional(TestClient) == positional(AsyncTestClient), verb
+
+
+@pytest.mark.parametrize("verb", _ALL_VERBS)
+def test_both_clients_use_the_same_defaults(verb):
+    def defaults(cls):
+        return {
+            p.name: p.default for p in inspect.signature(getattr(cls, verb)).parameters.values()
+        }
+
+    assert defaults(TestClient) == defaults(AsyncTestClient), verb
+
+
+@pytest.mark.parametrize("verb", _ALL_VERBS)
+def test_only_the_awaitability_differs(verb):
+    """The one difference that is supposed to exist."""
+    assert not inspect.iscoroutinefunction(getattr(TestClient, verb))
+    assert inspect.iscoroutinefunction(getattr(AsyncTestClient, verb))
+
+
+def test_both_clients_dispatch_a_body_through_the_same_helper_name():
+    assert hasattr(TestClient, "_dispatch_body")
+    assert hasattr(AsyncTestClient, "_dispatch_body")
+    assert list(inspect.signature(TestClient._dispatch_body).parameters) == list(
+        inspect.signature(AsyncTestClient._dispatch_body).parameters
+    )
+
+
+def test_neither_client_wraps_the_shared_body_assembler():
+    """The async client had a one-line `_assemble_body` method that only called
+    the module function the sync client used directly."""
+    assert not hasattr(TestClient, "_assemble_body")
+    assert not hasattr(AsyncTestClient, "_assemble_body")
+
+
+def test_a_signature_difference_would_be_caught():
+    """The vacuity guard for the three comparisons above: point one at two
+    things known to differ."""
+    assert list(inspect.signature(TestClient.get).parameters) != list(
+        inspect.signature(TestClient.post).parameters
+    )
 
 
 def _call_bodies(source: str, needle: str) -> list[str]:

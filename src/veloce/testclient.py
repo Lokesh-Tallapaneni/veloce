@@ -535,6 +535,30 @@ async def _send_one_request(
     return await _collect_response(app, scope, receive)
 
 
+def _prepare_body_request(
+    json: Any,
+    data: dict[str, str] | None,
+    content: bytes | None,
+    files: dict[str, Any] | None,
+    headers: dict[str, str] | None,
+    stream: Any | None,
+) -> tuple[dict[str, str], bytes | None]:
+    """Return `(headers, body)` for a body-carrying request.
+
+    `body` is `None` when `stream` was given, which excludes every buffered
+    form - enforcing that here keeps the API misuse loud (Veloce's convention)
+    rather than silently sending one and dropping another, and keeps both
+    clients on one answer about which argument wins.
+    """
+    if stream is not None:
+        assert json is None and data is None and content is None and files is None, (
+            "stream cannot be combined with json/data/content/files"
+        )
+        return dict(headers or {}), None
+    body, hdrs = _assemble_body(json, data, content, files, headers)
+    return hdrs, body
+
+
 def _assemble_body(
     json: Any,
     data: dict[str, str] | None,
@@ -888,31 +912,24 @@ class TestClient:
             follow_redirects=follow_redirects,
         )
 
-    def _json_or_form(
+    def _dispatch_body(
         self,
         method: str,
         path: str,
         json: Any,
         data: dict[str, str] | None,
-        headers: dict[str, str] | None,
         content: bytes | None,
-        files: dict[str, Any] | None = None,
-        follow_redirects: bool | None = None,
-        stream: Any | None = None,
+        files: dict[str, Any] | None,
+        headers: dict[str, str] | None,
+        follow_redirects: bool | None,
+        stream: Any | None,
     ) -> TestResponse:
-        hdrs = dict(headers or {})
-        body = b""
-        if stream is not None:
-            # A streaming body is mutually exclusive with the buffered body
-            # forms; enforcing it here keeps the API misuse loud (per Veloce's
-            # convention) instead of silently sending one and dropping another.
-            assert json is None and data is None and content is None and files is None, (
-                "stream cannot be combined with json/data/content/files"
-            )
+        """Send a body-carrying request, routing `stream` to the chunked path."""
+        hdrs, body = _prepare_body_request(json, data, content, files, headers, stream)
+        if body is None:
             return self._make_request(
                 method, path, headers=hdrs, follow_redirects=follow_redirects, stream=stream
             )
-        body, hdrs = _assemble_body(json, data, content, files, hdrs)
         return self._make_request(
             method, path, headers=hdrs, body=body, follow_redirects=follow_redirects
         )
@@ -932,7 +949,7 @@ class TestClient:
         chunks (a sync `Iterable` or `AsyncIterable` of `bytes`/`str`); when
         given it takes precedence over and excludes `json`/`data`/`content`/`files`.
         """
-        return self._json_or_form(
+        return self._dispatch_body(
             HTTP_METHOD_POST,
             path,
             json=json,
@@ -956,7 +973,7 @@ class TestClient:
         stream: Any | None = None,
     ) -> TestResponse:
         """Send a PUT. See `post` for the `stream` chunked-body parameter."""
-        return self._json_or_form(
+        return self._dispatch_body(
             HTTP_METHOD_PUT,
             path,
             json=json,
@@ -980,7 +997,7 @@ class TestClient:
         stream: Any | None = None,
     ) -> TestResponse:
         """Send a PATCH. See `post` for the `stream` chunked-body parameter."""
-        return self._json_or_form(
+        return self._dispatch_body(
             HTTP_METHOD_PATCH,
             path,
             json=json,
@@ -1054,7 +1071,7 @@ class TestClient:
             or files is not None
             or stream is not None
         ):
-            return self._json_or_form(
+            return self._dispatch_body(
                 verb,
                 path,
                 json=json,
@@ -1488,16 +1505,6 @@ class AsyncTestClient:
             stream=stream,
         )
 
-    def _assemble_body(
-        self,
-        json: Any,
-        data: dict[str, str] | None,
-        content: bytes | None,
-        files: dict[str, Any] | None,
-        headers: dict[str, str] | None,
-    ) -> tuple[bytes, dict[str, str]]:
-        return _assemble_body(json, data, content, files, headers)
-
     # ── Method shortcuts ──────────────────────────────────
 
     async def get(
@@ -1530,18 +1537,11 @@ class AsyncTestClient:
         stream: Any | None,
     ) -> TestResponse:
         """Send a body-carrying request, routing `stream` to the chunked path."""
-        if stream is not None:
-            assert json is None and data is None and content is None and files is None, (
-                "stream cannot be combined with json/data/content/files"
-            )
+        hdrs, body = _prepare_body_request(json, data, content, files, headers, stream)
+        if body is None:
             return await self._make_request(
-                method,
-                path,
-                headers=dict(headers or {}),
-                follow_redirects=follow_redirects,
-                stream=stream,
+                method, path, headers=hdrs, follow_redirects=follow_redirects, stream=stream
             )
-        body, hdrs = self._assemble_body(json, data, content, files, headers)
         return await self._make_request(
             method, path, headers=hdrs, body=body, follow_redirects=follow_redirects
         )
