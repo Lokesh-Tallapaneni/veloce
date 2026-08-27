@@ -14,4 +14,4 @@ Schema generation and the JSON encoding layer.
 ::: veloce.config_orjson_options
 
 ::: veloce.contrib.openapi.get_openapi_schema
-::: veloce.contrib.openapi.setup_openapi_routes
+::: veloce.contrib.docs_ui.setup_openapi_routes
