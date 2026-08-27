@@ -42,8 +42,34 @@ async def _start_server(app: Veloce) -> tuple[asyncio.AbstractServer, int]:
     return server, port
 
 
+@contextlib.asynccontextmanager
+async def _serving(app: Veloce):
+    """Serve `app` on an ephemeral port; close and drain it on the way out.
+
+    `server.close()` + `await server.wait_closed()` in a `finally` was written
+    out in all seventeen tests - a teardown the eighteenth would have to
+    remember, and one that leaks a listening socket for the rest of the session
+    when it is forgotten. Two tests restore an exception handler as well and
+    keep their own `finally` for that.
+    """
+    server, port = await _start_server(app)
+    try:
+        yield port
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
 class _RawWSClient:
     """A minimal RFC 6455 client over a real socket - genuine handshake + frames."""
+
+    #: Set by `connect` from the handshake response. Declared here because
+    #: assigning them in a classmethod and reading them everywhere else cost
+    #: fourteen `# type: ignore[attr-defined]` comments to silence what the
+    #: class can simply say.
+    status_line: str
+    resp_headers: dict[str, str]
+    handshake_key: str
 
     def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         self._reader = reader
@@ -84,19 +110,19 @@ class _RawWSClient:
             if k:
                 resp_headers[k.strip().lower()] = v.strip()
         client = cls(reader, writer)
-        client.status_line = status_line  # type: ignore[attr-defined]
-        client.resp_headers = resp_headers  # type: ignore[attr-defined]
-        client.handshake_key = key  # type: ignore[attr-defined]
+        client.status_line = status_line
+        client.resp_headers = resp_headers
+        client.handshake_key = key
         return client
 
     def assert_accepted(self) -> None:
-        assert "101" in self.status_line, self.status_line  # type: ignore[attr-defined]
+        assert "101" in self.status_line, self.status_line
         expected = base64.b64encode(
             hashlib.sha1(  # noqa: S324
-                (self.handshake_key + _RFC6455_GUID).encode()  # type: ignore[attr-defined]
+                (self.handshake_key + _RFC6455_GUID).encode()
             ).digest()
         ).decode()
-        assert self.resp_headers.get("sec-websocket-accept") == expected  # type: ignore[attr-defined]
+        assert self.resp_headers.get("sec-websocket-accept") == expected
 
     async def send_text(self, text: str) -> None:
         payload = text.encode("utf-8")
@@ -154,8 +180,7 @@ async def test_native_upgrade_echo_roundtrip():
         async for message in ws.iter_text():
             await ws.send_text(f"echo:{message}")
 
-    server, port = await _start_server(app)
-    try:
+    async with _serving(app) as port:
         client = await _RawWSClient.connect("127.0.0.1", port, "/echo")
         client.assert_accepted()
         try:
@@ -165,9 +190,6 @@ async def test_native_upgrade_echo_roundtrip():
             assert await client.recv_text() == "echo:world"
         finally:
             await client.close()
-    finally:
-        server.close()
-        await server.wait_closed()
 
 
 async def test_native_upgrade_path_params_and_di():
@@ -178,17 +200,13 @@ async def test_native_upgrade_path_params_and_di():
         await ws.accept()
         await ws.send_text(name)
 
-    server, port = await _start_server(app)
-    try:
+    async with _serving(app) as port:
         client = await _RawWSClient.connect("127.0.0.1", port, "/room/lobby")
         client.assert_accepted()
         try:
             assert await client.recv_text() == "lobby"
         finally:
             await client.close()
-    finally:
-        server.close()
-        await server.wait_closed()
 
 
 async def test_native_upgrade_query_string_visible():
@@ -199,17 +217,13 @@ async def test_native_upgrade_query_string_visible():
         await ws.accept()
         await ws.send_text(ws.query_params.get("token", ""))
 
-    server, port = await _start_server(app)
-    try:
+    async with _serving(app) as port:
         client = await _RawWSClient.connect("127.0.0.1", port, "/ws?token=abc123")
         client.assert_accepted()
         try:
             assert await client.recv_text() == "abc123"
         finally:
             await client.close()
-    finally:
-        server.close()
-        await server.wait_closed()
 
 
 async def test_native_peer_close_unwinds_handler():
@@ -225,16 +239,12 @@ async def test_native_peer_close_unwinds_handler():
         finally:
             finished.set()
 
-    server, port = await _start_server(app)
-    try:
+    async with _serving(app) as port:
         client = await _RawWSClient.connect("127.0.0.1", port, "/ws")
         client.assert_accepted()
         await client.send_close()
         await client.close()
         await asyncio.wait_for(finished.wait(), timeout=2.0)
-    finally:
-        server.close()
-        await server.wait_closed()
 
 
 async def test_native_peer_close_completes_handshake_without_tcp_drop():
@@ -255,8 +265,7 @@ async def test_native_peer_close_completes_handshake_without_tcp_drop():
         finally:
             finished.set()
 
-    server, port = await _start_server(app)
-    try:
+    async with _serving(app) as port:
         client = await _RawWSClient.connect("127.0.0.1", port, "/ws")
         client.assert_accepted()
         # Send a normal close and keep the TCP socket open.
@@ -267,9 +276,6 @@ async def test_native_peer_close_completes_handshake_without_tcp_drop():
         # And the handler must have unwound rather than stayed blocked.
         await asyncio.wait_for(finished.wait(), timeout=2.0)
         await client.close()
-    finally:
-        server.close()
-        await server.wait_closed()
 
 
 async def test_native_server_initiated_close_sends_frame():
@@ -284,8 +290,7 @@ async def test_native_server_initiated_close_sends_frame():
         await ws.send_text("bye")
         await ws.close(code=status.WS_1001_GOING_AWAY)
 
-    server, port = await _start_server(app)
-    try:
+    async with _serving(app) as port:
         client = await _RawWSClient.connect("127.0.0.1", port, "/ws")
         client.assert_accepted()
         assert await client.recv_text() == "bye"
@@ -295,9 +300,6 @@ async def test_native_server_initiated_close_sends_frame():
         # wait resolves without tripping its timeout.
         await client.send_close(code=status.WS_1001_GOING_AWAY)
         await client.close()
-    finally:
-        server.close()
-        await server.wait_closed()
 
 
 async def test_native_handler_has_app_context():
@@ -319,8 +321,7 @@ async def test_native_handler_has_app_context():
         await ws.send_text(f"{marker}:{g.marker}")
         await ws.close()
 
-    server, port = await _start_server(app)
-    try:
+    async with _serving(app) as port:
         client = await _RawWSClient.connect("127.0.0.1", port, "/ws")
         client.assert_accepted()
         assert await client.recv_text() == "bound:set"
@@ -328,9 +329,6 @@ async def test_native_handler_has_app_context():
             await asyncio.wait_for(client.recv_close(), timeout=2.0)
         await client.send_close()
         await client.close()
-    finally:
-        server.close()
-        await server.wait_closed()
 
 
 async def test_native_upgrade_no_loop_exception_on_connect():
@@ -431,15 +429,11 @@ async def test_native_upgrade_first_frame_in_handshake_segment():
 async def test_native_upgrade_no_route_returns_404():
     app = Veloce(openapi_url=None)
 
-    server, port = await _start_server(app)
-    try:
+    async with _serving(app) as port:
         client = await _RawWSClient.connect("127.0.0.1", port, "/nope")
-        assert "404" in client.status_line  # type: ignore[attr-defined]
-        assert "101" not in client.status_line  # type: ignore[attr-defined]
+        assert "404" in client.status_line
+        assert "101" not in client.status_line
         await client.close()
-    finally:
-        server.close()
-        await server.wait_closed()
 
 
 async def test_native_upgrade_wrong_version_returns_426():
@@ -449,15 +443,11 @@ async def test_native_upgrade_wrong_version_returns_426():
     async def handler(ws: WebSocket):
         await ws.accept()
 
-    server, port = await _start_server(app)
-    try:
+    async with _serving(app) as port:
         client = await _RawWSClient.connect("127.0.0.1", port, "/ws", version="8")
-        assert "426" in client.status_line  # type: ignore[attr-defined]
-        assert client.resp_headers.get("sec-websocket-version") == "13"  # type: ignore[attr-defined]
+        assert "426" in client.status_line
+        assert client.resp_headers.get("sec-websocket-version") == "13"
         await client.close()
-    finally:
-        server.close()
-        await server.wait_closed()
 
 
 async def test_native_upgrade_bad_origin_returns_403():
@@ -468,17 +458,13 @@ async def test_native_upgrade_bad_origin_returns_403():
     async def handler(ws: WebSocket):
         await ws.accept()
 
-    server, port = await _start_server(app)
-    try:
+    async with _serving(app) as port:
         client = await _RawWSClient.connect(
             "127.0.0.1", port, "/ws", origin="https://evil.example.com"
         )
-        assert "403" in client.status_line  # type: ignore[attr-defined]
-        assert "101" not in client.status_line  # type: ignore[attr-defined]
+        assert "403" in client.status_line
+        assert "101" not in client.status_line
         await client.close()
-    finally:
-        server.close()
-        await server.wait_closed()
 
 
 async def test_native_upgrade_good_origin_accepts():
@@ -490,8 +476,7 @@ async def test_native_upgrade_good_origin_accepts():
         await ws.accept()
         await ws.send_text("ok")
 
-    server, port = await _start_server(app)
-    try:
+    async with _serving(app) as port:
         client = await _RawWSClient.connect(
             "127.0.0.1", port, "/ws", origin="https://good.example.com"
         )
@@ -500,9 +485,6 @@ async def test_native_upgrade_good_origin_accepts():
             assert await client.recv_text() == "ok"
         finally:
             await client.close()
-    finally:
-        server.close()
-        await server.wait_closed()
 
 
 async def test_native_upgrade_bad_host_returns_403():
@@ -513,17 +495,13 @@ async def test_native_upgrade_bad_host_returns_403():
     async def handler(ws: WebSocket):
         await ws.accept()
 
-    server, port = await _start_server(app)
-    try:
+    async with _serving(app) as port:
         client = await _RawWSClient.connect(
             "127.0.0.1", port, "/ws", host_header="evil.example.com"
         )
-        assert "403" in client.status_line  # type: ignore[attr-defined]
-        assert "101" not in client.status_line  # type: ignore[attr-defined]
+        assert "403" in client.status_line
+        assert "101" not in client.status_line
         await client.close()
-    finally:
-        server.close()
-        await server.wait_closed()
 
 
 async def test_native_h2c_upgrade_returns_400_and_handler_does_not_run():
@@ -540,8 +518,7 @@ async def test_native_h2c_upgrade_returns_400_and_handler_does_not_run():
         ran.set()
         return {"ok": True}
 
-    server, port = await _start_server(app)
-    try:
+    async with _serving(app) as port:
         reader, writer = await asyncio.open_connection("127.0.0.1", port)
         writer.write(
             b"GET /upgrade HTTP/1.1\r\n"
@@ -558,9 +535,6 @@ async def test_native_h2c_upgrade_returns_400_and_handler_does_not_run():
         writer.close()
         with contextlib.suppress(Exception):
             await writer.wait_closed()
-    finally:
-        server.close()
-        await server.wait_closed()
 
 
 # ── A plain HTTP request on the same protocol is unaffected ─────────
@@ -573,8 +547,7 @@ async def test_plain_http_get_not_treated_as_upgrade():
     async def index():
         return {"ok": True}
 
-    server, port = await _start_server(app)
-    try:
+    async with _serving(app) as port:
         reader, writer = await asyncio.open_connection("127.0.0.1", port)
         writer.write(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
         await writer.drain()
@@ -584,9 +557,6 @@ async def test_plain_http_get_not_treated_as_upgrade():
         writer.close()
         with contextlib.suppress(Exception):
             await writer.wait_closed()
-    finally:
-        server.close()
-        await server.wait_closed()
 
 
 # ── accept() refuses native subprotocol / header negotiation ────────
@@ -603,8 +573,7 @@ async def test_native_accept_subprotocol_raises():
             await ws.accept(subprotocol="chat")
         await ws.close()
 
-    server, port = await _start_server(app)
-    try:
+    async with _serving(app) as port:
         client = await _RawWSClient.connect("127.0.0.1", port, "/ws")
         client.assert_accepted()
         try:
@@ -612,6 +581,3 @@ async def test_native_accept_subprotocol_raises():
             assert opcode == 0x8  # the handler closed after the failed accept
         finally:
             await client.close()
-    finally:
-        server.close()
-        await server.wait_closed()
