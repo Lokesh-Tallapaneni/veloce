@@ -35,14 +35,13 @@ def test_the_search_catalogue_sees_a_fully_constructed_server():
     """It holds the server and calls back into it, so it must get a finished one."""
     seen: dict[str, bool] = {}
     original = MCPServer._describe_tool
-
-    class Probe(MCPServer):
-        __slots__ = ()
-
     server = MCPServer(_app(), tool_search=True)
     for attribute in MCPServer.__slots__:
         seen[attribute] = hasattr(server, attribute)
     assert all(seen.values()), [name for name, ok in seen.items() if not ok]
+    # Construction must not rebind the method the catalogue calls back into -
+    # a `Probe` subclass used to be declared here and never used, which is what
+    # made this line look like it was checking nothing.
     assert original is MCPServer._describe_tool
 
 
