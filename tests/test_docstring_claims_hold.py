@@ -318,34 +318,80 @@ def test_a_blueprint_hook_fires_only_on_its_own_routes():
 # ── the MCP registration tuples are the shape the comment names ──────
 
 
-def test_the_tool_tuple_has_eleven_fields():
+def test_a_tool_registration_carries_every_declared_field():
+    """These were positional tuples, and three tests here checked the prose
+    comments still named the right count and order. The records carry their
+    field names in code, so the check is now that a registration holds what the
+    decorator was given - which is the thing the comments were standing in for.
+    """
     app = Veloce(openapi_url=None)
 
     @app.mcp_tool(description="Add", tags={"math"})
     async def add(a: int, b: int) -> int:
         return a + b
 
-    assert len(app._mcp_tools[0]) == 11
+    registration = app._mcp_tools[0]
+    assert registration.handler is not None
+    assert registration.description == "Add"
+    assert registration.tags == frozenset({"math"})
 
 
-def test_the_prompt_tuple_has_seven_fields():
+def test_a_prompt_registration_carries_every_declared_field():
     app = Veloce(openapi_url=None)
 
     @app.mcp_prompt(description="P")
     async def p() -> str:
         return "x"
 
-    assert len(app._mcp_prompts[0]) == 7
+    registration = app._mcp_prompts[0]
+    assert registration.handler is not None
+    assert registration.description == "P"
 
 
-def test_the_comments_name_the_real_field_counts():
-    import pathlib
-
-    source = (pathlib.Path(__file__).resolve().parents[1] / "src/veloce/app/mcp.py").read_text(
-        encoding="utf-8"
+def test_the_registrations_are_records_rather_than_tuples():
+    """The defect the old three guarded: a positional tuple whose field order
+    the writer and a reader in another subpackage had to agree on, with nothing
+    checking that they did. The two prose descriptions had already drifted - one
+    called the ninth tool field `declared`, the other `annotations`."""
+    from veloce.app.mcp import (
+        MCPCompleterRegistration,
+        MCPPromptRegistration,
+        MCPToolRegistration,
     )
-    assert "task_support, declared, meta, version" in source
-    assert "namespace, scopes, icons, meta" in source
+
+    assert MCPToolRegistration.__dataclass_fields__.keys() >= {
+        "handler",
+        "name",
+        "description",
+        "namespace",
+        "scopes",
+        "tags",
+        "icons",
+        "task_support",
+        "annotations",
+        "meta",
+        "version",
+    }
+    assert len(MCPToolRegistration.__dataclass_fields__) == 11
+    assert len(MCPPromptRegistration.__dataclass_fields__) == 7
+    assert len(MCPCompleterRegistration.__dataclass_fields__) == 4
+
+
+def test_a_registration_is_immutable():
+    """Frozen, so a consumer cannot rewrite what a decorator declared."""
+    import dataclasses
+
+    from veloce.app.mcp import MCPToolRegistration
+
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int) -> int:
+        return a
+
+    assert isinstance(app._mcp_tools[0], MCPToolRegistration)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        app._mcp_tools[0].description = "changed"
 
 
 # ── nothing on the response path formats a Date header ───────────────

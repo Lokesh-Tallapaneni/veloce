@@ -113,7 +113,9 @@ def attach_completers(app: Any, prompts: PromptRegistry, resources: ResourceRegi
     the same argument raises at mount time so the misconfiguration surfaces before
     a client connects.
     """
-    for kind, key, argument, completer in getattr(app, "_mcp_completers", ()):
+    for registration in getattr(app, "_mcp_completers", ()):
+        kind, key = registration.kind, registration.key
+        argument, completer = registration.argument, registration.completer
         if kind == "prompt":
             prompt = prompts.get(key)
             if prompt is None:

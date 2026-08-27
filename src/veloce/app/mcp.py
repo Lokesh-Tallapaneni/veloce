@@ -10,12 +10,70 @@ subsystem at all.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from veloce.principal import set_principal
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.icons import Icon
+
+
+@dataclass(frozen=True, slots=True)
+class MCPToolRegistration:
+    """One `@app.mcp_tool(...)` registration.
+
+    Was an eleven-element positional tuple whose field contract was restated at
+    five sites - a prose comment here, the nested `tuple[...]` annotation, the
+    `append`, a second prose comment in `contrib/mcp/registry.py`, and the
+    eleven-name destructure below it - and read back through an untyped
+    `getattr(app, "_mcp_tools", ())`.
+
+    Positional coupling across a subpackage boundary is the hazard: the writer
+    and the reader had to agree on the order of eleven values, with nothing
+    checking that they did. The two prose descriptions had already drifted -
+    this one called the ninth field `declared`, the other called it
+    `annotations`.
+    """
+
+    handler: Callable[..., Any]
+    name: str | None
+    description: str | None
+    namespace: str | None
+    scopes: frozenset[str] | None
+    tags: frozenset[str] | None
+    icons: Any
+    task_support: bool
+    annotations: dict[str, Any] | None
+    meta: dict[str, Any] | None
+    version: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class MCPPromptRegistration:
+    """One `@app.mcp_prompt(...)` registration. See `MCPToolRegistration`."""
+
+    handler: Callable[..., Any]
+    name: str | None
+    description: str | None
+    namespace: str | None
+    scopes: frozenset[str] | None
+    icons: Any
+    meta: dict[str, Any] | None
+
+
+@dataclass(frozen=True, slots=True)
+class MCPCompleterRegistration:
+    """One `@app.mcp_completer(...)` registration.
+
+    `kind` is `"prompt"` or `"resource"`; `key` is the prompt name or the
+    resource URI.
+    """
+
+    kind: str
+    key: str
+    argument: str
+    completer: Callable[..., Any]
 
 
 class MCPMixin:
@@ -35,41 +93,13 @@ class MCPMixin:
 
     def _init_mcp_state(self) -> None:
         """The registries `mcp_tool` / `mcp_prompt` / `mcp_completer` write into."""
-        # MCP-only tool registrations (contrib.mcp). Each entry is
-        # `(handler, name, description, namespace, scopes, tags, icons,
-        # task_support, declared, meta, version)`, recorded by
+        # MCP-only tool registrations (contrib.mcp), recorded by
         # `@app.mcp_tool(...)` and consumed once at `mount_mcp` time when the
-        # tool registry is assembled. The annotation below is the same shape.
-        self._mcp_tools: list[
-            tuple[
-                Callable[..., Any],
-                str | None,
-                str | None,
-                str | None,
-                frozenset[str] | None,
-                frozenset[str] | None,
-                Any,
-                bool,
-                dict[str, Any] | None,
-                dict[str, Any] | None,
-                str | None,
-            ]
-        ] = []
-        # MCP prompt registrations (contrib.mcp). Each entry is
-        # `(handler, name, description, namespace, scopes, icons, meta)`, recorded by
-        # `@app.mcp_prompt(...)` and consumed once at `mount_mcp` time when the
-        # prompt registry is assembled.
-        self._mcp_prompts: list[
-            tuple[
-                Callable[..., Any],
-                str | None,
-                str | None,
-                str | None,
-                frozenset[str] | None,
-                Any,
-                dict[str, Any] | None,
-            ]
-        ] = []
+        # tool registry is assembled.
+        self._mcp_tools: list[MCPToolRegistration] = []
+        # MCP prompt registrations (contrib.mcp), recorded by
+        # `@app.mcp_prompt(...)` and consumed at `mount_mcp` time.
+        self._mcp_prompts: list[MCPPromptRegistration] = []
         # Hooks that run around every MCP call - tool, resource read or prompt
         # render - whichever way the primitive was registered. A route-backed tool
         # replays the HTTP request lifecycle and so already sees `before_request`;
@@ -78,12 +108,10 @@ class MCPMixin:
         # falsy check per call.
         self._mcp_before_call: list[Callable[..., Any]] = []
         self._mcp_after_call: list[Callable[..., Any]] = []
-        # MCP argument-completer registrations (contrib.mcp). Each entry is
-        # `(kind, key, argument, completer)` where `kind` is "prompt" or
-        # "resource", `key` is the prompt name or resource URI, recorded by
+        # MCP argument-completer registrations (contrib.mcp), recorded by
         # `@app.mcp_completer(...)` and bound onto its descriptor at `mount_mcp`
         # time so `completion/complete` can answer for that argument.
-        self._mcp_completers: list[tuple[str, str, str, Callable[..., Any]]] = []
+        self._mcp_completers: list[MCPCompleterRegistration] = []
 
     def mcp_tool(
         self,
@@ -134,18 +162,18 @@ class MCPMixin:
             # reported against the decorator that wrote it.
             declared = validate_tool_annotations(annotations)
             self._mcp_tools.append(
-                (
-                    func,
-                    name,
-                    description,
-                    namespace,
-                    scope_set,
-                    frozenset(tags) if tags else None,
-                    icons,
-                    task_support,
-                    declared,
-                    meta,
-                    version,
+                MCPToolRegistration(
+                    handler=func,
+                    name=name,
+                    description=description,
+                    namespace=namespace,
+                    scopes=scope_set,
+                    tags=frozenset(tags) if tags else None,
+                    icons=icons,
+                    task_support=task_support,
+                    annotations=declared,
+                    meta=meta,
+                    version=version,
                 )
             )
             return func
@@ -187,7 +215,17 @@ class MCPMixin:
 
         def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
             require_mcp_description(name or func.__name__, description)
-            self._mcp_prompts.append((func, name, description, namespace, scope_set, icons, meta))
+            self._mcp_prompts.append(
+                MCPPromptRegistration(
+                    handler=func,
+                    name=name,
+                    description=description,
+                    namespace=namespace,
+                    scopes=scope_set,
+                    icons=icons,
+                    meta=meta,
+                )
+            )
             return func
 
         return decorator
@@ -264,7 +302,9 @@ class MCPMixin:
             raise ValueError("mcp_completer requires exactly one of prompt= or resource=.")
 
         def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
-            self._mcp_completers.append((kind, key, argument, func))
+            self._mcp_completers.append(
+                MCPCompleterRegistration(kind=kind, key=key, argument=argument, completer=func)
+            )
             return func
 
         return decorator

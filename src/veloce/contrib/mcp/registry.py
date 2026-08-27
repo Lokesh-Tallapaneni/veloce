@@ -367,35 +367,22 @@ def build_registry(app: Any) -> ToolRegistry:
     """Assemble the tool registry from explicit tools plus exposed routes."""
     registry = ToolRegistry()
 
-    # Explicit @app.mcp_tool registrations, recorded on the app at decoration
-    # time as `(handler, name, description, namespace, scopes, tags, icons,
-    # task_support, annotations, meta, version)` tuples.
-    for (
-        handler,
-        name,
-        description,
-        namespace,
-        scopes,
-        tags,
-        icons,
-        task_support,
-        declared_annotations,
-        declared_meta,
-        version,
-    ) in getattr(app, "_mcp_tools", ()):
+    # Explicit `@app.mcp_tool` registrations, recorded on the app at decoration
+    # time as `MCPToolRegistration` records.
+    for tool in getattr(app, "_mcp_tools", ()):
         _register_explicit_tool(
             registry,
-            handler,
-            name=name,
-            description=description,
-            namespace=namespace,
-            scopes=scopes,
-            tags=tags,
-            icons=icons,
-            task_support=task_support,
-            annotations=declared_annotations,
-            meta=declared_meta,
-            version=version,
+            tool.handler,
+            name=tool.name,
+            description=tool.description,
+            namespace=tool.namespace,
+            scopes=tool.scopes,
+            tags=tool.tags,
+            icons=tool.icons,
+            task_support=tool.task_support,
+            annotations=tool.annotations,
+            meta=tool.meta,
+            version=tool.version,
         )
 
     # Routes flagged for exposure. Walk every route (including those hidden

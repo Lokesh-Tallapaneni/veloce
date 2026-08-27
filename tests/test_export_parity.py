@@ -205,6 +205,9 @@ UNEXPORTED: dict[str, str] = {
     # ── remaining leaf internals ─────────────────────────────────
     "contrib.openapi.SchemaRegistry": "internal accumulator for one schema build",
     "routing.router.MCPRouteOptions": "the record behind RouteInfo.mcp; read through its properties",
+    "app.mcp.MCPToolRegistration": "one @app.mcp_tool registration, read at mount time",
+    "app.mcp.MCPPromptRegistration": "one @app.mcp_prompt registration, read at mount time",
+    "app.mcp.MCPCompleterRegistration": "one @app.mcp_completer registration, read at mount time",
     "contrib.docs_ui.SWAGGER_HTML": "template body for the built-in docs route",
     "contrib.docs_ui.REDOC_HTML": "template body for the built-in docs route",
     "exceptions.http_exception_payload": "shared error-body builder for the in-tree emit paths",

@@ -20,6 +20,7 @@ from veloce import (
     MCPContext,
     Veloce,
 )
+from veloce.app.mcp import MCPPromptRegistration
 
 # -- Prompts ----------------------------------------------------------
 
@@ -169,7 +170,19 @@ def test_prompt_duplicate_name_raises():
     async def greet() -> str:
         return "one"
 
-    app._mcp_prompts.append((greet, "greet", "Two", None, None, None, None))
+    # A second registration under the same name, built the way the decorator
+    # builds one. It used to be a seven-element positional tuple.
+    app._mcp_prompts.append(
+        MCPPromptRegistration(
+            handler=greet,
+            name="greet",
+            description="Two",
+            namespace=None,
+            scopes=None,
+            icons=None,
+            meta=None,
+        )
+    )
     with pytest.raises(ValueError, match="Duplicate MCP prompt"):
         _server(app)
 

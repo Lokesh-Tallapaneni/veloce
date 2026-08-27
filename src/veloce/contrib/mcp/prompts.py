@@ -124,18 +124,16 @@ def _register_prompt(
 def build_prompt_registry(app: Any) -> PromptRegistry:
     """Assemble the prompt registry from `@app.mcp_prompt` registrations."""
     registry = PromptRegistry()
-    for handler, name, description, namespace, scopes, icons, meta in getattr(
-        app, "_mcp_prompts", ()
-    ):
+    for prompt_registration in getattr(app, "_mcp_prompts", ()):
         _register_prompt(
             registry,
-            handler,
-            name=name,
-            description=description,
-            namespace=namespace,
-            scopes=scopes,
-            icons=icons,
-            meta=meta,
+            prompt_registration.handler,
+            name=prompt_registration.name,
+            description=prompt_registration.description,
+            namespace=prompt_registration.namespace,
+            scopes=prompt_registration.scopes,
+            icons=prompt_registration.icons,
+            meta=prompt_registration.meta,
         )
     for namespace, sub_app in mcp_mounts(app):
         for prompt in build_prompt_registry(sub_app).prompts.values():
