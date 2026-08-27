@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import orjson
+
 from tests.conftest import make_request
 from veloce import (
     Depends,
@@ -165,8 +167,6 @@ def test_security_scopes_in_veloce_exports():
 
 
 async def test_security_with_scopes():
-    import orjson
-
     app = Veloce(openapi_url=None)
     oauth2 = OAuth2PasswordBearer(token_url="/token")
 

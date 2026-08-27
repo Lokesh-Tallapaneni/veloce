@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 
+import orjson
 import pytest
 
 from tests.conftest import make_request
@@ -211,8 +212,6 @@ class TestMiddlewareHTTPDecorator:
     """Test @app.middleware('http') with the call_next pattern."""
 
     async def test_middleware_http_modifies_response(self):
-        import orjson
-
         app = Veloce(openapi_url=None)
 
         @app.middleware("http")

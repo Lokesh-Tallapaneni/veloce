@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import orjson
 import pytest
 
 from tests.conftest import make_request
@@ -52,8 +53,6 @@ async def test_dispatch_request_alias_runs_handler():
         return {"hit": True}
 
     resp = await app.dispatch_request(_req())
-    import orjson
-
     assert orjson.loads(resp.body) == {"hit": True}
 
 
@@ -65,6 +64,4 @@ async def test_full_dispatch_request_alias_runs_handler():
         return {"hit": True}
 
     resp = await app.full_dispatch_request(_req())
-    import orjson
-
     assert orjson.loads(resp.body) == {"hit": True}

@@ -7,6 +7,7 @@ import io
 import tempfile
 from pathlib import Path
 
+import orjson
 import pytest
 
 from tests.conftest import make_request
@@ -164,8 +165,6 @@ async def test_multipart_file_upload():
         headers={"content-type": "multipart/form-data; boundary=----TestBoundary"},
     )
     resp = await app.handle_request(req)
-    import orjson
-
     data = orjson.loads(resp.body)
     assert data["filename"] == "test.txt"
     assert data["size"] == 11

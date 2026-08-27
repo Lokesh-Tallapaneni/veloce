@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import tracemalloc
 
+import orjson
 import pytest
 
 from veloce import Veloce
@@ -47,8 +48,6 @@ def _sink_app() -> Veloce:
 
 
 async def _drive(app: Veloce, path: str, chunk: bytes, count: int) -> dict:
-    import orjson
-
     scope = {
         "type": "http",
         "method": "POST",

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 
+import orjson
+
 from tests.conftest import make_request
 from veloce import Request, SessionMiddleware, Veloce
 from veloce.testclient import TestClient
@@ -35,8 +37,6 @@ async def test_session_set_and_read():
     resp2 = await app.handle_request(
         make_request(path="/get", headers={"cookie": f"session={cookie_val}"})
     )
-    import orjson
-
     data = orjson.loads(resp2.body)
     assert data["username"] == "alice"
 

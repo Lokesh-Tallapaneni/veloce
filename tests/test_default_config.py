@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import orjson
+
 from tests.conftest import make_request
 from veloce import Request, SessionMiddleware, Veloce
 from veloce.config import Config
@@ -98,8 +100,6 @@ class TestConfigAndExtensions:
     """Test config, secret_key, extensions."""
 
     async def test_config_accessible_from_request(self):
-        import orjson
-
         app = Veloce(openapi_url=None)
         app.config["API_KEY"] = "secret123"
 
@@ -111,8 +111,6 @@ class TestConfigAndExtensions:
         assert orjson.loads(resp.body)["key"] == "secret123"
 
     async def test_secret_key_from_request(self):
-        import orjson
-
         app = Veloce(openapi_url=None)
         app.secret_key = "super-secret"
 

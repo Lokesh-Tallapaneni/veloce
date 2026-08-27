@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import orjson
+
 from tests.conftest import make_request
 from veloce import CSRFMiddleware, Request, Veloce
 from veloce.testclient import TestClient
@@ -61,8 +63,6 @@ async def test_post_without_cookie_is_refused():
 
     resp = await app.handle_request(_req("POST"))
     assert resp.status_code == 403
-    import orjson
-
     assert orjson.loads(resp.body) == {"detail": "CSRF cookie missing"}
 
 
@@ -305,8 +305,6 @@ async def test_origin_first_foreign_origin_refused_before_token():
         )
     )
     assert resp.status_code == 403
-    import orjson
-
     assert orjson.loads(resp.body) == {"detail": "CSRF origin mismatch"}
 
 
@@ -398,8 +396,6 @@ async def test_origin_first_https_missing_origin_requires_referer():
     )
     resp = await app.handle_request(req)
     assert resp.status_code == 403
-    import orjson
-
     assert orjson.loads(resp.body) == {"detail": "CSRF referer missing"}
 
     # https scope, no Origin, matching Referer -> passes.

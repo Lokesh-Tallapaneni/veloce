@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import orjson
+
 from tests.conftest import make_request
 from veloce import Blueprint, Request, Veloce
 from veloce.routing.router import Router
@@ -43,8 +45,6 @@ async def test_strict_slashes_false_matches_both_forms():
     resp2 = await app.handle_request(_req("/x/"))
     assert resp1.status_code == 200
     assert resp2.status_code == 200
-    import orjson
-
     assert orjson.loads(resp1.body) == {"ok": True}
     assert orjson.loads(resp2.body) == {"ok": True}
 
@@ -80,8 +80,6 @@ async def test_registering_slashed_sibling_keeps_unslashed_match():
     # `GET /users` must still resolve to its handler, not redirect to `/users/`.
     resp = await app.handle_request(_req("/users"))
     assert resp.status_code == 200
-    import orjson
-
     assert orjson.loads(resp.body) == {"slashed": False}
 
     # The slashed form still resolves to its own handler.

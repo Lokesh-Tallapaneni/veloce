@@ -14,6 +14,7 @@ is known.
 
 from __future__ import annotations
 
+import orjson
 import pytest
 
 from veloce import Request, Veloce
@@ -102,16 +103,12 @@ def test_the_asgi_scope_beats_the_constructor():
         await app(scope, receive, send)
 
     asyncio.run(drive())
-    import orjson
-
     assert orjson.loads(seen["body"])["root_path"] == "/from-server"
 
 
 def test_an_empty_scope_root_path_falls_back_to_the_constructor():
     """An ASGI server that is not behind a prefix sets `""`, not absent."""
     import asyncio
-
-    import orjson
 
     app = _app(root_path="/api")
     seen = {}

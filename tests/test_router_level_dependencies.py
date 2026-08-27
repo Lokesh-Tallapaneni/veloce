@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import orjson
+
 from tests.conftest import make_request
 from veloce import Blueprint, Depends, Request, Router, Veloce
 
@@ -74,8 +76,6 @@ async def test_router_dependency_value_available_via_depends():
 
     app = Veloce(debug=True, openapi_url=None)
     app.register_blueprint(bp)
-
-    import orjson
 
     resp = await app.handle_request(_req("/api/x"))
     assert orjson.loads(resp.body) == {"connected": True}

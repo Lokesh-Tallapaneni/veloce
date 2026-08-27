@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import orjson
+
 from tests.conftest import make_request
 from veloce import (
     APIKeyCookie,
@@ -28,8 +30,6 @@ class TestSecurity:
             make_request(path="/protected", headers={"authorization": "Bearer mytoken123"})
         )
         assert resp.status_code == 200
-        import orjson
-
         assert orjson.loads(resp.body)["token"] == "mytoken123"
 
     async def test_http_bearer_missing(self):
@@ -58,8 +58,6 @@ class TestSecurity:
             make_request(path="/admin", headers={"authorization": f"Basic {creds}"})
         )
         assert resp.status_code == 200
-        import orjson
-
         assert orjson.loads(resp.body)["user"] == "admin"
 
     async def test_api_key_header(self):
@@ -111,6 +109,4 @@ class TestSecurity:
             make_request(path="/me", headers={"authorization": "Bearer jwt.token.here"})
         )
         assert resp.status_code == 200
-        import orjson
-
         assert orjson.loads(resp.body)["token"] == "jwt.token.here"

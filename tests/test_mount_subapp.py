@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import orjson
 import pytest
 
 from tests.conftest import make_request
@@ -22,8 +23,6 @@ async def test_mount():
 
     resp = await main.handle_request(make_request(path="/api/items"))
     assert resp.status_code == 200
-    import orjson
-
     assert orjson.loads(resp.body) == [{"id": 1}]
 
 
@@ -56,8 +55,6 @@ class TestMountedRequestCarriesTheConnection:
         return app
 
     async def _call(self, app: Veloce, path: str) -> dict:
-        import orjson
-
         scope = {
             "type": "http",
             "method": "GET",

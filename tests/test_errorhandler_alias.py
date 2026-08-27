@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import orjson
+
 from tests.conftest import make_request
 from veloce import HTTPException, Request, Veloce, abort
 
@@ -19,8 +21,6 @@ async def test_errorhandler_status_code():
 
     resp = await app.handle_request(_req("/nope"))
     assert resp.status_code == 200  # the handler returned 200 by default
-    import orjson
-
     body = orjson.loads(resp.body)
     assert body == {"oops": "missing", "path": "/nope"}
 
@@ -40,8 +40,6 @@ async def test_errorhandler_exception_class():
         raise MyError("boom")
 
     resp = await app.handle_request(_req("/x"))
-    import orjson
-
     assert orjson.loads(resp.body) == {"err": "boom"}
 
 
@@ -71,6 +69,4 @@ async def test_errorhandler_for_httpexception_base():
         abort(403)
 
     resp = await app.handle_request(_req("/x"))
-    import orjson
-
     assert orjson.loads(resp.body) == {"caught": 403}

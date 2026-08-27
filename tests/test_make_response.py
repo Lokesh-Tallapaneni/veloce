@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import orjson
+
 from veloce import make_response
 
 
@@ -14,8 +16,6 @@ class TestMakeResponse:
     def test_make_response_dict(self):
         resp = make_response({"ok": True}, 200)
         assert resp.status_code == 200
-        import orjson
-
         assert orjson.loads(resp.body)["ok"] is True
 
     def test_make_response_bytes(self):

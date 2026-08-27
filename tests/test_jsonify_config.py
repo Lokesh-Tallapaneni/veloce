@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import orjson
+
 from veloce import Request, Veloce, jsonify
 from veloce.testclient import TestClient
 
@@ -61,8 +63,6 @@ def test_jsonify_pretty_print_when_config_set():
     assert b"\n" in resp.body
     assert b"  " in resp.body
     # Still valid JSON.
-    import orjson
-
     assert orjson.loads(resp.body) == {"a": 1, "b": [1, 2]}
 
 
@@ -116,23 +116,17 @@ def test_jsonify_list_passthrough():
 def test_jsonify_kwargs():
     resp = jsonify(name="alice", age=30)
     assert resp.status_code == 200
-    import orjson
-
     data = orjson.loads(resp.body)
     assert data["name"] == "alice"
 
 
 def test_jsonify_dict():
     resp = jsonify({"x": 1})
-    import orjson
-
     assert orjson.loads(resp.body) == {"x": 1}
 
 
 def test_jsonify_list():
     resp = jsonify([1, 2, 3])
-    import orjson
-
     assert orjson.loads(resp.body) == [1, 2, 3]
 
 

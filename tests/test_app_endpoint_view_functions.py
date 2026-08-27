@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import orjson
 import pytest
 
 from tests.conftest import make_request
@@ -60,8 +61,6 @@ async def test_endpoint_decorator_replaces_handler():
     async def new_handler():
         return {"v": "new"}
 
-    import orjson
-
     resp = await app.handle_request(_req())
     assert orjson.loads(resp.body) == {"v": "new"}
 
@@ -80,8 +79,6 @@ async def test_endpoint_decorator_reclassifies_sync_handler():
     info = next(i for _m, _p, i in app._collect_all_routes() if i.name == "my_view")
     assert info.is_fast_eligible is False
 
-    import orjson
-
     resp = await app.handle_request(_req())
     assert orjson.loads(resp.body) == {"v": "sync"}
 
@@ -97,8 +94,6 @@ async def test_endpoint_decorator_keeps_async_fast_path():
 
     info = next(i for _m, _p, i in app._collect_all_routes() if i.name == "my_view")
     assert info.is_fast_eligible is True
-
-    import orjson
 
     resp = await app.handle_request(_req())
     assert orjson.loads(resp.body) == {"v": "async"}

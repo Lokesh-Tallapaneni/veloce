@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import orjson
 import pytest
 
 from tests.conftest import make_request
@@ -29,8 +30,6 @@ async def test_blueprint_routes_mount_under_prefix():
 
     app = Veloce(debug=True, openapi_url=None)
     app.register_blueprint(bp)
-
-    import orjson
 
     resp1 = await app.handle_request(_req("/users/"))
     assert orjson.loads(resp1.body) == {"page": "users-index"}
@@ -124,8 +123,6 @@ async def test_blueprint_errorhandler_catches_blueprint_routes():
     app.register_blueprint(bp)
 
     resp = await app.handle_request(_req("/api/boom"))
-    import orjson
-
     assert orjson.loads(resp.body) == {"caught": "kaboom"}
 
 
@@ -161,8 +158,6 @@ async def test_blueprint_errorhandler_is_scoped_to_its_own_routes():
     async def app_boom():
         raise ScopedError("x")
 
-    import orjson
-
     # a's handler catches a's own route.
     resp_a = await app.handle_request(_req("/a/boom"))
     assert orjson.loads(resp_a.body) == {"by": "a"}
@@ -175,8 +170,6 @@ async def test_blueprint_errorhandler_is_scoped_to_its_own_routes():
 async def test_blueprint_status_handler_catches_unhandled_exception():
     """A blueprint `@bp.errorhandler(500)` fires for a plain unhandled exception
     on its own route (the unhandled-exception -> 500 path is scoped too)."""
-    import orjson
-
     bp = Blueprint("bp", url_prefix="/bp")
 
     @bp.errorhandler(500)
@@ -205,7 +198,6 @@ async def test_blueprint_status_handler_catches_unhandled_exception():
 async def test_nested_sibling_blueprints_scope_handlers():
     """Two sibling child blueprints under the same parent keep their own
     handlers - a shared exception type does not leak from one child to the other."""
-    import orjson
 
     class E(Exception):
         pass
@@ -277,8 +269,6 @@ async def test_same_blueprint_mounted_on_two_apps():
     app_a.register_blueprint(bp)
     app_b = Veloce(debug=True, openapi_url=None)
     app_b.register_blueprint(bp, url_prefix="/world")
-
-    import orjson
 
     ra = await app_a.handle_request(_req("/h/"))
     assert orjson.loads(ra.body) == {"x": 1}

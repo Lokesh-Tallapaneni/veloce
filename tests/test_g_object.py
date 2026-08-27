@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import orjson
 import pytest
 
 from tests.conftest import make_request
@@ -23,8 +24,6 @@ class TestGObject:
 
         # g is reset per request
         resp1 = await app.handle_request(make_request(path="/set"))
-        import orjson
-
         assert orjson.loads(resp1.body)["user"] == "alice"
 
         resp2 = await app.handle_request(make_request(path="/get"))

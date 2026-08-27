@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import asyncio
 
+from pydantic import BaseModel
+
 from tests.conftest import make_request
 from veloce import (
     BackgroundTask,
@@ -166,8 +168,6 @@ async def test_before_request_hook_disables_fast_path_and_runs():
 
 
 def test_response_model_route_not_fast_eligible():
-    from pydantic import BaseModel
-
     class Out(BaseModel):
         x: int
 

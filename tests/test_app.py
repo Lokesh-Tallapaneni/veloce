@@ -14,6 +14,7 @@ to the modules named for them.
 
 import json
 
+import orjson
 import pytest
 from pydantic import BaseModel
 
@@ -121,8 +122,6 @@ class TestRequestBody:
         @app.post("/items")
         async def create_item(item: Item):
             return {"name": item.name, "price": item.price}
-
-        import orjson
 
         body = orjson.dumps({"name": "Widget", "price": 9.99})
         response = await app.handle_request(

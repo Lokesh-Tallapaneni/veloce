@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import orjson
 import pytest
 
 from veloce import BuildError, Request, TestClient, Veloce
@@ -21,8 +22,6 @@ async def test_url_for_resolves_static_route():
     async def dash(request: Request):
         return {"url": request.url_for("dash")}
 
-    import orjson
-
     req = Request(method="GET", path="/dashboard", query_string="", headers={}, body=b"")
     resp = await app.handle_request(req)
     assert orjson.loads(resp.body)["url"] == "/dashboard"
@@ -34,8 +33,6 @@ async def test_url_for_with_path_params():
     @app.get("/items/{item_id:int}", name="item")
     async def item(request: Request, item_id: int):
         return {"url": request.url_for("item", item_id=42)}
-
-    import orjson
 
     req = Request(method="GET", path="/items/1", query_string="", headers={}, body=b"")
     resp = await app.handle_request(req)

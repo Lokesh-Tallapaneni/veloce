@@ -10,6 +10,7 @@ import inspect
 import logging
 
 import pytest
+from pydantic import BaseModel
 
 from veloce import Veloce
 from veloce.app import _URLMap
@@ -209,8 +210,6 @@ def test_coerce_response_does_not_treat_duck_model_dump_as_pydantic():
 
 
 def test_coerce_response_handles_real_pydantic_model():
-    from pydantic import BaseModel
-
     class Item(BaseModel):
         name: str
 

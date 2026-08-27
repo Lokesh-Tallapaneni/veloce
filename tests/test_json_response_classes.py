@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 
+import orjson
 import pytest
 
 from veloce import JSONResponse, ORJSONResponse, UJSONResponse, Veloce
@@ -157,8 +158,6 @@ _HAS_UJSON = importlib.util.find_spec("ujson") is not None
 
 @pytest.mark.skipif(not _HAS_UJSON, reason="ujson not installed")
 def test_ujson_response_serialises_dict():
-    import orjson
-
     resp = UJSONResponse({"a": 1})
     assert resp.content_type == "application/json"
     # Compare via re-decode; ujson and orjson differ in whitespace.

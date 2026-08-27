@@ -26,6 +26,7 @@ is opt-in rather than required.
 
 from __future__ import annotations
 
+import orjson
 import pytest
 
 pytest.importorskip("fakeredis")
@@ -194,8 +195,6 @@ async def test_a_custom_strategy_agrees_with_the_in_memory_backend():
 @pytest.mark.parametrize("factory", [s[1] for s in STRATEGIES], ids=[s[0] for s in STRATEGIES])
 async def test_state_written_by_lua_has_the_shape_python_expects(factory):
     """A rolling upgrade runs both forms against one key; the state must interop."""
-    import orjson
-
     client = FakeRedis()
     backend = RedisRateLimitBackend(client)
     strategy = factory()
@@ -209,8 +208,6 @@ async def test_state_written_by_lua_has_the_shape_python_expects(factory):
 @pytest.mark.parametrize("factory", [s[1] for s in STRATEGIES], ids=[s[0] for s in STRATEGIES])
 async def test_lua_reads_state_python_wrote(factory):
     """The other direction of the same upgrade."""
-    import orjson
-
     client = FakeRedis()
     backend = RedisRateLimitBackend(client)
     strategy = factory()

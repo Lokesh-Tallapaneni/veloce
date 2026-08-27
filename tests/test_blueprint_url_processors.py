@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import orjson
+
 from tests.conftest import make_request
 from veloce import Blueprint, Request, Veloce, g
 
@@ -30,8 +32,6 @@ async def test_blueprint_preprocessor_runs_for_blueprint_routes():
 
     app = Veloce(debug=True, openapi_url=None)
     app.register_blueprint(bp)
-
-    import orjson
 
     resp = await app.handle_request(_req("/api/en/page"))
     assert orjson.loads(resp.body) == {"lang": "en"}

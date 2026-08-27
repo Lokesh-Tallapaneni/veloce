@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import orjson
+
 from tests.conftest import make_request
 from veloce import Depends, Veloce
 from veloce.testclient import TestClient
@@ -85,8 +87,6 @@ async def test_override():
 
     # Without override
     resp = await app.handle_request(make_request(path="/db"))
-    import orjson
-
     assert orjson.loads(resp.body)["real"] is True
 
     # With override

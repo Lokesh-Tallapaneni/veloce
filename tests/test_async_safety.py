@@ -3,6 +3,7 @@
 import asyncio
 import pathlib
 
+import orjson
 import pytest
 
 import veloce
@@ -63,8 +64,6 @@ class TestSyncHandlerOffloading:
 
         resp = await app.handle_request(make_request(path="/sync"))
         assert resp.status_code == 200
-        import orjson
-
         assert orjson.loads(resp.body)["sync"] is True
 
     async def test_async_handler_still_works(self):

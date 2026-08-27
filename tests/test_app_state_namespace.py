@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import orjson
+
 from tests.conftest import make_request
 from veloce import Request, Veloce
 from veloce.http.request import State
@@ -53,8 +55,6 @@ async def test_app_state():
         return request.app.state["config"]
 
     resp = await app.handle_request(make_request(path="/config"))
-    import orjson
-
     assert orjson.loads(resp.body)["debug"] is True
 
 

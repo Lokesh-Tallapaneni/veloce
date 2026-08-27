@@ -11,6 +11,7 @@ expansion forms mean different things, and both now do:
 
 from __future__ import annotations
 
+import orjson
 import pytest
 
 from veloce import Veloce
@@ -39,8 +40,6 @@ async def _read(app: Veloce, uri: str) -> dict:
 
 
 async def _value(app: Veloce, uri: str) -> str:
-    import orjson
-
     response = await _read(app, uri)
     assert "error" not in response, response["error"]
     return orjson.loads(response["result"]["contents"][0]["text"])["received"]
@@ -132,8 +131,6 @@ def _two_template_app(greedy_first: bool) -> Veloce:
 @pytest.mark.parametrize("greedy_first", [True, False])
 async def test_a_specific_template_wins_over_a_greedy_one(greedy_first: bool):
     """A greedy template matches everything, so it must not win on order."""
-    import orjson
-
     response = await _read(_two_template_app(greedy_first), "file://report/meta")
     payload = orjson.loads(response["result"]["contents"][0]["text"])
     assert payload["matched"] == "specific"
@@ -142,8 +139,6 @@ async def test_a_specific_template_wins_over_a_greedy_one(greedy_first: bool):
 
 @pytest.mark.parametrize("greedy_first", [True, False])
 async def test_the_greedy_template_still_serves_what_nothing_else_matches(greedy_first: bool):
-    import orjson
-
     response = await _read(_two_template_app(greedy_first), "file://a/b/c.py")
     payload = orjson.loads(response["result"]["contents"][0]["text"])
     assert payload["matched"] == "greedy"
@@ -161,8 +156,6 @@ async def test_a_static_resource_still_wins_over_a_greedy_template():
     )
     async def config() -> dict:
         return {"matched": "static"}
-
-    import orjson
 
     response = await _read(app, "file://config")
     payload = orjson.loads(response["result"]["contents"][0]["text"])
@@ -219,8 +212,6 @@ async def test_a_template_may_mix_both_forms():
     async def blob(repo: str, path: str) -> dict:
         return {"repo": repo, "path": path}
 
-    import orjson
-
     response = await _read(app, "repo://veloce/blob/src/veloce/app/core.py")
     payload = orjson.loads(response["result"]["contents"][0]["text"])
     assert payload == {"repo": "veloce", "path": "src/veloce/app/core.py"}
@@ -265,8 +256,6 @@ def _two_greedy_app(catch_all_first: bool) -> Veloce:
 @pytest.mark.parametrize("catch_all_first", [True, False])
 async def test_the_longer_template_wins_between_two_catch_alls(catch_all_first: bool):
     """Both span segments, so only specificity separates them - not order."""
-    import orjson
-
     response = await _read(_two_greedy_app(catch_all_first), "docs://a/b/c.md/meta")
     payload = orjson.loads(response["result"]["contents"][0]["text"])
     assert payload["matched"] == "meta"
@@ -275,8 +264,6 @@ async def test_the_longer_template_wins_between_two_catch_alls(catch_all_first: 
 
 @pytest.mark.parametrize("catch_all_first", [True, False])
 async def test_the_catch_all_still_serves_the_rest(catch_all_first: bool):
-    import orjson
-
     response = await _read(_two_greedy_app(catch_all_first), "docs://a/b/c.md")
     payload = orjson.loads(response["result"]["contents"][0]["text"])
     assert payload["matched"] == "catch-all"

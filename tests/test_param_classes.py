@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import orjson
+
 from tests.conftest import make_request
 from veloce import Cookie, Header, Path, Query, Veloce
 
@@ -15,8 +17,6 @@ class TestParamClasses:
             return {"page": page, "limit": limit}
 
         resp = await app.handle_request(make_request(path="/items", query_string="page=3&limit=20"))
-        import orjson
-
         data = orjson.loads(resp.body)
         assert data["page"] == 3
         assert data["limit"] == 20
@@ -29,8 +29,6 @@ class TestParamClasses:
             return {"q": q}
 
         resp = await app.handle_request(make_request(path="/search"))
-        import orjson
-
         assert orjson.loads(resp.body)["q"] == ""
 
     async def test_query_validation_error(self):
@@ -53,8 +51,6 @@ class TestParamClasses:
         resp = await app.handle_request(
             make_request(path="/check", headers={"x-token": "secret123"})
         )
-        import orjson
-
         assert orjson.loads(resp.body)["token"] == "secret123"
 
     async def test_header_missing_required(self):
@@ -77,8 +73,6 @@ class TestParamClasses:
         resp = await app.handle_request(
             make_request(path="/me", headers={"cookie": "session_id=abc123"})
         )
-        import orjson
-
         assert orjson.loads(resp.body)["session"] == "abc123"
 
     async def test_path_param_class(self):
@@ -89,8 +83,6 @@ class TestParamClasses:
             return {"id": item_id}
 
         resp = await app.handle_request(make_request(path="/items/42"))
-        import orjson
-
         assert orjson.loads(resp.body)["id"] == 42
 
     async def test_string_length_validation(self):
@@ -116,8 +108,6 @@ class TestOptionalParams:
             return {"q": q}
 
         resp = await app.handle_request(make_request(path="/search"))
-        import orjson
-
         assert orjson.loads(resp.body)["q"] is None
 
         resp = await app.handle_request(make_request(path="/search", query_string="q=test"))

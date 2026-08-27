@@ -31,6 +31,7 @@ puts MCP on the compiled path, or takes HTTP off it, should announce itself here
 
 from __future__ import annotations
 
+import orjson
 import pytest
 
 from veloce import Depends, Veloce
@@ -102,8 +103,6 @@ def _call_tool(app, arguments=None):
 
 def _result_of(payload):
     """The tool's returned value, decoded from its text content block."""
-    import orjson
-
     assert "error" not in payload, payload
     return orjson.loads(payload["result"]["content"][0]["text"])
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import orjson
 import pytest
 
 from tests.conftest import make_request
@@ -29,8 +30,6 @@ async def test_subdomain_match_by_leftmost_label_without_server_name():
     # No SERVER_NAME → leftmost-label match.
     r = await app.handle_request(_req("/x", host="api.example.com"))
     assert r.status_code == 200
-    import orjson
-
     assert orjson.loads(r.body) == {"hit": "api"}
 
 

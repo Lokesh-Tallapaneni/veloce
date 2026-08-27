@@ -10,6 +10,8 @@ hook after it - reading the synthetic MCP request instead of the real one.
 
 from __future__ import annotations
 
+import orjson
+
 import veloce
 from veloce import MCPContext, Request, TestClient, Veloce, g
 from veloce._internal import _current_app_var, _current_request_var
@@ -181,8 +183,6 @@ def test_the_tool_still_sees_its_own_binding_during_the_call():
 
     @app.get("/outer")
     async def outer() -> dict:
-        import orjson
-
         response = await MCPServer(app).handle_message(
             {
                 "jsonrpc": "2.0",

@@ -37,6 +37,7 @@ from dataclasses import dataclass
 from typing import TypedDict
 
 import pytest
+from pydantic import BaseModel, ValidationError
 
 from veloce import JSONResponse, Veloce
 from veloce._model_backend import (
@@ -142,15 +143,11 @@ def test_the_shaper_still_filters_a_mapping():
 
 def test_the_shaper_still_refuses_a_non_conforming_value():
     """Filtering must not become "accept anything"."""
-    from pydantic import ValidationError
-
     with pytest.raises(ValidationError):
         shape_through_model({"nope": 1}, Public)
 
 
 def test_the_shaper_refuses_a_value_of_the_wrong_type():
-    from pydantic import ValidationError
-
     with pytest.raises(ValidationError):
         shape_through_model({"id": "not-an-int"}, Public)
 
@@ -171,8 +168,6 @@ def test_both_resolvers_accept_an_adaptable_model(model):
 
 
 def test_a_pydantic_return_is_accepted_by_both():
-    from pydantic import BaseModel
-
     class M(BaseModel):
         id: int
 
@@ -185,7 +180,6 @@ def test_a_pydantic_return_is_accepted_by_both():
 
 def test_the_http_resolver_is_a_superset_of_the_mcp_one():
     """The property the docstring claims. Asserted over every shape both see."""
-    from pydantic import BaseModel
 
     class M(BaseModel):
         id: int
@@ -209,8 +203,6 @@ def test_the_http_resolver_is_a_superset_of_the_mcp_one():
 
 
 def test_a_list_return_is_an_http_contract_but_not_an_mcp_one():
-    from pydantic import BaseModel
-
     class M(BaseModel):
         id: int
 
@@ -222,8 +214,6 @@ def test_a_list_return_is_an_http_contract_but_not_an_mcp_one():
 
 
 def test_a_union_return_is_an_http_contract_but_not_an_mcp_one():
-    from pydantic import BaseModel
-
     class M(BaseModel):
         id: int
 

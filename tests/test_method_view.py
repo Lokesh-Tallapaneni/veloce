@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import orjson
 import pytest
 
 from tests.conftest import make_request
@@ -98,8 +99,6 @@ async def test_round_trip_through_app():
     app.add_url_rule("/u", view_func=UserView.as_view("user"), methods=["GET", "POST"])
 
     resp_get = await app.handle_request(_req("/u", "GET"))
-    import orjson
-
     assert orjson.loads(resp_get.body) == {"verb": "GET"}
 
     resp_post = await app.handle_request(_req("/u", "POST"))

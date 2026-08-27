@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import orjson
 import pytest
 
 from veloce import AsyncTestClient, Veloce
@@ -244,8 +245,6 @@ _CALL = {
 
 async def test_a_client_initialized_on_one_worker_is_served_by_another():
     """The end-to-end shape: two apps, one backend, one client conversation."""
-    import orjson
-
     backend = MemoryBackend()
     worker_a, worker_b = _app(), _app()
     worker_a.mount_mcp(transport="http", sessions=True, session_backend=backend)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import orjson
 import pytest
 
 from tests.conftest import make_request
@@ -24,8 +25,6 @@ async def test_nested_blueprint_combines_prefixes():
 
     app = Veloce(debug=True, openapi_url=None)
     app.register_blueprint(api)
-
-    import orjson
 
     resp = await app.handle_request(_req("/api/users/42"))
     assert orjson.loads(resp.body) == {"uid": "42"}
@@ -96,8 +95,6 @@ async def test_child_errorhandler_inherited():
 
     app = Veloce(debug=True, openapi_url=None)
     app.register_blueprint(parent)
-
-    import orjson
 
     resp = await app.handle_request(_req("/p/c/boom"))
     assert orjson.loads(resp.body) == {"caught": "kaboom"}

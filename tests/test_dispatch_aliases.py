@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import orjson
+
 from tests.conftest import make_request
 from veloce import Request, Response, Veloce
 from veloce.testclient import TestClient
@@ -118,16 +120,12 @@ def test_make_response_bytes_wraps_html():
 def test_make_response_dict_json_encodes():
     app = Veloce()
     resp = app.make_response({"a": 1})
-    import orjson
-
     assert orjson.loads(resp.body) == {"a": 1}
 
 
 def test_make_response_list_json_encodes():
     app = Veloce()
     resp = app.make_response([1, 2, 3])
-    import orjson
-
     assert orjson.loads(resp.body) == [1, 2, 3]
 
 
