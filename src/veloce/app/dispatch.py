@@ -69,7 +69,6 @@ from veloce._protocol_constants import (
     TRACE_HEADER_TRACESTATE,
     build_trace_carrier,
 )
-from veloce.app.urls import URLRule as URLRule
 from veloce.blueprints import _endpoint_blueprint
 from veloce.debug import render_traceback_html
 from veloce.dependency import DependencyResolver, Depends
@@ -495,10 +494,20 @@ class DispatchMixin:
     ) -> Response:
         """Core request dispatch - middleware, routing, handler execution.
 
-        Thin orchestrator: the request phase, route resolution, handler
-        invocation, and response hooks each live in a focused helper. The
-        `try/finally` here owns the per-request teardown state (`_exc`,
-        `_bp_name`, `resolver`) that the `finally` block reads.
+        The per-request hot path, and **deliberately inline**: extracting a
+        phase out of this loop measured about 5% per request, which is why the
+        cold branches were moved out of `_asgi_app` and these were not. What is
+        here is here on purpose.
+
+        This docstring used to call it a "thin orchestrator" whose phases "each
+        live in a focused helper". They do not - the method is over three
+        hundred lines - and a reader who believed it went looking for helpers
+        that were never there.
+
+        The `try/finally` owns the per-request teardown state (`_exc`,
+        `_bp_name`, `resolver`) that the `finally` block reads; that is the
+        reason the state is bound before the `try` rather than where it is
+        first used.
         """
         _exc: Exception | None = None
         # Whether a background task took ownership of releasing this request's

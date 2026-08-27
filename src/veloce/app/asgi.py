@@ -62,7 +62,6 @@ from veloce._protocol_constants import (
     ROUTE_METHOD_WEBSOCKET,
     SET_COOKIE_JOINER,
 )
-from veloce.app.urls import URLRule as URLRule
 from veloce.dependency import DependencyResolver
 from veloce.exceptions import (
     RequestValidationError,

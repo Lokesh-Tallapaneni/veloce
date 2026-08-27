@@ -54,7 +54,6 @@ from veloce.app.plugins import PluginsMixin
 from veloce.app.serving import ServingMixin
 from veloce.app.templating import TemplatingMixin
 from veloce.app.testing import TestingMixin
-from veloce.app.urls import URLRule as URLRule
 from veloce.app.urls import _URLMap
 from veloce.audit import run as audit_run
 from veloce.blueprints import _endpoint_blueprint, _resolve_scoped_chain
