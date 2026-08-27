@@ -13,6 +13,7 @@ from veloce.signals import (
     ANY_SENDER,
     Namespace,
     Signal,
+    SignalResult,
     got_request_exception,
     request_finished,
     request_started,
@@ -720,3 +721,84 @@ def test_signal_disconnect_targets_the_correct_subscription():
     # The per-sender one is gone (only one subscription remains).
     assert len(sig._subs) == 1
     assert sig._subs[0][0] is ANY_SENDER
+
+
+def test_signal_result_is_alias_for_list_of_tuples() -> None:
+    # `SignalResult = list[tuple[Callable, Any]]` resolves to a
+    # `types.GenericAlias` at runtime — inspect the origin / args.
+    origin = getattr(SignalResult, "__origin__", None)
+    assert origin is list
+    (inner,) = SignalResult.__args__
+    assert getattr(inner, "__origin__", None) is tuple
+    callable_arg, any_arg = inner.__args__
+    # `Callable` from collections.abc is what the type alias resolves to.
+    from collections.abc import Callable
+    from typing import Any
+
+    assert callable_arg is Callable
+    assert any_arg is Any
+
+
+# ── send_robust with async receivers ─────────────────────────────────
+#
+# Moved here from `test_app_protocol_signals_e2e.py`, a module named for a fix
+# batch rather than a subject.
+
+
+async def test_send_robust_async_mixed_receivers():
+    sig = Signal("mixed")
+    fired: list[str] = []
+
+    def sync_recv(sender, **kw):
+        fired.append("sync")
+        return "sync-ok"
+
+    async def async_raise(sender, **kw):
+        fired.append("async-raise")
+        raise RuntimeError("boom-async")
+
+    async def async_ok(sender, **kw):
+        fired.append("async-ok")
+        return "async-ok"
+
+    sig.connect(sync_recv, weak=False)
+    sig.connect(async_raise, weak=False)
+    sig.connect(async_ok, weak=False)
+
+    results = await sig.send_robust_async("sender")
+
+    assert fired == ["sync", "async-raise", "async-ok"], fired
+    assert len(results) == 3
+    receivers = [r for r, _ in results]
+    values = [v for _, v in results]
+    assert sync_recv in receivers
+    assert async_raise in receivers
+    assert async_ok in receivers
+    # The async-raise receiver's value is the captured exception.
+    raised_value = next(v for r, v in results if r is async_raise)
+    assert isinstance(raised_value, RuntimeError)
+    assert "boom-async" in str(raised_value)
+    # async_ok awaited cleanly.
+    assert "async-ok" in values
+
+
+def test_send_robust_rejects_async_receiver(recwarn):
+    sig = Signal("sync-only")
+
+    async def async_recv(sender, **kw):
+        return "should-not-be-awaited"
+
+    sig.connect(async_recv, weak=False)
+    results = sig.send_robust("sender")
+
+    assert len(results) == 1
+    receiver, value = results[0]
+    assert receiver is async_recv
+    assert isinstance(value, TypeError), value
+    # No unawaited-coroutine RuntimeWarning slipped through.
+    unawaited = [
+        w
+        for w in recwarn.list
+        if issubclass(w.category, RuntimeWarning) and "never awaited" in str(w.message)
+    ]
+    assert not unawaited, [str(w.message) for w in unawaited]

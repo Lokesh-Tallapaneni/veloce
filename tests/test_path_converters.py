@@ -525,3 +525,17 @@ def test_a_float_placeholder_does_not_swallow_an_int_route():
     client = TestClient(app)
     assert client.get("/y/123").json() == {"kind": "int"}
     assert client.get("/x/123").status_code == 404
+
+
+def test_router_greedy_converter_with_trailing_uses_regex_fallback() -> None:
+    # `{p:path}` with a static suffix is no longer rejected at registration;
+    # it is handled by the hybrid router's regex fallback.
+    app = Veloce()
+
+    @app.get("/files/{p:path}/info/x")
+    async def serve(p: str) -> dict:
+        return {"p": p}
+
+    match = app.match("GET", "/files/a/b/info/x")
+    assert match is not None
+    assert match.path_params == {"p": "a/b"}

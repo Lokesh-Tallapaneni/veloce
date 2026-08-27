@@ -2046,3 +2046,67 @@ def test_native_server_serves_query_method_with_body():
         assert b'"term":"veloce"' in emitted
     finally:
         loop.close()
+
+
+# ── Oversize request-line and header limits ──────────────────────────
+#
+# Moved here from `test_app_protocol_signals_e2e.py`, a module named for a fix
+# batch rather than a subject. `_FakeTransport` already lives in this module.
+
+
+def test_protocol_oversize_url_emits_414():
+    loop = asyncio.new_event_loop()
+    try:
+        proto = HttpProtocol(Veloce(openapi_url=None), loop)
+        transport = _FakeTransport()
+        proto.connection_made(transport)
+
+        long_path = b"/" + (b"a" * (16 * 1024))  # 16 KiB
+        assert len(long_path) > MAX_URL_SIZE
+        proto.data_received(b"GET " + long_path + b" HTTP/1.1\r\nHost: x\r\n\r\n")
+
+        emitted = b"".join(transport.writes)
+        assert emitted.startswith(b"HTTP/1.1 414 "), emitted[:64]
+        assert transport.closed is True
+    finally:
+        loop.close()
+
+
+def test_protocol_oversize_single_header_emits_431():
+    loop = asyncio.new_event_loop()
+    try:
+        proto = HttpProtocol(Veloce(openapi_url=None), loop)
+        transport = _FakeTransport()
+        proto.connection_made(transport)
+
+        big_value = b"v" * (MAX_HEADER_SIZE + 256)  # > 8 KB
+        proto.data_received(b"GET / HTTP/1.1\r\nHost: x\r\nX-Huge: " + big_value + b"\r\n\r\n")
+
+        emitted = b"".join(transport.writes)
+        assert emitted.startswith(b"HTTP/1.1 431 "), emitted[:64]
+        assert transport.closed is True
+    finally:
+        loop.close()
+
+
+def test_protocol_cumulative_headers_emit_431():
+    loop = asyncio.new_event_loop()
+    try:
+        proto = HttpProtocol(Veloce(openapi_url=None), loop)
+        transport = _FakeTransport()
+        proto.connection_made(transport)
+
+        # Each header ~1 KB; need > MAX_TOTAL_HEADERS_SIZE (64 KB) cumulative.
+        per_header = b"v" * 1024
+        chunks = [b"GET / HTTP/1.1\r\nHost: x\r\n"]
+        n_headers = (MAX_TOTAL_HEADERS_SIZE // 1024) + 8
+        for i in range(n_headers):
+            chunks.append(b"X-Pad-%d: " % i + per_header + b"\r\n")
+        chunks.append(b"\r\n")
+        proto.data_received(b"".join(chunks))
+
+        emitted = b"".join(transport.writes)
+        assert emitted.startswith(b"HTTP/1.1 431 "), emitted[:64]
+        assert transport.closed is True
+    finally:
+        loop.close()

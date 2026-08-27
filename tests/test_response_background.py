@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import pytest
 
@@ -255,3 +256,34 @@ def test_convenience_subclasses_accept_background():
     assert JSONResponse({"ok": True}, background=task).background is task
     assert HTMLResponse("<p>x</p>", background=task).background is task
     assert PlainTextResponse("x", background=task).background is task
+
+
+# Moved here from `test_app_protocol_signals_e2e.py`, a module named for a fix
+# batch rather than a subject.
+
+
+def test_attached_background_task_failure_logs_on_app_logger(caplog):
+    app = Veloce(openapi_url=None)
+
+    def boom():
+        raise RuntimeError("background-task-boom")
+
+    @app.get("/bg")
+    async def view(request):
+        return Response(
+            body=b"ok",
+            content_type="text/plain",
+            background=BackgroundTask(boom),
+        )
+
+    client = app.test_client()
+    with caplog.at_level(logging.ERROR, logger=app.logger.name):
+        resp = client.get("/bg")
+        assert resp.status_code == 200
+        # Drain the loop so the BackgroundTask + done-callback have a chance to run.
+        loop = getattr(client, "_loop", None) or asyncio.new_event_loop()
+        for _ in range(5):
+            loop.run_until_complete(asyncio.sleep(0))
+
+    messages = [r.getMessage() for r in caplog.records if r.name == app.logger.name]
+    assert any("Background task failed" in m for m in messages), messages

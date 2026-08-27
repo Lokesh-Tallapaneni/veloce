@@ -9,6 +9,8 @@ from __future__ import annotations
 import inspect
 import logging
 
+import pytest
+
 from veloce import Veloce
 from veloce.app import _URLMap
 
@@ -140,8 +142,6 @@ def test_run_bind_all_parameter_present():
 
 
 def test_bind_all_with_explicit_host_raises_value_error():
-    import pytest
-
     app = _make_app()
     with pytest.raises(ValueError, match="bind_all"):
         app.run(host="192.168.1.10", bind_all=True)
@@ -224,3 +224,58 @@ def test_coerce_response_handles_real_pydantic_model():
     app = Veloce(openapi_url=None)
     response = app._coerce_response(Item(name="foo"))
     assert isinstance(response, JSONResponse)
+
+
+# Moved here from `test_app_protocol_signals_e2e.py`, a module named for a fix
+# batch rather than a subject. The duck-typing test below is the end-to-end
+# counterpart of `test_coerce_response_does_not_treat_duck_model_dump_as_pydantic`
+# above: that one calls `_coerce_response` directly and proves `.model_dump()` is
+# never invoked; this one proves the whole request path agrees.
+
+
+def test_routes_cache_returns_same_object_until_mutation():
+    app = Veloce(openapi_url=None)
+
+    async def first(request):
+        return {"ok": True}
+
+    app.add_url_rule("/first", endpoint="first", view_func=first)
+    snap1 = app.routes
+    snap2 = app.routes
+    assert snap1 is snap2, "cache hit should return the same list object"
+
+    async def second(request):
+        return {"ok": True}
+
+    app.add_url_rule("/second", endpoint="second", view_func=second)
+    snap3 = app.routes
+    assert snap3 is not snap1, "add_url_rule must invalidate the routes cache"
+    paths = {r["path"] for r in snap3}
+    assert "/first" in paths and "/second" in paths
+
+
+class FakeDumper:
+    """Looks like a Pydantic model but isn't — `_coerce_response` should
+    not route it through `JSONResponse(result.model_dump())`."""
+
+    def model_dump(self):
+        return {"oops": 1}
+
+
+def test_coerce_response_does_not_duck_type_model_dump():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/fake")
+    async def view(request):
+        return FakeDumper()
+
+    client = app.test_client()
+    resp = client.get("/fake")
+    # FakeDumper is not JSON-serializable and not a Pydantic model. The
+    # framework must NOT silently invoke `.model_dump()` and produce
+    # `{"oops": 1}`. The only acceptable outcomes are a non-200 (orjson
+    # TypeError surfacing as a 500) or a fallback body that does not
+    # contain the duck-typed dump.
+    assert b'"oops"' not in resp.body, (
+        f"_coerce_response duck-typed .model_dump(); body={resp.body!r}"
+    )

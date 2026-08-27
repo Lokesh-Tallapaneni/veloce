@@ -246,3 +246,20 @@ def test_inmemory_session_store_sweep_tolerates_concurrent_removal():
     removed = store.sweep_expired()
     assert removed == 2
     assert len(store._entries) == 0
+
+
+async def test_in_memory_session_store_per_instance_sweep_fires() -> None:
+    store = InMemorySessionStore(sweep_threshold=2, sweep_probability=1.0)
+    # Pre-populate with three already-expired entries by reaching into the
+    # internal map — public `write` would refresh the expiry.
+    past = time.time() - 60
+    store._entries["a"] = ({"x": 1}, past)
+    store._entries["b"] = ({"x": 2}, past)
+    store._entries["c"] = ({"x": 3}, past)
+    assert len(store._entries) == 3
+
+    # The next `write` should trip the per-instance sweep and evict the
+    # three expired entries, leaving only the fresh one.
+    await store.write("fresh", {"y": 1}, max_age=3600)
+
+    assert set(store._entries) == {"fresh"}

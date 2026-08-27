@@ -554,3 +554,10 @@ def test_a_duplicate_contribution_is_not_repeated():
     with TestClient(app) as client:
         response = client.get("/", headers={"Origin": "https://good.test"})
     assert _exposed(response) == {"X-Board-Page"}
+
+
+@pytest.mark.parametrize("pattern", [".*", ".+", "^.*$"])
+def test_cors_wildcard_regex_with_credentials_rejected(pattern: str) -> None:
+    with pytest.raises(ValueError) as excinfo:
+        CORSMiddleware(allow_credentials=True, allow_origin_regex=pattern)
+    assert "allow_credentials" in str(excinfo.value)

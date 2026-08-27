@@ -235,3 +235,9 @@ def test_safe_join_device_guard_is_noop_off_windows(monkeypatch):
     # On POSIX (_IS_NT False) device names are passed through untouched.
     monkeypatch.setattr("veloce.safe._IS_NT", False)
     assert safe_join("/srv/static", "COM1") is not None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX root semantics")
+def test_safe_join_root_directory_allows_children() -> None:
+    assert safe_join("/", "etc") == "/etc"
+    assert safe_join("/", "etc", "passwd") == "/etc/passwd"

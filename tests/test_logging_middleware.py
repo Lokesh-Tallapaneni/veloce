@@ -263,3 +263,24 @@ async def test_logging_middleware_durations_are_per_request():
     # process_response reads each request's own start, not the other's.
     await mw.process_response(r1, Response(status_code=200))
     await mw.process_response(r2, Response(status_code=200))
+
+
+def test_logging_middleware_sets_level_when_handler_preconfigured() -> None:
+    logger = logging.getLogger("veloce.access")
+    # Snapshot state so we can restore after the test.
+    saved_handlers = list(logger.handlers)
+    saved_level = logger.level
+    try:
+        logger.handlers = [logging.NullHandler()]
+        logger.setLevel(logging.NOTSET)
+        assert logger.level == logging.NOTSET
+
+        LoggingMiddleware()
+
+        assert logger.level == logging.INFO
+        # The pre-existing NullHandler must not have been duplicated.
+        assert len(logger.handlers) == 1
+        assert isinstance(logger.handlers[0], logging.NullHandler)
+    finally:
+        logger.handlers = saved_handlers
+        logger.setLevel(saved_level)

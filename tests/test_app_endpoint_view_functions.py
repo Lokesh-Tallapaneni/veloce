@@ -129,3 +129,25 @@ def test_endpoint_decorator_unknown_name_raises():
         @app.endpoint("does_not_exist")
         def fn():
             return {}
+
+
+# Moved here from `test_app_protocol_signals_e2e.py`, a module named for a fix
+# batch rather than a subject.
+
+
+def test_view_functions_returns_fresh_snapshot():
+    app = Veloce(openapi_url=None)
+
+    async def index(request):
+        return "hi"
+
+    app.add_url_rule("/", endpoint="index", view_func=index)
+
+    vf1 = app.view_functions
+    assert "index" in vf1
+    vf1["index"] = "poisoned"  # caller mutation
+    vf1["junk"] = lambda: None
+
+    vf2 = app.view_functions
+    assert vf2["index"] is index, "framework state must not be poisoned by caller mutation"
+    assert "junk" not in vf2

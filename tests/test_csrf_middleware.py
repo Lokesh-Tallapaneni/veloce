@@ -6,6 +6,7 @@ import pytest
 
 from tests.conftest import make_request
 from veloce import CSRFMiddleware, Request, Veloce
+from veloce.testclient import TestClient
 
 
 def _req(method: str, path: str = "/x", headers: dict | None = None, body: bytes = b"") -> Request:
@@ -495,8 +496,6 @@ def test_post_with_csrf_form_field_as_uploadfile_is_refused():
     # If the `csrf_token` multipart part arrives as a file upload, `form.get`
     # returns an UploadFile; compare_digest would crash on it. Middleware must
     # treat the non-string value as a missing token and refuse with 403.
-    from veloce.testclient import TestClient
-
     app = Veloce(debug=True, openapi_url=None)
     app.add_middleware(CSRFMiddleware())
 
@@ -566,3 +565,24 @@ async def test_csrf_header_and_form_paths_use_same_check():
         )
     )
     assert resp.status_code == 403
+
+
+def test_csrf_header_path_accepts_matching_token() -> None:
+    app = Veloce()
+    app.add_middleware(CSRFMiddleware(cookie_secure=False))
+
+    @app.get("/seed")
+    async def seed() -> dict:
+        return {"ok": True}
+
+    @app.post("/submit")
+    async def submit() -> dict:
+        return {"ok": True}
+
+    with TestClient(app) as client:
+        client.get("/seed")
+        token = client.cookies.get("csrf_token")
+        assert token, "CSRF cookie should have been minted"
+        resp = client.post("/submit", headers={"X-CSRF-Token": token})
+        assert resp.status_code == 200, resp.body
+        assert resp.json() == {"ok": True}
