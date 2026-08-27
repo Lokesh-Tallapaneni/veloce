@@ -26,10 +26,13 @@ there is nothing for them to show. Defensible, and previously undocumented.
 
 from __future__ import annotations
 
+import ast
 import inspect
+import pathlib
 
 import pytest
 
+import veloce.app.core as core
 from veloce import Veloce
 from veloce.app.mounting import MountingMixin
 from veloce.contrib.openapi import _validate_document
@@ -278,9 +281,66 @@ def test_the_app_still_serves_its_own_routes_without_a_schema():
     assert TestClient(app).get("/x").json() == {"ok": True}
 
 
-def test_the_docstrings_state_the_boundaries():
+def _init_documentation() -> dict[str, str]:
+    """Parameter -> the text its `Doc()` annotation carries.
+
+    Read off the parsed annotation rather than out of `inspect.getsource`.
+    The documentation *is* the string the `Doc` marker holds; the source is one
+    rendering of it, and a pure reflow of an implicitly-concatenated literal
+    changes the source while changing nothing a reader of the API ever sees.
+    Python joins adjacent string literals at parse time, so the AST gives the
+    joined value directly.
+
+    `typing.get_type_hints` cannot be used here: the signature names types that
+    exist only under `TYPE_CHECKING`, so resolving it raises.
+    """
+    module = pathlib.Path(core.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(module)
+    init = next(
+        node
+        for cls in tree.body
+        if isinstance(cls, ast.ClassDef) and cls.name == "Veloce"
+        for node in cls.body
+        if isinstance(node, ast.FunctionDef) and node.name == "__init__"
+    )
+    arguments = init.args
+    every = [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]
+    documentation = {}
+    for argument in every:
+        annotation = argument.annotation
+        if not isinstance(annotation, ast.Subscript):
+            continue
+        if getattr(annotation.value, "id", None) != "Annotated":
+            continue
+        for element in getattr(annotation.slice, "elts", []):
+            if (
+                isinstance(element, ast.Call)
+                and getattr(element.func, "id", None) == "Doc"
+                and element.args
+                and isinstance(element.args[0], ast.Constant)
+            ):
+                documentation[argument.arg] = element.args[0].value
+    return documentation
+
+
+def test_the_documentation_states_the_boundaries():
     """These were the gap; a future edit that drops them fails here."""
     assert "does not apply here" in inspect.getdoc(MountingMixin.mount)
-    source = inspect.getsource(Veloce.__init__)
-    assert "does not apply to `app.mount()`" in source
-    assert "both pages read this document" in source
+    documentation = _init_documentation()
+    assert "does not apply to `app.mount()`" in documentation["prefix"]
+    assert "both pages read this document" in documentation["openapi_url"]
+
+
+def test_every_public_constructor_parameter_is_documented():
+    """The accessor is the guard; one that found nothing would pass silently."""
+    documentation = _init_documentation()
+    assert len(documentation) >= 10
+    assert all(text.strip() for text in documentation.values())
+    assert {"prefix", "openapi_url", "docs_url", "redoc_url"} <= set(documentation)
+
+
+def test_a_reflow_of_the_literal_does_not_change_what_is_read():
+    """The brittleness this replaced: `getsource` sees the line breaks."""
+    joined = ast.parse('x: Annotated[str, Doc("one " "two " "three")]').body[0]
+    element = joined.annotation.slice.elts[1]
+    assert element.args[0].value == "one two three"

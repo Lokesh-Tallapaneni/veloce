@@ -18,6 +18,12 @@ def _sign_aged_cookie(mw: SessionMiddleware, payload: dict, age_seconds: int, mo
 
     Replay safety, not the client `Max-Age`, is what the server must enforce:
     an attacker keeps the stolen cookie regardless of its browser expiry.
+
+    `mw` must be the instance the app was given - `add_middleware` accepts a
+    built one. These tests used to construct the middleware twice, restating
+    `max_age` and `permanent_lifetime` by hand, so a drift between the two
+    would have signed with one configuration and read with another and the
+    failure would have looked like the middleware's.
     """
 
     # `monkeypatch`, not a hand-written try/finally: this rebinds an attribute
@@ -115,7 +121,7 @@ def test_stale_non_permanent_cookie_rejected_past_max_age(monkeypatch):
     """A non-permanent cookie older than max_age does not replay server-side."""
     app = Veloce()
     mw = SessionMiddleware(secret_key="k" * 32)
-    app.add_middleware(SessionMiddleware, secret_key="k" * 32)
+    app.add_middleware(mw)
     seen: list = []
 
     @app.get("/read")
@@ -139,7 +145,7 @@ def test_fresh_non_permanent_cookie_within_max_age_accepted(monkeypatch):
     """A non-permanent cookie younger than max_age still loads normally."""
     app = Veloce()
     mw = SessionMiddleware(secret_key="k" * 32)
-    app.add_middleware(SessionMiddleware, secret_key="k" * 32)
+    app.add_middleware(mw)
     seen: list = []
 
     @app.get("/read")
@@ -161,7 +167,7 @@ def test_permanent_cookie_within_permanent_lifetime_accepted(monkeypatch):
     """A permanent cookie older than max_age but within permanent_lifetime loads."""
     app = Veloce()
     mw = SessionMiddleware(secret_key="k" * 32)
-    app.add_middleware(SessionMiddleware, secret_key="k" * 32)
+    app.add_middleware(mw)
     seen: list = []
 
     @app.get("/read")
@@ -191,12 +197,7 @@ def test_stale_permanent_cookie_rejected_when_permanent_lifetime_shorter(monkeyp
     mw = SessionMiddleware(
         secret_key="k" * 32, max_age=long_max_age, permanent_lifetime=short_permanent
     )
-    app.add_middleware(
-        SessionMiddleware,
-        secret_key="k" * 32,
-        max_age=long_max_age,
-        permanent_lifetime=short_permanent,
-    )
+    app.add_middleware(mw)
     seen: list = []
 
     @app.get("/read")

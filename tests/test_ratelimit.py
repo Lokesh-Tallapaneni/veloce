@@ -240,6 +240,11 @@ def test_result_fields():
 # TestClient (which carries no transport peer address).
 _UA = {"User-Agent": "rl-test"}
 
+# The property three tests used to spell out separately: with a limit of two in
+# a window nothing can expire inside, the third request is refused.
+_LEGACY_LIMIT = {"max_requests": 2, "window_seconds": 60}
+_ALLOW_ALLOW_REFUSE = [200, 200, 429]
+
 
 def _app(strategy, backend=None) -> Veloce:
     app = Veloce(openapi_url=None)
@@ -285,19 +290,26 @@ def test_middleware_rejects_backend_without_strategy():
         RateLimitMiddleware(backend=InMemoryRateLimitBackend())
 
 
-def test_middleware_legacy_path_still_works():
-    # The released max_requests/window_seconds signature is unchanged.
+def test_the_legacy_untagged_path_allows_then_refuses():
+    """The released `max_requests`/`window_seconds` signature, with no tagged
+    route anywhere, still runs the sliding log and refuses the third request.
+
+    Two tests asserted this against identical arrangements - one named for the
+    signature being unchanged, the other for no route carrying a tag - and both
+    are claims about the same untagged legacy path. The remaining difference in
+    the module is the *door*: `test_the_dispatch_entry_point_allows_then_refuses`
+    drives `handle_request` directly rather than a client.
+    """
     app = Veloce(openapi_url=None)
-    app.add_middleware(RateLimitMiddleware(max_requests=2, window_seconds=60))
+    app.add_middleware(RateLimitMiddleware(**_LEGACY_LIMIT))
 
     @app.get("/")
     async def index(request: Request):
         return {"ok": True}
 
     with TestClient(app) as tc:
-        assert tc.get("/", headers=_UA).status_code == 200
-        assert tc.get("/", headers=_UA).status_code == 200
-        assert tc.get("/", headers=_UA).status_code == 429
+        codes = [tc.get("/", headers=_UA).status_code for _ in range(3)]
+    assert codes == _ALLOW_ALLOW_REFUSE
 
 
 # ── Per-route overrides ──────────────────────────────────────────────
@@ -544,9 +556,15 @@ def test_explicit_override_wins_over_decorator():
         assert tc.get("/strict", headers=_UA).status_code == 429
 
 
-async def test_rate_limit():
+async def test_the_dispatch_entry_point_allows_then_refuses():
+    """The same property through `handle_request` rather than a client.
+
+    The client path goes through the ASGI transport; this one calls dispatch
+    directly, which is a different door onto the same middleware and the reason
+    this is not a third copy of the test above.
+    """
     app = Veloce(openapi_url=None)
-    app.add_middleware(RateLimitMiddleware(max_requests=2, window_seconds=60))
+    app.add_middleware(RateLimitMiddleware(**_LEGACY_LIMIT))
 
     @app.get("/")
     async def index(request: Request):
@@ -555,15 +573,8 @@ async def test_rate_limit():
     # Stable UA → all three requests bucket together (no client_host
     # in these synthetic Requests; UA hash is the next fallback).
     ua = {"user-agent": "rate-limit-test/1.0"}
-
-    # First two requests should pass
-    for _ in range(2):
-        resp = await app.handle_request(make_request(headers=ua))
-        assert resp.status_code == 200
-
-    # Third should be rate limited
-    resp = await app.handle_request(make_request(headers=ua))
-    assert resp.status_code == 429
+    codes = [(await app.handle_request(make_request(headers=ua))).status_code for _ in range(3)]
+    assert codes == _ALLOW_ALLOW_REFUSE
 
 
 async def test_rate_limit_headers_on_success():
@@ -831,20 +842,6 @@ def test_a_route_added_after_the_first_request_is_tagged():
 
     assert tc.get("/late", headers=_UA).status_code == 200
     assert tc.get("/late", headers=_UA).status_code == 429
-
-
-def test_the_untagged_common_path_is_unchanged():
-    """No tagged route anywhere: the legacy sliding log must behave as before."""
-    app = Veloce(openapi_url=None)
-    app.add_middleware(RateLimitMiddleware(max_requests=2, window_seconds=60))
-
-    @app.get("/plain")
-    async def plain(request: Request):
-        return {"ok": True}
-
-    with TestClient(app) as tc:
-        codes = [tc.get("/plain", headers=_UA).status_code for _ in range(3)]
-    assert codes == [200, 200, 429]
 
 
 # ── end to end through a client ───────────────────────────────
