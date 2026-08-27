@@ -204,6 +204,7 @@ UNEXPORTED: dict[str, str] = {
     "routing.converters.path_param_schemas": "implementation behind the Converter base / register_converter seam",
     # ── remaining leaf internals ─────────────────────────────────
     "contrib.openapi.SchemaRegistry": "internal accumulator for one schema build",
+    "routing.router.MCPRouteOptions": "the record behind RouteInfo.mcp; read through its properties",
     "contrib.docs_ui.SWAGGER_HTML": "template body for the built-in docs route",
     "contrib.docs_ui.REDOC_HTML": "template body for the built-in docs route",
     "exceptions.http_exception_payload": "shared error-body builder for the in-tree emit paths",

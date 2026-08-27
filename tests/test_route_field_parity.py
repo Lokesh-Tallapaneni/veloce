@@ -22,7 +22,7 @@ import typing
 import pytest
 
 from veloce import Blueprint, Request, Router, Veloce
-from veloce.routing.router import RouteInfo
+from veloce.routing.router import MCPRouteOptions, RouteInfo
 from veloce.testclient import TestClient
 
 _ROUTER_SRC = pathlib.Path(inspect.getfile(Router)).read_text(encoding="utf-8")
@@ -32,6 +32,14 @@ _ROUTER_SRC = pathlib.Path(inspect.getfile(Router)).read_text(encoding="utf-8")
 #: parent's tags, dependencies and responses are combined in. The second is
 #: derived from the handler at registration time (`_finalize_plans`), so carrying a
 #: stale copy across would be wrong, not right.
+#: The MCP constructor parameters, discovered from the signature so this cannot
+#: fall behind the code it describes.
+_MCP_PARAMETERS = frozenset(
+    name
+    for name in inspect.signature(Router.add_route).parameters
+    if name.startswith(("mcp_", "expose_as_mcp_"))
+)
+
 _REWRITTEN = {
     "name",
     "path_template",
@@ -116,12 +124,33 @@ def test_the_scan_finds_the_fields_it_is_meant_to():
         assert len(_forwarded_in(name)) > 10, name
 
 
+def _carried_fields() -> set[str]:
+    """The names a copy has to forward.
+
+    `RouteInfo.__slots__` holds `mcp`, one record standing in for eleven fields
+    that used to be slots of their own. A copy forwards it by passing those
+    eleven keywords - `RouteInfo.__init__` rebuilds the record - so the names to
+    look for are the constructor's, not the slot's.
+    """
+    fields = {name for name in RouteInfo.__slots__ if not name.startswith("_")}
+    fields.discard("mcp")
+    fields.update(_MCP_PARAMETERS)
+    return fields
+
+
 @pytest.mark.parametrize("function_name", ["_readd_route", "_build_merged_route_info"])
 def test_every_route_field_is_carried_across(function_name: str):
     """The guard: a field neither copy forwards is a silent behaviour change."""
-    fields = {name for name in RouteInfo.__slots__ if not name.startswith("_")}
-    missing = sorted(fields - _REWRITTEN - _forwarded_in(function_name))
+    missing = sorted(_carried_fields() - _REWRITTEN - _forwarded_in(function_name))
     assert not missing, f"{function_name} does not carry: {missing}"
+
+
+def test_the_mcp_record_stands_in_for_its_eleven_fields():
+    """The premise of `_carried_fields`: `mcp` is the only such stand-in, and it
+    really does hold every one of them."""
+    assert "mcp" in RouteInfo.__slots__
+    assert not any(name.startswith("mcp_") for name in RouteInfo.__slots__)
+    assert set(_MCP_PARAMETERS) <= set(MCPRouteOptions.__dataclass_fields__)
 
 
 # ── The functional half ──────────────────────────────────────────────
@@ -353,13 +382,37 @@ def test_the_two_entry_points_accept_the_same_parameters():
 
 
 def test_every_mcp_parameter_reaches_the_route_info():
-    """The eleven single-emit-target fields, end to end through both entry points."""
+    """The eleven single-emit-target fields, end to end through both entry points.
+
+    They are no longer slots - one `mcp` record holds them - so the check is
+    that each is readable off a `RouteInfo`, which is the property that actually
+    matters to the fifty-six sites in `contrib/mcp` that read them.
+    """
     mcp_params = sorted(
         name for name in inspect.signature(Router.add_route).parameters if name.startswith("mcp_")
     )
     assert len(mcp_params) >= 8, mcp_params
-    slots = set(RouteInfo.__slots__)
-    assert all(name in slots for name in mcp_params), [n for n in mcp_params if n not in slots]
+    missing = [name for name in mcp_params if not hasattr(RouteInfo, name)]
+    assert not missing, missing
+
+
+def test_an_undeclared_route_reads_every_mcp_field_as_its_default():
+    """`RouteInfo.mcp` is `None` for a route that declares nothing, so each
+    property has to answer from the defaults rather than raise."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/plain")
+    async def plain():
+        return {}
+
+    info = app.match("GET", "/plain").route_info
+    assert info.mcp is None
+    assert info.expose_as_mcp_tool is False
+    assert info.expose_as_mcp_resource is False
+    assert info.mcp_task_support is False
+    assert info.mcp_description is None
+    assert info.mcp_scopes is None
+    assert info.mcp_icons is None
 
 
 def test_an_mcp_field_declared_through_the_decorator_reaches_the_tree():

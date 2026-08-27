@@ -7,6 +7,7 @@ import keyword
 import logging
 import re
 from collections.abc import Callable, Coroutine, Iterator, Sequence
+from dataclasses import dataclass
 from typing import Annotated, Any, get_origin
 from urllib.parse import urlencode
 
@@ -270,6 +271,58 @@ class RadixNode:
         self.converter: _Converter | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class MCPRouteOptions:
+    """Everything a route declares for `contrib.mcp`, in one record.
+
+    These eleven fields used to be eleven slots on `RouteInfo`. The router never
+    reads any of them - they exist for an optional integration - and carried
+    flat they had to be enumerated in five places: `RouteInfo.__slots__`, its
+    `__init__` signature, its assignment block, the copy-construction in
+    `_merge_node`, and `_ROUTE_IDENTITY_SLOTS`. Adding a twelfth meant editing
+    all five, and missing one was silent.
+
+    `RouteInfo.mcp` is `None` for a route that declares no MCP exposure, which
+    is almost every route, so an app that never mounts MCP carries one slot
+    rather than eleven. The individual names stay readable as properties on
+    `RouteInfo`, so nothing reading `info.mcp_scopes` had to change.
+    """
+
+    expose_as_mcp_tool: bool = False
+    mcp_description: str | None = None
+    expose_as_mcp_resource: bool = False
+    mcp_resource_uri: str | None = None
+    mcp_resource_mime_type: str | None = None
+    mcp_meta: dict[str, Any] | None = None
+    mcp_resource_size: int | None = None
+    mcp_resource_annotations: dict[str, Any] | None = None
+    mcp_scopes: frozenset[str] | None = None
+    mcp_icons: tuple[Any, ...] | None = None
+    mcp_task_support: bool = False
+
+    @classmethod
+    def build(cls, **options: Any) -> MCPRouteOptions | None:
+        """Return the options, or `None` when the route declares no MCP exposure.
+
+        `mcp_scopes` and `mcp_icons` are normalised here - to a `frozenset` and a
+        tuple - so the record is immutable all the way down and the MCP registry
+        reads them directly.
+        """
+        # Almost every route declares nothing, so that case allocates nothing
+        # and compares nothing: every value is falsy exactly when it is the
+        # default (two `False` flags, nine `None`s), so one `any()` over the
+        # values settles it. Building the record and comparing it against an
+        # all-defaults instance costs eleven field comparisons per route, which
+        # is measurable at registration on an app with many routes.
+        if not any(options.values()):
+            return None
+        scopes = options["mcp_scopes"]
+        icons = options["mcp_icons"]
+        options["mcp_scopes"] = frozenset(scopes) if scopes else None
+        options["mcp_icons"] = tuple(icons) if icons else None
+        return cls(**options)
+
+
 # ── Route metadata ─────────────────────────────────────────
 
 
@@ -313,17 +366,7 @@ class RouteInfo:
         "is_fast_eligible",
         "subdomain",
         "host",
-        "expose_as_mcp_tool",
-        "mcp_description",
-        "expose_as_mcp_resource",
-        "mcp_resource_uri",
-        "mcp_resource_mime_type",
-        "mcp_meta",
-        "mcp_resource_size",
-        "mcp_resource_annotations",
-        "mcp_scopes",
-        "mcp_icons",
-        "mcp_task_support",
+        "mcp",
         "excluded_middleware",
         "stream",
         "strict_slashes",
@@ -490,44 +533,22 @@ class RouteInfo:
         # `strict_slashes=False` therefore lost it on registration while the
         # same route reached through `include_router` kept it.
         self.strict_slashes: bool | None = None
-        # MCP exposure (contrib.mcp). `expose_as_mcp_tool` opts this route
-        # into the MCP tool registry; `mcp_description` is the LLM-facing
-        # description (separate from the docstring), required by the MCP
-        # safety policy at registry-build time.
-        self.expose_as_mcp_tool = expose_as_mcp_tool
-        self.mcp_description = mcp_description
-        # MCP resource exposure (contrib.mcp). `expose_as_mcp_resource` opts a
-        # read-only (GET/HEAD) route into the MCP resource registry;
-        # `mcp_resource_uri` is its resource URI - a static URI for a route with
-        # no path parameters, or a URI template (e.g. `users://{user_id}`) whose
-        # variables bind the route's path parameters.
-        self.expose_as_mcp_resource = expose_as_mcp_resource
-        self.mcp_resource_uri = mcp_resource_uri
-        # Declared media type for the resource listing. Never inferred: the
-        # response class is chosen from the handler's actual return value, so a
-        # guess made from its annotation could disagree with what a read returns.
-        self.mcp_resource_mime_type = mcp_resource_mime_type
-        # Optional spec fields a primitive may publish about itself: `_meta` on
-        # any of them, plus a resource's declared size and annotations.
-        self.mcp_meta = mcp_meta
-        self.mcp_resource_size = mcp_resource_size
-        self.mcp_resource_annotations = mcp_resource_annotations
-        # MCP authorization scopes required to call this route as a tool / read it
-        # as a resource. `None` means no scope requirement; a non-empty set is
-        # enforced against the request principal's granted scopes.
-        self.mcp_scopes = frozenset(mcp_scopes) if mcp_scopes else None
-        # Optional MCP `Icon` objects a client may render next to the tool /
-        # resource this route is exposed as. `None` (the common case) carries no
-        # icons and emits no ``icons`` key. Stored as a tuple so the route
-        # metadata is immutable and the MCP registry reads it directly.
-        self.mcp_icons = tuple(mcp_icons) if mcp_icons else None
-        # Opt this route's MCP tool into task-augmented `tools/call` (contrib.mcp).
-        # `False` (the default) advertises `execution.taskSupport: "forbidden"`
-        # and rejects a task-augmented call; `True` lets a client run the call as
-        # a background task it polls via `tasks/get` / `tasks/result`. The handler
-        # invocation is unchanged - the task reuses the same dispatch path the
-        # synchronous call uses, so a route stays one handler behind both doors.
-        self.mcp_task_support = mcp_task_support
+        # Every MCP option in one record. See `MCPRouteOptions`: the router
+        # reads none of them, and carried flat they had to be enumerated in five
+        # places. `None` when the route declares no MCP exposure.
+        self.mcp = MCPRouteOptions.build(
+            expose_as_mcp_tool=expose_as_mcp_tool,
+            mcp_description=mcp_description,
+            expose_as_mcp_resource=expose_as_mcp_resource,
+            mcp_resource_uri=mcp_resource_uri,
+            mcp_resource_mime_type=mcp_resource_mime_type,
+            mcp_meta=mcp_meta,
+            mcp_resource_size=mcp_resource_size,
+            mcp_resource_annotations=mcp_resource_annotations,
+            mcp_scopes=mcp_scopes,
+            mcp_icons=mcp_icons,
+            mcp_task_support=mcp_task_support,
+        )
         # Named middleware this route opts out of. `None` (the common case)
         # means "run every registered middleware" - the dispatch hot path
         # then iterates the app's middleware list directly with zero extra
@@ -542,6 +563,52 @@ class RouteInfo:
             excluded_middleware
         )
         self._mw_chain_cache: tuple[int, list[Any], list[Any]] | None = None
+
+    # ── MCP options, read through the one record that holds them ──
+
+    @property
+    def expose_as_mcp_tool(self) -> Any:
+        return False if self.mcp is None else self.mcp.expose_as_mcp_tool
+
+    @property
+    def mcp_description(self) -> Any:
+        return None if self.mcp is None else self.mcp.mcp_description
+
+    @property
+    def expose_as_mcp_resource(self) -> Any:
+        return False if self.mcp is None else self.mcp.expose_as_mcp_resource
+
+    @property
+    def mcp_resource_uri(self) -> Any:
+        return None if self.mcp is None else self.mcp.mcp_resource_uri
+
+    @property
+    def mcp_resource_mime_type(self) -> Any:
+        return None if self.mcp is None else self.mcp.mcp_resource_mime_type
+
+    @property
+    def mcp_meta(self) -> Any:
+        return None if self.mcp is None else self.mcp.mcp_meta
+
+    @property
+    def mcp_resource_size(self) -> Any:
+        return None if self.mcp is None else self.mcp.mcp_resource_size
+
+    @property
+    def mcp_resource_annotations(self) -> Any:
+        return None if self.mcp is None else self.mcp.mcp_resource_annotations
+
+    @property
+    def mcp_scopes(self) -> Any:
+        return None if self.mcp is None else self.mcp.mcp_scopes
+
+    @property
+    def mcp_icons(self) -> Any:
+        return None if self.mcp is None else self.mcp.mcp_icons
+
+    @property
+    def mcp_task_support(self) -> Any:
+        return False if self.mcp is None else self.mcp.mcp_task_support
 
 
 class RouteMatch:
