@@ -15,11 +15,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-import pathlib
-import re
 
 import pytest
 
+from tests._mcp_source import dict_values_for_key, tree
 from veloce import Veloce
 from veloce.contrib.mcp.capabilities import Capability
 from veloce.contrib.mcp.server import RESULT_TYPE_COMPLETE, RESULT_TYPE_TASK, MCPServer
@@ -215,10 +214,7 @@ def test_the_result_discriminators_that_are_advertised_can_all_be_produced():
     # By module object: the test reads the dispatcher's *source* for the
     # `resultType` values it assigns, so it needs the file rather than the
     # names.
-    from veloce.contrib.mcp import server as server_module
-
-    source = pathlib.Path(server_module.__file__).read_text(encoding="utf-8")
-    emitted = set(re.findall(r'"resultType":\s*([A-Za-z_][A-Za-z0-9_]*)', source))
+    emitted = dict_values_for_key(tree("server.py"), "resultType")
     assert emitted == {"RESULT_TYPE_TASK", "RESULT_TYPE_COMPLETE"}, (
         f"the dispatcher emits a resultType this test does not know about: {emitted}"
     )

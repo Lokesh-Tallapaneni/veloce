@@ -19,10 +19,10 @@ withholds them, and the server unions them the same way it merges `handlers()`.
 from __future__ import annotations
 
 import json
-import pathlib
 
 import pytest
 
+from tests._mcp_source import attribute_chains, module_level_names, tree
 from veloce import Veloce
 from veloce.contrib.mcp.capabilities.base import Capability, _ServerCapability
 from veloce.contrib.mcp.capabilities.concrete import LoggingCapability
@@ -73,16 +73,22 @@ def test_the_capabilities_supply_the_rest():
 
 
 def test_the_dispatcher_holds_no_second_table():
-    source = (
-        pathlib.Path(__file__).resolve().parents[1]
-        / "src"
-        / "veloce"
-        / "contrib"
-        / "mcp"
-        / "server.py"
-    ).read_text(encoding="utf-8")
-    assert "_HANDSHAKE_ONLY_METHODS = frozenset(\n    {\n" not in source
-    assert "self._handshake_only" in source
+    """The retirement set is owned by the capabilities, not restated here.
+
+    Asserted against the parsed module. The old form searched for the literal
+    text `_HANDSHAKE_ONLY_METHODS = frozenset(\\n    {\\n`, so the formatter
+    moving the brace broke it and a second table written on one line evaded it.
+    """
+    server = tree("server.py")
+    tables = {
+        name for name in module_level_names(server) if name.endswith("_HANDSHAKE_ONLY_METHODS")
+    }
+    assert tables == {"_CORE_HANDSHAKE_ONLY_METHODS"}, (
+        f"the dispatcher declares a second retirement table: {tables}"
+    )
+    assert attribute_chains(server, "_handshake_only"), (
+        "the dispatcher no longer reads the union it builds from the capabilities"
+    )
 
 
 # ── the contract every capability inherits ───────────────────────────

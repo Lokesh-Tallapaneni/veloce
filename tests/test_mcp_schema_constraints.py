@@ -26,11 +26,10 @@ the duplication goes with it.
 
 from __future__ import annotations
 
-import pathlib
-
 import pytest
 from pydantic import BaseModel, Field
 
+from tests._mcp_source import attribute_chains, calls, tree
 from veloce import Cookie, Header, Query, Veloce
 from veloce.testclient import TestClient
 
@@ -270,9 +269,21 @@ def test_a_model_property_is_not_given_marker_constraints():
 
 
 def test_the_bridge_uses_the_shared_constraint_helper():
-    """Hand-copying `description` and `title` is how the drift started."""
-    source = (
-        pathlib.Path(__file__).resolve().parents[1] / "src/veloce/contrib/mcp/plan_bridge.py"
-    ).read_text(encoding="utf-8")
-    assert "_apply_marker_constraints" in source
-    assert 'prop = {**prop, "description": d.marker.description}' not in source
+    """Hand-copying `description` and `title` is how the drift started.
+
+    Asserted against the parsed module: the bridge calls the helper, and reads
+    no marker field itself. The old form searched for one exact line of
+    hand-copying, so the same copy with different spacing - or copying `title`
+    instead of `description` - walked past it.
+    """
+    bridge = tree("plan_bridge.py")
+    assert calls(bridge, "_apply_marker_constraints"), (
+        "the bridge no longer calls the shared constraint helper"
+    )
+    hand_copied = attribute_chains(bridge, "marker", "description") + attribute_chains(
+        bridge, "marker", "title"
+    )
+    assert hand_copied == [], (
+        f"the bridge reads a marker field directly at lines {hand_copied}; "
+        "`_apply_marker_constraints` is the one place that should"
+    )

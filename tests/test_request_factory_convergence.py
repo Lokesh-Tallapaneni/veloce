@@ -54,6 +54,13 @@ def _modules_importing_the_factory() -> list[str]:
     ]
 
 
+# Scanned once. Three tests called `_modules_constructing_request()` and each
+# re-parsed all ~750 test modules - three of the suite's six slowest tests, for
+# one answer computed three times.
+CONSTRUCTING = _modules_constructing_request()
+IMPORTING = _modules_importing_the_factory()
+
+
 # ── the line that must not move the wrong way ────────────────────────
 
 
@@ -64,7 +71,7 @@ def test_no_new_module_hand_builds_a_request():
     `tests.conftest` instead. If you genuinely need a shape it cannot build, add
     the argument there - it forwards `**extra` to the constructor.
     """
-    count = len(_modules_constructing_request())
+    count = len(CONSTRUCTING)
     assert count <= DIRECT_CONSTRUCTION_CEILING, (
         f"{count} modules construct `Request(...)` directly, ceiling is "
         f"{DIRECT_CONSTRUCTION_CEILING}; use tests.conftest.make_request"
@@ -77,7 +84,7 @@ def test_the_ceiling_is_not_stale():
     Lower `DIRECT_CONSTRUCTION_CEILING` when you convert a module - that is the
     mechanism by which this shrinks.
     """
-    count = len(_modules_constructing_request())
+    count = len(CONSTRUCTING)
     assert count >= DIRECT_CONSTRUCTION_CEILING - 5, (
         f"only {count} modules construct `Request(...)` directly; lower the "
         f"ceiling from {DIRECT_CONSTRUCTION_CEILING} to {count}"
@@ -86,8 +93,8 @@ def test_the_ceiling_is_not_stale():
 
 def test_the_shared_factory_is_the_majority_path():
     """It was imported by 36 modules against ~96 private factories."""
-    shared = len(_modules_importing_the_factory())
-    direct = len(_modules_constructing_request())
+    shared = len(IMPORTING)
+    direct = len(CONSTRUCTING)
     assert shared > direct, (shared, direct)
 
 

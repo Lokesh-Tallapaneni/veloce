@@ -16,6 +16,13 @@ def _req(headers: dict[str, str]) -> Request:
 # ── Hop-picking ────────────────────────────────────────────────────────
 
 
+# `_pick_hop` is a pure function over one header value, and the cases below are
+# its edges - a chain shorter than the trust depth, a zero depth, a missing
+# header. The wiring that calls it is covered end to end further down; these
+# are the inputs that are awkward to arrange through a client and cheap to
+# state directly.
+
+
 def test_pick_hop_returns_rightmost_for_one_trusted():
     """`X-Forwarded-For: client, proxy1, proxy2` + trust=1 → proxy2."""
     assert ProxyFix._pick_hop("client, proxy1, proxy2", 1) == "proxy2"
@@ -45,55 +52,66 @@ def test_pick_hop_strips_whitespace():
 # ── Forwarded header (RFC 7239) ────────────────────────────────────────
 
 
-def test_parse_forwarded_basic():
-    pf = ProxyFix(x_for=1, x_proto=1, x_host=1)
-    p = pf._parse_forwarded(
-        "for=client.example.com; proto=https; host=ex.com",
-        x_for=1,
-        x_proto=1,
-        x_host=1,
-        x_prefix=0,
+# These drove `_parse_forwarded` directly, passing `x_for=`/`x_proto=`/`x_host=`
+# to the *call* after already passing them to the constructor - so the two could
+# disagree and the test would still pass, while the instance under test decided
+# nothing. Through the middleware the constructor's configuration is what
+# selects, which is also where the security property lives: the wiring that
+# picks the trusted hop is the part an attacker attacks.
+
+
+def test_a_forwarded_header_supplies_client_scheme_and_host():
+    app = _make_app_with_proxy_fix(x_for=1, x_proto=1, x_host=1, trust_forwarded=True)
+    body = (
+        TestClient(app)
+        .get("/info", headers={"Forwarded": "for=client.example.com; proto=https; host=ex.com"})
+        .json()
     )
-    assert p == {"for": "client.example.com", "proto": "https", "host": "ex.com"}
+    assert body["client"] == "client.example.com"
+    assert body["scheme"] == "https"
+    assert body["host"] == "ex.com"
 
 
-def test_parse_forwarded_strips_ipv6_brackets():
-    pf = ProxyFix(x_for=1)
-    p = pf._parse_forwarded(
-        'for="[2001:db8::1]:8080"',
-        x_for=1,
-        x_proto=0,
-        x_host=0,
-        x_prefix=0,
+def test_a_forwarded_for_drops_the_ipv6_brackets():
+    """`for=` carries a node identifier; the address is what a handler wants."""
+    app = _make_app_with_proxy_fix(x_for=1, trust_forwarded=True)
+    body = TestClient(app).get("/info", headers={"Forwarded": 'for="[2001:db8::1]:8080"'}).json()
+    assert body["client"] == "2001:db8::1"
+
+
+def test_a_forwarded_host_authority_survives_with_its_port():
+    """A `host=` authority is kept whole; only `for=`/`by=` get unbracketed.
+
+    Through the middleware the observable is what a handler reads, and the URL
+    layer splits the authority: the brackets belong to the wire form, while the
+    host and the port are what `request.url` exposes. The unit test this
+    replaced asserted the intermediate string and so could not tell whether
+    anything downstream understood it.
+    """
+    app = _make_app_with_proxy_fix(x_host=1, trust_forwarded=True)
+    body = TestClient(app).get("/info", headers={"Forwarded": 'host="[2001:db8::1]:8443"'}).json()
+    assert body["host"] == "2001:db8::1"
+    assert body["port"] == 8443
+
+
+def test_a_forwarded_chain_is_selected_from_the_right():
+    """Multiple proxies: select by trust depth from the right, not the left.
+
+    The left of the chain is attacker-supplied. Picking from it is the classic
+    spoof, and only the wired middleware can show that the configured depth is
+    the one applied.
+    """
+    app = _make_app_with_proxy_fix(x_for=1, x_proto=1, trust_forwarded=True)
+    body = (
+        TestClient(app)
+        .get(
+            "/info",
+            headers={"Forwarded": "for=attacker; proto=http, for=trusted; proto=https"},
+        )
+        .json()
     )
-    assert p["for"] == "2001:db8::1"
-
-
-def test_parse_forwarded_host_keeps_ipv6_brackets_and_port():
-    """A `host=` authority is kept verbatim; only `for=`/`by=` get unbracketed."""
-    pf = ProxyFix(x_host=1)
-    p = pf._parse_forwarded(
-        'host="[2001:db8::1]:8443"',
-        x_for=0,
-        x_proto=0,
-        x_host=1,
-        x_prefix=0,
-    )
-    assert p["host"] == "[2001:db8::1]:8443"
-
-
-def test_parse_forwarded_selects_from_right():
-    """Multiple proxies -- select by trust depth from the right, not the left."""
-    pf = ProxyFix(x_for=1, x_proto=1)
-    p = pf._parse_forwarded(
-        "for=attacker; proto=http, for=trusted; proto=https",
-        x_for=1,
-        x_proto=1,
-        x_host=0,
-        x_prefix=0,
-    )
-    assert p["for"] == "trusted"
-    assert p["proto"] == "https"
+    assert body["client"] == "trusted"
+    assert body["scheme"] == "https"
 
 
 # ── Construction validation ────────────────────────────────────────────
@@ -117,6 +135,7 @@ def _make_app_with_proxy_fix(**kwargs) -> Veloce:
             "client": request.client_host,
             "scheme": request.url.scheme,
             "host": request.url.host,
+            "port": request.url.port,
             "secure": request.is_secure,
         }
 
