@@ -67,16 +67,16 @@ def _schema_for(response_model: Any) -> Any:
 
 
 @pytest.mark.parametrize(
-    ("model", "label"),
+    "model",
     [
-        (list[Item], "list"),
-        (Sequence[Item], "Sequence"),
-        (tuple[Item, ...], "tuple"),
-        (set[Item], "set"),
-        (frozenset[Item], "frozenset"),
+        pytest.param(list[Item], id="list"),
+        pytest.param(Sequence[Item], id="Sequence"),
+        pytest.param(tuple[Item, ...], id="tuple"),
+        pytest.param(set[Item], id="set"),
+        pytest.param(frozenset[Item], id="frozenset"),
     ],
 )
-def test_a_sequence_of_models_is_an_array_of_refs(model, label):
+def test_a_sequence_of_models_is_an_array_of_refs(model):
     """The defect: everything but `list` documented no response schema."""
     assert _schema_for(model) == {
         "type": "array",

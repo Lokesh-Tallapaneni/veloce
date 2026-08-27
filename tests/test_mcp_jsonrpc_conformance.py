@@ -48,30 +48,30 @@ def _send(raw: bytes):
 
 
 @pytest.mark.parametrize(
-    ("raw", "label"),
+    "raw",
     [
-        (b'[{"jsonrpc":"2.0","id":1,"method":"ping"}]', "a batch array"),
-        (b'"just a string"', "a bare string"),
-        (b"42", "a bare number"),
-        (b"true", "a bare boolean"),
-        (b"null", "a bare null"),
+        pytest.param(b'[{"jsonrpc":"2.0","id":1,"method":"ping"}]', id="a batch array"),
+        pytest.param(b'"just a string"', id="a bare string"),
+        pytest.param(b"42", id="a bare number"),
+        pytest.param(b"true", id="a bare boolean"),
+        pytest.param(b"null", id="a bare null"),
     ],
 )
-def test_json_that_is_not_a_request_object_is_an_invalid_request(raw: bytes, label: str):
+def test_json_that_is_not_a_request_object_is_an_invalid_request(raw: bytes):
     response = _send(raw)
     assert response.status_code == 400
     assert response.json()["error"]["code"] == _INVALID_REQUEST
 
 
 @pytest.mark.parametrize(
-    ("raw", "label"),
+    "raw",
     [
-        (b"{not valid json", "unbalanced brace"),
-        (b'{"jsonrpc": ', "truncated"),
-        (b"", "empty body"),
+        pytest.param(b"{not valid json", id="unbalanced brace"),
+        pytest.param(b'{"jsonrpc": ', id="truncated"),
+        pytest.param(b"", id="empty body"),
     ],
 )
-def test_text_that_is_not_json_is_a_parse_error(raw: bytes, label: str):
+def test_text_that_is_not_json_is_a_parse_error(raw: bytes):
     response = _send(raw)
     assert response.status_code == 400
     assert response.json()["error"]["code"] == _PARSE_ERROR

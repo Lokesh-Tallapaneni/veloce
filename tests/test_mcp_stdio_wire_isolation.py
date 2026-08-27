@@ -100,17 +100,19 @@ def _wire_messages(stdout: str) -> list[dict]:
 
 
 @pytest.mark.parametrize(
-    ("label", "body"),
+    "body",
     [
-        ("print", "    print('polluting the wire')\n"),
-        ("direct write", "    sys.stdout.write('polluting\\n')\n    sys.stdout.flush()\n"),
-        (
-            "child process",
+        pytest.param("    print('polluting the wire')\n", id="print"),
+        pytest.param(
+            "    sys.stdout.write('polluting\\n')\n    sys.stdout.flush()\n", id="direct write"
+        ),
+        pytest.param(
             "    subprocess.run([sys.executable, '-c', \"print('from a child')\"], check=False)\n",
+            id="child process",
         ),
     ],
 )
-def test_handler_output_never_reaches_the_wire(tmp_path, label, body):
+def test_handler_output_never_reaches_the_wire(tmp_path, body):
     result = _run_server(tmp_path, body)
     messages = _wire_messages(result.stdout)
     assert [m.get("id") for m in messages] == [1, 2]

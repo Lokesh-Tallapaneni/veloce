@@ -161,8 +161,8 @@ def test_a_capability_written_without_the_revision_parameter_still_works():
     server._capabilities = (*server._capabilities, legacy)
 
     assert legacy not in server._era_aware_capabilities
-    for modern in (True, False):
-        assert "house" in server._advertised_capabilities(modern)
+    assert "house" in server._advertised_capabilities(True)
+    assert "house" in server._advertised_capabilities(False)
 
 
 def test_a_capability_that_accepts_the_revision_is_detected():

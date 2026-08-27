@@ -17,6 +17,7 @@ import asyncio
 import contextlib
 
 import orjson
+import pytest
 
 from veloce import Veloce
 from veloce.contrib.mcp._helpers import _notifier_var
@@ -84,13 +85,13 @@ async def test_the_catalogue_still_carries_execution_for_a_handshake_client():
     assert entry["execution"] == {"taskSupport": "optional"}
 
 
-async def test_both_tool_definition_doors_agree():
+@pytest.mark.parametrize("modern", [False, True], ids=["handshake", "modern"])
+async def test_both_tool_definition_doors_agree(modern):
     """A search server shows only the catalogue, so the two must not diverge."""
-    for modern in (False, True):
-        server = MCPServer(_search_app(), tool_search=True)
-        described = await _described(server, modern=modern)
-        listed = await _listed(MCPServer(_search_app()), modern=modern)
-        assert ("execution" in described) == ("execution" in listed), modern
+    server = MCPServer(_search_app(), tool_search=True)
+    described = await _described(server, modern=modern)
+    listed = await _listed(MCPServer(_search_app()), modern=modern)
+    assert ("execution" in described) == ("execution" in listed)
 
 
 # ── Every task-shaping site agrees on the field names ────────────────

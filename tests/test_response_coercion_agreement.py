@@ -42,16 +42,16 @@ def _through_dispatch(value):
     return TestClient(app).get("/r")
 
 
-@pytest.mark.parametrize(("value", "label"), _VALUES, ids=[label for _v, label in _VALUES])
-def test_all_three_coercers_agree_on_status(value, label):
+@pytest.mark.parametrize("value", [pytest.param(v, id=label) for v, label in _VALUES])
+def test_all_three_coercers_agree_on_status(value):
     app = Veloce(openapi_url=None)
     dispatched = _through_dispatch(value)
     assert dispatched.status_code == make_response(value).status_code
     assert dispatched.status_code == app.make_response(value).status_code
 
 
-@pytest.mark.parametrize(("value", "label"), _VALUES, ids=[label for _v, label in _VALUES])
-def test_all_three_coercers_agree_on_body(value, label):
+@pytest.mark.parametrize("value", [pytest.param(v, id=label) for v, label in _VALUES])
+def test_all_three_coercers_agree_on_body(value):
     app = Veloce(openapi_url=None)
     dispatched = _through_dispatch(value)
     assert dispatched.body == make_response(value).body

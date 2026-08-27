@@ -103,15 +103,15 @@ def test_the_envelope_does_not_carry_the_dialect(accept):
 
 
 @pytest.mark.parametrize(
-    ("label", "message"),
+    "message",
     [
-        ("initialize", INITIALIZE),
-        ("tools/list", {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
-        ("ping", {"jsonrpc": "2.0", "id": 1, "method": "ping"}),
-        ("tools/call", None),
+        pytest.param(INITIALIZE, id="initialize"),
+        pytest.param({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, id="tools/list"),
+        pytest.param({"jsonrpc": "2.0", "id": 1, "method": "ping"}, id="ping"),
+        pytest.param(None, id="tools/call"),
     ],
 )
-def test_no_successful_reply_shape_carries_the_dialect(label, message):
+def test_no_successful_reply_shape_carries_the_dialect(message):
     response = _client().post(
         "/mcp", json=message or _call(), headers={"Accept": "application/json"}
     )
@@ -119,17 +119,17 @@ def test_no_successful_reply_shape_carries_the_dialect(label, message):
 
 
 @pytest.mark.parametrize(
-    ("label", "message"),
+    "message",
     [
-        ("unknown method", {"jsonrpc": "2.0", "id": 1, "method": "nope"}),
-        ("not a request object", [1, 2]),
-        (
-            "unknown tool",
+        pytest.param({"jsonrpc": "2.0", "id": 1, "method": "nope"}, id="unknown method"),
+        pytest.param([1, 2], id="not a request object"),
+        pytest.param(
             {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "nope"}},
+            id="unknown tool",
         ),
     ],
 )
-def test_no_error_reply_shape_carries_the_dialect(label, message):
+def test_no_error_reply_shape_carries_the_dialect(message):
     """An error envelope is protocol too."""
     response = _client().post("/mcp", json=message, headers={"Accept": "application/json"})
     assert "dialect" not in response.json()

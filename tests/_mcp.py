@@ -15,16 +15,40 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+from collections.abc import Callable
 from typing import Any
 
 import orjson
 
+from veloce import Veloce
 from veloce.contrib.mcp import MCPAuth, MCPServer
 from veloce.contrib.mcp.transports.stdio import StdioTransport
 from veloce.principal import Principal
 
 RESOURCE_SERVER_URL = "https://api.example.com/mcp"
 AUTHORIZATION_SERVER_URL = "https://auth.example.com"
+
+
+def greeting_server(completer: Callable | None = None) -> MCPServer:
+    """A server with a `greet(name)` prompt, plus a `name` completer if given.
+
+    Ten tests in `test_mcp_completion.py` retyped this pair verbatim. What
+    varies between them is the completer body, so that is the argument; the
+    prompt is the same three lines every time and says nothing about any of
+    them.
+
+    Tests needing a different prompt - a second uncompleted argument, a
+    resource template - build their own, because the shape *is* their subject.
+    """
+    app = Veloce()
+
+    @app.mcp_prompt(description="A greeting")
+    async def greet(name: str) -> str:
+        return f"Hi {name}"
+
+    if completer is not None:
+        app.mcp_completer(prompt="greet", argument="name")(completer)
+    return MCPServer(app)
 
 
 class Pipe:

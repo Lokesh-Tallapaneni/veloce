@@ -47,15 +47,17 @@ def _post(client: TestClient, payload: dict):
 
 
 @pytest.mark.parametrize(
-    ("payload", "label"),
+    "payload",
     [
-        ({"jsonrpc": "2.0", "id": 99, "result": {"ok": True}}, "result"),
-        ({"jsonrpc": "2.0", "id": 99, "error": {"code": -1, "message": "no"}}, "error"),
-        ({"jsonrpc": "2.0", "id": "str-id", "result": {}}, "string id"),
-        ({"jsonrpc": "2.0", "id": 0, "result": {}}, "falsy id"),
+        pytest.param({"jsonrpc": "2.0", "id": 99, "result": {"ok": True}}, id="result"),
+        pytest.param(
+            {"jsonrpc": "2.0", "id": 99, "error": {"code": -1, "message": "no"}}, id="error"
+        ),
+        pytest.param({"jsonrpc": "2.0", "id": "str-id", "result": {}}, id="string id"),
+        pytest.param({"jsonrpc": "2.0", "id": 0, "result": {}}, id="falsy id"),
     ],
 )
-def test_a_posted_response_is_accepted_with_no_body(payload: dict, label: str):
+def test_a_posted_response_is_accepted_with_no_body(payload: dict):
     response = _post(_client(), payload)
     assert response.status_code == 202
     assert response.body == b""
@@ -77,16 +79,16 @@ def test_a_response_carrying_an_unknown_id_is_still_accepted():
 
 
 @pytest.mark.parametrize(
-    ("payload", "label"),
+    "payload",
     [
-        ({"jsonrpc": "2.0", "id": 99}, "id but neither method nor result"),
-        ({"jsonrpc": "2.0"}, "nothing at all"),
-        ({"id": 99, "result": {}}, "no jsonrpc version"),
-        ({"jsonrpc": "1.0", "id": 99, "result": {}}, "wrong jsonrpc version"),
-        ({"jsonrpc": "2.0", "method": 42, "id": 1}, "non-string method"),
+        pytest.param({"jsonrpc": "2.0", "id": 99}, id="id but neither method nor result"),
+        pytest.param({"jsonrpc": "2.0"}, id="nothing at all"),
+        pytest.param({"id": 99, "result": {}}, id="no jsonrpc version"),
+        pytest.param({"jsonrpc": "1.0", "id": 99, "result": {}}, id="wrong jsonrpc version"),
+        pytest.param({"jsonrpc": "2.0", "method": 42, "id": 1}, id="non-string method"),
     ],
 )
-def test_something_that_is_neither_a_request_nor_a_response_is_refused(payload: dict, label: str):
+def test_something_that_is_neither_a_request_nor_a_response_is_refused(payload: dict):
     response = _post(_client(), payload)
     assert response.status_code == 200
     assert response.json()["error"]["code"] == _INVALID_REQUEST

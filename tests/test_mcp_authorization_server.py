@@ -38,12 +38,16 @@ ISSUER = "https://api.example.com"
 REDIRECT = "http://127.0.0.1:9876/callback"
 
 
-def _pkce() -> tuple[str, str]:
-    verifier = secrets.token_urlsafe(48)
-    challenge = (
+def _challenge_for(verifier: str) -> str:
+    """RFC 7636 Sec. 4.2: BASE64URL-encoded SHA-256 of the verifier, unpadded."""
+    return (
         base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
     )
-    return verifier, challenge
+
+
+def _pkce() -> tuple[str, str]:
+    verifier = secrets.token_urlsafe(48)
+    return verifier, _challenge_for(verifier)
 
 
 def _server(**kwargs) -> MCPAuthorizationServer:
@@ -699,19 +703,22 @@ def test_a_standard_base64_challenge_is_refused():
     assert not _verify_pkce(verifier, standard)
 
 
-def test_the_challenge_is_43_unpadded_characters_for_every_verifier():
+@pytest.mark.parametrize("length", [43, 64, 96, 128])
+def test_the_challenge_is_43_unpadded_characters_for_every_verifier(length):
     """SHA-256 is 32 bytes, which is 42.67 base64 characters - always one
-    padding character stripped, so the challenge is always 43 long."""
-    for length in (43, 64, 96, 128):
-        verifier = secrets.token_urlsafe(length)[:length]
-        challenge = (
-            base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest())
-            .rstrip(b"=")
-            .decode()
-        )
-        assert len(challenge) == 43
-        assert "=" not in challenge
-        assert _verify_pkce(verifier, challenge)
+    padding character stripped, so the challenge is always 43 long.
+
+    The challenge is built by `_challenge_for`, the same helper `_pkce` uses.
+    The loop this replaced spelled the encoding out a second time, so a test
+    and a helper that agreed on the *wrong* base64 alphabet would both have
+    passed - which is exactly the confusion the neighbouring
+    `test_a_standard_base64_challenge_is_refused` exists to rule out.
+    """
+    verifier = secrets.token_urlsafe(length)[:length]
+    challenge = _challenge_for(verifier)
+    assert len(challenge) == 43
+    assert "=" not in challenge
+    assert _verify_pkce(verifier, challenge)
 
 
 def test_a_verifier_one_character_off_is_refused():

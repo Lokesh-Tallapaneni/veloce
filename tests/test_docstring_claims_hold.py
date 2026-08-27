@@ -142,10 +142,13 @@ def test_reset_is_only_reachable_through_the_resolve_entry_points():
 
 
 @pytest.mark.parametrize(
-    ("label", "exc"),
-    [("empty detail", HTTPException(404, "")), ("a described error", NotFound())],
+    "exc",
+    [
+        pytest.param(HTTPException(404, ""), id="empty detail"),
+        pytest.param(NotFound(), id="a described error"),
+    ],
 )
-def test_both_doors_render_the_same_body(label, exc):
+def test_both_doors_render_the_same_body(exc):
     """The defect: an empty detail became `"Error"` out of band and `""` in band."""
     app = Veloce(openapi_url=None)
 
