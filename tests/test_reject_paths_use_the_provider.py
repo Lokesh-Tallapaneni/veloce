@@ -30,8 +30,6 @@ from __future__ import annotations
 import asyncio
 import json
 
-import pytest
-
 from veloce import Veloce
 from veloce.json_provider import DefaultJSONProvider
 from veloce.serving.protocol import HttpProtocol
@@ -239,10 +237,19 @@ async def test_the_413_is_the_same_whether_a_request_preceded_it():
     assert json.loads(cold) == json.loads(warm)
 
 
-@pytest.mark.parametrize("repeat", range(3))
-async def test_the_413_is_stable_across_repeats(repeat):
-    _status, body = await _drive(_app(), _scope("/up", b"x" * 100, "POST"), b"x" * 100)
-    assert json.loads(body)["dialect"] == "custom"
+async def test_the_413_is_stable_across_repeats():
+    """The same app answers identically each time, on one app instance.
+
+    This was parametrized over `range(3)` with the value unused, so it built a
+    fresh app per run and asserted the same thing three times under three ids -
+    which does not test repetition at all. Driving one app three times does.
+    """
+    app = _app()
+    bodies = [
+        (await _drive(app, _scope("/up", b"x" * 100, "POST"), b"x" * 100))[1] for _ in range(3)
+    ]
+    assert all(json.loads(body)["dialect"] == "custom" for body in bodies)
+    assert len({body for body in bodies}) == 1, f"the 413 body varied across repeats: {bodies}"
 
 
 # ── an app with no provider is unchanged ─────────────────────────────

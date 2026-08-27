@@ -48,12 +48,13 @@ async def test_errorhandler_exception_class():
 def test_errorhandler_is_same_object_as_exception_handler():
     """The alias points at the same callable — no semantic drift."""
     app = Veloce(openapi_url=None)
-    assert app.errorhandler is app.exception_handler or (
-        # If bound-method comparison fails on some Python versions, the
-        # underlying function should be identical.
-        getattr(app.errorhandler, "__func__", None)
-        is getattr(app.exception_handler, "__func__", None)
-    )
+    # Two attribute reads give two *bound method* objects, so `is` between them
+    # is always False - the version this replaces led with that comparison and
+    # fell through to a `getattr(..., None) is getattr(..., None)` that would
+    # also pass if both attributes stopped being functions. The underlying
+    # function is the thing that is shared, and it is read directly.
+    assert app.errorhandler.__func__ is app.exception_handler.__func__
+    assert Veloce.errorhandler is Veloce.exception_handler
 
 
 async def test_errorhandler_for_httpexception_base():

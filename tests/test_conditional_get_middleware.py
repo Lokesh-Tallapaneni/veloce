@@ -70,7 +70,11 @@ def test_auto_etag_false_still_forwards_handler_etag():
 
     client = TestClient(app)
     r1 = client.get("/")
-    assert not r1.headers.get("ETag", "").startswith("W/") if r1.headers.get("ETag") else True
+    # Two assertions, not one conditional: the version this replaces read
+    # `... if r1.headers.get("ETag") else True`, which passes when the handler's
+    # ETag is missing altogether - the case it exists to rule out.
+    assert r1.headers.get("ETag") == '"abc"', "the handler's ETag was not forwarded"
+    assert not r1.headers["ETag"].startswith("W/"), "it was weakened on the way through"
     r2 = client.get("/", headers={"If-None-Match": '"abc"'})
     assert r2.status_code == 304
     # No synthesis on a plain body.

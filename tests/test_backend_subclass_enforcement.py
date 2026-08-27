@@ -320,7 +320,23 @@ def test_every_builtin_converter_satisfies_the_guard():
         and issubclass(obj, converters._Converter)
         and obj is not converters._Converter
     ]
-    assert len(built_in) >= 10
+    assert len(built_in) >= 10, "the scan found no converters - it is not running"
+
+    # The claim: each shipped converter satisfies the guard. Counting them says
+    # nothing about that; re-running the guard over each one does.
+    for converter in built_in:
+        assert callable(getattr(converter, "match", None)), (
+            f"{converter.__name__} does not supply `match`, which the guard requires"
+        )
+        assert "__slots__" in converter.__dict__, (
+            f"{converter.__name__} does not declare `__slots__`, so it silently "
+            "gains a `__dict__` from its slotted base"
+        )
+        # Not instantiated: `AnyConverter` takes its choice list, so there is
+        # no uniform way to build one - and the guard is about the declaration.
+        assert converter.match is not converters._Converter.match, (
+            f"{converter.__name__} inherits the base's `match` stub"
+        )
 
 
 def test_a_json_provider_missing_a_half_is_refused():

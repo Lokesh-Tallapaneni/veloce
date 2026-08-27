@@ -1,35 +1,39 @@
 """Tests for async safety — no leaks, proper resource management."""
 
 import asyncio
+import pathlib
 
 import pytest
 
-import veloce.app.core as mod
+import veloce
 from tests.conftest import make_request
 from veloce import Request, StreamingResponse, Veloce
 from veloce.serving.protocol import HttpProtocol
 
+SRC = pathlib.Path(veloce.__file__).parent
+PACKAGE_MODULES = sorted(SRC.rglob("*.py"))
 
-class TestNoDeprecatedEventLoop:
-    """Verify no deprecated asyncio.get_event_loop() calls remain."""
 
-    def test_no_get_event_loop_in_app(self):
-        import inspect
+def test_the_deprecated_loop_scan_covers_the_package():
+    """The parametrized check below is vacuous on an empty file list."""
+    assert len(PACKAGE_MODULES) > 100
 
-        source = inspect.getsource(mod)
-        assert "get_event_loop()" not in source, (
-            "app.py still uses deprecated asyncio.get_event_loop()"
-        )
 
-    def test_no_get_event_loop_in_protocol(self):
-        import inspect
+@pytest.mark.parametrize("path", PACKAGE_MODULES, ids=lambda p: p.relative_to(SRC).as_posix())
+def test_no_module_uses_the_deprecated_event_loop_accessor(path):
+    """`asyncio.get_event_loop()` is deprecated and returns a loop that may not run.
 
-        # By module object, not by name: the test reads the module's *source*,
-        # so binding its names at the top would not give it the file to scan.
-        import veloce.serving.protocol as mod
-
-        source = inspect.getsource(mod)
-        assert "get_event_loop()" not in source
+    This used to grep exactly two modules for a repository-wide claim, and its
+    failure message named `app.py` - a path that stopped existing when the
+    package was split into `veloce/app/`. A third module reintroducing the call
+    was invisible to it.
+    """
+    source = path.read_text(encoding="utf-8")
+    assert "get_event_loop()" not in source, (
+        f"{path.relative_to(SRC).as_posix()} uses the deprecated "
+        "asyncio.get_event_loop(); use get_running_loop() or take the loop as "
+        "an argument"
+    )
 
 
 class TestTaskStrongReferences:

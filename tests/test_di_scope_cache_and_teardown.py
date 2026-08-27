@@ -328,7 +328,7 @@ def test_request_typed_request_is_valid():
     async def a(request: Request):
         return {}
 
-    assert _registered(a)
+    assert _registered(app, "/a")
 
 
 def test_ordinary_query_param_is_valid():
@@ -338,7 +338,7 @@ def test_ordinary_query_param_is_valid():
     async def b(q: str = Query()):
         return {}
 
-    assert _registered(b)
+    assert _registered(app, "/b")
 
 
 def test_request_named_depends_is_allowed():
@@ -353,7 +353,7 @@ def test_request_named_depends_is_allowed():
     async def c(request=Depends(dep)):
         return {}
 
-    assert _registered(c)
+    assert _registered(app, "/c")
 
 
 def test_ws_name_in_http_plan_is_valid():
@@ -364,12 +364,19 @@ def test_ws_name_in_http_plan_is_valid():
     async def d(ws: str = Query()):
         return {}
 
-    assert _registered(d)
+    assert _registered(app, "/d")
 
 
-def _registered(handler) -> bool:
-    """Registration succeeded if we reached here without ConfigurationError."""
-    return handler is not None
+def _registered(app: Veloce, path: str) -> bool:
+    """True when `path` is on the app's route table and reaches a handler.
+
+    The version this replaces took the decorated function and returned
+    `handler is not None`, which is true of any function - so the four tests
+    below ended in an assertion that could not fail. Reaching the decorator
+    without a `ConfigurationError` is most of what they mean, but "the route is
+    actually there" is the part worth asserting.
+    """
+    return any(route == path for _method, route, _info in app.iter_routes())
 
 
 def test_configuration_error_in_exports():
