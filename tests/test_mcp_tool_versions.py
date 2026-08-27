@@ -296,16 +296,22 @@ def _published_versions(app: Veloce, name: str) -> tuple[str | None, list[str]]:
     return published.get("version"), published.get("versions", [])
 
 
-def _every_published_version_resolves(app: Veloce) -> bool:
-    """The invariant: what a tool advertises is what the server can dispatch."""
+def _unresolvable_published_versions(app: Veloce) -> list[str]:
+    """Every `tool@version` the app advertises that the server cannot dispatch.
+
+    Returns the offenders rather than a boolean: asserted through a `-> bool`
+    helper, a failure reads `assert False` and says nothing about which tool,
+    which version, or which of the two apps under test.
+    """
     registry = build_registry(app)
     server = MCPServer(app)
+    unresolvable: list[str] = []
     for name, tool in registry.tools.items():
         entry = server._describe_tool(tool)
         for version in ((entry.get("_meta") or {}).get("veloce") or {}).get("versions", []):
             if registry.resolve(name, version) is None:
-                return False
-    return True
+                unresolvable.append(f"{name}@{version}")
+    return unresolvable
 
 
 def test_the_original_still_advertises_every_version_it_serves():
@@ -351,8 +357,8 @@ def test_what_a_tool_advertises_is_what_the_server_can_dispatch():
     parent.mount("/billing", _versioned_app(), expose_mcp=True)
     app = _versioned_app()
     app.add_mcp_tool(derive_tool(build_registry(app).tools["calc"], name="calculate"))
-    assert _every_published_version_resolves(parent)
-    assert _every_published_version_resolves(app)
+    assert _unresolvable_published_versions(parent) == []
+    assert _unresolvable_published_versions(app) == []
 
 
 async def test_a_proxied_tool_publishes_no_version_the_gateway_cannot_serve():
@@ -369,7 +375,7 @@ async def test_a_proxied_tool_publishes_no_version_the_gateway_cannot_serve():
     gateway = Veloce(title="Gateway", openapi_url=None)
     await add_mcp_proxy(gateway, "up", request)
     assert _published_versions(gateway, "up_calc") == (None, [])
-    assert _every_published_version_resolves(gateway)
+    assert _unresolvable_published_versions(gateway) == []
 
 
 async def test_other_upstream_metadata_still_travels():

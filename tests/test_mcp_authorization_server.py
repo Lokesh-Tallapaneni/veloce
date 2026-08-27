@@ -560,31 +560,47 @@ async def test_the_verifier_resolves_a_token_to_its_principal():
         assert principal.claims["client_id"] == client_id
 
 
+def _advance(monkeypatch, seconds: float) -> None:
+    """Move the authorization module's clock forward.
+
+    `_now()` is the one clock the module reads, so shifting it is exact - and a
+    real `asyncio.sleep` proving a 1ms TTL costs wall time and depends on the
+    sleep being long enough on a loaded machine.
+    """
+    # The module object, because the helper patches an attribute on it -
+    # importing `_now` by name would give a value, not the binding to swap.
+    from veloce.contrib.mcp import authorization
+
+    base = authorization._now()
+    monkeypatch.setattr(authorization, "_now", lambda: base + seconds)
+
+
 async def test_the_verifier_refuses_a_token_it_never_issued():
     server = _server()
     assert await server.verifier()(secrets.token_urlsafe(32)) is None
 
 
-async def test_the_verifier_refuses_an_expired_token():
-    server = _server(access_token_ttl=0.001)
+async def test_the_verifier_refuses_an_expired_token(monkeypatch):
+    """The clock moves, not the test: a real sleep is slow and inexact."""
+    server = _server(access_token_ttl=60)
     async with AsyncTestClient(_app(server)) as client:
         client_id, code, verifier = await _authorized(client)
         issued = await _redeem(client, client_id, code, verifier)
-        import asyncio
+        assert await server.verifier()(issued["access_token"]) is not None
 
-        await asyncio.sleep(0.01)
+        _advance(monkeypatch, 61)
         assert await server.verifier()(issued["access_token"]) is None
 
 
-async def test_an_expired_token_is_dropped_rather_than_kept():
+async def test_an_expired_token_is_dropped_rather_than_kept(monkeypatch):
     store = InMemoryAuthorizationStore()
-    server = _server(access_token_ttl=0.001, store=store)
+    server = _server(access_token_ttl=60, store=store)
     async with AsyncTestClient(_app(server)) as client:
         client_id, code, verifier = await _authorized(client)
         issued = await _redeem(client, client_id, code, verifier)
-        import asyncio
+        assert await store.get_token(_digest(issued["access_token"])) is not None
 
-        await asyncio.sleep(0.01)
+        _advance(monkeypatch, 61)
         await server.verifier()(issued["access_token"])
         assert await store.get_token(_digest(issued["access_token"])) is None
 
