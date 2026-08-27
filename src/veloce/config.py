@@ -24,6 +24,8 @@ import orjson
 
 from veloce._protocol_constants import URL_SCHEME_HTTP
 
+_logger = logging.getLogger(__name__)
+
 # Per-process cap on simultaneously-open connections for the built-in serving
 # path. Without it, a DDoS can exhaust RAM by opening sockets faster than
 # dispatch can drain them.
@@ -37,8 +39,6 @@ DEFAULT_MAX_CONCURRENT_CONNECTIONS = 1000
 # streaming path awaits on. The low mark is left to asyncio's default (a
 # quarter of high) when only the high mark is supplied.
 DEFAULT_WRITE_BUFFER_HIGH_WATER = 256 * 1024
-
-_logger = logging.getLogger(__name__)
 
 
 def _orjson_load(fp: IO[str] | IO[bytes]) -> Mapping[str, Any]:

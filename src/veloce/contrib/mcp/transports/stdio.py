@@ -49,6 +49,8 @@ if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.server import MCPServer
     from veloce.contrib.mcp.transports.base import BidirectionalTransport
 
+_logger = logging.getLogger(__name__)
+
 # JSON-RPC 2.0 Sec. 5.1 parse error - returned for a line that is not valid
 # JSON. The id is null because the request could not be read.
 
@@ -61,9 +63,6 @@ _SERVER_ID_PREFIX = "srv-"
 # force - but these two exist to reach a request that is ALREADY running, so
 # queueing them behind it defeats them entirely.
 _CONTROL_METHODS = frozenset({"ping", "notifications/cancelled"})
-
-
-_logger = logging.getLogger(__name__)
 
 
 class StdioTransport:

@@ -74,6 +74,35 @@ def _forward(params: dict[str, Any], accepted: frozenset[str] | None) -> dict[st
     return {name: value for name, value in params.items() if name in accepted}
 
 
+def _reject_unresolvable_defaults(cls: type, verb: str, method: Any) -> None:
+    """Refuse a verb method declaring a parameter marker or `Depends`.
+
+    A `MethodView` is one route serving several verbs, so there is one handler
+    plan for the route and none per verb - nothing resolves these. Left alone the
+    default object itself was passed, so `q: str = Query(default="")` handed the
+    method a `Query` instance and the view answered with its repr. Raised at
+    class-definition time, like the `async def` check above, so the mistake
+    surfaces on import rather than as a nonsense response.
+    """
+    try:
+        parameters = inspect.signature(method).parameters
+    except (TypeError, ValueError):  # pragma: no cover - builtins and C callables
+        return
+    offenders = [
+        param.name
+        for param in parameters.values()
+        if isinstance(param.default, (ParamBase, Depends))
+    ]
+    if not offenders:
+        return
+    raise TypeError(
+        f"{cls.__name__}.{verb} declares {', '.join(offenders)} with a parameter "
+        f"marker or Depends(), which a MethodView verb method cannot resolve: the "
+        f"route has one handler plan shared by every verb. Read the value from "
+        f"`request` inside the method, or use a function handler."
+    )
+
+
 class View:
     """Base class-based view - one `dispatch_request` per class.
 
@@ -93,6 +122,14 @@ class View:
     # this one in place, or every view class would share the same list.
     decorators: ClassVar[list[Callable]] = []
     init_every_request: ClassVar[bool] = True
+
+    #: the failure would otherwise be a `NotImplementedError` on the first
+    #: request to the route it was registered for.
+    _required = ("dispatch_request",)
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        _require_methods(cls, View, View._required)
 
     @classmethod
     def as_view(cls, name: str, *class_args: Any, **class_kwargs: Any) -> Callable:
@@ -147,46 +184,9 @@ class View:
 
     #: The method a subclass must supply, checked at definition rather than left
     #: to fail at call time - a view that never dispatches serves nothing, and
-    #: the failure would otherwise be a `NotImplementedError` on the first
-    #: request to the route it was registered for.
-    _required = ("dispatch_request",)
-
-    def __init_subclass__(cls, **kwargs: object) -> None:
-        super().__init_subclass__(**kwargs)
-        _require_methods(cls, View, View._required)
-
     async def dispatch_request(self, *args: Any, **kwargs: Any) -> Any:
         """Handle the request - subclasses must override."""
         raise NotImplementedError(f"{type(self).__name__} must implement dispatch_request()")
-
-
-def _reject_unresolvable_defaults(cls: type, verb: str, method: Any) -> None:
-    """Refuse a verb method declaring a parameter marker or `Depends`.
-
-    A `MethodView` is one route serving several verbs, so there is one handler
-    plan for the route and none per verb - nothing resolves these. Left alone the
-    default object itself was passed, so `q: str = Query(default="")` handed the
-    method a `Query` instance and the view answered with its repr. Raised at
-    class-definition time, like the `async def` check above, so the mistake
-    surfaces on import rather than as a nonsense response.
-    """
-    try:
-        parameters = inspect.signature(method).parameters
-    except (TypeError, ValueError):  # pragma: no cover - builtins and C callables
-        return
-    offenders = [
-        param.name
-        for param in parameters.values()
-        if isinstance(param.default, (ParamBase, Depends))
-    ]
-    if not offenders:
-        return
-    raise TypeError(
-        f"{cls.__name__}.{verb} declares {', '.join(offenders)} with a parameter "
-        f"marker or Depends(), which a MethodView verb method cannot resolve: the "
-        f"route has one handler plan shared by every verb. Read the value from "
-        f"`request` inside the method, or use a function handler."
-    )
 
 
 class MethodView(View):

@@ -57,6 +57,16 @@ class JSONProvider:
         app.json_provider_class = MyJSONProvider
     """
 
+    #: Both halves a provider must supply, checked at definition rather than
+    #: left to fail at call time - a provider missing one of them works until
+    #: the first response that needs to encode, or the first request body that
+    #: needs to decode, and then fails on a live request.
+    _required = ("dumps", "loads")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        _require_methods(cls, JSONProvider, JSONProvider._required)
+
     def __init__(self, app: Any) -> None:
         self._app = app
 
@@ -72,16 +82,6 @@ class JSONProvider:
     def loads(self, data: bytes | str) -> Any:
         """Parse JSON `data` into Python objects."""
         raise NotImplementedError
-
-    #: Both halves a provider must supply, checked at definition rather than
-    #: left to fail at call time - a provider missing one of them works until
-    #: the first response that needs to encode, or the first request body that
-    #: needs to decode, and then fails on a live request.
-    _required = ("dumps", "loads")
-
-    def __init_subclass__(cls, **kwargs: object) -> None:
-        super().__init_subclass__(**kwargs)
-        _require_methods(cls, JSONProvider, JSONProvider._required)
 
     def response(self, value: Any, **kwargs: Any) -> Any:
         """Build a `Response` carrying `value` as JSON.

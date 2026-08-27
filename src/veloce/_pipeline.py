@@ -48,6 +48,11 @@ PH_HTTP_FINISH = 3  # post-response observation (instrumentation timing + metric
 PH_WS_HANDSHAKE = 4  # ws connect gate (host / origin allow-lists)
 PH_ASGI_WRAP = 5  # outermost ASGI wrapper (ASGI middleware, live-otel span)
 
+# `order` for the live-otel ASGI wrapper - larger than the default `order` of
+# the standard `_asgi_middleware` spec so it sorts first within PH_ASGI_WRAP and
+# composes OUTERMOST, mirroring the historical `_asgi_middleware.insert(0, ...)`.
+WRAP_ORDER_OTEL = 100
+
 # Number of phases - the compiler buckets over `range(_PH_COUNT)`.
 _PH_COUNT = 6
 
@@ -200,12 +205,6 @@ def compile_pipeline(app: Veloce) -> CompiledPipeline:
         and not app._middlewares
     )
     return cp
-
-
-# `order` for the live-otel ASGI wrapper - larger than the default `order` of
-# the standard `_asgi_middleware` spec so it sorts first within PH_ASGI_WRAP and
-# composes OUTERMOST, mirroring the historical `_asgi_middleware.insert(0, ...)`.
-WRAP_ORDER_OTEL = 100
 
 
 def flatten_asgi_wrap(slot: object) -> list[AsgiWrapPair]:

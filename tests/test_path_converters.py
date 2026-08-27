@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import datetime as _dt
+import decimal as _dec
 import re
 import uuid
 
@@ -10,11 +12,17 @@ import pytest
 from veloce import Request, Veloce
 from veloce.routing.converters import (
     AnyConverter,
+    DateConverter,
+    DateTimeConverter,
+    DecimalConverter,
     FloatConverter,
     IntConverter,
     PathConverter,
     StringConverter,
+    TimeConverter,
+    TimeDeltaConverter,
     UUIDConverter,
+    extract_regex_converters,
     parse_converter,
 )
 from veloce.routing.router import Router
@@ -310,21 +318,6 @@ def test_module_int_digit_cap_not_in_public_surface():
 
     assert "_MAX_INT_DIGITS" not in dir(_routing)
     assert _conv._MAX_INT_DIGITS == 20
-
-
-# ── Temporal / decimal converters ───────────────────────────────────────
-
-import datetime as _dt  # noqa: E402
-import decimal as _dec  # noqa: E402
-
-from veloce.routing.converters import (  # noqa: E402
-    DateConverter,
-    DateTimeConverter,
-    DecimalConverter,
-    TimeConverter,
-    TimeDeltaConverter,
-    extract_regex_converters,
-)
 
 
 def test_date_converter():

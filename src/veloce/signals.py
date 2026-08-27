@@ -412,16 +412,6 @@ class Signal:
             targets[slot] = (target, result)
         return targets
 
-    def _log_receiver_raised(self, target: Callable, exc: BaseException) -> None:
-        """Log a receiver failure at WARNING with the traceback attached."""
-        _logger.warning(
-            MSG_RECEIVER_RAISED,
-            getattr(target, "__qualname__", repr(target)),
-            self.name,
-            exc.__class__.__name__,
-            exc_info=exc,
-        )
-
     def has_receivers_for(self, sender: Any = None) -> bool:
         """`True` if any connected receiver would fire for `sender`.
 
@@ -436,6 +426,16 @@ class Signal:
             if _matches(sub_sender, sender):
                 return True
         return False
+
+    def _log_receiver_raised(self, target: Callable, exc: BaseException) -> None:
+        """Log a receiver failure at WARNING with the traceback attached."""
+        _logger.warning(
+            MSG_RECEIVER_RAISED,
+            getattr(target, "__qualname__", repr(target)),
+            self.name,
+            exc.__class__.__name__,
+            exc_info=exc,
+        )
 
     def __repr__(self) -> str:
         return f"<Signal name={self.name!r} receivers={len(self._subs)}>"

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from veloce import Veloce
 from veloce.json_provider import DefaultJSONProvider, JSONProvider
 
@@ -227,10 +229,6 @@ def test_fractional_decimal_still_float():
     assert jsonable_encoder(decimal.Decimal("9.99")) == 9.99
     out = jsonable_encoder(decimal.Decimal("1.0"))  # negative exponent -> float
     assert out == 1.0 and type(out) is float
-
-
-# Add `Any` import for the type-checker.
-from typing import Any  # noqa: E402
 
 
 def test_huge_exponent_decimal_fast_string_no_int_materialization():

@@ -143,25 +143,6 @@ class BadRequest(HTTPException):
     description = "Bad Request"
 
 
-class FilesKeyError(VeloceError, KeyError):
-    """Descriptive miss on ``request.files`` raised in debug mode.
-
-    Subclasses ``KeyError`` so handlers that already catch the bare lookup
-    miss keep working, while the message explains the most common cause:
-    the field was submitted as a plain form value (missing
-    ``enctype="multipart/form-data"``) or the body was JSON rather than a
-    multipart upload. Only raised when ``app.debug`` is set; production
-    keeps the plain ``KeyError`` semantics.
-    """
-
-    def __init__(self, message: str) -> None:
-        self._message = message
-        super().__init__(message)
-
-    def __str__(self) -> str:
-        return self._message
-
-
 class Unauthorized(HTTPException):
     code = HTTP_401_UNAUTHORIZED
     description = "Unauthorized"
@@ -388,6 +369,25 @@ class WebSocketRequestValidationError(RequestValidationError):
 
 
 # ── Other exception families ──────────────────────────────
+
+
+class FilesKeyError(VeloceError, KeyError):
+    """Descriptive miss on ``request.files`` raised in debug mode.
+
+    Subclasses ``KeyError`` so handlers that already catch the bare lookup
+    miss keep working, while the message explains the most common cause:
+    the field was submitted as a plain form value (missing
+    ``enctype="multipart/form-data"``) or the body was JSON rather than a
+    multipart upload. Only raised when ``app.debug`` is set; production
+    keeps the plain ``KeyError`` semantics.
+    """
+
+    def __init__(self, message: str) -> None:
+        self._message = message
+        super().__init__(message)
+
+    def __str__(self) -> str:
+        return self._message
 
 
 class BuildError(VeloceError, LookupError):

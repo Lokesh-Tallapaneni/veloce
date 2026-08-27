@@ -158,6 +158,17 @@ class Veloce(
     # is the spec version string emitted in the document.
     openapi_version: str = "3.1.0"
 
+    # Attributes built lazily on first access, declared here so their type does
+    # not depend on which method the runtime happens to reach first: the
+    # construction helpers below assign the initial `None`, and the accessors
+    # replace it with the built value.
+    _cached_routes: list[dict[str, Any]] | None
+    _cached_view_functions: dict[str, Callable] | None
+    _cached_url_map: _URLMap | None
+    _json_provider: Any
+    _aborter: Any
+    _cli_group: Any
+
     def __init__(
         self,
         title: Annotated[
@@ -486,350 +497,6 @@ class Veloce(
             if not os.path.isabs(tdir):
                 tdir = os.path.join(self.package_root, tdir)
             self._templates = Jinja2Templates(directory=tdir)
-
-    def _init_runtime_state(self) -> None:
-        """Initialise the app's internal runtime and pipeline state.
-
-        The lifecycle bookkeeping, middleware ledger, compiled feature
-        pipeline specs, instrumentation / MCP / error-handler tables, and the
-        route-introspection caches. Arg-free: every value is an empty
-        container, a sentinel, or a FeatureSpec whose enabled/build lambdas
-        read app state lazily at request time. Called once from __init__.
-        """
-        self._init_lifecycle_state()
-        self._init_middleware_state()
-        self._init_feature_pipeline()
-        self._init_asgi_stack_state()
-        self._init_mcp_state()
-        self._init_introspection_caches()
-
-    def _init_lifecycle_state(self) -> None:
-        """Lifespan handles, the setup lock, and the spawned-task ledgers."""
-        self._lifespan_cm: Any = None
-        # Setup lock: flipped True on the first dispatch (under
-        # `_first_request_lock`) so late route/hook/blueprint registration -
-        # which would race in-flight requests under concurrent ASGI dispatch -
-        # raises `SetupError` instead of silently mutating the live route table.
-        # Initialised here, before the ctor-time `exception_handlers=` /
-        # `middleware=` registration runs, so `_assert_mutable` can read it.
-        # Relaxed under DEBUG/TESTING (decided at lock time) so hot-reload and
-        # test monkeypatching stay ergonomic.
-        self._setup_locked = False
-        # Master switch for the setup lock. The in-memory `TestClient` clears it
-        # so a test can keep registering routes/hooks between requests without
-        # tripping `SetupError`; real serving paths leave it on.
-        self._setup_lock_enabled = True
-        # Single AsyncExitStack driving startup teardown. Entered resources
-        # (the lifespan CM, each `on_shutdown` callback, the watchdog) are
-        # pushed here in startup order, so a failure mid-startup unwinds only
-        # what already succeeded and a clean shutdown unwinds everything in
-        # reverse. `None` until the first startup run.
-        self._lifespan_stack: contextlib.AsyncExitStack | None = None
-        # Mounted Veloce sub-apps started during startup, in start order. Shut
-        # down newest-first BEFORE the parent's own on_shutdown handlers, so a
-        # child releasing work against a shared resource tears down while that
-        # resource is still open (reverse of parent-then-children startup).
-        self._started_subapps: list[Veloce] = []
-        # App-scoped background tasks spawned via `app.spawn(...)`. Named tasks
-        # live in the dict (cancellable / retrievable by name); anonymous ones
-        # in the set. Both hold strong references so the loop cannot GC an
-        # in-flight task, and both are cancelled-and-drained on shutdown.
-        self._spawned_named: dict[str, asyncio.Task[Any]] = {}
-        self._spawned_anon: set[asyncio.Task[Any]] = set()
-
-    def _init_middleware_state(self) -> None:
-        """The app logger and the middleware ledger its registration funnels write."""
-        # Set up logger: the logger name is the
-        # `import_name` (already resolved to the caller's module above
-        # when not passed explicitly).
-        self.logger = logging.getLogger(self.import_name)
-
-        self._middlewares: list[Middleware] = []
-        # Priority-ordering bookkeeping for `_middlewares`. Each registered
-        # middleware records `(priority, sequence, instance)`; `sequence` is a
-        # monotonic registration counter so equal priorities keep registration
-        # order (a stable tiebreak). `_middleware_seq` issues those sequence
-        # numbers and `_any_priority` stays False until a non-zero priority is
-        # passed - while it is False, `_middlewares` is exactly the append-order
-        # list and the ordered rebuild is skipped entirely, so an app that never
-        # uses priorities pays nothing and its ordering is byte-identical to
-        # before. Once any priority is set, `_middlewares` is rebuilt at
-        # registration time (never per request) as a stable sort by descending
-        # priority, so higher-priority middleware runs earlier in the request
-        # phase and correspondingly later in the response phase.
-        self._middleware_records: list[tuple[int, int, Middleware]] = []
-        self._middleware_seq = 0
-        self._any_priority = False
-        # Monotonic generation counter for `_middlewares`, bumped on every
-        # mutation via `add_middleware`. A route's per-route exclusion chain
-        # cache (`RouteInfo._mw_chain_cache`) keys on this so a filtered
-        # chain is recomputed only when the registered middleware set
-        # actually changes, never per request.
-        self._mw_version = 0
-
-    def _init_feature_pipeline(self) -> None:
-        """The feature registry and the pipeline compiled from it.
-
-        The `FeatureSpec` declarations are appended in order and read back as a
-        sequence, so they stay together here rather than being split by topic.
-        """
-        # Feature registry + compiled pipeline. `_features` holds the app-level
-        # `FeatureSpec` declarations; `_gen` is a monotonic generation counter
-        # bumped by every registration funnel; `_pipeline` caches the compiled
-        # artifact and is rebuilt lazily when `cp.gen != self._gen`. Generalises
-        # the `_mw_version` pattern from middleware-only to all compiled features.
-        self._gen = 0
-        self._features: list[FeatureSpec] = []
-        self._pipeline: CompiledPipeline | None = None
-        # WebSocket handshake host / origin gate: pre-filtered from the
-        # registered middleware at compile time so the per-connect path iterates
-        # a frozen tuple instead of probing every middleware. Enabled only when
-        # middleware exists.
-        self._features.append(
-            FeatureSpec(
-                "ws.handshake",
-                PH_WS_HANDSHAKE,
-                enabled=lambda: bool(self._middlewares),
-                build=lambda: build_ws_handshake_checks(self),
-            )
-        )
-        # Response-phase middleware: the `process_response` bound methods in
-        # reversed registration order, fused once at compile so no per-response
-        # `reversed(self._middlewares)` alloc runs. Consumed only when a request
-        # carries no per-route exclusion chain (`_MW_RESPONSE_CHAIN_KEY` absent);
-        # an excluded route falls back to the dynamic filtered walk.
-        self._features.append(
-            FeatureSpec(
-                "http.middleware.response",
-                PH_HTTP_POST,
-                enabled=lambda: bool(self._middlewares),
-                build=lambda: build_response_middleware(self),
-            )
-        )
-        # Request-phase middleware: the `process_request` bound methods in
-        # forward registration order, fused once. Consumed only when a request
-        # carries no per-route exclusion chain; an excluded route uses its
-        # dynamic filtered chain.
-        self._features.append(
-            FeatureSpec(
-                "http.middleware.request",
-                PH_HTTP_PRE,
-                enabled=lambda: bool(self._middlewares),
-                build=lambda: build_request_middleware(self),
-            )
-        )
-        # `@app.middleware("http")` call_next chain: the registered functions
-        # fused into a tuple. The slot is `None` when none are registered, so the
-        # around branch in `handle_request` is taken only when funcs exist.
-        self._features.append(
-            FeatureSpec(
-                "http.middleware.around",
-                PH_HTTP_AROUND,
-                enabled=lambda: bool(self._http_middleware_funcs),
-                build=lambda: tuple(self._http_middleware_funcs),
-            )
-        )
-        # Instrumentation hooks: the registered hooks fused into a tuple. The
-        # slot is `None` for an un-instrumented app, which then never reads the
-        # perf clock or runs the post-response metrics call.
-        self._features.append(
-            FeatureSpec(
-                "http.instrumentation",
-                PH_HTTP_FINISH,
-                enabled=lambda: bool(self._instrumentation),
-                build=lambda: tuple(self._instrumentation),
-            )
-        )
-        # Standard ASGI middleware wrappers: the registered `(cls, options)`
-        # pairs in registration order. Lives at the default `order` so any
-        # higher-order wrapper (the live-otel span, registered with a larger
-        # `order`) sorts ahead of it and ends up the outermost wrapper - the
-        # same position the historical `_asgi_middleware.insert(0, ...)` gave it.
-        # The build returns a list of pairs; `_build_asgi_stack` flattens the
-        # fused slot into one ordered chain.
-        self._features.append(
-            FeatureSpec(
-                "asgi.middleware",
-                PH_ASGI_WRAP,
-                enabled=lambda: bool(self._asgi_middleware),
-                build=lambda: list(self._asgi_middleware),
-            )
-        )
-
-    def _init_asgi_stack_state(self) -> None:
-        """The ASGI wrapper stack and the observability hooks around it."""
-        # Standard ASGI middleware - `(class, options)` pairs. Each wraps the
-        # whole ASGI application (instantiated as `cls(app, **options)`) and
-        # is assembled lazily into `_asgi_stack` on the first request.
-        self._asgi_middleware: list[tuple[Any, dict[str, Any]]] = []
-        # The assembled ASGI wrapper stack and the generation it was built at.
-        # Rebuilt when the compiled pipeline's generation advances (a new ASGI
-        # wrapper registered, e.g. the live-otel span), so no wrapper registry
-        # needs its own manual stack reset.
-        self._asgi_stack: Callable | None = None
-        self._asgi_stack_gen: int = -1
-        # Observability instrumentation hooks - each is invoked once per
-        # finished HTTP request with a `RequestMetrics` record. Empty by
-        # default, so an un-instrumented app pays nothing.
-        self._instrumentation: list[Callable] = []
-        # Per-hook route-template exclusions, populated only when a hook is
-        # registered with `exclude_routes`. Sparse on purpose: the common case
-        # (no exclusions) leaves this empty so the dispatch loop skips the
-        # membership test entirely and a hook with no exclusion pays nothing.
-        self._instrumentation_excludes: dict[Callable, frozenset[str]] = {}
-
-    def _init_introspection_caches(self) -> None:
-        """The watchdog handle, error-handler maps, and the lazy route caches."""
-        # Dev-mode event-loop blocking watchdog - armed during startup only
-        # when the `EVENT_LOOP_WATCHDOG` config key is set, so it is `None`
-        # (and free) for every other app.
-        self._watchdog: Any = None
-        self._exception_handlers: dict[type, Callable] = {}
-        self._status_handlers: dict[int, Callable] = {}
-        # Route-introspection caches - rebuilt lazily on next access after
-        # a mutation. Invalidated through `_invalidate_route_caches()`,
-        # which fires from `add_route` / `include_router` (the two
-        # entry-points every higher-level registration ultimately funnels
-        # through, including `register_blueprint` and `add_url_rule`).
-        self._cached_routes: list[dict[str, Any]] | None = None
-        self._cached_view_functions: dict[str, Callable] | None = None
-        self._cached_url_map: _URLMap | None = None
-        # Cached `_find_exception_handler` MRO walks; invalidated on
-        # any `register_error_handler` call. The cache assumes the
-        # exception-type space is bounded - typical applications raise
-        # a fixed set of exception classes, so it never grows beyond a
-        # few dozen entries. An app that synthesises new exception
-        # classes per request would grow this unboundedly; not a target
-        # workload.
-        self._exc_handler_cache: dict[type, Callable | None] = {}
-
-    def _init_registries(self) -> None:
-        """Initialise the per-app hook, mount, template, and URL registries.
-
-        The request and blueprint hooks, mount lists, template and URL
-        processor registries, and the lazily-built helpers (webhooks router,
-        JSON provider, aborter, static config). Arg-free; called once from
-        __init__ after the constructor-time handler/middleware registration.
-        """
-        self._on_startup: list[Callable] = []
-        self._on_shutdown: list[Callable] = []
-        self._static_handlers: list[StaticFiles] = []
-        self._dependency_overrides: dict[Callable, Callable] = {}
-        # Cross-request cache of `(sub_plan, is_coro, is_gen, is_async_gen)`
-        # for overridden dependencies. Hoisted to the app so each request's
-        # fresh DependencyResolver doesn't pay the build + triple-probe cost.
-        # WeakKeyDictionary so a transient override target (a per-test
-        # lambda, a hot-reloaded factory) does not pin its plan for the
-        # process lifetime - strong-keyed callable caches become leaks
-        # under test-suite churn.
-        self._override_subplans: weakref.WeakKeyDictionary[Callable, Any] = (
-            weakref.WeakKeyDictionary()
-        )
-        self._before_request_hooks: list[Callable] = []
-        self._before_first_request_hooks: list[Callable] = []
-        # Single-fire guard: lock prevents concurrent first requests from
-        # both seeing `_first_request_fired = False` and running hooks twice.
-        # The lock itself is lazy-allocated on first use so it binds to the
-        # currently-running event loop, not to whatever loop happens to be
-        # current at app-construction time (which is typically no loop at
-        # all when Veloce() is instantiated at module scope, and a
-        # different loop when TestClient spins one up later).
-        self._first_request_fired = False
-        self._first_request_lock: asyncio.Lock | None = None
-        self._after_request_hooks: list[Callable] = []
-        self._teardown_request_hooks: list[Callable] = []
-        # Blueprint hooks bucketed by blueprint name. Dispatch only walks
-        # the bucket whose name matches the matched route's `endpoint`
-        # prefix, avoiding the O(B*H) per-request no-op gate iteration
-        # the flattened-with-startswith-gate approach used to incur.
-        self._bp_before_hooks: dict[str, list[Callable]] = {}
-        self._bp_after_hooks: dict[str, list[Callable]] = {}
-        self._bp_teardown_hooks: dict[str, list[Callable]] = {}
-        # Per-blueprint error handlers, kept out of the app-global tables so a
-        # blueprint's handler only catches exceptions raised by its own (or a
-        # nested descendant's) routes - consulted by `request.blueprints` before
-        # the app-level tables, never across sibling blueprints.
-        self._bp_exception_handlers: dict[str, dict[type, Callable]] = {}
-        self._bp_status_handlers: dict[str, dict[int, Callable]] = {}
-        self._teardown_appcontext_hooks: list[Callable] = []
-        self._context_processors: list[Callable] = []
-        # `(prefix, prefix + "/", sub_app)` - the second slot is the
-        # boundary string the dispatcher compares against the request path,
-        # precomputed once so the per-request loop avoids re-allocating it.
-        self._mounted_apps: list[tuple[str, str, Any]] = []
-        # Same shape for ASGI-layer mounts dispatched with the raw scope.
-        self._asgi_mounts: list[tuple[str, str, Any]] = []
-        # Sub-apps mounted with `expose_mcp=True`, whose MCP primitives are
-        # published through this app's own MCP server under a name prefix.
-        self._mcp_mounts: list[tuple[str, Any]] = []
-        # Tools handed over already built rather than derived from a signature:
-        # an upstream's, discovered by `add_mcp_proxy`, or one narrowed by
-        # `derive_tool` and registered with `add_mcp_tool`. Their schema is
-        # whatever built them, so the registry adds them as they are.
-        self._mcp_prebuilt_tools: list[Any] = []
-        self._http_middleware_funcs: list[Callable] = []  # @app.middleware("http") funcs
-        # Jinja2 helper registrations - applied to the env on each render.
-        self._template_filters: list[tuple[str, Callable]] = []
-        self._template_globals: list[tuple[str, Callable]] = []
-        self._template_tests: list[tuple[str, Callable]] = []
-        # URL processors: preprocessor runs after route match and
-        # can mutate path_params (e.g. pop a lang segment into g); url_defaults
-        # runs inside url_for/url_path_for and can inject default kwargs.
-        # Objects that report to `veloce check` without being middleware or a
-        # static handler. A mounted MCP endpoint registers routes, so the audit
-        # had nothing to ask about a tool-execution endpoint with no auth.
-        self._auditables: list[Any] = []
-        self._url_value_preprocessors: list[Callable] = []
-        self._url_default_funcs: list[Callable] = []
-        # Blueprint-contributed URL processors, bucketed by the endpoint's
-        # dotted blueprint name exactly as the request hooks are. Merged into
-        # the app lists as gated closures, every blueprint's processor was
-        # tested on every request - the O(blueprints * processors) of no-op
-        # work the hook buckets exist to avoid - and one of them cost every
-        # route in the app its straight-line dispatch.
-        self._bp_url_value_preprocessors: dict[str, list[Callable]] = {}
-        self._bp_url_default_funcs: dict[str, list[Callable]] = {}
-        # `url_build_error_handlers` - list of `(error, endpoint, values)`
-        # callbacks consulted when `url_for` can't build a URL.
-        self.url_build_error_handlers: list[Callable] = []
-        # `app.blueprints` view + `iter_blueprints()` iterator -
-        # name -> Blueprint of every successfully registered blueprint.
-        self._blueprints_map: dict[str, Any] = {}
-        # `@app.shell_context_processor` registry - each function
-        # returns a dict that's merged into `veloce shell`'s namespace.
-        self._shell_context_processors: list[Callable] = []
-        # Lazily-built `click.Group` for app-defined CLI commands. Built
-        # on first `app.cli` access so `click` isn't a hard import.
-        self._cli_group: Any = None
-        # `app.webhooks` - an APIRouter whose routes are pure
-        # documentation: registered for the OpenAPI 3.1 `webhooks`
-        # section, never dispatched.
-        from veloce.blueprints import Blueprint
-
-        self.webhooks = Blueprint("webhooks")
-        # JSON provider - the. Class attribute is overridable;
-        # instance is built lazily on first `app.json` access.
-        from veloce.json_provider import DefaultJSONProvider
-
-        self.json_provider_class: Any = DefaultJSONProvider
-        self._json_provider: Any = None
-        # Resolved on first use from the provider above: `None` means "the
-        # default provider with nothing configured", which is byte-for-byte what
-        # the direct orjson path already emits - so an app that configured
-        # nothing keeps that path and pays only a `None` test. Anything else is
-        # the provider's own `dumps`, so a configured dialect reaches a handler's
-        # `dict` / `list` / model return the way it already reaches `jsonify`.
-        self._handler_json_dumps: Any = _UNRESOLVED_JSON_DUMPS
-        # Callable `Aborter`. Lazily built on first `app.aborter`
-        # access so subclasses can override before use without paying
-        # construction cost for apps that don't touch it.
-        self._aborter: Any = None
-        # Static-folder attributes - `static_folder` is
-        # resolved relative to `package_root` if not absolute. Mounting
-        # a `StaticFiles` handler at `static_url_path` is opt-in via
-        # `app.static(prefix=app.static_url_path, directory=app.static_folder)`.
-        self.static_folder: str = "static"
-        self.static_url_path: str = "/static"
 
     # ── Properties ────────────────────────────────────────
 
@@ -1906,5 +1573,351 @@ class Veloce(
         # reached, but they pin the callable + its plan. Drop them so a
         # long-lived test suite that swaps in hundreds of fakes doesn't leak.
         self._override_subplans.clear()
+
+    # ── Construction helpers ──────────────────────────────
+
+    def _init_runtime_state(self) -> None:
+        """Initialise the app's internal runtime and pipeline state.
+
+        The lifecycle bookkeeping, middleware ledger, compiled feature
+        pipeline specs, instrumentation / MCP / error-handler tables, and the
+        route-introspection caches. Arg-free: every value is an empty
+        container, a sentinel, or a FeatureSpec whose enabled/build lambdas
+        read app state lazily at request time. Called once from __init__.
+        """
+        self._init_lifecycle_state()
+        self._init_middleware_state()
+        self._init_feature_pipeline()
+        self._init_asgi_stack_state()
+        self._init_mcp_state()
+        self._init_introspection_caches()
+
+    def _init_lifecycle_state(self) -> None:
+        """Lifespan handles, the setup lock, and the spawned-task ledgers."""
+        self._lifespan_cm: Any = None
+        # Setup lock: flipped True on the first dispatch (under
+        # `_first_request_lock`) so late route/hook/blueprint registration -
+        # which would race in-flight requests under concurrent ASGI dispatch -
+        # raises `SetupError` instead of silently mutating the live route table.
+        # Initialised here, before the ctor-time `exception_handlers=` /
+        # `middleware=` registration runs, so `_assert_mutable` can read it.
+        # Relaxed under DEBUG/TESTING (decided at lock time) so hot-reload and
+        # test monkeypatching stay ergonomic.
+        self._setup_locked = False
+        # Master switch for the setup lock. The in-memory `TestClient` clears it
+        # so a test can keep registering routes/hooks between requests without
+        # tripping `SetupError`; real serving paths leave it on.
+        self._setup_lock_enabled = True
+        # Single AsyncExitStack driving startup teardown. Entered resources
+        # (the lifespan CM, each `on_shutdown` callback, the watchdog) are
+        # pushed here in startup order, so a failure mid-startup unwinds only
+        # what already succeeded and a clean shutdown unwinds everything in
+        # reverse. `None` until the first startup run.
+        self._lifespan_stack: contextlib.AsyncExitStack | None = None
+        # Mounted Veloce sub-apps started during startup, in start order. Shut
+        # down newest-first BEFORE the parent's own on_shutdown handlers, so a
+        # child releasing work against a shared resource tears down while that
+        # resource is still open (reverse of parent-then-children startup).
+        self._started_subapps: list[Veloce] = []
+        # App-scoped background tasks spawned via `app.spawn(...)`. Named tasks
+        # live in the dict (cancellable / retrievable by name); anonymous ones
+        # in the set. Both hold strong references so the loop cannot GC an
+        # in-flight task, and both are cancelled-and-drained on shutdown.
+        self._spawned_named: dict[str, asyncio.Task[Any]] = {}
+        self._spawned_anon: set[asyncio.Task[Any]] = set()
+
+    def _init_middleware_state(self) -> None:
+        """The app logger and the middleware ledger its registration funnels write."""
+        # Set up logger: the logger name is the
+        # `import_name` (already resolved to the caller's module above
+        # when not passed explicitly).
+        self.logger = logging.getLogger(self.import_name)
+
+        self._middlewares: list[Middleware] = []
+        # Priority-ordering bookkeeping for `_middlewares`. Each registered
+        # middleware records `(priority, sequence, instance)`; `sequence` is a
+        # monotonic registration counter so equal priorities keep registration
+        # order (a stable tiebreak). `_middleware_seq` issues those sequence
+        # numbers and `_any_priority` stays False until a non-zero priority is
+        # passed - while it is False, `_middlewares` is exactly the append-order
+        # list and the ordered rebuild is skipped entirely, so an app that never
+        # uses priorities pays nothing and its ordering is byte-identical to
+        # before. Once any priority is set, `_middlewares` is rebuilt at
+        # registration time (never per request) as a stable sort by descending
+        # priority, so higher-priority middleware runs earlier in the request
+        # phase and correspondingly later in the response phase.
+        self._middleware_records: list[tuple[int, int, Middleware]] = []
+        self._middleware_seq = 0
+        self._any_priority = False
+        # Monotonic generation counter for `_middlewares`, bumped on every
+        # mutation via `add_middleware`. A route's per-route exclusion chain
+        # cache (`RouteInfo._mw_chain_cache`) keys on this so a filtered
+        # chain is recomputed only when the registered middleware set
+        # actually changes, never per request.
+        self._mw_version = 0
+
+    def _init_feature_pipeline(self) -> None:
+        """The feature registry and the pipeline compiled from it.
+
+        The `FeatureSpec` declarations are appended in order and read back as a
+        sequence, so they stay together here rather than being split by topic.
+        """
+        # Feature registry + compiled pipeline. `_features` holds the app-level
+        # `FeatureSpec` declarations; `_gen` is a monotonic generation counter
+        # bumped by every registration funnel; `_pipeline` caches the compiled
+        # artifact and is rebuilt lazily when `cp.gen != self._gen`. Generalises
+        # the `_mw_version` pattern from middleware-only to all compiled features.
+        self._gen = 0
+        self._features: list[FeatureSpec] = []
+        self._pipeline: CompiledPipeline | None = None
+        # WebSocket handshake host / origin gate: pre-filtered from the
+        # registered middleware at compile time so the per-connect path iterates
+        # a frozen tuple instead of probing every middleware. Enabled only when
+        # middleware exists.
+        self._features.append(
+            FeatureSpec(
+                "ws.handshake",
+                PH_WS_HANDSHAKE,
+                enabled=lambda: bool(self._middlewares),
+                build=lambda: build_ws_handshake_checks(self),
+            )
+        )
+        # Response-phase middleware: the `process_response` bound methods in
+        # reversed registration order, fused once at compile so no per-response
+        # `reversed(self._middlewares)` alloc runs. Consumed only when a request
+        # carries no per-route exclusion chain (`_MW_RESPONSE_CHAIN_KEY` absent);
+        # an excluded route falls back to the dynamic filtered walk.
+        self._features.append(
+            FeatureSpec(
+                "http.middleware.response",
+                PH_HTTP_POST,
+                enabled=lambda: bool(self._middlewares),
+                build=lambda: build_response_middleware(self),
+            )
+        )
+        # Request-phase middleware: the `process_request` bound methods in
+        # forward registration order, fused once. Consumed only when a request
+        # carries no per-route exclusion chain; an excluded route uses its
+        # dynamic filtered chain.
+        self._features.append(
+            FeatureSpec(
+                "http.middleware.request",
+                PH_HTTP_PRE,
+                enabled=lambda: bool(self._middlewares),
+                build=lambda: build_request_middleware(self),
+            )
+        )
+        # `@app.middleware("http")` call_next chain: the registered functions
+        # fused into a tuple. The slot is `None` when none are registered, so the
+        # around branch in `handle_request` is taken only when funcs exist.
+        self._features.append(
+            FeatureSpec(
+                "http.middleware.around",
+                PH_HTTP_AROUND,
+                enabled=lambda: bool(self._http_middleware_funcs),
+                build=lambda: tuple(self._http_middleware_funcs),
+            )
+        )
+        # Instrumentation hooks: the registered hooks fused into a tuple. The
+        # slot is `None` for an un-instrumented app, which then never reads the
+        # perf clock or runs the post-response metrics call.
+        self._features.append(
+            FeatureSpec(
+                "http.instrumentation",
+                PH_HTTP_FINISH,
+                enabled=lambda: bool(self._instrumentation),
+                build=lambda: tuple(self._instrumentation),
+            )
+        )
+        # Standard ASGI middleware wrappers: the registered `(cls, options)`
+        # pairs in registration order. Lives at the default `order` so any
+        # higher-order wrapper (the live-otel span, registered with a larger
+        # `order`) sorts ahead of it and ends up the outermost wrapper - the
+        # same position the historical `_asgi_middleware.insert(0, ...)` gave it.
+        # The build returns a list of pairs; `_build_asgi_stack` flattens the
+        # fused slot into one ordered chain.
+        self._features.append(
+            FeatureSpec(
+                "asgi.middleware",
+                PH_ASGI_WRAP,
+                enabled=lambda: bool(self._asgi_middleware),
+                build=lambda: list(self._asgi_middleware),
+            )
+        )
+
+    def _init_asgi_stack_state(self) -> None:
+        """The ASGI wrapper stack and the observability hooks around it."""
+        # Standard ASGI middleware - `(class, options)` pairs. Each wraps the
+        # whole ASGI application (instantiated as `cls(app, **options)`) and
+        # is assembled lazily into `_asgi_stack` on the first request.
+        self._asgi_middleware: list[tuple[Any, dict[str, Any]]] = []
+        # The assembled ASGI wrapper stack and the generation it was built at.
+        # Rebuilt when the compiled pipeline's generation advances (a new ASGI
+        # wrapper registered, e.g. the live-otel span), so no wrapper registry
+        # needs its own manual stack reset.
+        self._asgi_stack: Callable | None = None
+        self._asgi_stack_gen: int = -1
+        # Observability instrumentation hooks - each is invoked once per
+        # finished HTTP request with a `RequestMetrics` record. Empty by
+        # default, so an un-instrumented app pays nothing.
+        self._instrumentation: list[Callable] = []
+        # Per-hook route-template exclusions, populated only when a hook is
+        # registered with `exclude_routes`. Sparse on purpose: the common case
+        # (no exclusions) leaves this empty so the dispatch loop skips the
+        # membership test entirely and a hook with no exclusion pays nothing.
+        self._instrumentation_excludes: dict[Callable, frozenset[str]] = {}
+
+    def _init_introspection_caches(self) -> None:
+        """The watchdog handle, error-handler maps, and the lazy route caches."""
+        # Dev-mode event-loop blocking watchdog - armed during startup only
+        # when the `EVENT_LOOP_WATCHDOG` config key is set, so it is `None`
+        # (and free) for every other app.
+        self._watchdog: Any = None
+        self._exception_handlers: dict[type, Callable] = {}
+        self._status_handlers: dict[int, Callable] = {}
+        # Route-introspection caches - rebuilt lazily on next access after
+        # a mutation. Invalidated through `_invalidate_route_caches()`,
+        # which fires from `add_route` / `include_router` (the two
+        # entry-points every higher-level registration ultimately funnels
+        # through, including `register_blueprint` and `add_url_rule`).
+        self._cached_routes = None
+        self._cached_view_functions = None
+        self._cached_url_map = None
+        # Cached `_find_exception_handler` MRO walks; invalidated on
+        # any `register_error_handler` call. The cache assumes the
+        # exception-type space is bounded - typical applications raise
+        # a fixed set of exception classes, so it never grows beyond a
+        # few dozen entries. An app that synthesises new exception
+        # classes per request would grow this unboundedly; not a target
+        # workload.
+        self._exc_handler_cache: dict[type, Callable | None] = {}
+
+    def _init_registries(self) -> None:
+        """Initialise the per-app hook, mount, template, and URL registries.
+
+        The request and blueprint hooks, mount lists, template and URL
+        processor registries, and the lazily-built helpers (webhooks router,
+        JSON provider, aborter, static config). Arg-free; called once from
+        __init__ after the constructor-time handler/middleware registration.
+        """
+        self._on_startup: list[Callable] = []
+        self._on_shutdown: list[Callable] = []
+        self._static_handlers: list[StaticFiles] = []
+        self._dependency_overrides: dict[Callable, Callable] = {}
+        # Cross-request cache of `(sub_plan, is_coro, is_gen, is_async_gen)`
+        # for overridden dependencies. Hoisted to the app so each request's
+        # fresh DependencyResolver doesn't pay the build + triple-probe cost.
+        # WeakKeyDictionary so a transient override target (a per-test
+        # lambda, a hot-reloaded factory) does not pin its plan for the
+        # process lifetime - strong-keyed callable caches become leaks
+        # under test-suite churn.
+        self._override_subplans: weakref.WeakKeyDictionary[Callable, Any] = (
+            weakref.WeakKeyDictionary()
+        )
+        self._before_request_hooks: list[Callable] = []
+        self._before_first_request_hooks: list[Callable] = []
+        # Single-fire guard: lock prevents concurrent first requests from
+        # both seeing `_first_request_fired = False` and running hooks twice.
+        # The lock itself is lazy-allocated on first use so it binds to the
+        # currently-running event loop, not to whatever loop happens to be
+        # current at app-construction time (which is typically no loop at
+        # all when Veloce() is instantiated at module scope, and a
+        # different loop when TestClient spins one up later).
+        self._first_request_fired = False
+        self._first_request_lock: asyncio.Lock | None = None
+        self._after_request_hooks: list[Callable] = []
+        self._teardown_request_hooks: list[Callable] = []
+        # Blueprint hooks bucketed by blueprint name. Dispatch only walks
+        # the bucket whose name matches the matched route's `endpoint`
+        # prefix, avoiding the O(B*H) per-request no-op gate iteration
+        # the flattened-with-startswith-gate approach used to incur.
+        self._bp_before_hooks: dict[str, list[Callable]] = {}
+        self._bp_after_hooks: dict[str, list[Callable]] = {}
+        self._bp_teardown_hooks: dict[str, list[Callable]] = {}
+        # Per-blueprint error handlers, kept out of the app-global tables so a
+        # blueprint's handler only catches exceptions raised by its own (or a
+        # nested descendant's) routes - consulted by `request.blueprints` before
+        # the app-level tables, never across sibling blueprints.
+        self._bp_exception_handlers: dict[str, dict[type, Callable]] = {}
+        self._bp_status_handlers: dict[str, dict[int, Callable]] = {}
+        self._teardown_appcontext_hooks: list[Callable] = []
+        self._context_processors: list[Callable] = []
+        # `(prefix, prefix + "/", sub_app)` - the second slot is the
+        # boundary string the dispatcher compares against the request path,
+        # precomputed once so the per-request loop avoids re-allocating it.
+        self._mounted_apps: list[tuple[str, str, Any]] = []
+        # Same shape for ASGI-layer mounts dispatched with the raw scope.
+        self._asgi_mounts: list[tuple[str, str, Any]] = []
+        # Sub-apps mounted with `expose_mcp=True`, whose MCP primitives are
+        # published through this app's own MCP server under a name prefix.
+        self._mcp_mounts: list[tuple[str, Any]] = []
+        # Tools handed over already built rather than derived from a signature:
+        # an upstream's, discovered by `add_mcp_proxy`, or one narrowed by
+        # `derive_tool` and registered with `add_mcp_tool`. Their schema is
+        # whatever built them, so the registry adds them as they are.
+        self._mcp_prebuilt_tools: list[Any] = []
+        self._http_middleware_funcs: list[Callable] = []  # @app.middleware("http") funcs
+        # Jinja2 helper registrations - applied to the env on each render.
+        self._template_filters: list[tuple[str, Callable]] = []
+        self._template_globals: list[tuple[str, Callable]] = []
+        self._template_tests: list[tuple[str, Callable]] = []
+        # URL processors: preprocessor runs after route match and
+        # can mutate path_params (e.g. pop a lang segment into g); url_defaults
+        # runs inside url_for/url_path_for and can inject default kwargs.
+        # Objects that report to `veloce check` without being middleware or a
+        # static handler. A mounted MCP endpoint registers routes, so the audit
+        # had nothing to ask about a tool-execution endpoint with no auth.
+        self._auditables: list[Any] = []
+        self._url_value_preprocessors: list[Callable] = []
+        self._url_default_funcs: list[Callable] = []
+        # Blueprint-contributed URL processors, bucketed by the endpoint's
+        # dotted blueprint name exactly as the request hooks are. Merged into
+        # the app lists as gated closures, every blueprint's processor was
+        # tested on every request - the O(blueprints * processors) of no-op
+        # work the hook buckets exist to avoid - and one of them cost every
+        # route in the app its straight-line dispatch.
+        self._bp_url_value_preprocessors: dict[str, list[Callable]] = {}
+        self._bp_url_default_funcs: dict[str, list[Callable]] = {}
+        # `url_build_error_handlers` - list of `(error, endpoint, values)`
+        # callbacks consulted when `url_for` can't build a URL.
+        self.url_build_error_handlers: list[Callable] = []
+        # `app.blueprints` view + `iter_blueprints()` iterator -
+        # name -> Blueprint of every successfully registered blueprint.
+        self._blueprints_map: dict[str, Any] = {}
+        # `@app.shell_context_processor` registry - each function
+        # returns a dict that's merged into `veloce shell`'s namespace.
+        self._shell_context_processors: list[Callable] = []
+        # Lazily-built `click.Group` for app-defined CLI commands. Built
+        # on first `app.cli` access so `click` isn't a hard import.
+        self._cli_group = None
+        # `app.webhooks` - an APIRouter whose routes are pure
+        # documentation: registered for the OpenAPI 3.1 `webhooks`
+        # section, never dispatched.
+        from veloce.blueprints import Blueprint
+
+        self.webhooks = Blueprint("webhooks")
+        # JSON provider - the. Class attribute is overridable;
+        # instance is built lazily on first `app.json` access.
+        from veloce.json_provider import DefaultJSONProvider
+
+        self.json_provider_class: Any = DefaultJSONProvider
+        self._json_provider = None
+        # Resolved on first use from the provider above: `None` means "the
+        # default provider with nothing configured", which is byte-for-byte what
+        # the direct orjson path already emits - so an app that configured
+        # nothing keeps that path and pays only a `None` test. Anything else is
+        # the provider's own `dumps`, so a configured dialect reaches a handler's
+        # `dict` / `list` / model return the way it already reaches `jsonify`.
+        self._handler_json_dumps: Any = _UNRESOLVED_JSON_DUMPS
+        # Callable `Aborter`. Lazily built on first `app.aborter`
+        # access so subclasses can override before use without paying
+        # construction cost for apps that don't touch it.
+        self._aborter = None
+        # Static-folder attributes - `static_folder` is
+        # resolved relative to `package_root` if not absolute. Mounting
+        # a `StaticFiles` handler at `static_url_path` is opt-in via
+        # `app.static(prefix=app.static_url_path, directory=app.static_folder)`.
+        self.static_folder: str = "static"
+        self.static_url_path: str = "/static"
 
     # ── ASGI compatibility layer ──────────────────────────

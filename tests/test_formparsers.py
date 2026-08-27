@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import pytest
+
 from veloce import Request, TestClient, Veloce
-from veloce.http.formparsers import _parse_content_disposition
+from veloce.exceptions import BadRequest, RequestEntityTooLarge
+from veloce.http.formparsers import _parse_content_disposition, parse_multipart_form
 
 
 def test_quoted_semicolon_preserved_in_name():
@@ -116,11 +119,6 @@ def test_uploadfile_accepts_plain_dict_headers():
 
 
 # ── Helpers shared by the limit / boundary / charset tests ───────────
-
-import pytest  # noqa: E402
-
-from veloce.exceptions import BadRequest, RequestEntityTooLarge  # noqa: E402
-from veloce.http.formparsers import parse_multipart_form  # noqa: E402
 
 _BOUNDARY = "veloceboundary123"
 

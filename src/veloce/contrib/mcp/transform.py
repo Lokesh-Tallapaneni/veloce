@@ -103,6 +103,54 @@ def _declared_types(schema: dict[str, Any]) -> frozenset[str]:
     return frozenset(names)
 
 
+@dataclass(frozen=True, slots=True)
+class _Derivation:
+    """The argument translation a derived tool applies before its handler runs."""
+
+    bindings: tuple[_Binding, ...] = field(default=())
+
+    def translate(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Map the published arguments back to what the original handler takes."""
+        translated: dict[str, Any] = {}
+        for binding in self.bindings:
+            if binding.published is None:
+                translated[binding.original] = binding.default
+                continue
+            if binding.published in arguments:
+                translated[binding.original] = arguments[binding.published]
+            elif binding.has_default:
+                translated[binding.original] = binding.default
+        return translated
+
+
+def _reject_incompatible_schema(
+    tool_name: str,
+    argument: str,
+    original: dict[str, Any],
+    replacement: dict[str, Any],
+) -> None:
+    """Refuse a replacement schema the handler behind it would not accept.
+
+    `schema=` reshapes what the agent is told; it does not reshape the handler,
+    whose parameter type the binder still enforces. A replacement naming a type
+    the original does not accept publishes a contract every call following it
+    would be refused for - and the refusal would read as the model's mistake.
+    Narrowing within the same type (an `enum`, a `maximum`, a `pattern`) is what
+    the argument is for and is left alone.
+    """
+    accepted = _declared_types(original)
+    offered = _declared_types(replacement)
+    if not accepted or not offered:
+        return
+    unsupported = offered - accepted
+    if unsupported:
+        raise ValueError(
+            f"{tool_name!r} declares {argument!r} as {'/'.join(sorted(accepted))}, so a "
+            f"schema offering {'/'.join(sorted(unsupported))} publishes a shape the tool "
+            "would refuse; reshape within the declared type, or change the handler."
+        )
+
+
 def derive_tool(
     tool: MCPTool,
     *,
@@ -187,51 +235,3 @@ def derive_tool(
         input_schema=derived_schema,
         derived_from=_Derivation(tuple(bindings)),
     )
-
-
-@dataclass(frozen=True, slots=True)
-class _Derivation:
-    """The argument translation a derived tool applies before its handler runs."""
-
-    bindings: tuple[_Binding, ...] = field(default=())
-
-    def translate(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        """Map the published arguments back to what the original handler takes."""
-        translated: dict[str, Any] = {}
-        for binding in self.bindings:
-            if binding.published is None:
-                translated[binding.original] = binding.default
-                continue
-            if binding.published in arguments:
-                translated[binding.original] = arguments[binding.published]
-            elif binding.has_default:
-                translated[binding.original] = binding.default
-        return translated
-
-
-def _reject_incompatible_schema(
-    tool_name: str,
-    argument: str,
-    original: dict[str, Any],
-    replacement: dict[str, Any],
-) -> None:
-    """Refuse a replacement schema the handler behind it would not accept.
-
-    `schema=` reshapes what the agent is told; it does not reshape the handler,
-    whose parameter type the binder still enforces. A replacement naming a type
-    the original does not accept publishes a contract every call following it
-    would be refused for - and the refusal would read as the model's mistake.
-    Narrowing within the same type (an `enum`, a `maximum`, a `pattern`) is what
-    the argument is for and is left alone.
-    """
-    accepted = _declared_types(original)
-    offered = _declared_types(replacement)
-    if not accepted or not offered:
-        return
-    unsupported = offered - accepted
-    if unsupported:
-        raise ValueError(
-            f"{tool_name!r} declares {argument!r} as {'/'.join(sorted(accepted))}, so a "
-            f"schema offering {'/'.join(sorted(unsupported))} publishes a shape the tool "
-            "would refuse; reshape within the declared type, or change the handler."
-        )

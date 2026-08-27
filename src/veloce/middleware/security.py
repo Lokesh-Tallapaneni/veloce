@@ -810,33 +810,6 @@ class SecurityHeadersMiddleware(Middleware):
 
     sets_hardening_headers = True
 
-    def audit(self, ctx: AuditContext) -> Iterable[Finding]:
-        """Note the opt-in headers this instance is not sending.
-
-        The three defaults are always safe; `Strict-Transport-Security` and
-        `Content-Security-Policy` are not, so they stay off until asked for.
-        That leaves a registered instance looking hardened while sending
-        neither, which is said here rather than left to a scanner to find.
-        Informational: an app served over plain HTTP, or one whose policy is
-        set at a proxy, is right to leave them off.
-        """
-        if HEADER_STRICT_TRANSPORT_SECURITY not in self._headers:
-            yield Finding(
-                "SecurityHeadersMiddleware sends no Strict-Transport-Security, so a browser "
-                "can be talked back onto plain HTTP.",
-                severity="info",
-                fix="pass hsts_max_age=31536000 (one year)",
-                id="hsts-not-sent",
-            )
-        if HEADER_CONTENT_SECURITY_POLICY not in self._headers:
-            yield Finding(
-                "SecurityHeadersMiddleware sends no Content-Security-Policy, the header that "
-                "limits where scripts may load from.",
-                severity="info",
-                fix="pass content_security_policy=\"default-src 'self'\" and widen from there",
-                id="csp-not-sent",
-            )
-
     def __init__(
         self,
         *,
@@ -878,6 +851,33 @@ class SecurityHeadersMiddleware(Middleware):
         self._header_items: tuple[tuple[str, str, str], ...] = tuple(
             (name, name.lower(), value) for name, value in headers.items()
         )
+
+    def audit(self, ctx: AuditContext) -> Iterable[Finding]:
+        """Note the opt-in headers this instance is not sending.
+
+        The three defaults are always safe; `Strict-Transport-Security` and
+        `Content-Security-Policy` are not, so they stay off until asked for.
+        That leaves a registered instance looking hardened while sending
+        neither, which is said here rather than left to a scanner to find.
+        Informational: an app served over plain HTTP, or one whose policy is
+        set at a proxy, is right to leave them off.
+        """
+        if HEADER_STRICT_TRANSPORT_SECURITY not in self._headers:
+            yield Finding(
+                "SecurityHeadersMiddleware sends no Strict-Transport-Security, so a browser "
+                "can be talked back onto plain HTTP.",
+                severity="info",
+                fix="pass hsts_max_age=31536000 (one year)",
+                id="hsts-not-sent",
+            )
+        if HEADER_CONTENT_SECURITY_POLICY not in self._headers:
+            yield Finding(
+                "SecurityHeadersMiddleware sends no Content-Security-Policy, the header that "
+                "limits where scripts may load from.",
+                severity="info",
+                fix="pass content_security_policy=\"default-src 'self'\" and widen from there",
+                id="csp-not-sent",
+            )
 
     async def process_response(self, request: Request, response: Response) -> Response:
         """Attach security hardening headers to every response."""

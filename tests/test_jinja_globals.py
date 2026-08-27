@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from veloce import Veloce, g
 from veloce.contrib.templating import Jinja2Templates
 
 
-def _bind(app: Veloce) -> Any:  # type: ignore[name-defined]
+def _bind(app: Veloce) -> Any:
     from veloce.helpers import _current_app_var
 
     return _current_app_var.set(app)
 
 
-def _unbind(token: Any) -> None:  # type: ignore[name-defined]
+def _unbind(token: Any) -> None:
     from veloce.helpers import _current_app_var
 
     _current_app_var.reset(token)
@@ -86,7 +88,3 @@ def test_get_flashed_messages_available_in_template(tmp_path):
         assert out == "OK"
     finally:
         _unbind(token)
-
-
-# Pull `Any` in for the type-checker
-from typing import Any  # noqa: E402

@@ -495,6 +495,15 @@ def _templates_for(caller: str) -> Any:
     return templates
 
 
+def _new_fallback_env() -> Any:
+    """Build the minimal environment the string helper falls back to."""
+    from jinja2 import Environment, select_autoescape
+
+    env = Environment(autoescape=select_autoescape(["html", "htm", "xml", "xhtml"]))
+    env.context_class = _veloce_context_class()
+    return env
+
+
 def render_template(template_name: str | Sequence[str], **context: Any) -> str:
     """Render a named template against the current app.
 
@@ -557,12 +566,3 @@ def render_template_string(source: str, **context: Any) -> str:
         env = _app_fallback_envs[app] = _new_fallback_env()
     _sync_app_jinja_helpers(env)
     return env.from_string(source).render(context)
-
-
-def _new_fallback_env() -> Any:
-    """Build the minimal environment the string helper falls back to."""
-    from jinja2 import Environment, select_autoescape
-
-    env = Environment(autoescape=select_autoescape(["html", "htm", "xml", "xhtml"]))
-    env.context_class = _veloce_context_class()
-    return env

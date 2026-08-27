@@ -532,6 +532,12 @@ _current_request_var: contextvars.ContextVar[Any] = contextvars.ContextVar(
     "veloce_current_request", default=None
 )
 
+# Distinguishes "the handler-JSON serialiser has not been resolved yet" from a
+# resolved `None`, which means "take the direct path". Lives here because the
+# app's core resolves it and the dispatch mixin reads it, and those two cannot
+# import each other.
+_UNRESOLVED_JSON_DUMPS: Any = object()
+
 
 def dumps_for(app: Any, payload: Any) -> bytes:
     """Serialise `payload` through `app`'s provider, or directly without one.
@@ -566,13 +572,6 @@ def dumps_for(app: Any, payload: Any) -> bytes:
 def dumps_current(payload: Any) -> bytes:
     """Serialise through the app handling this request, or directly outside one."""
     return dumps_for(_current_app_var.get(), payload)
-
-
-# Distinguishes "the handler-JSON serialiser has not been resolved yet" from a
-# resolved `None`, which means "take the direct path". Lives here because the
-# app's core resolves it and the dispatch mixin reads it, and those two cannot
-# import each other.
-_UNRESOLVED_JSON_DUMPS: Any = object()
 
 
 def _require_methods(cls: type, base: type, names: tuple[str, ...]) -> None:

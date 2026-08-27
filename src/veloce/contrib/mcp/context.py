@@ -36,10 +36,10 @@ from veloce.contrib.mcp.sampling import (
     SamplingRun,
     content_blocks,
 )
+from veloce.principal import current_principal
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.session import MCPSession
-from veloce.principal import current_principal
 
 # What a sampling request may ask the client to attach to the prompt. The client
 # MAY ignore the request, so this is a hint; a value outside the set is a typo the
@@ -716,6 +716,8 @@ class MCPContext:
         roots = result.get("roots")
         return roots if isinstance(roots, list) else []
 
+    # ── Per-connection visibility ─────────────────────────────
+
     async def hide(self, *names: str) -> None:
         """Hide tools, prompts or resources from this connection's listings.
 
@@ -779,6 +781,8 @@ class MCPContext:
             if name in server.resources.resources:
                 kinds.add("resources")
         return frozenset(kinds)
+
+    # ── Call-scoped result metadata ───────────────────────────
 
     @property
     def result_meta(self) -> dict[str, Any]:

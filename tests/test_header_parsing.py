@@ -5,7 +5,11 @@ from __future__ import annotations
 import pytest
 
 from veloce import Request, Response
-from veloce._header_parsing import parse_header_params, parse_media_type_params
+from veloce._header_parsing import (
+    parse_header_params,
+    parse_media_type_params,
+    split_outside_quotes,
+)
 from veloce.http.datastructures import AcceptHeader
 
 # --- Content-Disposition shape (`;` delimiter, unescape on) -----------------
@@ -131,8 +135,6 @@ def test_empty_key_dropped():
 
 
 # --- split_outside_quotes ---------------------------------------------------
-
-from veloce._header_parsing import split_outside_quotes  # noqa: E402
 
 
 def test_split_outside_quotes_plain():

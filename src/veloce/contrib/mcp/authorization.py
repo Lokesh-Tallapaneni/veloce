@@ -51,12 +51,12 @@ from veloce.principal import Principal
 from veloce.safe import constant_time_compare
 from veloce.status import HTTP_302_FOUND
 
-_logger = logging.getLogger(__name__)
-
 if TYPE_CHECKING:  # pragma: no cover
     from collections.abc import Iterable, Sequence
 
     from veloce.http.request import Request
+
+_logger = logging.getLogger(__name__)
 
 # RFC 8414 well-known path for authorization server metadata.
 AUTHORIZATION_SERVER_METADATA_PATH = "/.well-known/oauth-authorization-server"

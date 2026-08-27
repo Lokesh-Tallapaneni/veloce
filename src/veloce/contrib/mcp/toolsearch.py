@@ -60,6 +60,27 @@ _CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 # still reference it and a result can still be attributed.
 _STEP_ID_PREFIX = "step"
 
+_SEARCH_DESCRIPTION = (
+    "Find the tools that fit a task. Returns the best matches by name, with a "
+    "one-line description each; call describe_tools for a match's full definition "
+    "before calling it. This server publishes its catalogue through search rather "
+    "than listing it, so this is where every other tool is found."
+)
+
+_DESCRIBE_DESCRIPTION = (
+    "Return the full definition - description, input schema, annotations - of each "
+    "named tool, which is what is needed to call it. Names come from search_tools."
+)
+
+_RUN_DESCRIPTION = (
+    "Run several tool calls in one request. Each step names a tool and its "
+    'arguments; an argument of the form {"$from": "<step id>", "path": "<JSON '
+    "pointer>\"} is replaced by that part of an earlier step's result, so a chain "
+    "of calls costs one round trip. Set quiet on a step whose result is only "
+    "needed by a later step and it is left out of the response. Stops at the first "
+    "failing step unless stop_on_error is false."
+)
+
 
 def _tokenize(text: str) -> list[str]:
     """Split text into lowercase terms, breaking camelCase into words."""
@@ -256,6 +277,31 @@ def _referenceable(result: dict[str, Any]) -> Any:
     return content
 
 
+def _document(tool: MCPTool) -> str:
+    """Return the text a tool is ranked on."""
+    parts: Iterable[str] = (
+        tool.name,
+        tool.title or "",
+        tool.description or "",
+        " ".join(sorted(tool.tags)),
+    )
+    return " ".join(part for part in parts if part)
+
+
+def _meta_tool(handler: Any, name: str, description: str) -> MCPTool:
+    """Build one of the three tools, deriving its schema from the handler."""
+    plan = build_plan(handler)
+    schemas: dict[str, dict[str, Any]] = {}
+    return MCPTool(
+        name=name,
+        description=description,
+        handler=handler,
+        plan=plan,
+        input_schema=build_input_schema(plan, schemas),
+        annotations={"readOnlyHint": name != "run_tools"},
+    )
+
+
 class ToolSearch:
     """The three tools that stand in for a catalogue too large to list."""
 
@@ -356,50 +402,3 @@ class ToolSearch:
             if failed and stop_on_error:
                 return {"steps": reported, "stopped": step_id}
         return {"steps": reported}
-
-
-def _document(tool: MCPTool) -> str:
-    """Return the text a tool is ranked on."""
-    parts: Iterable[str] = (
-        tool.name,
-        tool.title or "",
-        tool.description or "",
-        " ".join(sorted(tool.tags)),
-    )
-    return " ".join(part for part in parts if part)
-
-
-def _meta_tool(handler: Any, name: str, description: str) -> MCPTool:
-    """Build one of the three tools, deriving its schema from the handler."""
-    plan = build_plan(handler)
-    schemas: dict[str, dict[str, Any]] = {}
-    return MCPTool(
-        name=name,
-        description=description,
-        handler=handler,
-        plan=plan,
-        input_schema=build_input_schema(plan, schemas),
-        annotations={"readOnlyHint": name != "run_tools"},
-    )
-
-
-_SEARCH_DESCRIPTION = (
-    "Find the tools that fit a task. Returns the best matches by name, with a "
-    "one-line description each; call describe_tools for a match's full definition "
-    "before calling it. This server publishes its catalogue through search rather "
-    "than listing it, so this is where every other tool is found."
-)
-
-_DESCRIBE_DESCRIPTION = (
-    "Return the full definition - description, input schema, annotations - of each "
-    "named tool, which is what is needed to call it. Names come from search_tools."
-)
-
-_RUN_DESCRIPTION = (
-    "Run several tool calls in one request. Each step names a tool and its "
-    'arguments; an argument of the form {"$from": "<step id>", "path": "<JSON '
-    "pointer>\"} is replaced by that part of an earlier step's result, so a chain "
-    "of calls costs one round trip. Set quiet on a step whose result is only "
-    "needed by a later step and it is left out of the response. Stops at the first "
-    "failing step unless stop_on_error is false."
-)

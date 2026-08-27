@@ -90,11 +90,11 @@ from veloce.contrib.mcp.transports.event_store import _EVENT_ID_SEP, SSEEventSto
 from veloce.contrib.mcp.transports.session_store import HttpSessionStore, SessionBackend
 from veloce.http.response import JSONResponse, Response
 from veloce.principal import Principal, current_principal, set_principal
+from veloce.security._utils import _extract_bearer_token
 from veloce.sse import EventSourceResponse, ServerSentEvent
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.http.request import Request
-from veloce.security._utils import _extract_bearer_token
 
 _logger = logging.getLogger(__name__)
 

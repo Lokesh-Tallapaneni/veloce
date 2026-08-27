@@ -65,10 +65,10 @@ from typing import TYPE_CHECKING, Any
 
 from veloce._protocol_constants import LIFECYCLE_SHUTDOWN, LIFECYCLE_STARTUP
 
-_logger = logging.getLogger(__name__)
-
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.app import Veloce
+
+_logger = logging.getLogger(__name__)
 
 # gunicorn is optional and POSIX-only. Import its worker base at module load
 # so the subclass below can extend it, but tolerate its absence: a box without
