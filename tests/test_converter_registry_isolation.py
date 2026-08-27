@@ -15,8 +15,8 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import Veloce
-from veloce.routing.converters import Converter, register_converter
+from veloce import Veloce, register_converter, unregister_converter
+from veloce.routing.converters import Converter, StringConverter, parse_converter
 from veloce.testclient import TestClient
 
 
@@ -85,8 +85,6 @@ def test_and_that_one_did_not_leak_either():
 
 @pytest.mark.parametrize("name", ["int", "str", "float", "uuid", "path"])
 def test_a_builtin_converter_still_resolves(name):
-    from veloce.routing.converters import parse_converter
-
     assert parse_converter(name) is not None
 
 
@@ -104,3 +102,54 @@ def test_registering_still_refuses_to_shadow_a_builtin():
     """Restoring must not reopen the door the registration guard closes."""
     with pytest.raises(Exception):
         register_converter("int", _ShoutConverter)
+
+
+class TestUnregisterConverter:
+    """`register_converter` finally has the public inverse its sibling ships.
+
+    `register_encoder` / `unregister_encoder` ship both halves; the converter
+    registry shipped only the writer, so the only way to undo a registration was
+    to reach into the private `_CUSTOM` dict - which this module's own isolation
+    fixture had to do.
+    """
+
+    @staticmethod
+    def _converter_class():
+        class Custom(StringConverter):
+            pass
+
+        return Custom
+
+    def test_a_registered_converter_can_be_removed(self):
+        register_converter("t-removable", self._converter_class())
+        assert parse_converter("t-removable") is not None
+        unregister_converter("t-removable")
+        with pytest.raises(ValueError, match="t-removable"):
+            parse_converter("t-removable")
+
+    def test_removing_an_unknown_name_is_a_no_op(self):
+        unregister_converter("t-never-registered")
+        unregister_converter("t-never-registered")
+
+    def test_a_builtin_cannot_be_removed(self):
+        with pytest.raises(ValueError, match="built-in"):
+            unregister_converter("int")
+
+    def test_a_route_registered_earlier_keeps_working(self):
+        """Documented: `parse_converter` runs at registration, not at match."""
+        register_converter("t-sticky", self._converter_class())
+        app = Veloce(openapi_url=None)
+
+        @app.get("/x/{value:t-sticky}")
+        async def handler(value: str):
+            return {"value": value}
+
+        unregister_converter("t-sticky")
+        with TestClient(app) as client:
+            assert client.get("/x/abc").json() == {"value": "abc"}
+
+    def test_it_is_reachable_from_the_top_level(self):
+        import veloce
+
+        assert "unregister_converter" in veloce.__all__
+        assert veloce.unregister_converter.__module__ == "veloce.routing.converters"

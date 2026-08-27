@@ -128,7 +128,10 @@ async def report(day):
     because `ciso8601` would hand back a different `tzinfo` type for it.
     Without the package the converter behaves exactly as it does with it.
 
-Use `register_converter` to add your own.
+Use `register_converter` to add your own, and `unregister_converter` to remove it
+again -- the registry is process-global, so a test or a plugin that registers one
+should take it back out. Routes already registered keep the converter they were
+built with; only later registrations are affected.
 
 ### Static segments win over parameters
 

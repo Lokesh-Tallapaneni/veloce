@@ -233,7 +233,7 @@ from veloce.ratelimit import (
     TokenBucket,
     rate_limit,
 )
-from veloce.routing.converters import Converter, register_converter
+from veloce.routing.converters import Converter, register_converter, unregister_converter
 
 # Routing
 from veloce.routing.router import Router
@@ -580,6 +580,7 @@ __all__ = [
     # Converters
     "Converter",
     "register_converter",
+    "unregister_converter",
     # Parameter classes
     "Query",
     "Path",

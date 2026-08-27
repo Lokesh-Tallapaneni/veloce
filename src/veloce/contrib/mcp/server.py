@@ -21,7 +21,7 @@ import asyncio
 import inspect
 import logging
 import time
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from veloce import status
@@ -391,8 +391,12 @@ class MCPServer(TasksMixin, InvocationMixin):
         cache_ttl_ms: int = DEFAULT_CACHE_TTL_MS,
         page_size: int | None = None,
         tool_search: bool = False,
+        capabilities: Sequence[Capability] | None = None,
     ) -> None:
         self.app = app
+        # Capabilities the caller supplies, appended to the built-ins below.
+        # Bound before the list is built so the two are assembled in one place.
+        extra_capabilities = tuple(capabilities or ())
         # Optional per-caller `tools/list` visibility policy. `None` - the default -
         # leaves listing unfiltered, so an application that does not opt in pays
         # nothing and sees exactly the pre-existing behaviour.
@@ -485,7 +489,7 @@ class MCPServer(TasksMixin, InvocationMixin):
         # The spec areas this server serves, each owning its `initialize`
         # advertisement and its method handlers. A new area is a capability
         # added here, not a branch edited into the dispatcher or `_initialize`.
-        capabilities: list[Capability] = [
+        built_in: list[Capability] = [
             ToolsCapability(self),
             ResourcesCapability(self),
             PromptsCapability(self),
@@ -497,8 +501,16 @@ class MCPServer(TasksMixin, InvocationMixin):
         # is on, so an off server returns method-not-found for them (matching the
         # `subscribe: false` it advertises) and pays no dispatch-map cost.
         if self._subscriptions_enabled:
-            capabilities.append(SubscriptionsCapability(self))
-        self._capabilities: tuple[Capability, ...] = tuple(capabilities)
+            built_in.append(SubscriptionsCapability(self))
+        # Caller-supplied capabilities go last, so an out-of-tree spec area is
+        # advertised and dispatched alongside the built-in ones. Last also means
+        # a name collision resolves to the caller's, which is the only useful
+        # direction: a capability added to serve a method the built-ins do not
+        # is the point, and one shadowing a built-in method is a deliberate
+        # override rather than an accident the framework should silently win.
+        if extra_capabilities:
+            built_in.extend(extra_capabilities)
+        self._capabilities: tuple[Capability, ...] = tuple(built_in)
         # Which capabilities vary their advertisement by protocol revision,
         # resolved once here rather than inspected on every handshake.
         self._era_aware_capabilities: frozenset[Capability] = frozenset(

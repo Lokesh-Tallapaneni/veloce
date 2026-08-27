@@ -219,6 +219,7 @@ VELOCE_ALL = {
     "redirect",
     "register_converter",
     "register_encoder",
+    "unregister_converter",
     "render_template",
     "render_template_string",
     "request",
@@ -289,6 +290,7 @@ SUBPACKAGE_ALL = {
         "RouteMatch",
         "Router",
         "register_converter",
+        "unregister_converter",
     },
     "veloce.middleware": {
         "BaseHTTPMiddleware",

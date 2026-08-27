@@ -63,7 +63,7 @@ class MCPEndpointPosture:
 
 def record_endpoint(app: Any, transport: str, path: str, auth: Any, allowed_origins: Any) -> None:
     """Register one mounted endpoint's posture with the app's audit."""
-    app._auditables.append(
+    app.register_auditable(
         MCPEndpointPosture(
             transport=transport,
             path=path,

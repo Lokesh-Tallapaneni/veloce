@@ -54,6 +54,7 @@ MCP_ALL = {
     "MCPSession",
     "MCPTask",
     "MCPTool",
+    "MethodHandler",
     "MethodNotFoundError",
     "OAuthClient",
     "OriginNotAllowedError",

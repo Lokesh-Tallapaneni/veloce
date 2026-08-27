@@ -37,21 +37,24 @@ def _clear_graceful_drain_latch():
 def _isolate_custom_converters():
     """Restore the process-global converter registry between tests.
 
-    `register_converter` writes into `routing.converters._CUSTOM`, which has no
-    teardown and no `unregister_converter`. Every test that registered one
-    leaked it into every later test, and the suite compensated by hand-numbering
-    names (`slug`, `slug2`, `slug3`) so registrations would not collide - a
-    workaround that has to be remembered by whoever adds the next one, and that
-    silently stops working when two modules pick the same number.
+    `register_converter` writes a process-global registry, so every test that
+    registers one leaks it into every later test. The suite used to compensate
+    by hand-numbering names (`slug`, `slug2`, `slug3`) so registrations would
+    not collide - a workaround whoever adds the next one has to remember, and
+    one that stops working silently when two modules pick the same number.
 
     Snapshot and restore is one dict copy per test and removes the need for any
-    of that.
+    of that. It reads the registry directly (there is no public way to list it)
+    but removes through the public `unregister_converter`, so the fixture
+    exercises the same inverse a user has.
     """
+    from veloce import unregister_converter
     from veloce.routing import converters
 
     saved = dict(converters._CUSTOM)
     yield
-    converters._CUSTOM.clear()
+    for name in set(converters._CUSTOM) - set(saved):
+        unregister_converter(name)
     converters._CUSTOM.update(saved)
 
 

@@ -66,3 +66,10 @@ returns `Finding` objects; startup refuses to serve on an `error`.
 ::: veloce.Finding
 ::: veloce.AuditContext
 ::: veloce.AuditFailed
+
+Middleware reports on itself through `Middleware.audit` without registering
+anywhere. Something that hardens or exposes the app without being middleware
+says so with `app.register_auditable(...)`, which puts it on the same terms:
+give it an `audit(ctx)` yielding `Finding`s.
+
+::: veloce.Veloce.register_auditable

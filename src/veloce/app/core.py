@@ -739,6 +739,39 @@ class Veloce(
 
     # ── Security posture ───────────────────────────────────
 
+    def register_auditable(self, component: Any) -> Any:
+        """Register `component` to report to `veloce check` and `security_audit`.
+
+        Middleware reports on itself through `Middleware.audit` without being
+        registered anywhere - it is already in the stack. Something that hardens
+        or exposes the app *without* being middleware has nowhere to say so, and
+        a mounted MCP endpoint is the case in tree: it registers routes, so
+        without this the audit had nothing to ask about a tool-execution
+        endpoint with no authentication.
+
+        `component` needs an `audit(ctx)` yielding `Finding`s, exactly as a
+        middleware's does; it may also carry the `Auditable` class markers
+        (`sets_hardening_headers`, `audit_needs_routes`). Returns `component`,
+        so it can be used as a decorator on a class.
+
+        Usage::
+
+            class TelemetryEndpoint:
+                def audit(self, ctx):
+                    if not self.authenticated:
+                        yield Finding(
+                            "telemetry endpoint accepts unauthenticated writes",
+                            severity="error",
+                            fix="pass auth=...",
+                            id="telemetry-unauthenticated",
+                        )
+
+            app.register_auditable(TelemetryEndpoint())
+        """
+        self._assert_mutable()
+        self._auditables.append(component)
+        return component
+
     def security_audit(self) -> list[str]:
         """Return human-readable warnings about the current security posture.
 

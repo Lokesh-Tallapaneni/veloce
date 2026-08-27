@@ -18,7 +18,10 @@ The Model Context Protocol server, registries, and transports. Most applications
 ::: veloce.contrib.mcp.ResourceRegistry
 ::: veloce.contrib.mcp.PromptRegistry
 ::: veloce.contrib.mcp.TaskRegistry
+The seam an out-of-tree spec area implements against: subclass `Capability`, annotate the handler map with `MethodHandler`, and pass an instance to `MCPServer(capabilities=[...])`.
+
 ::: veloce.contrib.mcp.Capability
+::: veloce.contrib.mcp.MethodHandler
 ::: veloce.contrib.mcp.ToolsCapability
 ::: veloce.contrib.mcp.ResourcesCapability
 ::: veloce.contrib.mcp.PromptsCapability

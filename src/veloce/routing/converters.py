@@ -609,6 +609,23 @@ def register_converter(name: str, converter_cls: type[_Converter]) -> None:
     _CUSTOM[name] = converter_cls
 
 
+def unregister_converter(name: str) -> None:
+    """Remove a converter registered with `register_converter`.
+
+    No-op when `name` was never registered. A built-in name is refused with
+    `ValueError`, matching `register_converter`: the built-ins are not the
+    caller's to remove, and silently ignoring the attempt would leave a test
+    or a plugin believing it had.
+
+    Routes already registered against the converter keep the instance they were
+    built with - `parse_converter` runs at registration time, not at match
+    time - so this affects only routes registered afterwards.
+    """
+    if name in _BUILTIN:
+        raise ValueError(f"cannot unregister built-in converter {name!r}")
+    _CUSTOM.pop(name, None)
+
+
 def parse_converter(spec: str | None) -> _Converter:
     """Build a converter from the `:spec` portion of `{name:spec}`.
 

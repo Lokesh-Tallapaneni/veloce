@@ -101,7 +101,7 @@ from veloce.contrib.mcp.resources import (
     build_resource_registry,
 )
 from veloce.contrib.mcp.sampling import SampledToolCall, SamplingRun
-from veloce.contrib.mcp.server import MCPServer
+from veloce.contrib.mcp.server import MCPServer, MethodHandler
 from veloce.contrib.mcp.session import MCPSession
 from veloce.contrib.mcp.subscriptions import SubscriptionsCapability
 from veloce.contrib.mcp.tasks import MCPTask, TaskRegistry, TasksCapability
@@ -120,6 +120,7 @@ __all__ = [
     "MCPServer",
     "MCPSession",
     "MCPTool",
+    "MethodHandler",
     "PromptRegistry",
     "ResourceRegistry",
     "ToolFilter",
