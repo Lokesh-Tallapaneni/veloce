@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from veloce import Request, Veloce
 from veloce.http.datastructures import Headers, QueryParams
 from veloce.testclient import TestClient
@@ -167,8 +169,6 @@ async def test_app_duplicate_request_headers_preserved():
         "client": ("testclient", 50000),
         "server": ("testserver", 80),
     }
-
-    import asyncio
 
     async def drive():
         body_sent = False

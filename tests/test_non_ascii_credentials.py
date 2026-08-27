@@ -37,6 +37,8 @@ documented way (`except JWTError: raise Unauthorized`) never caught it.
 
 from __future__ import annotations
 
+import hashlib
+
 import pytest
 
 from veloce import CSRFMiddleware, Depends, HTTPBearer, Unauthorized, Veloce
@@ -188,8 +190,6 @@ def test_a_non_ascii_pkce_verifier_is_refused_not_a_crash():
 
 def test_a_matching_pkce_verifier_still_verifies():
     """The negative direction: a legitimate S256 pair must still succeed."""
-    import hashlib
-
     verifier = "a" * 64
     challenge = _b64encode(hashlib.sha256(verifier.encode("ascii")).digest())
     assert _verify_pkce(verifier, challenge) is True

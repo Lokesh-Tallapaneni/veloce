@@ -20,6 +20,7 @@ calls `_run_after_hooks` rather than restating it.
 from __future__ import annotations
 
 import asyncio
+import inspect
 
 import pytest
 
@@ -342,8 +343,6 @@ def test_the_alias_produces_what_the_request_produces():
 
 def test_the_alias_is_not_a_second_implementation():
     """A guard: restating the loop is how the two drifted the first time."""
-    import inspect
-
     source = inspect.getsource(Veloce.process_response)
     assert "_run_after_hooks" in source
     assert "for hook in reversed" not in source

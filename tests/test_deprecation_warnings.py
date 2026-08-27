@@ -10,6 +10,8 @@ category a user can silence in one line.
 
 from __future__ import annotations
 
+import ast
+import pathlib
 import subprocess
 import sys
 import textwrap
@@ -99,9 +101,6 @@ def _stdlib_deprecation_uses() -> list[str]:
     was invisible to it. `VeloceDeprecationWarning` is a distinct `Name`, so it
     is excluded structurally rather than by substring.
     """
-    import ast
-    import pathlib
-
     root = pathlib.Path(__file__).resolve().parent.parent / "src" / "veloce"
     offenders = []
     for path in sorted(root.rglob("*.py")):
@@ -129,8 +128,6 @@ def test_the_guard_sees_a_single_line_deprecation(tmp_path, monkeypatch):
     The line-matching version it replaced returned nothing for this file, so it
     could not have caught the spelling it was written for.
     """
-    import ast
-
     source = 'import warnings\nwarnings.warn("gone", DeprecationWarning, stacklevel=2)\n'
     found = [
         node.lineno
@@ -150,8 +147,6 @@ def test_the_guard_sees_a_single_line_deprecation(tmp_path, monkeypatch):
 def test_the_guard_does_not_flag_the_veloce_category():
     """The negative: `VeloceDeprecationWarning` must not trip it, or the guard
     would fail on every correct deprecation in the tree."""
-    import ast
-
     source = 'warnings.warn("x", VeloceDeprecationWarning, stacklevel=2)\n'
     found = [
         node.lineno
@@ -163,8 +158,6 @@ def test_the_guard_does_not_flag_the_veloce_category():
 
 def test_the_guard_actually_reads_the_package():
     """A guard that silently walked nothing would pass forever."""
-    import pathlib
-
     root = pathlib.Path(__file__).resolve().parent.parent / "src" / "veloce"
     assert len(list(root.rglob("*.py"))) > 50
 

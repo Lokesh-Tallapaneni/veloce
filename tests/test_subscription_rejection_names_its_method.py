@@ -12,6 +12,8 @@ wrong one either.
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
 from tests._mcp import call_error
@@ -58,7 +60,5 @@ async def test_the_rejection_still_explains_itself():
 
 def test_the_parameter_has_no_default():
     """What let both callers take the wrong value: a default nobody overrode."""
-    import inspect
-
     parameter = inspect.signature(SubscriptionsCapability._require_session).parameters["method"]
     assert parameter.default is inspect.Parameter.empty

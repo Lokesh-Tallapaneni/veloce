@@ -32,6 +32,8 @@ from __future__ import annotations
 
 import ast
 import pathlib
+import subprocess
+import sys
 
 import pytest
 
@@ -296,9 +298,6 @@ def test_every_meta_key_has_one_definition():
 
 def test_the_session_module_imports_on_its_own():
     """It must not need the dispatch core to be importable."""
-    import subprocess
-    import sys
-
     result = subprocess.run(
         [sys.executable, "-c", "import veloce.contrib.mcp.session"],
         capture_output=True,

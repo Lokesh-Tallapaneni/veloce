@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
 import subprocess
 import sys
 
@@ -280,8 +281,6 @@ def test_the_stdio_writer_uses_the_shared_envelope_encoder():
     It now shares `encode_envelope` with the HTTP and SSE transports, so all
     three frame the protocol identically.
     """
-    import pathlib
-
     source = (
         pathlib.Path(__file__).resolve().parents[1]
         / "src"

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import tempfile
 import weakref
 
 from veloce import BackgroundTask, BackgroundTasks, Response, Veloce
@@ -66,8 +67,6 @@ def _files():
 
 def _request_with_form():
     """A request whose multipart form has already been parsed into a spool file."""
-    import tempfile
-
     from tests.conftest import make_request
 
     # Deliberately not a context manager: the point of the test is that the

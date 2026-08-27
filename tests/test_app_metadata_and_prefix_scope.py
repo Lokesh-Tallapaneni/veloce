@@ -26,6 +26,8 @@ there is nothing for them to show. Defensible, and previously undocumented.
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
 from veloce import Veloce
@@ -278,8 +280,6 @@ def test_the_app_still_serves_its_own_routes_without_a_schema():
 
 def test_the_docstrings_state_the_boundaries():
     """These were the gap; a future edit that drops them fails here."""
-    import inspect
-
     assert "does not apply here" in inspect.getdoc(MountingMixin.mount)
     source = inspect.getsource(Veloce.__init__)
     assert "does not apply to `app.mount()`" in source

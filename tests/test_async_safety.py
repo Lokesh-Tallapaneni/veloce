@@ -2,6 +2,7 @@
 
 import asyncio
 import pathlib
+import time
 
 import orjson
 import pytest
@@ -57,8 +58,6 @@ class TestSyncHandlerOffloading:
 
         @app.get("/sync")
         def sync_handler(request: Request):
-            import time
-
             time.sleep(0.001)  # Would block event loop without executor
             return {"sync": True}
 
@@ -151,8 +150,6 @@ class TestPerformanceAfterFixes:
     """
 
     async def test_async_handler_under_50us(self):
-        import time
-
         app = Veloce(openapi_url=None)
 
         @app.get("/bench")
@@ -183,8 +180,6 @@ class TestPerformanceAfterFixes:
         an improvement. The bare hop is timed in the same run and subtracted, so
         what is asserted is what dispatch adds on top of it.
         """
-        import time
-
         app = Veloce(openapi_url=None)
 
         @app.get("/sync-bench")

@@ -27,6 +27,7 @@ in the app's dialect, is the whole rule.
 from __future__ import annotations
 
 import json
+import pathlib
 
 import pytest
 
@@ -185,8 +186,6 @@ def test_an_error_reply_agrees_across_accept_values():
 
 def test_all_three_transports_share_one_encoder():
     """stdio was already right; the other two now call the same function."""
-    import pathlib
-
     root = pathlib.Path(__file__).resolve().parents[1] / "src" / "veloce" / "contrib" / "mcp"
     for path in ("transports/http.py", "transports/sse.py", "transports/stdio.py"):
         assert "encode_envelope" in (root / path).read_text(encoding="utf-8"), path

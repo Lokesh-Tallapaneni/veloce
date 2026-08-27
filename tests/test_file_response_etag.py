@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 
 from veloce import FileResponse
@@ -89,8 +90,6 @@ async def test_async_etag_matches_sync_for_same_file(tmp_path):
 
 def test_file_etag_passes_usedforsecurity_false(tmp_path, monkeypatch):
     """The file ETag MD5 must be flagged non-security so it is FIPS-safe."""
-    import hashlib
-
     seen = {}
     real_md5 = hashlib.md5
 

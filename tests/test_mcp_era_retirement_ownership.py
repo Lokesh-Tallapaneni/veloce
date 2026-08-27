@@ -18,6 +18,9 @@ withholds them, and the server unions them the same way it merges `handlers()`.
 
 from __future__ import annotations
 
+import json
+import pathlib
+
 import pytest
 
 from veloce import Veloce
@@ -70,8 +73,6 @@ def test_the_capabilities_supply_the_rest():
 
 
 def test_the_dispatcher_holds_no_second_table():
-    import pathlib
-
     source = (
         pathlib.Path(__file__).resolve().parents[1]
         / "src"
@@ -115,8 +116,6 @@ def test_every_retired_method_is_actually_registered():
 
 def test_a_capability_does_not_advertise_what_it_retires():
     """The property the split made possible to get wrong."""
-    import json
-
     server = _server()
     for capability in server.capabilities:
         if not capability.handshake_only_methods:

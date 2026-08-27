@@ -15,6 +15,7 @@ than a wall-clock duration that would be flaky on a loaded machine.
 from __future__ import annotations
 
 import asyncio
+import inspect
 
 from veloce import Veloce
 from veloce.app.serving import ServingMixin
@@ -113,8 +114,6 @@ async def test_the_worker_source_orders_the_drain_first():
     30-second SIGKILL, and no unit test driving gunicorn can catch that on a
     box where gunicorn does not run at all (it is POSIX-only).
     """
-    import inspect
-
     body = inspect.getsource(VeloceWorker._serve)
     # Scope to the teardown block: an earlier `wait_closed()` lives in the
     # start-up failure path, which is a different question. Comments are
@@ -129,8 +128,6 @@ async def test_the_worker_source_orders_the_drain_first():
 
 async def test_the_native_run_path_orders_the_drain_first():
     """`app.run()` had the same inversion via `async with server:`."""
-    import inspect
-
     body = _code_only(inspect.getsource(ServingMixin._serve))
     assert "start_graceful_drain()" in body
     assert body.index("start_graceful_drain()") < body.index("finally:"), (

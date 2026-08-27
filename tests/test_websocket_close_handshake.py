@@ -20,6 +20,7 @@ peer's reply rather than waiting for a clock.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import struct
 import time
 
@@ -168,8 +169,6 @@ def test_the_production_timeout_is_still_five_seconds():
     Read off the class rather than the patched instance attribute, so the
     fixture that speeds the suite up cannot quietly become the product default.
     """
-    import inspect
-
     source = inspect.getsource(WebSocket)
     assert "CLOSE_HANDSHAKE_TIMEOUT = 5.0" in source
 

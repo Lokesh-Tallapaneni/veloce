@@ -25,6 +25,7 @@ is what two browser tabs produce, did not.
 from __future__ import annotations
 
 import asyncio
+import pathlib
 
 import pytest
 
@@ -344,8 +345,6 @@ async def test_the_documented_recipe_serves_later_calls_from_the_cache():
 
 def test_the_caching_guide_shows_the_recheck():
     """A guide example that dropped the re-check would be the broken one."""
-    import pathlib
-
     guide = pathlib.Path(__file__).resolve().parents[1] / "docs/guide/caching.md"
     text = guide.read_text(encoding="utf-8")
     assert "Re-check" in text

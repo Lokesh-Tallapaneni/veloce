@@ -10,6 +10,7 @@ believed they were on uvicorn had nothing in the output to tell them otherwise.
 from __future__ import annotations
 
 import argparse
+import inspect
 import types
 
 import pytest
@@ -67,8 +68,6 @@ def test_reload_is_forwarded_when_asked_for() -> None:
 
 def test_both_commands_reach_the_same_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     """The property the extraction exists for, driven through both commands."""
-    import inspect
-
     for name in ("_cmd_run", "_cmd_mcp_run"):
         body = inspect.getsource(getattr(cli, name))
         assert "_serve_builtin(" in body, f"{name} does not use the shared fallback"

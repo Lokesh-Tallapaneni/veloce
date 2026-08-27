@@ -13,7 +13,11 @@ resolves elsewhere, would change behaviour silently. These pin the wiring.
 
 from __future__ import annotations
 
+import importlib
 import inspect
+import pkgutil
+import subprocess
+import sys
 
 import pytest
 
@@ -67,9 +71,6 @@ def test_no_mixin_declares_slots():
     nine adopt it: they assign to `self` (they write the host's state), which a
     slotted class refuses.
     """
-    import importlib
-    import pkgutil
-
     mixins: list[type] = []
     for info in pkgutil.iter_modules(app_package.__path__):
         module = importlib.import_module(f"veloce.app.{info.name}")
@@ -125,9 +126,6 @@ def test_registration_still_reaches_those_registries():
 
 def test_an_app_that_registers_nothing_never_loads_the_subsystem():
     """The mixin's `contrib.mcp` imports stay inside the methods that need them."""
-    import subprocess
-    import sys
-
     out = subprocess.run(
         [
             sys.executable,

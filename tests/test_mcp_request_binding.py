@@ -10,6 +10,9 @@ hook after it - reading the synthetic MCP request instead of the real one.
 
 from __future__ import annotations
 
+import asyncio
+import gc
+
 import orjson
 
 import veloce
@@ -66,8 +69,6 @@ async def test_a_failing_tool_call_still_unbinds():
 
 
 async def test_a_timed_out_call_still_unbinds():
-    import asyncio
-
     app = _app(MCP_CALL_TIMEOUT=0.01)
 
     @app.mcp_tool(description="Sleeps past the budget")
@@ -208,9 +209,6 @@ def test_a_call_abandoned_mid_flight_plants_no_binding_when_collected():
     no awaiter to hand a context back to, so the unbind must not fire and write
     the outer binding into a context that never made the call.
     """
-    import asyncio
-    import gc
-
     app = Veloce(title="Abandoned", openapi_url=None)
 
     @app.mcp_tool(description="Never settles")

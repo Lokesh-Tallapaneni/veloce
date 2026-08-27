@@ -8,6 +8,8 @@ anonymous caller over HTTP.
 
 from __future__ import annotations
 
+import warnings
+
 import veloce.security as security_pkg
 from veloce import Depends, Veloce, current_principal
 from veloce.middleware.sessions import SessionMiddleware
@@ -206,8 +208,6 @@ def test_a_custom_cookie_name_is_published():
 def test_no_undescribed_scheme_warning_is_raised():
     """The framework warns rather than silently publishing an open route; that
     warning must no longer fire for this scheme."""
-    import warnings
-
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         _documented_app().openapi()

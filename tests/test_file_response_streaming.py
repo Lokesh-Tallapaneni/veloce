@@ -16,7 +16,9 @@ small asset, so the fast path is deliberately unchanged.
 
 from __future__ import annotations
 
+import asyncio
 import tracemalloc
+from pathlib import Path
 
 import pytest
 
@@ -155,9 +157,6 @@ async def test_a_small_file_keeps_the_inline_read(small_file):
 
 async def test_streaming_closes_the_file(large_file, tmp_path):
     """A leaked handle would keep the file locked and exhaust descriptors."""
-    import asyncio
-    from pathlib import Path
-
     response = await FileResponse.from_path(large_file)
     consumed = b"".join([chunk async for chunk in response._stream])
     assert len(consumed) == _LARGE

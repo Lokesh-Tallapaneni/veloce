@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Annotated
 
 import orjson
@@ -142,8 +143,6 @@ async def test_a_mutable_default_is_not_shared_between_tool_calls():
 
 def test_both_doors_give_the_handler_its_own_value():
     """One handler, two doors: neither may see the other's mutations."""
-    import asyncio
-
     app = _accumulating_app()
     server = MCPServer(app)
 

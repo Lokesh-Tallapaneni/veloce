@@ -20,6 +20,8 @@ non-empty, so an app that passes none pays nothing.
 
 from __future__ import annotations
 
+import subprocess
+import sys
 import warnings
 
 import pytest
@@ -156,9 +158,6 @@ def test_the_app_still_works_with_a_typo():
 
 def test_the_check_is_skipped_when_there_is_nothing_to_check():
     """It imports `difflib` and `inspect`; neither should load for a bare app."""
-    import subprocess
-    import sys
-
     code = (
         "import sys; sys.path.insert(0, 'src');"
         "import veloce; veloce.Veloce(openapi_url=None);"

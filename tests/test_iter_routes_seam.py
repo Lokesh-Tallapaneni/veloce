@@ -30,6 +30,10 @@ the summary view, and these tests pin that it did not move.
 
 from __future__ import annotations
 
+import inspect
+import re
+from pathlib import Path
+
 from pydantic import BaseModel
 
 from veloce import Depends, Router, Veloce
@@ -157,8 +161,6 @@ def test_websocket_routes_appear_when_asked_for():
 def test_include_hidden_is_keyword_only():
     """Positional would let `iter_routes(True)` read as a path argument."""
 
-    import inspect
-
     kind = inspect.signature(Veloce.iter_routes).parameters["include_hidden"].kind
 
     assert kind is inspect.Parameter.KEYWORD_ONLY
@@ -247,9 +249,6 @@ def test_no_subpackage_reads_the_route_table_privately():
     subclass calling `self._collect_all_routes()` is not a crossing either;
     `blueprints.py` inherits the method. Everything else is.
     """
-    import re
-    from pathlib import Path
-
     foreign = re.compile(r"(?<!self)[.]_collect_all_routes")
     root = Path(__file__).resolve().parents[1] / "src" / "veloce"
     offenders = [
@@ -265,8 +264,6 @@ def test_the_boundary_scan_can_actually_fail():
     """The regex above once ended in a stray control character and so matched
     nothing - it passed while four modules were offending. Point it at strings
     known to offend and known not to."""
-    import re
-
     foreign = re.compile(r"(?<!self)[.]_collect_all_routes")
     assert foreign.search("for m, p, i in app._collect_all_routes():")
     assert foreign.search("self._app._collect_all_routes()")

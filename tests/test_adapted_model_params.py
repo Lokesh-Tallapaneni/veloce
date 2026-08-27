@@ -10,6 +10,7 @@ runtime agree and match what a `BaseModel` parameter already did.
 
 from __future__ import annotations
 
+import weakref
 from dataclasses import dataclass, field
 from typing import Annotated
 
@@ -316,6 +317,4 @@ def test_the_adapter_cache_holds_its_keys_weakly():
     Pydantic keeps its own internal caches, so this asserts the structure Veloce
     controls rather than that a type actually becomes collectable.
     """
-    import weakref
-
     assert isinstance(_model_backend._adapters, weakref.WeakKeyDictionary)

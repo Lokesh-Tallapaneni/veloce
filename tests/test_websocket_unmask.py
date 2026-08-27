@@ -26,6 +26,7 @@ covered explicitly.
 from __future__ import annotations
 
 import os
+import struct
 
 import pytest
 
@@ -155,8 +156,6 @@ def _client_frame(payload: bytes, opcode: int = 0x2) -> bytes:
     same code path under test, so a bug in it would cancel out and the
     comparison would prove nothing.
     """
-    import struct
-
     mask = b"\x11\x22\x33\x44"
     n = len(payload)
     head = bytearray([0x80 | opcode])

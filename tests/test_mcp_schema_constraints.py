@@ -26,6 +26,8 @@ the duplication goes with it.
 
 from __future__ import annotations
 
+import pathlib
+
 import pytest
 from pydantic import BaseModel, Field
 
@@ -269,8 +271,6 @@ def test_a_model_property_is_not_given_marker_constraints():
 
 def test_the_bridge_uses_the_shared_constraint_helper():
     """Hand-copying `description` and `title` is how the drift started."""
-    import pathlib
-
     source = (
         pathlib.Path(__file__).resolve().parents[1] / "src/veloce/contrib/mcp/plan_bridge.py"
     ).read_text(encoding="utf-8")

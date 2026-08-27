@@ -13,6 +13,8 @@ streaming route was told the client was still there.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from veloce import Request, Veloce
@@ -124,8 +126,6 @@ class TestTheNativeProtocolReportsAVanishedClient:
 
     @staticmethod
     async def _protocol_with_streaming_route():
-        import asyncio
-
         from ._protocol import _FakeTransport
 
         seen: dict[str, object] = {}
@@ -147,8 +147,6 @@ class TestTheNativeProtocolReportsAVanishedClient:
         return protocol, seen
 
     async def test_a_client_that_vanishes_mid_body_is_reported(self) -> None:
-        import asyncio
-
         protocol, seen = await self._protocol_with_streaming_route()
         protocol.data_received(
             b"POST /upload HTTP/1.1\r\nHost: t\r\nContent-Length: 100\r\n\r\nhalf"
@@ -169,8 +167,6 @@ class TestTheNativeProtocolReportsAVanishedClient:
         )
 
     async def test_a_body_that_completes_is_not_reported_as_disconnected(self) -> None:
-        import asyncio
-
         protocol, seen = await self._protocol_with_streaming_route()
         protocol.data_received(b"POST /upload HTTP/1.1\r\nHost: t\r\nContent-Length: 4\r\n\r\nhalf")
         for _ in range(8):

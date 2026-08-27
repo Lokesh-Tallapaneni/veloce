@@ -10,6 +10,7 @@ a security check that passes in silence is worse than no check.
 
 from __future__ import annotations
 
+import ast
 import pathlib
 from typing import Any
 
@@ -182,8 +183,6 @@ def test_the_core_names_no_middleware_at_module_scope():
     app pays to import a middleware it may never register, and means the core
     knows a specific optional feature. Nothing in the core may import one.
     """
-    import ast
-
     core = pathlib.Path(veloce.app.core.__file__).read_text(encoding="utf-8")
     tree = ast.parse(core)
     offenders = [

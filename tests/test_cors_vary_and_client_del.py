@@ -35,6 +35,7 @@ error arrived buried:
 from __future__ import annotations
 
 import gc
+import inspect
 
 import pytest
 
@@ -229,8 +230,6 @@ def test_a_normal_client_still_closes_its_loop():
 
 def test_the_async_client_del_is_guarded_too():
     """The sync and async clients must not diverge - the project's parity rule."""
-    import inspect
-
     for cls in (TestClient, AsyncTestClient):
         deleter = getattr(cls, "__del__", None)
         if deleter is None:

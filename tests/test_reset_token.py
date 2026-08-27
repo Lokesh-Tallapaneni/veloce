@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+
 import pytest
 
 import veloce.signing
@@ -82,8 +84,6 @@ def test_non_bytes_state_raises_typeerror():
 def test_version_mismatch_returns_false():
 
     signer = Signer(SECRET, RESET_TOKEN_SALT)
-    import hashlib
-
     fp = hashlib.blake2b(STATE_A, digest_size=32).hexdigest()
     token = signer.dumps([99, fp])
     assert check_reset_token(token, STATE_A, secret=SECRET, max_age=3600) is False

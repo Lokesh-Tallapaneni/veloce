@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import textwrap
 
 import pytest
 
@@ -572,8 +573,6 @@ def test_cors_wildcard_regex_with_credentials_rejected(pattern: str) -> None:
 
 
 def _usage_block(obj) -> str:
-    import textwrap
-
     doc = inspect.getdoc(obj) or ""
     after = doc.split("Usage::", 1)[1]
     lines, started = [], False

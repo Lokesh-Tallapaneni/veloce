@@ -18,6 +18,8 @@ its own copy fails here.
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
 from veloce import Veloce
@@ -107,8 +109,6 @@ def test_root_is_never_treated_as_trailing_slash():
 
 def test_the_predicate_is_used_by_both_consumers():
     """The structural half: neither may grow its own copy again."""
-    import inspect
-
     for name in ("_match_tree", "get_allowed_methods"):
         source = inspect.getsource(getattr(router.Router, name))
         assert "_slash_mismatch(" in source, f"{name} no longer uses the shared predicate"

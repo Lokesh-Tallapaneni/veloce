@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import unittest.mock
 
 import pytest
 from pydantic import BaseModel
@@ -129,8 +130,6 @@ def test_run_host_default_is_loopback():
     sig = inspect.signature(Veloce.run)
     assert sig.parameters["host"].default is None
     assert sig.parameters["bind_all"].default is False
-
-    import unittest.mock
 
     app = _make_app()
     with unittest.mock.patch.object(Veloce, "_serve") as mock_serve:

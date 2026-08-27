@@ -22,6 +22,7 @@ directory problem again.
 
 from __future__ import annotations
 
+import inspect
 import pathlib
 import re
 
@@ -78,8 +79,6 @@ def _public_names() -> set[str]:
     `test_unswept_scope_findings.py`, and it cannot go stale the way a
     hand-written exemption list would.
     """
-    import inspect
-
     names = {name.lower() for name in veloce.__all__}
     # A plural of a public name is the same name. `Finding` is the class; a
     # module covering several of them is `..._findings`.

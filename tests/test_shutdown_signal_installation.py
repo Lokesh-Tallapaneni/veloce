@@ -11,7 +11,9 @@ handlers, which decides how `_serve` waits, and what has to be put back.
 
 from __future__ import annotations
 
+import ast
 import asyncio
+import pathlib
 import signal
 
 import pytest
@@ -111,9 +113,6 @@ async def test_a_late_event_on_a_closed_loop_is_ignored(monkeypatch) -> None:
 
 def test_serve_no_longer_carries_the_platform_question() -> None:
     """The split, checked at the source: `_serve` reads as serving."""
-    import ast
-    import pathlib
-
     source = (
         pathlib.Path(__file__).resolve().parents[1] / "src" / "veloce" / "app" / "serving.py"
     ).read_text(encoding="utf-8")

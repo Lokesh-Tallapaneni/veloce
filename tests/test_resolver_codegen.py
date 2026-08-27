@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import inspect
+import linecache
+import traceback
+
 from veloce import (
     Body,
     Cookie,
@@ -381,9 +385,6 @@ async def _two(page: int = 1):
 
 def test_the_generated_frame_shows_its_source():
     """The defect: a traceback through generated code showed no line."""
-    import linecache
-    import traceback
-
     resolver = _resolver_of(_one)
     filename = resolver.__code__.co_filename
     frame = traceback.StackSummary.from_list([(filename, 2, "_resolver", None)]).format()
@@ -408,8 +409,6 @@ def test_the_filename_names_the_handler():
 
 def test_the_registered_source_is_the_resolver_that_ran():
     """A per-resolver entry must hold that resolver's own code."""
-    import linecache
-
     resolver = _resolver_of(_one)
     source = "".join(linecache.getlines(resolver.__code__.co_filename))
     assert "def _resolver(" in source
@@ -419,8 +418,6 @@ def test_the_registered_source_is_the_resolver_that_ran():
 def test_checkcache_does_not_evict_the_entry():
     """`linecache.checkcache` runs on every traceback; a stat-based entry for a
     filename with no file on disk would be dropped before it was ever read."""
-    import linecache
-
     resolver = _resolver_of(_one)
     filename = resolver.__code__.co_filename
     assert linecache.getline(filename, 1) != ""
@@ -429,8 +426,6 @@ def test_checkcache_does_not_evict_the_entry():
 
 
 def test_inspect_can_read_the_generated_source():
-    import inspect
-
     resolver = _resolver_of(_one)
     assert "def _resolver(" in inspect.getsource(resolver)
 
@@ -441,7 +436,6 @@ def test_a_graph_resolver_is_registered_too():
     Driven through a real request: the graph resolver is built by the resolver
     on first use, not by `build_plan`, so serving the route is what compiles it.
     """
-    import linecache
 
     async def dep(q: int = 0):
         return q
@@ -493,8 +487,6 @@ def test_the_filename_is_stable_for_the_same_generated_code():
 def test_recompiling_one_plan_adds_one_cache_entry():
     """A counter-keyed name grew `linecache` without bound - a re-registered
     route or a test suite would accumulate an entry per compile, never freed."""
-    import linecache
-
     before = {k for k in linecache.cache if k.startswith("<veloce-")}
     for _ in range(25):
         _resolver_of(_one)

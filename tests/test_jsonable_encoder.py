@@ -16,7 +16,10 @@ from __future__ import annotations
 
 import datetime
 import enum
+import ipaddress
+import re
 import uuid
+from collections import deque
 from decimal import Decimal
 
 from pydantic import BaseModel
@@ -56,15 +59,11 @@ class TestJsonableEncoder:
         assert result == 9.99
 
     def test_scalar_re_pattern(self):
-        import re
-
         pat = re.compile("ab")
         assert jsonable_encoder(pat) == "ab"
         assert orjson_default(pat) == "ab"
 
     def test_scalar_ipaddress(self):
-        import ipaddress
-
         assert jsonable_encoder(ipaddress.IPv4Address("1.2.3.4")) == "1.2.3.4"
         assert jsonable_encoder(ipaddress.IPv6Address("::1")) == "::1"
         net = ipaddress.IPv4Network("1.2.3.0/24")
@@ -74,8 +73,6 @@ class TestJsonableEncoder:
         assert jsonable_encoder(ipaddress.IPv4Interface("1.2.3.4/24")) == "1.2.3.4/24"
 
     def test_deque_recurses(self):
-        from collections import deque
-
         assert jsonable_encoder(deque([1, 2, 3])) == [1, 2, 3]
         assert jsonable_encoder({"d": deque([1, 2])}) == {"d": [1, 2]}
         u = uuid.UUID("12345678-1234-5678-1234-567812345678")

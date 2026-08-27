@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import pathlib
 
 from tests._asgi_drive import body_of, drive, headers_of, status_of
 from veloce import Veloce
@@ -143,8 +144,6 @@ def test_an_unset_limit_is_carried_as_none():
 
 def test_the_builder_has_one_definition():
     """Two copies is how the two transports came to disagree."""
-    import pathlib
-
     root = pathlib.Path(__file__).resolve().parents[1] / "src" / "veloce"
     dispatch = (root / "app" / "dispatch.py").read_text(encoding="utf-8")
     protocol = (root / "serving" / "protocol.py").read_text(encoding="utf-8")

@@ -23,6 +23,8 @@ behaviour-preserving - same text, same order, same `access_log` gate.
 
 from __future__ import annotations
 
+import importlib.metadata as metadata
+
 import veloce
 from veloce import Veloce
 from veloce._version import UNKNOWN_VERSION, resolve_version
@@ -102,6 +104,4 @@ def test_the_resolved_version_is_not_the_unknown_sentinel():
 
 
 def test_the_resolved_version_matches_the_installed_distribution():
-    import importlib.metadata as metadata
-
     assert resolve_version() == metadata.version("veloceframework")

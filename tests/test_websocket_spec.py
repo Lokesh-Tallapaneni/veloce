@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import struct
 
 import orjson
@@ -285,7 +286,6 @@ async def test_websocket_data_frame_mid_fragmentation_is_protocol_error():
 def test_receive_text_before_accept_raises():
     """Calling `receive_text` before `accept()` is a programming error
     — without the guard the caller hung on the empty queue forever."""
-    import asyncio
 
     async def go() -> None:
         ws = WebSocket(_FakeTransport(), {})
@@ -296,8 +296,6 @@ def test_receive_text_before_accept_raises():
 
 
 def test_receive_bytes_before_accept_raises():
-    import asyncio
-
     async def go() -> None:
         ws = WebSocket(_FakeTransport(), {})
         with pytest.raises(RuntimeError, match="call accept"):
@@ -309,7 +307,6 @@ def test_receive_bytes_before_accept_raises():
 def test_receive_json_before_accept_raises():
     """`receive_json` routes through `receive_text`, so it inherits the
     guard — pin so a future refactor cannot regress it."""
-    import asyncio
 
     async def go() -> None:
         ws = WebSocket(_FakeTransport(), {})
@@ -324,7 +321,6 @@ def test_raw_receive_before_accept_raises():
     handshake state machine as the typed `receive_*` helpers — otherwise
     it consumes the `websocket.connect` envelope and corrupts the next
     `accept()`. Symmetric with the existing `WebSocket.send()` guard."""
-    import asyncio
 
     async def go() -> None:
         # Build an ASGI-mode WebSocket so `receive()` is in-scope.
@@ -345,7 +341,6 @@ def test_raw_receive_before_accept_raises():
 def test_receive_after_close_raises_disconnect():
     """A receive after the application closed the connection is a
     `WebSocketDisconnect`, matching the `send_*` close-state behaviour."""
-    import asyncio
 
     async def go() -> None:
         ws = mark_accepted(WebSocket(_FakeTransport(), {}))

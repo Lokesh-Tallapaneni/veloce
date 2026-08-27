@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import functools
+
 import pytest
 
 from tests.conftest import make_request
@@ -104,8 +106,6 @@ def test_init_every_request_false_reuses_instance():
 
 
 def test_decorators_are_applied():
-    import functools
-
     calls: list[str] = []
 
     def log_decorator(fn):

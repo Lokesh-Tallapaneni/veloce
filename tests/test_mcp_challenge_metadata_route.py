@@ -21,6 +21,8 @@ both transports registers it once.
 
 from __future__ import annotations
 
+import pathlib
+
 import pytest
 
 from tests._mcp import auth
@@ -198,8 +200,6 @@ def test_the_metadata_route_needs_no_token():
 
 def test_the_transports_share_one_registration():
     """Two copies is how the two came to differ."""
-    import pathlib
-
     root = pathlib.Path(__file__).resolve().parents[1] / "src" / "veloce" / "contrib" / "mcp"
     http = (root / "transports" / "http.py").read_text(encoding="utf-8")
     sse = (root / "transports" / "sse.py").read_text(encoding="utf-8")

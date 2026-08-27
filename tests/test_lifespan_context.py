@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
+from contextlib import asynccontextmanager
+
 import pytest
 
 from veloce import Veloce
@@ -31,8 +34,6 @@ async def test_lifespan_context_yields_the_app():
 
 
 async def test_lifespan_context_runs_lifespan_cm():
-    import contextlib
-
     order: list[str] = []
 
     @contextlib.asynccontextmanager
@@ -78,8 +79,6 @@ async def test_lifespan_startup_shutdown():
         app.state["db"] = {"connected": True}
         yield
         log.append("shutdown")
-
-    from contextlib import asynccontextmanager
 
     app = Veloce(lifespan=asynccontextmanager(lifespan), openapi_url=None)
 

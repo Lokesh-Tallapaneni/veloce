@@ -9,6 +9,7 @@ CHANGELOG entry) — never to make a refactor pass.
 from __future__ import annotations
 
 import importlib
+import os
 
 import veloce
 from veloce.http import Request, UploadFile
@@ -450,7 +451,5 @@ def test_serving_subpackage():
 
 
 def test_py_typed_exists():
-    import os
-
     pkg_dir = os.path.dirname(veloce.__file__)
     assert os.path.exists(os.path.join(pkg_dir, "py.typed"))

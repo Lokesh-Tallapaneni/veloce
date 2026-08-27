@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+
 import orjson
 
 from tests.conftest import make_request
@@ -50,8 +52,6 @@ class TestSecurity:
         @app.get("/admin")
         async def admin(credentials=Depends(security)):
             return {"user": credentials.username}
-
-        import base64
 
         creds = base64.b64encode(b"admin:secret").decode()
         resp = await app.handle_request(

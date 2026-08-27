@@ -13,7 +13,10 @@ unaffected.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import pathlib
+import re
 
 import pytest
 
@@ -182,9 +185,6 @@ def test_a_capability_that_accepts_the_revision_is_detected():
 
 def _client_visible_payloads() -> str:
     """Everything a client learns about this server's surface, as one blob."""
-    import asyncio
-    import json
-
     server = MCPServer(_app())
     modern = {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}
 
@@ -212,8 +212,6 @@ def test_the_result_discriminators_that_are_advertised_can_all_be_produced():
     third string was absent from it, which is true by construction. This reads
     the dispatcher's source for the values it actually assigns.
     """
-    import re
-
     # By module object: the test reads the dispatcher's *source* for the
     # `resultType` values it assigns, so it needs the file rather than the
     # names.

@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+import json
 import time
 
 import pytest
@@ -159,9 +163,6 @@ def test_signature_verified_before_payload_decode():
     # Valid signature over a non-JSON payload -> InvalidTokenError.
     header_b64 = _b64encode(b'{"alg":"HS256","typ":"JWT"}')
     payload_b64 = _b64encode(b"notjson")
-    import hashlib
-    import hmac
-
     signing_input = f"{header_b64}.{payload_b64}".encode("ascii")
     sig = hmac.new(SECRET.encode(), signing_input, hashlib.sha256).digest()
     token = f"{header_b64}.{payload_b64}.{_b64encode(sig)}"
@@ -199,9 +200,6 @@ def test_import_surface():
 
 def test_alg_none_is_refused_even_when_allow_listed():
     """The JWT module's strongest claim, pinned."""
-    import base64
-    import json
-
     # From the leaf, deliberately: module scope binds the same name through
     # the `veloce` gateway, and this asserts the leaf itself refuses
     # `alg=none` rather than relying on the re-export to do it.

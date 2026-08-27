@@ -22,6 +22,8 @@ place either end asks.
 
 from __future__ import annotations
 
+import pathlib
+
 import pytest
 
 from veloce import MCPContext, Veloce
@@ -94,8 +96,6 @@ def test_a_later_revision_is_modern_too():
 
 def test_the_transport_no_longer_defines_its_own():
     """Two definitions is what let the two ends disagree."""
-    import pathlib
-
     source = (
         pathlib.Path(__file__).resolve().parents[1]
         / "src"
@@ -110,8 +110,6 @@ def test_the_transport_no_longer_defines_its_own():
 
 
 def test_the_core_no_longer_gates_on_presence():
-    import pathlib
-
     source = (
         pathlib.Path(__file__).resolve().parents[1]
         / "src"

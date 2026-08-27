@@ -18,6 +18,7 @@ again: a test whose *name* claims one channel must assert that channel.
 from __future__ import annotations
 
 import ast
+import asyncio
 import pathlib
 
 import pytest
@@ -141,8 +142,6 @@ def test_both_vocabularies_are_actually_in_use():
 )
 def test_an_argument_failure_is_reported_in_band(arguments, expect_in_band):
     """The contract the renamed tests assert, stated once here too."""
-    import asyncio
-
     app = Veloce(openapi_url=None)
 
     @app.mcp_tool(description="Add two integers")
@@ -168,8 +167,6 @@ def test_an_argument_failure_is_reported_in_band(arguments, expect_in_band):
 
 def test_an_unknown_tool_is_reported_on_the_error_channel():
     """The other side of the distinction: this one really is a transport error."""
-    import asyncio
-
     app = Veloce(openapi_url=None)
 
     @app.mcp_tool(description="Add two integers")

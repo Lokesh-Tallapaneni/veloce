@@ -13,6 +13,8 @@ a registration is visible inside its own test, and gone from the next.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 import veloce
@@ -28,8 +30,6 @@ class _ShoutConverter(Converter):
     __slots__ = ()
 
     def match(self, value: str):
-        import re
-
         if re.fullmatch(r"[A-Z]+", value):
             return True, value.lower()
         return False, None

@@ -23,6 +23,8 @@ check.
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from veloce import Veloce
@@ -223,8 +225,6 @@ def test_an_app_with_no_mcp_records_nothing():
 
 def test_veloce_check_fails_on_an_unauthenticated_endpoint(tmp_path, monkeypatch):
     """The property the finding is about: the exposure reaches the exit code."""
-    import sys
-
     module = tmp_path / "mcp_posture_app.py"
     module.write_text(
         "from veloce import SecurityHeadersMiddleware, Veloce\n"
@@ -243,8 +243,6 @@ def test_veloce_check_fails_on_an_unauthenticated_endpoint(tmp_path, monkeypatch
 
 
 def test_veloce_check_passes_once_it_is_configured(tmp_path, monkeypatch):
-    import sys
-
     module = tmp_path / "mcp_secure_app.py"
     module.write_text(
         "from veloce import SecurityHeadersMiddleware, Veloce\n"

@@ -15,6 +15,8 @@ had read out of `request.state`. `SessionMiddleware` is installed here, so
 reach-in was doing by hand what the accessor does.
 """
 
+import datetime
+
 import pytest
 from pydantic import BaseModel
 
@@ -162,8 +164,6 @@ def app() -> Veloce:
 
     @app.get("/encoder")
     async def encoder_test(request: Request):
-        import datetime
-
         data = {"date": datetime.date(2024, 1, 15), "items": {1, 2, 3}}
         return jsonable_encoder(data)
 

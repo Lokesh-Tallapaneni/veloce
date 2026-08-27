@@ -12,6 +12,8 @@ default on the wire.
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
 from veloce import SecurityHeadersMiddleware, ServerSessionMiddleware, SessionMiddleware, Veloce
@@ -175,8 +177,6 @@ def test_a_retired_key_can_be_silenced_like_any_finding():
 
 def test_the_retired_table_names_no_argument_the_constructor_lacks():
     """A hint pointing at a keyword that does not exist is worse than none."""
-    import inspect
-
     accepted = set(inspect.signature(SessionMiddleware.__init__).parameters)
     missing = [arg for arg in _RETIRED_CONFIG_KEYS.values() if arg not in accepted]
     assert missing == [], f"retired keys pointing at unknown arguments: {missing}"

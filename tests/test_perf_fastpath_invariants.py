@@ -29,6 +29,7 @@ the regression it would catch:
 
 from __future__ import annotations
 
+import builtins
 import enum
 import linecache
 
@@ -224,8 +225,6 @@ def test_a_linear_dependency_chain_compiles_on_first_use():
 def test_no_import_happens_while_serving_a_request():
     """A per-request import is a `sys.modules` lookup on every call, and the
     kind of regression that arrives with an innocent-looking helper."""
-    import builtins
-
     app = Veloce(openapi_url=None)
 
     @app.get("/plain")

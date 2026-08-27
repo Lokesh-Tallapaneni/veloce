@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from tests.conftest import make_request
 from veloce import Request, Response, Veloce
 from veloce.blueprints import Blueprint
@@ -192,8 +194,6 @@ async def test_teardown_appcontext_not_fired_on_shutdown():
     Lived in `test_async_safety.py`, which was not where a reader looking for
     appcontext-teardown behaviour would find it.
     """
-    import asyncio
-
     log = []
     app = Veloce(openapi_url=None)
 

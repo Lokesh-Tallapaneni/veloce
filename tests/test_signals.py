@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import gc
+import warnings
+from typing import Any
 
 import pytest
 
@@ -62,8 +65,6 @@ def test_has_receivers_for_true_when_connected():
 
 def test_weak_ref_dies_when_owner_collected():
     """Weak-ref receivers don't pin the owner."""
-    import gc
-
     sig = Signal()
 
     class Owner:
@@ -267,8 +268,6 @@ def test_send_robust_returns_exceptions_and_continues():
 
 def test_send_robust_rejects_async_receiver_with_typeerror():
     """Sync send_robust + async receiver → TypeError entry, no unawaited coroutine."""
-    import warnings
-
     sig = Signal("sync-only")
 
     async def async_handler(sender, **kwargs):
@@ -553,8 +552,6 @@ async def test_send_robust_async_async_receiver_sees_pre_sync_mutation_context()
 
 def test_connect_is_async_classification_does_not_break_sync_paths():
     """The 4-tuple `_subs` change leaves sync send/send_robust unchanged."""
-    import warnings
-
     sig = Signal("classify")
 
     def sync_ok(sender, **kwargs):
@@ -579,7 +576,6 @@ def test_connect_is_async_classification_does_not_break_sync_paths():
 
 def test_iter_live_targets_prunes_dead_weakref_after_single_send():
     """Both send and send_robust prune dead weakrefs via _iter_live_targets."""
-    import gc
 
     class Owner:
         def handle(self, sender, **kw):
@@ -618,7 +614,6 @@ def test_send_prunes_when_only_receiver_is_dead():
     dead weakrefs would strand them forever. send() now resolves to the empty
     fast-path only when _subs is truly empty, so the dead entry is dropped.
     """
-    import gc
 
     class Owner:
         def handle(self, sender, **kw):
@@ -729,7 +724,6 @@ def test_signal_result_is_alias_for_list_of_tuples() -> None:
     callable_arg, any_arg = inner.__args__
     # `Callable` from collections.abc is what the type alias resolves to.
     from collections.abc import Callable
-    from typing import Any
 
     assert callable_arg is Callable
     assert any_arg is Any

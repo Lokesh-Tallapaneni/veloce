@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import pathlib
 import urllib.parse
 
 import pytest
@@ -259,8 +260,6 @@ async def test_the_http_transport_reports_the_same_subject():
 
 def test_the_sse_post_path_publishes_the_principal():
     """A guard: the discard-name bug is invisible at runtime until it matters."""
-    import pathlib
-
     source = (
         pathlib.Path(__file__).resolve().parents[1]
         / "src"

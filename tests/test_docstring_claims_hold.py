@@ -25,7 +25,10 @@ shapes, and `http_date`'s claim to cost 3 us on every response.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import inspect
+import pathlib
+import re
 
 import pytest
 
@@ -129,9 +132,6 @@ def test_a_trivial_route_allocates_no_resolver():
 
 def test_reset_is_only_reachable_through_the_resolve_entry_points():
     """The docstring now names these two; a third would make it stale again."""
-    import pathlib
-    import re
-
     source = (pathlib.Path(__file__).resolve().parents[1] / "src/veloce/dependency.py").read_text(
         encoding="utf-8"
     )
@@ -186,8 +186,6 @@ def test_a_structured_validation_detail_is_still_a_list():
 
 def test_there_is_one_payload_builder():
     """The two copies differing by one substitution is what caused the drift."""
-    import pathlib
-
     root = pathlib.Path(__file__).resolve().parents[1] / "src/veloce/app"
     for name in ("errors.py", "dispatch.py"):
         source = (root / name).read_text(encoding="utf-8")
@@ -381,8 +379,6 @@ def test_the_registrations_are_records_rather_than_tuples():
 
 def test_a_registration_is_immutable():
     """Frozen, so a consumer cannot rewrite what a decorator declared."""
-    import dataclasses
-
     app = Veloce(openapi_url=None)
 
     @app.mcp_tool(description="Add")

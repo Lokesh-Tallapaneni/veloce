@@ -7,6 +7,8 @@ so WebSocket dependencies get the same `yield`-style teardown and
 
 from __future__ import annotations
 
+import asyncio
+
 from pydantic import BaseModel
 
 from veloce import BackgroundTasks, Depends, Response, Security, SecurityScopes, Veloce, WebSocket
@@ -251,8 +253,6 @@ def test_websocket_independent_async_deps_run_in_parallel():
     started, and the test would **hang** rather than pass - so concurrency is
     proven by the test completing at all, with no sleep and no threshold.
     """
-    import asyncio
-
     app = Veloce(debug=True, openapi_url=None)
     arrived: list[str] = []
     both_here = asyncio.Event()

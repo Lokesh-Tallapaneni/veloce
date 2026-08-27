@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time as _time
+
 import pytest
 
 from tests.conftest import make_request
@@ -630,8 +632,6 @@ async def test_clientless_requests_do_not_share_bucket():
 
 async def test_rate_limit_middleware_evicts_stale_buckets():
     """The bucket dict must not grow unbounded with unique client IPs."""
-    import time as _time
-
     mw = RateLimitMiddleware(max_requests=1000, window_seconds=1)
     now = _time.monotonic()
     stale = now - 3600

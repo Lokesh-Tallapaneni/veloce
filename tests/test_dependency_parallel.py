@@ -15,6 +15,7 @@ Constraints — preserved by `parallel_group_end`:
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 from veloce import Depends, Security, Veloce
 from veloce._handler_plan import (
@@ -140,8 +141,6 @@ def test_yield_dependency_still_tears_down_in_order():
 
 async def test_group_end_helper_stops_at_security_dependency():
     """`parallel_group_end` refuses to expand past a Security() slot."""
-    from types import SimpleNamespace
-
     plain = SimpleNamespace(
         kind=K_DEPENDS,
         target_type=None,
@@ -171,8 +170,6 @@ async def test_group_end_helper_refuses_nested_security():
     `_scope_stack` would otherwise be corrupted by interleaved
     push/pop pairs across sibling tasks.
     """
-    from types import SimpleNamespace
-
     # An inner Security slot reachable through outer plain's sub_plan.
     inner_sec = SimpleNamespace(
         kind=K_DEPENDS,

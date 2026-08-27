@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import functools
+import inspect as _inspect
+
 import pytest
 from pydantic import BaseModel
 
@@ -250,8 +253,6 @@ async def test_plan_avoids_inspect_signature_on_hot_path(app: Veloce, monkeypatc
     # First request triggers any lazy imports — exclude that.
     await app.handle_request(_make_request(path="/fast"))
 
-    import inspect as _inspect
-
     calls = {"n": 0}
     real = _inspect.signature
 
@@ -284,8 +285,6 @@ def test_class_dependency_resolves_init_annotations():
 
 def test_partial_dependency_resolves_wrapped_annotations():
     """A functools.partial dependency keeps the wrapped function's annotations."""
-    import functools
-
     app = Veloce(openapi_url=None)
 
     def make_pager(page: int = 1, fixed: str = "x"):

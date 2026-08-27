@@ -8,6 +8,7 @@ protocol concerns with two section separators - both of them past line
 from __future__ import annotations
 
 import asyncio
+import socket
 
 from tests._protocol import _drain_loop, _FakeTransport
 from veloce import Veloce
@@ -41,8 +42,6 @@ class _KeepAliveTransport(_FakeTransport):
 
 def test_connection_made_sets_so_keepalive():
     """On the native path SO_KEEPALIVE is enabled on the accepted socket."""
-    import socket
-
     loop = asyncio.new_event_loop()
     try:
         proto = HttpProtocol(Veloce(openapi_url=None), loop)
@@ -77,8 +76,6 @@ def test_keepalive_tuning_options_are_platform_guarded():
     defines. On Windows none exist, so only SO_KEEPALIVE is set - the native
     run() path must not crash there.
     """
-    import socket
-
     loop = asyncio.new_event_loop()
     try:
         app = Veloce(openapi_url=None)

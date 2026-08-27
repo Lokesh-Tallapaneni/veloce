@@ -34,6 +34,7 @@ Envelope plain, content in the app's dialect. One rule, both tool kinds.
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 
 import pytest
 
@@ -83,8 +84,6 @@ def _app(provider=None, **config) -> Veloce:
 
     @app.mcp_tool(description="Report a value needing the fallback encoder")
     async def exotic() -> dict:
-        from decimal import Decimal
-
         return {"b": Decimal("0.25"), "a": {1, 2}}
 
     app.mount_mcp(transport="http", path="/mcp")

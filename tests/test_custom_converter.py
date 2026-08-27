@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from veloce import Veloce
@@ -15,8 +17,6 @@ class SlugConverter(Converter):
     __slots__ = ()
 
     def match(self, value: str):
-        import re
-
         if re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", value):
             return True, value
         return False, None

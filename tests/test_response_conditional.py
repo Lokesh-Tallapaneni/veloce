@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+
 import pytest
 
 from tests.conftest import make_request
@@ -28,8 +30,6 @@ def test_add_etag_sets_strong_quoted_etag():
 def test_add_etag_passes_usedforsecurity_false(monkeypatch):
     """The cache-validator MD5 must be flagged non-security so it does not
     raise on FIPS Python builds."""
-    import hashlib
-
     seen = {}
     real_md5 = hashlib.md5
 

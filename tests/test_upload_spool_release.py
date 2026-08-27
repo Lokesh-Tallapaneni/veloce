@@ -14,6 +14,7 @@ under a running task.
 from __future__ import annotations
 
 import asyncio
+import warnings
 
 from veloce import BackgroundTask, JSONResponse, Veloce
 from veloce.http.formparsers import MULTIPART_SPOOL_MAX_SIZE
@@ -115,8 +116,6 @@ def test_a_request_with_no_upload_is_unaffected():
 
 def test_the_upload_path_leaves_no_resource_warning():
     """The census that surfaced this: 34 unclosed-file warnings on this path."""
-    import warnings
-
     seen: dict = {}
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always", ResourceWarning)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from urllib.parse import urlencode
+
 import orjson
 
 from tests.conftest import make_request
@@ -509,8 +511,6 @@ async def test_csrf_header_and_form_paths_use_same_check():
     pin the equivalence with a single test that runs both branches
     through identical inputs.
     """
-    from urllib.parse import urlencode
-
     app = Veloce(debug=True, openapi_url=None)
     app.add_middleware(CSRFMiddleware())
 

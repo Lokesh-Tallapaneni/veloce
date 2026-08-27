@@ -13,6 +13,7 @@ be entirely unaffected - which the last section pins.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 
 import pytest
@@ -347,8 +348,6 @@ def test_a_handshake_revision_in_the_body_alone_is_untouched():
 
 def test_the_two_doors_agree_on_a_handshake_revision():
     """The same message must not be served on one transport and refused on the other."""
-    import asyncio
-
     app = Veloce(title="Headers", openapi_url=None)
 
     @app.mcp_tool(description="Add two numbers")

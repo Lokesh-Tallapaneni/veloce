@@ -19,13 +19,14 @@ them. It rejects three shapes that are never one of those reasons:
   * a `veloce.*` import inside a body of a module that never calls
     `importorskip` or `pytest.skip`, where there is nothing to defer: `veloce`
     is always importable, so the top of the module could bind it;
-  * an import of a **declared runtime dependency** in such a module, for the
-    same reason - a module that cannot import `orjson` cannot be collected
-    either, so deferring it defers nothing.
+  * an import of the **standard library or a declared runtime dependency** in
+    such a module, for the same reason - a module that cannot import `asyncio`
+    or `orjson` cannot be collected either, so deferring it defers nothing.
 
 A hoist of the second shape moved 410 imports out of 235 modules, and removing
 the copies it made redundant took 193 more. The third took eighty `import
-orjson` statements out of forty.
+orjson` statements out of forty, seven `pydantic` and `jinja2` ones out of six,
+and 169 stdlib ones out of ninety.
 
 An *optional* dependency is the legitimate case and stays allowed: `msgspec`,
 `redis` and the ASGI servers may genuinely be absent, which is what
@@ -38,6 +39,7 @@ from __future__ import annotations
 import ast
 import pathlib
 import re
+import sys
 
 import pytest
 
@@ -104,7 +106,10 @@ _RUNTIME_MODULES = {
     "httptools": "httptools",
     "jinja2": "jinja2",
 }
-_ALWAYS_PRESENT = frozenset(m for m in _RUNTIME_MODULES.values() if m)
+# The standard library belongs in the same set: it is present by definition.
+_ALWAYS_PRESENT = frozenset(m for m in _RUNTIME_MODULES.values() if m) | set(
+    sys.stdlib_module_names
+)
 
 
 def _declared_runtime_dependencies() -> set[str]:
@@ -125,7 +130,7 @@ def _declared_runtime_dependencies() -> set[str]:
 
 
 def _unjustified_runtime_dependency(path: pathlib.Path) -> list[str]:
-    """Hard-dependency imports inside a body where nothing could need deferring."""
+    """Always-present imports inside a body where nothing could need deferring."""
     text = path.read_text(encoding="utf-8")
     if "importorskip" in text or "pytest.skip" in text:
         return []
@@ -189,9 +194,10 @@ def test_no_first_party_import_hides_inside_a_body(path):
 def test_no_runtime_dependency_import_hides_inside_a_body(path):
     offenders = _unjustified_runtime_dependency(path)
     assert offenders == [], (
-        f"{path.name}: these import a declared runtime dependency, which this "
-        "module needs to be collected at all, so there is nothing to defer - "
-        f"move them to the module top: {offenders}"
+        f"{path.name}: these import the standard library or a declared runtime "
+        "dependency, which this module needs to be collected at all, so there "
+        "is nothing to defer - move them to the module top, or add a comment "
+        f"saying what the deferral is for: {offenders}"
     )
 
 
@@ -204,6 +210,19 @@ def test_a_hard_dependency_import_in_a_body_is_found(tmp_path):
     module = tmp_path / "test_probe.py"
     module.write_text("def test_x():\n    import orjson\n\n    assert orjson\n", encoding="utf-8")
     assert _unjustified_runtime_dependency(module) == ["test_x:2"]
+
+
+def test_a_stdlib_import_in_a_body_is_found(tmp_path):
+    module = tmp_path / "test_probe.py"
+    module.write_text("def test_x():\n    import asyncio\n\n    assert asyncio\n", encoding="utf-8")
+    assert _unjustified_runtime_dependency(module) == ["test_x:2"]
+
+
+def test_a_third_party_import_that_is_not_declared_is_allowed(tmp_path):
+    """Anything outside the two always-present sets may genuinely be absent."""
+    module = tmp_path / "test_probe.py"
+    module.write_text("def test_x():\n    import uvicorn\n\n    assert uvicorn\n", encoding="utf-8")
+    assert _unjustified_runtime_dependency(module) == []
 
 
 def test_an_optional_dependency_import_in_a_body_is_allowed(tmp_path):

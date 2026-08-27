@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from tests.conftest import make_request
@@ -60,8 +62,6 @@ async def test_if_match_wildcard_on_missing_file_is_not_found(static):
 
 async def test_if_unmodified_since_earlier_than_mtime_returns_412(static):
     sf, path = static
-    import os
-
     older = http_date(os.stat(path).st_mtime - 3600)
     resp = await sf.handle(_req("/static/blob.bin", {"if-unmodified-since": older}))
     assert resp.status_code == 412
@@ -69,8 +69,6 @@ async def test_if_unmodified_since_earlier_than_mtime_returns_412(static):
 
 async def test_if_unmodified_since_not_older_returns_200(static):
     sf, path = static
-    import os
-
     newer = http_date(os.stat(path).st_mtime + 3600)
     resp = await sf.handle(_req("/static/blob.bin", {"if-unmodified-since": newer}))
     assert resp.status_code == 200
@@ -81,8 +79,6 @@ async def test_if_unmodified_since_not_older_returns_200(static):
 
 async def test_if_match_takes_precedence_over_if_unmodified_since(static):
     sf, path = static
-    import os
-
     base = await sf.handle(_req("/static/blob.bin"))
     newer = http_date(os.stat(path).st_mtime + 3600)  # would satisfy IUS → 200
     resp = await sf.handle(
@@ -97,8 +93,6 @@ async def test_if_match_takes_precedence_over_if_unmodified_since(static):
 
 async def test_satisfied_if_match_wildcard_suppresses_failing_ius(static):
     sf, path = static
-    import os
-
     older = http_date(os.stat(path).st_mtime - 3600)  # would fail IUS → 412
     resp = await sf.handle(
         _req("/static/blob.bin", {"if-match": "*", "if-unmodified-since": older})

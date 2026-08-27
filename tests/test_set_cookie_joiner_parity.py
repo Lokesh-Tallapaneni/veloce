@@ -19,6 +19,7 @@ carries its own copy of the separator.
 from __future__ import annotations
 
 import asyncio
+import inspect
 
 import pytest
 
@@ -189,8 +190,6 @@ def test_no_splitter_hardcodes_the_separator():
     files - the separator is legitimately *described* in several comments and
     docstrings, and flagging those would make this guard noise.
     """
-    import inspect
-
     for name, func in (
         ("_build_asgi_headers", _build_asgi_headers),
         ("_encode_response_head", _encode_response_head),

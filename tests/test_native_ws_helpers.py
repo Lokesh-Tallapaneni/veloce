@@ -9,6 +9,8 @@ prevent.
 
 from __future__ import annotations
 
+import asyncio
+
 from tests._native_ws import (
     accepted_websocket,
     deliver,
@@ -50,8 +52,6 @@ def test_marking_accepted_writes_nothing():
 
 def test_an_accepted_socket_can_send():
     """It is the state that follows a handshake, not just a flag."""
-    import asyncio
-
     websocket, transport = accepted_websocket()
     asyncio.run(websocket.send_text("hi"))
     assert transport.writes
@@ -121,8 +121,6 @@ def test_deliver_and_a_real_frame_share_the_buffer():
 
 
 def test_a_delivered_message_reaches_receive():
-    import asyncio
-
     websocket, _ = accepted_websocket()
     deliver(websocket, b"planted")
     assert asyncio.run(websocket.receive_bytes()) == b"planted"

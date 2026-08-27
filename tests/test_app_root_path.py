@@ -14,6 +14,8 @@ is known.
 
 from __future__ import annotations
 
+import asyncio
+
 import orjson
 import pytest
 
@@ -74,8 +76,6 @@ def test_an_app_at_root_is_unchanged():
 
 def test_the_asgi_scope_beats_the_constructor():
     """The server knows where the app was actually mounted."""
-    import asyncio
-
     app = _app(root_path="/declared")
     seen = {}
 
@@ -108,8 +108,6 @@ def test_the_asgi_scope_beats_the_constructor():
 
 def test_an_empty_scope_root_path_falls_back_to_the_constructor():
     """An ASGI server that is not behind a prefix sets `""`, not absent."""
-    import asyncio
-
     app = _app(root_path="/api")
     seen = {}
 

@@ -14,8 +14,10 @@ non-empty scan separately, which is the shape that cannot go quiet.
 from __future__ import annotations
 
 import ast
+import importlib
 import pathlib
 import re
+import sys
 
 import pytest
 
@@ -57,8 +59,6 @@ def test_the_scan_found_the_noted_deferrals() -> None:
 )
 def test_the_noted_import_targets_a_real_module(where: str, line: int, module: str) -> None:
     """A note naming a module that no longer exists is worse than no note."""
-    import importlib
-
     assert module.startswith("veloce"), f"{where}:{line} notes a non-veloce import"
     importlib.import_module(module)
 
@@ -69,8 +69,6 @@ def test_the_cycle_is_still_there_to_break() -> None:
     Checked through the module-level import graph the sibling guard builds - if
     a noted import could be hoisted without creating a cycle, the note is stale.
     """
-    import sys
-
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
     from test_module_import_graph import _graph, _module_name
 

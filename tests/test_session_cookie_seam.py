@@ -20,6 +20,8 @@ which is the property these tests pin.
 
 from __future__ import annotations
 
+from collections import ChainMap
+
 import pytest
 
 import veloce.signing
@@ -92,8 +94,6 @@ def test_nested_values_round_trip():
 
 def test_encode_accepts_any_mapping():
     """It is annotated `Mapping`, so a session object is as good as a dict."""
-    from collections import ChainMap
-
     mw = _mw()
     assert mw.decode_cookie(mw.encode_cookie(ChainMap({"user": "alice"}))) == {"user": "alice"}
 

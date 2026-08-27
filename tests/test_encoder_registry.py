@@ -8,6 +8,7 @@ The other two thirds of `veloce/encoders.py` are in
 
 import base64
 import datetime
+import datetime as _dt
 from decimal import Decimal
 
 import orjson
@@ -256,7 +257,6 @@ def test_orjson_default_bytearray_round_trip():
 def test_orjson_default_resolves_scalar_subclass_without_registry():
     """The orjson default hook resolves a scalar subclass via its base (MRO walk)
     even with an empty registry, instead of falling through to `vars()` -> {}."""
-    import datetime as _dt
 
     class _MyDateTime(_dt.datetime):
         pass

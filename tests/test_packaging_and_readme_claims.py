@@ -29,8 +29,11 @@ again does not fail here.
 
 from __future__ import annotations
 
+import importlib.metadata as metadata
+import importlib.util
 import pathlib
 import re
+import re as _re
 import warnings
 
 import pytest
@@ -80,8 +83,6 @@ def test_the_example_app_uses_no_deprecated_lifecycle_hook():
 
 def test_the_example_app_imports_without_a_deprecation_warning():
     """The guard that matters - a future deprecation fails here, not silently."""
-    import importlib.util
-
     spec = importlib.util.spec_from_file_location("_example_app_probe", EXAMPLE)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -92,8 +93,6 @@ def test_the_example_app_imports_without_a_deprecation_warning():
 
 def test_the_example_app_still_serves():
     """End to end: the migrated hooks must actually run."""
-    import importlib.util
-
     spec = importlib.util.spec_from_file_location("_example_app_serve", EXAMPLE)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -181,8 +180,6 @@ def test_every_runtime_dependency_declares_a_floor():
 
 def test_the_installed_versions_satisfy_the_floors():
     """The environment must not be below what the project claims to need."""
-    import importlib.metadata as metadata
-
     for spec in _pyproject()["project"]["dependencies"]:
         name = spec.split(">=")[0].split(";")[0].strip()
         if name == "uvloop":
@@ -230,8 +227,6 @@ def test_the_versions_page_documents_the_floor_policy():
 
 def test_the_floors_quoted_in_the_docs_match_the_manifest():
     """A worked example that drifts from the manifest teaches the wrong number."""
-    import re as _re
-
     page = ROOT / "docs/deployment/versions.md"
     section = page.read_text(encoding="utf-8").split("## How Veloce pins its own", 1)[1]
     quoted = dict(_re.findall(r'"([a-z0-9-]+)>=([0-9.]+)"', section))

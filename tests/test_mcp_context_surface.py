@@ -8,6 +8,8 @@ here rather than left to review.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from tests._mcp import call, call_error
@@ -334,8 +336,6 @@ async def test_a_task_reports_its_handle_and_the_call_that_created_it():
     `task_id` is the handle the client polls with; `origin_request_id` is the
     request it is correlating against.
     """
-    import asyncio
-
     seen: dict = {}
     app = Veloce(openapi_url=None)
 

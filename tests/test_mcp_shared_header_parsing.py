@@ -25,6 +25,8 @@ JSON reply it got before: the stream is for a client that asked for it.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from tests._mcp import auth
@@ -100,8 +102,6 @@ def test_a_client_that_did_not_ask_for_the_stream_gets_json(accept):
 
 
 def test_the_reply_is_correct_either_way():
-    import json
-
     assert json.loads(_reply("application/json"))["result"]["content"][0]["text"] == "ok"
     assert "ok" in _reply("text/event-stream")
 

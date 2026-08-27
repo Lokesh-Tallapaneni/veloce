@@ -13,6 +13,7 @@ the suite.
 from __future__ import annotations
 
 import ast
+import asyncio
 import pathlib
 import re
 
@@ -70,8 +71,6 @@ def test_async_tests_really_do_run_without_a_marker():
 
 async def test_this_coroutine_test_runs_with_no_marker():
     """Proof by existence: no decorator, and it must not be reported skipped."""
-    import asyncio
-
     await asyncio.sleep(0)
 
 

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import re
 
 import pytest
 
@@ -65,7 +66,6 @@ def _compare(verb, **kwargs):
     The boundary is random per request, so two correct clients differ there and
     nowhere else - masking it is what lets the rest be compared exactly.
     """
-    import re
 
     def normalise(payload):
         payload = dict(payload)

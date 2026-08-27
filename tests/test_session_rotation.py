@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from veloce import Request, SessionMiddleware, Veloce
@@ -24,8 +26,6 @@ def test_signer_embeds_timestamp():
 
 def test_old_token_rejected_when_past_max_age(monkeypatch):
     """A cookie signed in 2000 must not validate today regardless of cookie Max-Age."""
-    import time
-
     mw = SessionMiddleware(secret_key="k" * 32, max_age=60)
 
     real_time = time.time

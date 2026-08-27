@@ -12,6 +12,8 @@ every response-shaped POST was misread as garbage.
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
 from veloce import TestClient, Veloce
@@ -132,8 +134,6 @@ async def test_the_dispatcher_returns_nothing_for_a_response():
 
 async def test_stdio_still_resolves_a_reply_before_dispatch():
     """stdio owns pending requests, so it must keep intercepting replies itself."""
-    import inspect
-
     source = inspect.getsource(stdio)
     assert '"method" not in message' in source
     assert "_resolve_reply" in source

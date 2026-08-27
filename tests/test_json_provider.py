@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import decimal
+import json as stdlib_json
+from pathlib import PurePosixPath
 from typing import Any
 
 from veloce import Veloce
@@ -74,7 +77,6 @@ def test_provider_response_builds_jsonresponse():
 
 def test_subclassable_with_pure_dict_loads():
     """A custom provider can use a different parser (stdlib json)."""
-    import json as stdlib_json
 
     class StdlibJSON(JSONProvider):
         def dumps(self, obj, **kwargs):
@@ -99,9 +101,6 @@ def test_dumps_serialises_set_via_default_hook():
 
 
 def test_dumps_serialises_path_decimal_and_bytes():
-    import decimal
-    from pathlib import PurePosixPath
-
     app = Veloce(openapi_url=None)
     body = app.json.dumps({"p": PurePosixPath("a/b"), "d": decimal.Decimal("1.5"), "b": b"hi"})
     # Bytes serialise as lossless base64 ("hi" -> "aGk="), not a UTF-8 decode.
@@ -120,8 +119,6 @@ def test_dumps_serialises_arbitrary_object_via_vars():
 
 
 def test_default_hook_recurses_into_nested_unsupported_leaves():
-    import decimal
-
     class Wrap:
         def __init__(self) -> None:
             self.amount = decimal.Decimal("2.5")
@@ -158,15 +155,11 @@ def test_orjson_default_falls_back_to_str_for_slotted_object():
 
 
 def test_finite_decimal_encodes_as_json_number():
-    import decimal
-
     resp = JSONResponse({"price": decimal.Decimal("1.5")})
     assert resp.body == b'{"price":1.5}'
 
 
 def test_out_of_float_range_decimal_encodes_as_string_not_null():
-    import decimal
-
     # float(Decimal('1E10000')) overflows to inf, which orjson would emit as
     # JSON null - silently dropping the value. The hook must preserve it as a
     # string instead. Both encode paths agree.
@@ -176,30 +169,22 @@ def test_out_of_float_range_decimal_encodes_as_string_not_null():
 
 
 def test_decimal_nan_encodes_as_string_not_null():
-    import decimal
-
     nan = decimal.Decimal("NaN")
     assert orjson_default(nan) == str(nan)
 
 
 def test_integer_valued_decimal_encodes_as_int():
-    import decimal
-
     out = jsonable_encoder(decimal.Decimal("1"))
     assert out == 1 and type(out) is int
 
 
 def test_large_in_range_integer_decimal_keeps_exact_digits():
-    import decimal
-
     # < 2**64, so exact int round-trip with no e+19 precision loss.
     resp = JSONResponse({"v": decimal.Decimal("12345678901234567890")})
     assert resp.body == b'{"v":12345678901234567890}'
 
 
 def test_huge_integer_decimal_falls_back_to_string():
-    import decimal
-
     big = decimal.Decimal("1E10000")  # exponent 10000 >= 0, int out of 64-bit window
     assert orjson_default(big) == str(big)
     assert jsonable_encoder(big) == str(big)
@@ -208,16 +193,12 @@ def test_huge_integer_decimal_falls_back_to_string():
 
 
 def test_fractional_decimal_still_float():
-    import decimal
-
     assert jsonable_encoder(decimal.Decimal("9.99")) == 9.99
     out = jsonable_encoder(decimal.Decimal("1.0"))  # negative exponent -> float
     assert out == 1.0 and type(out) is float
 
 
 def test_huge_exponent_decimal_fast_string_no_int_materialization():
-    import decimal
-
     # Must NOT materialize a million-digit int; returns str directly.
     big = decimal.Decimal("1E1000000")
     assert orjson_default(big) == str(big)

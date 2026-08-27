@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from tests.conftest import make_request
@@ -17,8 +19,6 @@ class TestPerformance:
 
     async def test_simple_route_under_50us(self):
         """Sanity check: simple route should complete in under 50 microseconds."""
-        import time
-
         app = Veloce(openapi_url=None)
 
         @app.get("/bench")

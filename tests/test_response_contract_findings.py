@@ -14,6 +14,8 @@ much it mattered. A route that declared one model and returned another exited 0.
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 from pydantic import BaseModel
 
@@ -74,8 +76,6 @@ def test_the_contradiction_names_both_models():
 
 def test_the_contradiction_fails_veloce_check(tmp_path, monkeypatch):
     """The property that was missing: it now reaches the exit code."""
-    import sys
-
     module = tmp_path / "contract_app.py"
     module.write_text(
         "from pydantic import BaseModel\n"
