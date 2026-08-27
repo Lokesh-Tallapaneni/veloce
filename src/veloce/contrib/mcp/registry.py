@@ -8,9 +8,19 @@ A `ToolRegistry` is assembled once, at `mount_mcp` time, from two sources:
 
 Each entry carries the handler, its precompiled `HandlerPlan` (reused from
 route registration, or built on demand for an MCP-only tool), the derived
-input JSON Schema, and the LLM-facing description. The safety policy is
-enforced here: a mutating route is never auto-exposed, and every exposed
-handler must carry a non-empty description.
+input JSON Schema, and the LLM-facing description.
+
+The safety policy is **default-closed, not verb-based**: nothing is exposed
+unless its author passes `expose_as_mcp_tool=True`, and a route that does pass
+it is exposed **whatever its HTTP method** - a `DELETE` becomes a tool exactly
+as a `GET` does. What the registry enforces is the one registration-time rule
+in `safety.py`: every exposed handler must carry a non-empty description.
+
+This docstring used to say "a mutating route is never auto-exposed". That is
+true only in the sense that *nothing* is auto-exposed, and it read as a
+verb-based gate protecting mutating routes. There is no such gate, and
+`safety.py` says so; an author exposing a `DELETE` is taking that decision
+themselves.
 """
 
 from __future__ import annotations
