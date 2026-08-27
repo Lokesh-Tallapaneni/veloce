@@ -10,7 +10,9 @@ renaming. They are kept as-is deliberately for spec compliance.
 
 from __future__ import annotations
 
-from typing import Any, TypeVar
+from typing import Annotated, Any, TypeVar
+
+from typing_extensions import Doc
 
 from veloce._params import Form
 from veloce._protocol_constants import AUTH_SCHEME_BEARER, OAUTH2_GRANT_TYPE_PASSWORD
@@ -51,9 +53,18 @@ class OAuth2PasswordBearer(_OAuth2BearerScheme):
 
     def __init__(
         self,
-        token_url: str,
-        auto_error: bool = True,
-        scopes: dict[str, str] | None = None,
+        token_url: Annotated[
+            str,
+            Doc("Endpoint the password flow exchanges credentials at."),
+        ],
+        auto_error: Annotated[
+            bool,
+            Doc("Raise 401 when the token is absent; False resolves to None."),
+        ] = True,
+        scopes: Annotated[
+            dict[str, str] | None,
+            Doc("Scope name to description, published in the OpenAPI document."),
+        ] = None,
     ) -> None:
         self.token_url = token_url
         self.auto_error = auto_error
@@ -97,11 +108,26 @@ class OAuth2AuthorizationCodeBearer(_OAuth2BearerScheme):
 
     def __init__(
         self,
-        authorizationUrl: str,
-        tokenUrl: str,
-        refreshUrl: str | None = None,
-        scopes: dict[str, str] | None = None,
-        auto_error: bool = True,
+        authorizationUrl: Annotated[
+            str,
+            Doc("Endpoint the user agent is sent to for authorization."),
+        ],
+        tokenUrl: Annotated[
+            str,
+            Doc("Endpoint the authorization code is exchanged for a token at."),
+        ],
+        refreshUrl: Annotated[
+            str | None,
+            Doc("Endpoint refresh tokens are redeemed at. Omitted when unset."),
+        ] = None,
+        scopes: Annotated[
+            dict[str, str] | None,
+            Doc("Scope name to description, published in the OpenAPI document."),
+        ] = None,
+        auto_error: Annotated[
+            bool,
+            Doc("Raise 401 when the token is absent; False resolves to None."),
+        ] = True,
     ) -> None:
         self.authorizationUrl = authorizationUrl
         self.tokenUrl = tokenUrl
@@ -134,8 +160,14 @@ class OpenIdConnect(_OAuth2BearerScheme):
 
     def __init__(
         self,
-        openIdConnectUrl: str,
-        auto_error: bool = True,
+        openIdConnectUrl: Annotated[
+            str,
+            Doc("OpenID Connect discovery document URL."),
+        ],
+        auto_error: Annotated[
+            bool,
+            Doc("Raise 401 when the token is absent; False resolves to None."),
+        ] = True,
     ) -> None:
         self.openIdConnectUrl = openIdConnectUrl
         self.auto_error = auto_error

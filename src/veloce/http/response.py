@@ -606,7 +606,7 @@ class Response:
 
     @last_modified.setter
     def last_modified(self, value: Any) -> None:
-        """Set the last modified date."""
+        """Set the `Last-Modified` header."""
         self._set_http_date_header(HEADER_LAST_MODIFIED, value)
 
     @property
@@ -619,7 +619,7 @@ class Response:
 
     @expires.setter
     def expires(self, value: Any) -> None:
-        """Set the expires date."""
+        """Set the `Expires` header."""
         self._set_http_date_header(HEADER_EXPIRES, value)
 
     def _set_http_date_header(self, name: str, value: Any) -> None:
@@ -838,7 +838,7 @@ class Response:
 
     @vary.setter
     def vary(self, value: Any) -> None:
-        """Set the vary."""
+        """Set the `Vary` header."""
         hs = value if isinstance(value, HeaderSet) else HeaderSet(value)
         header_pop(self.headers, HEADER_VARY)
         self.headers[HEADER_VARY] = hs.to_header()
@@ -855,7 +855,7 @@ class Response:
 
     @allow.setter
     def allow(self, value: Any) -> None:
-        """Set the allow."""
+        """Set the `Allow` header."""
         hs = value if isinstance(value, HeaderSet) else HeaderSet(value)
         header_pop(self.headers, HEADER_ALLOW)
         self.headers[HEADER_ALLOW] = hs.to_header()
@@ -874,7 +874,7 @@ class Response:
 
     @www_authenticate.setter
     def www_authenticate(self, value: str | None) -> None:
-        """Set the WWW-Authenticate."""
+        """Set the `WWW-Authenticate` header."""
         if value is None:
             header_pop(self.headers, HEADER_WWW_AUTHENTICATE)
         else:
@@ -919,7 +919,7 @@ class Response:
 
     @content_encoding.setter
     def content_encoding(self, value: str | None) -> None:
-        """Set the content encoding."""
+        """Set the `Content-Encoding` header."""
         self._set_or_pop(HEADER_CONTENT_ENCODING, value)
 
     @property
@@ -929,7 +929,7 @@ class Response:
 
     @content_language.setter
     def content_language(self, value: str | None) -> None:
-        """Set the content language."""
+        """Set the `Content-Language` header."""
         self._set_or_pop(HEADER_CONTENT_LANGUAGE, value)
 
     @property
@@ -943,7 +943,7 @@ class Response:
 
     @accept_ranges.setter
     def accept_ranges(self, value: str | None) -> None:
-        """Set the accept ranges."""
+        """Set the `Accept-Ranges` header."""
         self._set_or_pop(HEADER_ACCEPT_RANGES, value)
 
     def set_content_range(
@@ -988,7 +988,7 @@ class Response:
 
     @date.setter
     def date(self, value: Any) -> None:
-        """Set the date."""
+        """Set the `Date` header."""
         if value is None:
             header_pop(self.headers, HEADER_DATE)
         else:
@@ -1002,7 +1002,7 @@ class Response:
 
     @location.setter
     def location(self, value: str | None) -> None:
-        """Set the location."""
+        """Set the `Location` header."""
         self._set_or_pop(HEADER_LOCATION, value)
 
     @property
@@ -1012,6 +1012,7 @@ class Response:
 
     @content_location.setter
     def content_location(self, value: str | None) -> None:
+        """Set the `Content-Location` header, or remove it with `None`."""
         self._set_or_pop(HEADER_CONTENT_LOCATION, value)
 
     @property
@@ -1034,7 +1035,7 @@ class Response:
 
     @retry_after.setter
     def retry_after(self, value: Any) -> None:
-        """Set the retry after."""
+        """Set the `Retry-After` header."""
         if value is None:
             header_pop(self.headers, HEADER_RETRY_AFTER)
         elif isinstance(value, timedelta):
@@ -1055,6 +1056,7 @@ class Response:
 
     @age.setter
     def age(self, value: int | None) -> None:
+        """Set the `Age` header in seconds, or remove it with `None`."""
         if value is None:
             header_pop(self.headers, HEADER_AGE)
         else:

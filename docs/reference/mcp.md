@@ -18,6 +18,11 @@ The Model Context Protocol server, registries, and transports. Most applications
 ::: veloce.contrib.mcp.ResourceRegistry
 ::: veloce.contrib.mcp.PromptRegistry
 ::: veloce.contrib.mcp.TaskRegistry
+::: veloce.contrib.mcp.Capability
+::: veloce.contrib.mcp.ToolsCapability
+::: veloce.contrib.mcp.ResourcesCapability
+::: veloce.contrib.mcp.PromptsCapability
+::: veloce.contrib.mcp.LoggingCapability
 ::: veloce.contrib.mcp.TasksCapability
 ::: veloce.contrib.mcp.SubscriptionsCapability
 ::: veloce.contrib.mcp.CompletionsCapability
@@ -50,7 +55,10 @@ The content a tool, resource, or prompt may return beyond plain text.
 
 Transports, and the store that lets HTTP sessions outlive one worker.
 
+::: veloce.contrib.mcp.Transport
+::: veloce.contrib.mcp.BidirectionalTransport
 ::: veloce.contrib.mcp.register_http_transport
+::: veloce.contrib.mcp.register_sse_transport
 ::: veloce.contrib.mcp.StdioTransport
 ::: veloce.contrib.mcp.serve_stdio
 ::: veloce.contrib.mcp.SessionBackend

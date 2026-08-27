@@ -191,6 +191,10 @@ class StaticFiles:
         # handler.
         self.max_age = max_age
         self._cache_control = f"public, max-age={max_age}" if max_age is not None else None
+        # Why the directory could not be served, or `None`. Always set, so the
+        # read in `handle()` is a plain attribute access rather than a
+        # `getattr` guard standing in for a branch that might not have run.
+        self._setup_problem: str | None = None
         # Validate the configured directory once at construction (a setup-time
         # context, not an async request path). A typo otherwise builds a
         # handler that silently 404s every asset, discoverable only by hitting
@@ -204,7 +208,7 @@ class StaticFiles:
             if must_exist:
                 raise ValueError(problem)
             warnings.warn(problem, stacklevel=2)
-            self._setup_problem: str | None = problem
+            self._setup_problem = problem
         elif not os.access(self.directory, (os.R_OK | os.X_OK) if directory_index else os.X_OK):
             # Serving a known file needs SEARCH (X_OK) on the directory; a
             # directory listing additionally needs READ (R_OK). Require exactly
@@ -385,7 +389,7 @@ class StaticFiles:
         every asset. Informational: the dev flow that creates the directory
         after wiring the app is the reason the downgrade exists.
         """
-        problem = getattr(self, "_setup_problem", None)
+        problem = self._setup_problem
         if problem is None:
             return ()
         from veloce.audit import Finding

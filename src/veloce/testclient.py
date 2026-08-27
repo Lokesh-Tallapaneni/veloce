@@ -309,7 +309,25 @@ def _build_receive(body: bytes, stream: Any | None) -> Any:
 
 
 class TestResponse:
-    """View into a single ASGI response cycle."""
+    """What every `TestClient` / `AsyncTestClient` call returns.
+
+    A read-only view of one ASGI response cycle: `status_code`, the decoded
+    `text` and parsed `json()`, a case-insensitive `headers` mapping, the parsed
+    `cookies`, and `raw_headers` for the cases the mapping flattens (several
+    `Set-Cookie` lines arrive as one joined value in `headers`, and separately in
+    `raw_headers`).
+
+    Not constructed directly - the clients build it.
+
+    Usage::
+
+        with TestClient(app) as client:
+            response = client.get("/items/1")
+
+        assert response.status_code == 200
+        assert response.json() == {"id": 1}
+        assert response.headers["content-type"].startswith("application/json")
+    """
 
     __slots__ = (
         "status_code",

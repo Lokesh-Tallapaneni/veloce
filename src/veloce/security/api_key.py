@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
+
+from typing_extensions import Doc
 
 from veloce._constants import HEADER_WWW_AUTHENTICATE
 from veloce.http.request import Request
@@ -42,7 +44,21 @@ class _APIKeyBase(SecurityScheme):
         if not cls._openapi_in:
             raise TypeError(f"{cls.__name__} must set _openapi_in to an OpenAPI 'in' location")
 
-    def __init__(self, name: str, auto_error: bool = True, realm: str = "") -> None:
+    def __init__(
+        self,
+        name: Annotated[
+            str,
+            Doc("Name of the header, query parameter or cookie carrying the key."),
+        ],
+        auto_error: Annotated[
+            bool,
+            Doc("Raise 401 when the key is absent; False resolves to None instead."),
+        ] = True,
+        realm: Annotated[
+            str,
+            Doc("Realm published in the `WWW-Authenticate` challenge on a 401."),
+        ] = "",
+    ) -> None:
         # Keep the user's casing for the OpenAPI spec; header lookup goes
         # through the case-insensitive `Headers` (CIMultiDict) so the case
         # doesn't matter at read time.

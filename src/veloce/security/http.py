@@ -5,7 +5,9 @@ from __future__ import annotations
 import secrets
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Annotated, Any
+
+from typing_extensions import Doc
 
 from veloce._constants import HEADER_AUTHORIZATION, HEADER_WWW_AUTHENTICATE, MSG_NOT_AUTHENTICATED
 from veloce._header_parsing import parse_header_params
@@ -40,7 +42,17 @@ class HTTPBasic(SecurityScheme):
     # `auto_error` is owned by `SecurityScheme`'s slots.
     __slots__ = ("realm", "_challenge_template")
 
-    def __init__(self, auto_error: bool = True, realm: str = "") -> None:
+    def __init__(
+        self,
+        auto_error: Annotated[
+            bool,
+            Doc("Raise 401 when credentials are absent; False resolves to None."),
+        ] = True,
+        realm: Annotated[
+            str,
+            Doc("Realm published in the `WWW-Authenticate` challenge on a 401."),
+        ] = "",
+    ) -> None:
         _validate_realm(realm)
         self.auto_error = auto_error
         self.realm = realm
@@ -136,11 +148,26 @@ class HTTPDigest(SecurityScheme):
 
     def __init__(
         self,
-        realm: str,
-        qop: str = "auth",
-        algorithm: str = "SHA-256",
-        auto_error: bool = True,
-        nonce_factory: Callable[[], str] | None = None,
+        realm: Annotated[
+            str,
+            Doc("Protection space the digest challenge names. Required."),
+        ],
+        qop: Annotated[
+            str,
+            Doc("Quality of protection offered - `auth` or `auth-int` (RFC 7616)."),
+        ] = "auth",
+        algorithm: Annotated[
+            str,
+            Doc("Digest algorithm published in the challenge."),
+        ] = "SHA-256",
+        auto_error: Annotated[
+            bool,
+            Doc("Raise 401 when credentials are absent; False resolves to None."),
+        ] = True,
+        nonce_factory: Annotated[
+            Callable[[], str] | None,
+            Doc("Mint the challenge nonce. Defaults to a cryptographic random."),
+        ] = None,
     ) -> None:
         # RFC 7616 Sec. 3.2 prefers SHA-256; MD5 remains accepted for back-compat
         # with RFC 2617 clients but should not be the default for new servers.
@@ -224,7 +251,17 @@ class HTTPBearer(_BearerScheme):
     # `__call__`.
     __slots__ = ("scheme_name", "_bearer_scheme")
 
-    def __init__(self, auto_error: bool = True, scheme_name: str = AUTH_SCHEME_BEARER) -> None:
+    def __init__(
+        self,
+        auto_error: Annotated[
+            bool,
+            Doc("Raise 401 when the token is absent; False resolves to None."),
+        ] = True,
+        scheme_name: Annotated[
+            str,
+            Doc("Authorization scheme accepted and published, e.g. `Bearer`."),
+        ] = AUTH_SCHEME_BEARER,
+    ) -> None:
         self.auto_error = auto_error
         self.scheme_name = scheme_name
         self._bearer_scheme = scheme_name

@@ -304,7 +304,7 @@ from veloce.signing import BadData, BadSignature, BadTimeSignature, Signer
 from veloce.sse import EventSourceResponse, ServerSentEvent
 
 # Testing
-from veloce.testclient import AsyncTestClient, TestClient
+from veloce.testclient import AsyncTestClient, TestClient, TestResponse
 
 # Class-based views
 from veloce.views import MethodView, View
@@ -490,6 +490,7 @@ __all__ = [
     # Testing
     "TestClient",
     "AsyncTestClient",
+    "TestResponse",
     # Class-based views
     "View",
     "MethodView",

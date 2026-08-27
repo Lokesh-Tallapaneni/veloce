@@ -157,6 +157,7 @@ VELOCE_ALL = {
     "StaticFiles",
     "StreamingResponse",
     "TestClient",
+    "TestResponse",
     "TokenBucket",
     "TooManyRequests",
     "TrustedHostMiddleware",

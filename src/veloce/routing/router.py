@@ -253,7 +253,11 @@ class RadixNode:
         self.wildcard_child: RadixNode | None = None
         # Method name (uppercase) -> RouteInfo.
         self.handlers: dict[str, RouteInfo] = {}
-        self.param_name: str | None = None
+        # `""` rather than `None` for a static node, which has no name. The
+        # union would otherwise reach the match loop, where the three
+        # `params[pname]` sites would each need a suppression or a runtime
+        # narrowing check per param child per request.
+        self.param_name: str = ""
         self.is_param = False
         self.is_wildcard = False
         self.trailing_slash = False
@@ -1758,7 +1762,7 @@ class Router:
     def _match_node(
         self,
         node: RadixNode,
-        segments: tuple[str, ...] | list[str],
+        segments: tuple[str, ...],
         idx: int,
         params: dict[str, Any],
     ) -> RadixNode | None:
@@ -1813,18 +1817,18 @@ class Router:
                 rest = "/".join(segments[idx:])
                 ok, coerced = converter.match(rest)
                 if ok and child.handlers:
-                    params[pname] = coerced  # type: ignore[index]
+                    params[pname] = coerced
                     return child
                 continue
             ok, coerced = converter.match(seg)
             if not ok:
                 continue
-            params[pname] = coerced  # type: ignore[index]
+            params[pname] = coerced
             result = self._match_node(child, segments, idx + 1, params)
             if result is not None:
                 return result
             if not single_param:
-                del params[pname]  # type: ignore[arg-type]
+                del params[pname]
 
         # Try wildcard (legacy `*` syntax - kept for back-compat).
         if node.wildcard_child is not None:
@@ -2451,7 +2455,7 @@ class Router:
         for child in node.static_children.values():
             self._walk_tree(child, path_parts + [child.segment], out, include_hidden)
         for child in node.param_children:
-            seg = "{" + (child.param_name or "") + "}"
+            seg = "{" + child.param_name + "}"
             self._walk_tree(child, path_parts + [seg], out, include_hidden)
         if node.wildcard_child is not None:
             self._walk_tree(node.wildcard_child, path_parts + ["{path}"], out, include_hidden)

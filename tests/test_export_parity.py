@@ -113,9 +113,6 @@ UNEXPORTED: dict[str, str] = {
     # `status.py` — a predicate over the status constants, used by the response
     # encoders to decide whether a body may be emitted.
     "status.status_permits_body": "internal predicate used by the response encoders",
-    # `testclient.py` — the response type `TestClient` returns. Reachable as
-    # `veloce.testclient.TestResponse` for a typed test helper.
-    "testclient.TestResponse": "test-only type; reachable as veloce.testclient.TestResponse",
     # `websocket.py` — handshake internals. `WebSocket` is the public object.
     "websocket.compute_accept": "RFC 6455 handshake internals",
     "websocket.WebSocketState": "connection-state enum used by the dispatch core",
