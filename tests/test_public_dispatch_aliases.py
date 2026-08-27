@@ -18,6 +18,8 @@ agreeing is exactly the failure worth catching.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from tests.conftest import make_request
@@ -98,11 +100,10 @@ def test_the_aliases_agree_with_the_served_response():
     Synchronous: `TestClient` drives its own loop, which cannot be entered from
     inside a running one.
     """
-    import asyncio
 
     app = _app()
     served = TestClient(app).get("/r")
-    aliased = asyncio.new_event_loop().run_until_complete(_through(app, "dispatch_request"))
+    aliased = asyncio.run(_through(app, "dispatch_request"))
     assert served.status_code == aliased.status_code
     assert served.body == aliased.body
 

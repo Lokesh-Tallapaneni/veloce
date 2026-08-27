@@ -19,6 +19,8 @@ default could never apply, and the two walks now read it the same way.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from tests.conftest import make_request
@@ -107,11 +109,10 @@ def test_dispatch_runs_the_same_hooks_in_the_same_order(short_circuit):
 
     direct_order: list[str] = []
     app2 = _app_with_hooks(direct_order, short_circuit=short_circuit)
-    import asyncio
 
-    asyncio.new_event_loop().run_until_complete(
-        app2.preprocess_request(make_request(path="/plain"))
-    )
+    # `asyncio.run` rather than an `async def` test: the sync `TestClient`
+    # above drives its own loop, which cannot run inside a running one.
+    asyncio.run(app2.preprocess_request(make_request(path="/plain")))
 
     # Dispatch also runs the handler when nothing short-circuits; the hook
     # prefix is what must match.

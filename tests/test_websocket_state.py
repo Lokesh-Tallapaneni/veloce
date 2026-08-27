@@ -66,8 +66,7 @@ def test_state_importable_from_top_level():
 # -- OSError normalization on the ASGI send path ----------------------
 
 
-def test_send_oserror_normalized_to_disconnect():
-    import asyncio
+async def test_send_oserror_normalized_to_disconnect():
 
     import pytest
 
@@ -89,11 +88,10 @@ def test_send_oserror_normalized_to_disconnect():
             await ws.send_text("hi")
         assert ws._closed is True
 
-    asyncio.new_event_loop().run_until_complete(run())
+    await run()
 
 
-def test_send_bytes_connectionreset_normalized():
-    import asyncio
+async def test_send_bytes_connectionreset_normalized():
 
     import pytest
 
@@ -113,7 +111,7 @@ def test_send_bytes_connectionreset_normalized():
         with pytest.raises(WebSocketDisconnect):
             await ws.send_bytes(b"x")
 
-    asyncio.new_event_loop().run_until_complete(run())
+    await run()
 
 
 # -- `ws.state` scratch namespace + slotted connection object ---------

@@ -243,7 +243,7 @@ async def test_offload_dependency_through_compiled_path():
     assert b'"v":42' in resp.body
 
 
-def test_compiled_resolver_cached_on_plan():
+async def test_compiled_resolver_cached_on_plan():
     def dep():
         return 1
 
@@ -253,9 +253,8 @@ def test_compiled_resolver_cached_on_plan():
     plan = build_plan(handler)
     assert plan.compiled_graph_resolver is None
     # Resolving once compiles and caches the resolver on the plan.
-    import asyncio
 
-    asyncio.new_event_loop().run_until_complete(DependencyResolver().resolve_plan(plan, _req(), {}))
+    await DependencyResolver().resolve_plan(plan, _req(), {})
     assert plan.compiled_graph_resolver is not None
     assert plan.compiled_graph_resolver is not _NOT_COMPILABLE
 

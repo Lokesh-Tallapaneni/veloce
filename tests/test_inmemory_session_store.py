@@ -12,15 +12,10 @@ create-and-forget traffic). The store offers both:
 
 from __future__ import annotations
 
-import asyncio
 import time
 
 from veloce import InMemorySessionStore
 from veloce import sessions as sessions_module
-
-
-def _run(coro):  # tiny helper so the tests stay sync-friendly
-    return asyncio.new_event_loop().run_until_complete(coro)
 
 
 def test_sweep_expired_returns_count_and_removes_expired() -> None:
@@ -52,7 +47,7 @@ def test_sweep_expired_does_not_touch_live_entries() -> None:
     assert set(store._entries) == {"x", "y"}
 
 
-def test_probabilistic_sweep_fires_on_write_above_threshold(monkeypatch) -> None:
+async def test_probabilistic_sweep_fires_on_write_above_threshold(monkeypatch) -> None:
     store = InMemorySessionStore()
     # Pre-populate above the threshold with already-expired entries.
     past = time.time() - 1
@@ -66,12 +61,12 @@ def test_probabilistic_sweep_fires_on_write_above_threshold(monkeypatch) -> None
 
     # Trigger one `write` — the new entry is live, every other is
     # expired and must be evicted by the sweep `write` invokes.
-    _run(store.write("trigger", {"hello": "world"}, max_age=60))
+    await store.write("trigger", {"hello": "world"}, max_age=60)
 
     assert set(store._entries) == {"trigger"}
 
 
-def test_probabilistic_sweep_does_not_fire_below_threshold(monkeypatch) -> None:
+async def test_probabilistic_sweep_does_not_fire_below_threshold(monkeypatch) -> None:
     store = InMemorySessionStore()
     past = time.time() - 1
     # Well under the threshold — the sweep must not run even if the
@@ -81,7 +76,7 @@ def test_probabilistic_sweep_does_not_fire_below_threshold(monkeypatch) -> None:
 
     monkeypatch.setattr(sessions_module.random, "random", lambda: 0.0)
 
-    _run(store.write("trigger", {"hello": "world"}, max_age=60))
+    await store.write("trigger", {"hello": "world"}, max_age=60)
 
     # Every expired entry survives — `write` only added "trigger".
     assert "trigger" in store._entries
@@ -89,7 +84,7 @@ def test_probabilistic_sweep_does_not_fire_below_threshold(monkeypatch) -> None:
         assert f"expired-{i}" in store._entries
 
 
-def test_probabilistic_sweep_skipped_when_dice_miss(monkeypatch) -> None:
+async def test_probabilistic_sweep_skipped_when_dice_miss(monkeypatch) -> None:
     store = InMemorySessionStore()
     past = time.time() - 1
     n = sessions_module._SWEEP_THRESHOLD + 5
@@ -99,13 +94,13 @@ def test_probabilistic_sweep_skipped_when_dice_miss(monkeypatch) -> None:
     # 0.99 >= _SWEEP_PROBABILITY (~0.031), so the sweep must skip.
     monkeypatch.setattr(sessions_module.random, "random", lambda: 0.99)
 
-    _run(store.write("trigger", {"hello": "world"}, max_age=60))
+    await store.write("trigger", {"hello": "world"}, max_age=60)
 
     # Nothing was evicted on this call.
     assert len(store._entries) == n + 1
 
 
-def test_probabilistic_sweep_preserves_live_entries(monkeypatch) -> None:
+async def test_probabilistic_sweep_preserves_live_entries(monkeypatch) -> None:
     store = InMemorySessionStore()
     past = time.time() - 1
     future = time.time() + 3600
@@ -117,14 +112,14 @@ def test_probabilistic_sweep_preserves_live_entries(monkeypatch) -> None:
 
     monkeypatch.setattr(sessions_module.random, "random", lambda: 0.0)
 
-    _run(store.write("trigger", {"hello": "world"}, max_age=60))
+    await store.write("trigger", {"hello": "world"}, max_age=60)
 
     # Sweep wiped every expired entry; the live ones (including the
     # one this `write` just added) survive.
     assert set(store._entries) == {"live-1", "live-2", "trigger"}
 
 
-def test_probabilistic_sweep_fires_on_replace(monkeypatch) -> None:
+async def test_probabilistic_sweep_fires_on_replace(monkeypatch) -> None:
     store = InMemorySessionStore()
     past = time.time() - 1
     n = sessions_module._SWEEP_THRESHOLD + 1
@@ -137,7 +132,7 @@ def test_probabilistic_sweep_fires_on_replace(monkeypatch) -> None:
 
     monkeypatch.setattr(sessions_module.random, "random", lambda: 0.0)
 
-    ok = _run(store.replace("target", {"v": 1}, max_age=60))
+    ok = await store.replace("target", {"v": 1}, max_age=60)
 
     assert ok is True
     assert set(store._entries) == {"target"}

@@ -182,8 +182,7 @@ def test_compose_with_gzip():
     assert r.status_code == 200
 
 
-def test_unit_method_gate_and_skips():
-    import asyncio
+async def test_unit_method_gate_and_skips():
 
     from veloce.http.request import Request
 
@@ -194,7 +193,7 @@ def test_unit_method_gate_and_skips():
 
     # POST gate
     resp = Response(body=b"x")
-    out = asyncio.new_event_loop().run_until_complete(mw.process_response(_req("POST"), resp))
+    out = await mw.process_response(_req("POST"), resp)
     assert out is resp
     assert not out.headers.get("ETag")
 

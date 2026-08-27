@@ -133,7 +133,7 @@ def test_app_headers_case_insensitive_in_handler():
     assert j["title"] == "v"
 
 
-def test_app_duplicate_request_headers_preserved():
+async def test_app_duplicate_request_headers_preserved():
     """When the ASGI scope carries duplicate headers, Request.headers must
     preserve them — `Forwarded` is a common duplicate-carrying header."""
     # Build a synthetic ASGI scope with duplicated headers and dispatch
@@ -185,7 +185,7 @@ def test_app_duplicate_request_headers_preserved():
 
         await app(scope, receive, send)
 
-    asyncio.new_event_loop().run_until_complete(drive())
+    await drive()
     assert seen["all"] == ["hop1", "hop2", "hop3"]
 
 

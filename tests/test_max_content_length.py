@@ -60,7 +60,7 @@ def test_explicit_none_max_content_length_allows_any_size():
     assert resp.json() == {"received": 1_000_000}
 
 
-def test_default_limit_rejects_oversized_declared_length():
+async def test_default_limit_rejects_oversized_declared_length():
     """With no explicit config, the default 100 MiB cap rejects an over-limit
     declared Content-Length cheaply (DoS protection is on by default)."""
 
@@ -75,11 +75,11 @@ def test_default_limit_rejects_oversized_declared_length():
         },
         body=b"",
     )
-    resp = asyncio.new_event_loop().run_until_complete(app.handle_request(req))
+    resp = await app.handle_request(req)
     assert resp.status_code == 413
 
 
-def test_declared_content_length_over_limit_rejected_cheaply():
+async def test_declared_content_length_over_limit_rejected_cheaply():
     """A liar that claims Content-Length over the limit is rejected without
     reading the body. We can't easily fake a content-length-vs-body mismatch
     through the TestClient — but we can construct a Request directly."""
@@ -93,11 +93,11 @@ def test_declared_content_length_over_limit_rejected_cheaply():
         headers={"content-length": "999999", "content-type": "application/octet-stream"},
         body=b"",  # actual body shorter — irrelevant; declared length is the trigger
     )
-    resp = asyncio.new_event_loop().run_until_complete(app.handle_request(req))
+    resp = await app.handle_request(req)
     assert resp.status_code == 413
 
 
-def test_actual_body_over_limit_rejected_even_without_content_length():
+async def test_actual_body_over_limit_rejected_even_without_content_length():
     """No Content-Length header but oversized body → still rejected."""
 
     app = _app(max_size=100)
@@ -108,7 +108,7 @@ def test_actual_body_over_limit_rejected_even_without_content_length():
         headers={},
         body=b"x" * 500,
     )
-    resp = asyncio.new_event_loop().run_until_complete(app.handle_request(req))
+    resp = await app.handle_request(req)
     assert resp.status_code == 413
 
 
@@ -288,7 +288,7 @@ def _drive(app, headers: list[tuple[bytes, bytes]], body: bytes) -> int:
         if message["type"] == "http.response.start":
             status.append(message["status"])
 
-    asyncio.get_event_loop_policy().new_event_loop().run_until_complete(app(scope, receive, send))
+    asyncio.run(app(scope, receive, send))
     return status[0]
 
 

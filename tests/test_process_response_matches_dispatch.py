@@ -19,6 +19,8 @@ calls `_run_after_hooks` rather than restating it.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from veloce import Request, Response, Veloce
@@ -332,14 +334,13 @@ def test_a_real_request_is_served_by_the_same_hooks():
 
 def test_the_alias_produces_what_the_request_produces():
     """The property the fix is for: verify a hook here, ship it with confidence."""
-    import asyncio
 
     app = _hooked_app()
     served = TestClient(app).get("/x")
 
-    result = asyncio.new_event_loop().run_until_complete(
-        app.process_response(_request(), _response())
-    )
+    # `asyncio.run` rather than an `async def` test: the sync `TestClient`
+    # above drives its own loop, which cannot run inside a running one.
+    result = asyncio.run(app.process_response(_request(), _response()))
     assert isinstance(result, Response)
     assert result.headers["X-Seen"] == served.headers["X-Seen"]
 

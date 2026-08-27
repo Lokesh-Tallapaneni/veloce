@@ -153,8 +153,7 @@ def test_debug_app_constructor_surfaces_reason_end_to_end():
     assert exc.value.detail.startswith("Invalid JSON body:")
 
 
-def test_async_and_sync_paths_agree_on_masked_detail():
-    import asyncio
+async def test_async_and_sync_paths_agree_on_masked_detail():
 
     from veloce.exceptions import BadRequest
 
@@ -164,7 +163,7 @@ def test_async_and_sync_paths_agree_on_masked_detail():
 
     async_req = _json_req(b"{bad")
     with pytest.raises(BadRequest) as async_exc:
-        asyncio.new_event_loop().run_until_complete(async_req.json())
+        await async_req.json()
 
     assert sync_exc.value.detail == async_exc.value.detail == "Invalid JSON body"
 

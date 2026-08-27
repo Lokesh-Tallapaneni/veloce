@@ -40,13 +40,12 @@ def test_view_base_dispatch_not_implemented_raises():
             pass
 
 
-def test_view_base_dispatch_still_raises_when_called_directly():
+async def test_view_base_dispatch_still_raises_when_called_directly():
     """The base's own method keeps its `NotImplementedError` body - the guard
     sits in front of it rather than replacing it."""
-    import asyncio
 
     with pytest.raises(NotImplementedError):
-        asyncio.new_event_loop().run_until_complete(View().dispatch_request(_req()))
+        await View().dispatch_request(_req())
 
 
 def test_as_view_sets_name_and_view_class():

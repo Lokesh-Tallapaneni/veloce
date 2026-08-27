@@ -270,10 +270,10 @@ def test_attached_background_task_failure_logs_on_app_logger(caplog):
     with caplog.at_level(logging.ERROR, logger=app.logger.name):
         resp = client.get("/bg")
         assert resp.status_code == 200
-        # Drain the loop so the BackgroundTask + done-callback have a chance to run.
-        loop = getattr(client, "_loop", None) or asyncio.new_event_loop()
-        for _ in range(5):
-            loop.run_until_complete(asyncio.sleep(0))
+        # The public seam for this wait. The hand-rolled drain it replaces fell
+        # back to `asyncio.new_event_loop()` when the client had no `_loop`,
+        # which leaked one for the rest of the session.
+        client.wait_for_background_tasks()
 
     messages = [r.getMessage() for r in caplog.records if r.name == app.logger.name]
     assert any("Background task failed" in m for m in messages), messages

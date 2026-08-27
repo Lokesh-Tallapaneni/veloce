@@ -251,7 +251,26 @@ def test_run_parser_has_env_file_flags():
     assert args.env_file is None
 
 
-def test_env_file_populates_environ(tmp_path, monkeypatch):
+@pytest.fixture
+def isolated_environ(monkeypatch):
+    """Undo whatever `_apply_env_file` writes into the real `os.environ`.
+
+    `monkeypatch.delenv(key, raising=False)` on a key that is not there
+    registers nothing to undo, so a key the loader then *sets* survives the
+    test - and the next one reads an environment the suite arranged rather
+    than the one it meant to.
+    """
+    import os
+
+    before = dict(os.environ)
+    yield
+    for key in set(os.environ) - set(before):
+        monkeypatch.delenv(key, raising=False)
+    os.environ.clear()
+    os.environ.update(before)
+
+
+def test_env_file_populates_environ(tmp_path, monkeypatch, isolated_environ):
     env = tmp_path / ".env"
     env.write_text("CLI_ENV_KEY=from_file\nexport CLI_ENV_OTHER='quoted value'\n")
     monkeypatch.delenv("CLI_ENV_KEY", raising=False)
@@ -267,7 +286,7 @@ def test_env_file_populates_environ(tmp_path, monkeypatch):
     assert os.environ["CLI_ENV_OTHER"] == "quoted value"
 
 
-def test_no_env_file_disables_loading(tmp_path, monkeypatch):
+def test_no_env_file_disables_loading(tmp_path, monkeypatch, isolated_environ):
     env = tmp_path / ".env"
     env.write_text("CLI_ENV_DISABLED=should_not_load\n")
     monkeypatch.delenv("CLI_ENV_DISABLED", raising=False)
@@ -281,7 +300,7 @@ def test_no_env_file_disables_loading(tmp_path, monkeypatch):
     assert "CLI_ENV_DISABLED" not in os.environ
 
 
-def test_env_file_does_not_overwrite_existing_environ(tmp_path, monkeypatch):
+def test_env_file_does_not_overwrite_existing_environ(tmp_path, monkeypatch, isolated_environ):
     env = tmp_path / ".env"
     env.write_text("CLI_ENV_PRESET=from_file\n")
     monkeypatch.setenv("CLI_ENV_PRESET", "already_set")
@@ -296,7 +315,7 @@ def test_env_file_does_not_overwrite_existing_environ(tmp_path, monkeypatch):
     assert os.environ["CLI_ENV_PRESET"] == "already_set"
 
 
-def test_explicit_missing_env_file_errors(tmp_path):
+def test_explicit_missing_env_file_errors(tmp_path, isolated_environ):
     missing = tmp_path / "nope.env"
     parser = build_parser()
     args = parser.parse_args(["run", "demo:app", "--env-file", str(missing)])
@@ -304,7 +323,7 @@ def test_explicit_missing_env_file_errors(tmp_path):
         _apply_env_file(args)
 
 
-def test_auto_discover_missing_default_is_silent(tmp_path, monkeypatch):
+def test_auto_discover_missing_default_is_silent(tmp_path, monkeypatch, isolated_environ):
     # CWD with no .env — auto-discovery must not raise.
     monkeypatch.chdir(tmp_path)
     parser = build_parser()
@@ -312,7 +331,7 @@ def test_auto_discover_missing_default_is_silent(tmp_path, monkeypatch):
     _apply_env_file(args)  # no exception
 
 
-def test_auto_discover_unreadable_default_errors(tmp_path, monkeypatch):
+def test_auto_discover_unreadable_default_errors(tmp_path, monkeypatch, isolated_environ):
     # An auto-discovered `.env` that exists but cannot be read (here: a
     # directory in its place) is a real failure, not a silent skip — booting
     # with missing config would mask broken environments.
@@ -965,3 +984,51 @@ def test_no_env_file_keeps_the_audit_off_the_dotenv(tmp_path, monkeypatch, capsy
     import envapp2
 
     assert envapp2.app.debug is False
+
+
+class TestTheEnvFileTestsDoNotLeak:
+    """`_apply_env_file` writes the real `os.environ`; the fixture undoes it.
+
+    `monkeypatch.delenv(key, raising=False)` on a key that is not there
+    registers nothing to undo. So the guard the tests appeared to have covered
+    only keys that already existed, and every key the loader *set* survived into
+    the rest of the session.
+    """
+
+    def test_a_key_the_loader_set_is_gone_afterwards(self, tmp_path, monkeypatch):
+        import os
+
+        key = "CLI_LEAK_PROBE"
+        assert key not in os.environ
+
+        env = tmp_path / ".env"
+        env.write_text(f"{key}=leaked\n", encoding="utf-8")
+
+        def _run_with_fixture():
+            before = dict(os.environ)
+            try:
+                args = build_parser().parse_args(["run", "demo:app", "--env-file", str(env)])
+                _apply_env_file(args)
+                assert os.environ[key] == "leaked"
+            finally:
+                os.environ.clear()
+                os.environ.update(before)
+
+        _run_with_fixture()
+        assert key not in os.environ, "the loader's write outlived the test"
+
+    def test_the_fixture_restores_a_key_it_overwrote(self, tmp_path, isolated_environ):
+        import os
+
+        key = "CLI_EXISTING_PROBE"
+        os.environ[key] = "original"
+        try:
+            env = tmp_path / ".env"
+            env.write_text(f"{key}=from_file\n", encoding="utf-8")
+            args = build_parser().parse_args(["run", "demo:app", "--env-file", str(env)])
+            _apply_env_file(args)
+            # The loader does not overwrite an existing key; the point here is
+            # that the fixture leaves the original value in place either way.
+            assert os.environ[key] == "original"
+        finally:
+            os.environ.pop(key, None)
