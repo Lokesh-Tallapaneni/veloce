@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from tests._routes import route_at
 from veloce import Request, Veloce
 from veloce.testclient import TestClient
 
@@ -51,10 +52,4 @@ def test_no_defaults_means_empty_dict():
     async def plain():
         return {}
 
-    # RouteInfo.defaults defaults to an empty dict.
-    for _m, path, info in app._collect_all_routes():
-        if path == "/plain":
-            assert info.defaults == {}
-            break
-    else:
-        raise AssertionError("route not found")
+    assert route_at(app, "/plain").defaults == {}

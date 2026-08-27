@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import gzip
 
-import pytest
-
 from veloce import GZipMiddleware, Response, Veloce
 from veloce.testclient import TestClient
 
@@ -68,11 +66,14 @@ def _make_gzip_app() -> Veloce:
         # A handler that returns a body that's already been compressed
         # (and declares it via Content-Encoding) — middleware must NOT
         # re-gzip it, or no client can decode the result.
+        # A *compressible* content type on purpose. With
+        # `application/octet-stream` the middleware skipped on type and never
+        # reached the Content-Encoding check at all.
         body = b"x" * 2000
         compressed = gzip.compress(body)
         return Response(
             body=compressed,
-            content_type="application/octet-stream",
+            content_type="text/plain",
             headers={"Content-Encoding": "gzip"},
         )
 
@@ -101,13 +102,24 @@ def test_gzip_compresses_when_no_existing_encoding():
 
 
 def test_gzip_skips_already_encoded_response():
+    """A genuinely gzipped body reaches the client decodable in one pass.
+
+    The end-to-end half: `test_an_already_encoded_body_is_not_re_encoded` in
+    `test_compression_negotiation.py` isolates the Content-Encoding check with
+    a placeholder token, and a mutation deleting that check fails it. It cannot
+    fail here - a second gzip layer over real gzip output is *larger* than the
+    first, so the `clen < len(body)` guard declines it anyway. This asserts the
+    outcome a client depends on instead of claiming to pin the branch.
+    """
     client = TestClient(_make_gzip_app())
     resp = client.get("/pre-encoded", headers={"accept-encoding": "gzip"})
     assert resp.status_code == 200
-    # The middleware must NOT have added a second `gzip` layer.
-    # Decoding the body once with gzip should give back the original.
-    decoded = gzip.decompress(resp.body)
-    assert decoded == b"x" * 2000
+    # Both halves of "did not add a second layer": the header still declares
+    # one encoding rather than `gzip, gzip`, and one decode returns the
+    # original. Decoding alone leaves a doubled header undetected, and a
+    # doubled header is what tells a client how many times to decode.
+    assert resp.headers.get("content-encoding") == "gzip"
+    assert gzip.decompress(resp.body) == b"x" * 2000
 
 
 def test_gzip_proceeds_when_existing_encoding_is_identity():
@@ -124,6 +136,7 @@ def test_gzip_skipped_without_accept_encoding():
     resp = client.get("/plain")  # no accept-encoding
     assert resp.status_code == 200
     assert resp.headers.get("content-encoding") is None
+    assert resp.body == b"x" * 2000
 
 
 def test_gzip_skipped_below_minimum_size():
@@ -135,7 +148,10 @@ def test_gzip_skipped_below_minimum_size():
         return "x"
 
     resp = TestClient(app).get("/tiny", headers={"accept-encoding": "gzip"})
+    # Not compressed, *and* delivered intact: a middleware that dropped the
+    # body below the threshold would satisfy the header assertion alone.
     assert resp.headers.get("content-encoding") is None
+    assert resp.body == b"x"
 
 
 def test_gzip_vary_header_appended_not_replaced():
@@ -155,10 +171,3 @@ def test_gzip_vary_header_appended_not_replaced():
     vary = resp.headers.get("vary", "")
     assert "Origin" in vary
     assert "Accept-Encoding" in vary
-
-
-# ── pytest plugin sanity ─────────────────────────────────────────────
-
-
-def test_pytest_imported():
-    assert pytest is not None
