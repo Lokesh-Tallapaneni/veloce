@@ -27,6 +27,7 @@ dynamic response path.
 from __future__ import annotations
 
 import gzip as gzip_module
+import inspect
 
 import pytest
 
@@ -379,3 +380,62 @@ def test_a_browser_shaped_header_selects_a_modern_coding():
     middleware = CompressionMiddleware(algorithms=("zstd", "br", "gzip"))
     response = _get(_app(middleware), "gzip, deflate, br, zstd")
     assert response.headers["Content-Encoding"] == "zstd"
+
+
+# ── compress_stream carries no unused parameter ──────────────────
+#
+# Moved here from `test_unswept_scope_findings.py`, a module named for the audit
+# batch that produced it rather than for the source it covers.
+
+
+def test_compress_stream_carries_no_unused_parameter():
+    """The original finding was a `request` argument threaded through and never
+    read. `coding` was added later and is read, so the check is that every
+    parameter appears in the body rather than that the signature never grows.
+    """
+    from veloce.middleware.compression import CompressionMiddleware
+
+    source = inspect.getsource(CompressionMiddleware._compress_stream)
+    body = source.split(":", 1)[1]
+    params = [p for p in inspect.signature(CompressionMiddleware._compress_stream).parameters][1:]
+    assert params
+    assert "request" not in params
+    for param in params:
+        assert param in body, f"{param} is never read"
+
+
+def test_streaming_compression_still_works():
+    """The negative: removing the argument must not disturb the path."""
+    app = Veloce(openapi_url=None)
+    app.add_middleware(GZipMiddleware(minimum_size=1))
+
+    @app.get("/s")
+    async def s():
+        async def gen():
+            for _ in range(50):
+                yield b"hello world "
+
+        return StreamingResponse(gen(), content_type="text/plain")
+
+    import gzip
+
+    response = TestClient(app).get("/s", headers={"Accept-Encoding": "gzip"})
+    assert response.headers.get("Content-Encoding") == "gzip"
+    # The client does not decode for us, so the round trip is the assertion.
+    assert gzip.decompress(response.body) == b"hello world " * 50
+
+
+def test_a_refused_encoding_still_streams_plain():
+    app = Veloce(openapi_url=None)
+    app.add_middleware(GZipMiddleware(minimum_size=1))
+
+    @app.get("/s")
+    async def s():
+        async def gen():
+            yield b"plain"
+
+        return StreamingResponse(gen(), content_type="text/plain")
+
+    response = TestClient(app).get("/s", headers={"Accept-Encoding": "gzip;q=0"})
+    assert response.headers.get("Content-Encoding") != "gzip"
+    assert response.text == "plain"

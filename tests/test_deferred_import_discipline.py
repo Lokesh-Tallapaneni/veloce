@@ -179,3 +179,28 @@ def test_every_module_imports_on_its_own():
             [sys.executable, "-c", f"import {module}"], capture_output=True, text=True
         )
         assert result.returncode == 0, f"{module}: {result.stderr}"
+
+
+#
+# Moved here from `test_unswept_scope_findings.py`, a module named for the audit
+# batch that produced it rather than for the source it covers.
+
+
+def test_the_scope_defers_only_the_optional_dependency():
+    """No deferred import in this scope claims to break a cycle."""
+    root = pathlib.Path(__file__).resolve().parents[1] / "src/veloce"
+    deferred = []
+    for directory in ("routing", "security", "serving", "middleware"):
+        for path in (root / directory).rglob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for fn in [
+                n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+            ]:
+                for sub in ast.walk(fn):
+                    if isinstance(sub, (ast.Import, ast.ImportFrom)):
+                        deferred.append(getattr(sub, "module", None) or sub.names[0].name)
+    # `watchfiles` for the reloader, and the compression codecs, whose packages
+    # are optional. Each of those is imported once at module import to build the
+    # codec table, not per response - the point of the rule is that no deferred
+    # import exists to paper over a cycle, and none of these does.
+    assert set(deferred) <= {"watchfiles", "brotli", "brotlicffi", "zstandard"}, deferred

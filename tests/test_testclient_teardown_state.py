@@ -165,3 +165,61 @@ def test_both_documented_forms_shut_the_app_down(form):
         client.get("/")
         client.close()
     assert ran == ["shutdown"]
+
+
+# ── the test client hands the app back ───────────────────────────────
+#
+# Moved here from `test_extensibility_gaps.py`, a module named for a review
+# batch rather than a subject.
+
+
+def test_the_setup_lock_is_restored_on_close():
+    """The defect: an app touched by a client never froze its routes again."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/x")
+    async def x():
+        return {}
+
+    assert app._setup_lock_enabled is True
+    with TestClient(app) as client:
+        client.get("/x")
+        assert app._setup_lock_enabled is False
+    assert app._setup_lock_enabled is True
+
+
+def test_an_explicit_close_restores_it_too():
+    app = Veloce(openapi_url=None)
+    client = TestClient(app)
+    assert app._setup_lock_enabled is False
+    client.close()
+    assert app._setup_lock_enabled is True
+
+
+def test_closing_twice_is_harmless():
+    app = Veloce(openapi_url=None)
+    client = TestClient(app)
+    client.close()
+    client.close()
+    assert app._setup_lock_enabled is True
+
+
+def test_an_app_that_had_it_off_keeps_it_off():
+    """Restored to what it was, not to True."""
+    app = Veloce(openapi_url=None)
+    app._setup_lock_enabled = False
+    with TestClient(app):
+        pass
+    assert app._setup_lock_enabled is False
+
+
+def test_late_registration_still_works_inside_the_client():
+    """The reason the lock is relaxed at all must survive the fix."""
+    app = Veloce(openapi_url=None)
+    with TestClient(app) as client:
+
+        @app.get("/late")
+        async def late():
+            return {"ok": True}
+
+        assert client.get("/late").json() == {"ok": True}

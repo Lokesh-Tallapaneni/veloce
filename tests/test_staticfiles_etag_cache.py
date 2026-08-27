@@ -122,3 +122,51 @@ def test_two_files_do_not_share_an_entry(root):
     (root / "other.txt").write_text("other")
     client = _client(root)
     assert client.get("/s/asset.txt").headers["ETag"] != client.get("/s/other.txt").headers["ETag"]
+
+
+# ── one cache lifetime for both ways of serving a file ───────────────
+#
+# Moved here from `test_extensibility_gaps.py`, a module named for a review
+# batch rather than a subject.
+
+
+@pytest.fixture
+def asset_dir(tmp_path):
+    (tmp_path / "a.txt").write_text("hi", encoding="utf-8")
+    return tmp_path
+
+
+def _cache_control(asset_dir, *, configured=None, **kwargs) -> str:
+    app = Veloce(openapi_url=None)
+    if configured is not None:
+        app.config["SEND_FILE_MAX_AGE_DEFAULT"] = configured
+    app.mount("/s", StaticFiles(directory=str(asset_dir), **kwargs))
+    return TestClient(app).get("/s/a.txt").headers["cache-control"]
+
+
+def test_the_app_wide_default_reaches_static_files(asset_dir):
+    """The defect: `send_file` honoured it and this handler did not."""
+    assert _cache_control(asset_dir, configured=60) == "public, max-age=60"
+
+
+def test_an_explicit_handler_max_age_wins(asset_dir):
+    assert _cache_control(asset_dir, configured=60, max_age=99) == "public, max-age=99"
+
+
+def test_neither_set_keeps_the_previous_default(asset_dir):
+    """No deployment changes by upgrading."""
+    assert _cache_control(asset_dir) == "public, max-age=3600"
+
+
+def test_a_zero_max_age_is_honoured_not_treated_as_unset(asset_dir):
+    assert _cache_control(asset_dir, max_age=0) == "public, max-age=0"
+
+
+def test_a_range_request_uses_the_same_lifetime(asset_dir):
+    """The literal was written twice; both had to move."""
+    app = Veloce(openapi_url=None)
+    app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 60
+    app.mount("/s", StaticFiles(directory=str(asset_dir)))
+    response = TestClient(app).get("/s/a.txt", headers={"Range": "bytes=0-0"})
+    assert response.status_code == 206
+    assert response.headers["cache-control"] == "public, max-age=60"

@@ -5,7 +5,9 @@ from __future__ import annotations
 import pytest
 
 from tests.conftest import make_request
-from veloce import Request, Veloce
+from veloce import Request, Response, Veloce
+from veloce.contrib.staticfiles import StaticFiles
+from veloce.testclient import TestClient
 
 
 class TestMountSubApps:
@@ -124,3 +126,62 @@ class TestMountedRequestCarriesTheConnection:
             make_request(path="/api/echo", method="POST", body=b"x" * 64)
         )
         assert resp.status_code == 413
+
+
+# ── mount() asks for the protocol, not the class ─────────────────────
+#
+# Moved here from `test_extensibility_gaps.py`, a module named for a review
+# batch rather than a subject.
+
+
+class MemoryAssets:
+    """Exactly what the dispatcher needs: a prefix and an async handle."""
+
+    def __init__(self, files: dict[str, str]) -> None:
+        self.prefix = ""
+        self.files = files
+
+    async def handle(self, request):
+        name = request.path[len(self.prefix) :].lstrip("/")
+        if name in self.files:
+            return Response(body=self.files[name].encode(), content_type="text/plain")
+        return None
+
+
+def test_a_handler_implementing_the_protocol_can_be_mounted():
+    """The defect: rejected for not being a `StaticFiles`."""
+    app = Veloce(openapi_url=None)
+    app.mount("/assets", MemoryAssets({"a.txt": "hello"}))
+    client = TestClient(app)
+    assert client.get("/assets/a.txt").text == "hello"
+
+
+def test_a_mounted_handler_that_returns_none_falls_through():
+    app = Veloce(openapi_url=None)
+    app.mount("/assets", MemoryAssets({}))
+
+    @app.get("/assets/live")
+    async def live():
+        return {"route": True}
+
+    client = TestClient(app)
+    assert client.get("/assets/live").json() == {"route": True}
+    assert client.get("/assets/missing").status_code == 404
+
+
+def test_the_mount_prefix_is_written_onto_the_handler():
+    handler = MemoryAssets({})
+    Veloce(openapi_url=None).mount("/assets/", handler)
+    assert handler.prefix == "/assets"
+
+
+def test_a_real_staticfiles_still_mounts(tmp_path):
+    (tmp_path / "a.txt").write_text("disk", encoding="utf-8")
+    app = Veloce(openapi_url=None)
+    app.mount("/s", StaticFiles(directory=str(tmp_path)))
+    assert TestClient(app).get("/s/a.txt").text == "disk"
+
+
+def test_something_that_is_neither_is_still_rejected():
+    with pytest.raises(TypeError):
+        Veloce(openapi_url=None).mount("/x", object())

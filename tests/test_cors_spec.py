@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
 from veloce import CORSMiddleware, Middleware, Veloce
@@ -561,3 +563,60 @@ def test_cors_wildcard_regex_with_credentials_rejected(pattern: str) -> None:
     with pytest.raises(ValueError) as excinfo:
         CORSMiddleware(allow_credentials=True, allow_origin_regex=pattern)
     assert "allow_credentials" in str(excinfo.value)
+
+
+# ── the CORS usage example runs ───────────────────────────────
+#
+# Moved here from `test_unswept_scope_findings.py`, a module named for the audit
+# batch that produced it rather than for the source it covers.
+
+
+def _usage_block(obj) -> str:
+    import textwrap
+
+    doc = inspect.getdoc(obj) or ""
+    after = doc.split("Usage::", 1)[1]
+    lines, started = [], False
+    for line in after.splitlines():
+        if not line.strip():
+            if started:
+                lines.append("")
+            continue
+        if line.startswith((" ", "\t")):
+            started = True
+            lines.append(line)
+        elif started:
+            break
+    return textwrap.dedent("\n".join(lines)).strip()
+
+
+def test_the_cors_usage_example_constructs():
+    """The defect: it raised `ValueError` at construction."""
+    namespace = {"CORSMiddleware": CORSMiddleware, "app": Veloce(openapi_url=None)}
+    exec(compile(_usage_block(CORSMiddleware), "<cors usage>", "exec"), namespace)
+
+
+def test_the_cors_usage_example_declares_allow_headers():
+    """Omitting it is the wildcard that made the example raise."""
+    assert "allow_headers" in _usage_block(CORSMiddleware)
+
+
+def test_credentials_with_wildcard_headers_is_still_refused():
+    """The guard the example was tripping must stay."""
+    with pytest.raises(ValueError, match="allow_credentials"):
+        CORSMiddleware(allow_origins=["https://example.com"], allow_credentials=True)
+
+
+def test_the_example_actually_answers_a_cors_request():
+    """Constructing is not enough - it has to do the job it advertises."""
+    app = Veloce(openapi_url=None)
+    namespace = {"CORSMiddleware": CORSMiddleware, "app": app}
+    exec(compile(_usage_block(CORSMiddleware), "<cors usage>", "exec"), namespace)
+
+    @app.get("/x")
+    async def x() -> dict:
+        return {}
+
+    response = TestClient(app).get("/x", headers={"Origin": "https://example.com"})
+    allowed = [v for k, v in response.headers.items() if k.lower() == "access-control-allow-origin"]
+    assert allowed == ["https://example.com"]

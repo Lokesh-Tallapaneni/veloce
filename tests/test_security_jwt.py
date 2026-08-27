@@ -190,3 +190,23 @@ def test_import_surface():
     from veloce import encode_jwt as _ej  # noqa: F401
 
     assert issubclass(InvalidSignatureError, TopJWTError)
+
+
+#
+# Moved here from `test_unswept_scope_findings.py`, a module named for the audit
+# batch that produced it rather than for the source it covers.
+
+
+def test_alg_none_is_refused_even_when_allow_listed():
+    """The JWT module's strongest claim, pinned."""
+    import base64
+    import json
+
+    from veloce.security.jwt import decode_jwt
+
+    def b64(data: dict) -> str:
+        return base64.urlsafe_b64encode(json.dumps(data).encode()).rstrip(b"=").decode()
+
+    token = f"{b64({'alg': 'none', 'typ': 'JWT'})}.{b64({'sub': 'attacker'})}."
+    with pytest.raises(Exception, match="none"):
+        decode_jwt(token, "secret", algorithms=["none"])

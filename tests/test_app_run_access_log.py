@@ -92,3 +92,47 @@ def test_a_failing_request_is_still_logged(caplog):
         TestClient(app).get("/boom")
     messages = [r.getMessage() for r in caplog.records]
     assert any("500" in m for m in messages)
+
+
+# ── the access log asks the hook ─────────────────────────────────────
+#
+# Moved here from `test_extensibility_gaps.py`, a module named for a review
+# batch rather than a subject.
+
+
+def test_a_user_access_log_suppresses_the_built_in_one():
+    """The defect: identified by `__module__`, so only Veloce's own counted."""
+    app = Veloce(openapi_url=None)
+
+    def my_access_log(metrics):
+        pass
+
+    my_access_log.is_access_log = True
+    app.add_instrumentation(my_access_log)
+    app._install_dev_access_log()
+    assert app._instrumentation == [my_access_log]
+
+
+def test_an_unmarked_hook_does_not_suppress_it():
+    app = Veloce(openapi_url=None)
+
+    def timing(metrics):
+        pass
+
+    app.add_instrumentation(timing)
+    app._install_dev_access_log()
+    assert len(app._instrumentation) == 2
+
+
+def test_the_built_in_access_log_is_installed_once():
+    app = Veloce(openapi_url=None)
+    app._install_dev_access_log()
+    app._install_dev_access_log()
+    assert len(app._instrumentation) == 1
+
+
+def test_the_built_in_hook_carries_the_marker():
+    """So a second installer can recognise it the same way."""
+    app = Veloce(openapi_url=None)
+    app._install_dev_access_log()
+    assert getattr(app._instrumentation[0], "is_access_log", False) is True

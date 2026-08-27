@@ -1,8 +1,12 @@
 """Tests for the radix tree router."""
 
+import logging
+
 import pytest
 
+from veloce import Veloce
 from veloce.routing.router import Router
+from veloce.testclient import TestClient
 
 
 @pytest.fixture
@@ -254,3 +258,133 @@ def test_distinct_params_still_register():
     with pytest.raises(ValueError):
         r.add_route("/a/{k}/b/{k}", handler, ["GET"])
     r.add_route("/{only}", handler, ["GET"])
+
+
+# ── a duplicate route name is reported ───────────────────────────
+#
+# Moved here from `test_unswept_scope_findings.py`, a module named for the audit
+# batch that produced it rather than for the source it covers.
+
+
+def test_a_duplicate_name_on_a_different_path_warns(caplog):
+    """The defect: the reverse entry was replaced in silence."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/users", name="listing")
+    async def users() -> dict:
+        return {}
+
+    with caplog.at_level(logging.WARNING):
+
+        @app.get("/posts", name="listing")
+        async def posts() -> dict:
+            return {}
+
+    assert any("listing" in r.getMessage() for r in caplog.records)
+
+
+def test_the_warning_names_both_paths(caplog):
+    app = Veloce(openapi_url=None)
+
+    @app.get("/users", name="listing")
+    async def users() -> dict:
+        return {}
+
+    with caplog.at_level(logging.WARNING):
+
+        @app.get("/posts", name="listing")
+        async def posts() -> dict:
+            return {}
+
+    message = " ".join(r.getMessage() for r in caplog.records)
+    assert "/users" in message
+    assert "/posts" in message
+
+
+def test_replacing_a_route_at_the_same_path_stays_silent(caplog):
+    """The name legitimately moves with the route it names."""
+    app = Veloce(openapi_url=None, on_duplicate="override")
+
+    @app.get("/users", name="listing")
+    async def first() -> dict:
+        return {}
+
+    async def second() -> dict:
+        return {}
+
+    with caplog.at_level(logging.WARNING):
+        app.get("/users", name="listing")(second)
+
+    assert not [r for r in caplog.records if "name" in (r.getMessage()).lower()]
+    assert app.url_for("listing") == "/users"
+
+
+def test_two_distinct_names_are_silent(caplog):
+    app = Veloce(openapi_url=None)
+
+    with caplog.at_level(logging.WARNING):
+
+        @app.get("/users", name="users")
+        async def users() -> dict:
+            return {}
+
+        @app.get("/posts", name="posts")
+        async def posts() -> dict:
+            return {}
+
+    assert caplog.records == []
+
+
+def test_the_last_registration_still_wins():
+    """Reporting it must not change which route the name resolves to."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/users", name="listing")
+    async def users() -> dict:
+        return {}
+
+    @app.get("/posts", name="listing")
+    async def posts() -> dict:
+        return {}
+
+    assert app.url_for("listing") == "/posts"
+
+
+def test_both_routes_still_serve():
+    """A name collision is a naming problem, not a routing one."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/users", name="listing")
+    async def users() -> dict:
+        return {"which": "users"}
+
+    @app.get("/posts", name="listing")
+    async def posts() -> dict:
+        return {"which": "posts"}
+
+    client = TestClient(app)
+    assert client.get("/users").json() == {"which": "users"}
+    assert client.get("/posts").json() == {"which": "posts"}
+
+
+def test_a_blueprint_name_is_still_namespaced(caplog):
+    """The merge path was already protected and must stay silent."""
+    from veloce import Blueprint
+
+    app = Veloce(openapi_url=None)
+
+    @app.get("/users", name="listing")
+    async def users() -> dict:
+        return {}
+
+    bp = Blueprint("shop", url_prefix="/shop")
+
+    @bp.get("/posts", name="listing")
+    async def posts() -> dict:
+        return {}
+
+    with caplog.at_level(logging.WARNING):
+        app.register_blueprint(bp)
+
+    assert app.url_for("listing") == "/users"
+    assert app.url_for("shop.listing") == "/shop/posts"

@@ -6,6 +6,7 @@ import pytest
 
 from tests.conftest import make_request
 from veloce import Request, Veloce
+from veloce.testclient import TestClient
 
 
 def _req(path: str, host: str) -> Request:
@@ -165,3 +166,69 @@ def test_an_ip_literal_has_no_subdomain(host):
 def test_a_configured_server_name_still_strips_the_apex():
     assert _subdomain("tenant.example.com", server_name="example.com") == "tenant"
     assert _subdomain("example.com", server_name="example.com") == ""
+
+
+# ── one answer to "what subdomain is this" ───────────────────────────
+#
+# Moved here from `test_extensibility_gaps.py`, a module named for a review
+# batch rather than a subject.
+
+
+def test_an_ip_literal_host_matches_no_subdomain_route():
+    """The defect: the router matched `192`, the handler saw `''`."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/", subdomain="192")
+    async def h(request):
+        return {"subdomain": request.subdomain}
+
+    assert TestClient(app).get("/", headers={"Host": "192.168.1.1"}).status_code == 404
+
+
+def test_a_named_subdomain_still_matches():
+    app = Veloce(openapi_url=None)
+    app.config["SERVER_NAME"] = "example.com"
+
+    @app.get("/", subdomain="api")
+    async def h(request):
+        return {"subdomain": request.subdomain}
+
+    client = TestClient(app)
+    assert client.get("/", headers={"Host": "api.example.com"}).json() == {"subdomain": "api"}
+    assert client.get("/", headers={"Host": "www.example.com"}).status_code == 404
+
+
+def test_a_wildcard_subdomain_matches_any_non_empty_one():
+    app = Veloce(openapi_url=None)
+    app.config["SERVER_NAME"] = "example.com"
+
+    @app.get("/", subdomain="*")
+    async def h(request):
+        return {"subdomain": request.subdomain}
+
+    client = TestClient(app)
+    assert client.get("/", headers={"Host": "api.example.com"}).status_code == 200
+    assert client.get("/", headers={"Host": "example.com"}).status_code == 404
+
+
+def test_the_router_and_the_handler_agree():
+    """The property: whatever matched is what the handler is told."""
+    app = Veloce(openapi_url=None)
+    app.config["SERVER_NAME"] = "example.com"
+
+    @app.get("/", subdomain="api")
+    async def h(request):
+        return {"subdomain": request.subdomain}
+
+    body = TestClient(app).get("/", headers={"Host": "api.example.com"}).json()
+    assert body["subdomain"] == "api"
+
+
+def test_a_wildcard_does_not_match_an_ip_literal():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/", subdomain="*")
+    async def h(request):
+        return {}
+
+    assert TestClient(app).get("/", headers={"Host": "10.0.0.1"}).status_code == 404
