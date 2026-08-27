@@ -33,10 +33,9 @@ def test_sync_etag_changes_when_content_changes(tmp_path):
     p = tmp_path / "a.txt"
     p.write_bytes(b"hello")
     e1 = FileResponse(str(p)).headers["ETag"]
-    # Touch the size so mtime changes and content differs.
-    import time
-
-    time.sleep(0.01)
+    # The rewrite changes the file's *size*, which the ETag covers, so the two
+    # differ whether or not the mtime ticks. A real `time.sleep(0.01)` used to
+    # sit here forcing an mtime change the assertion never needed.
     p.write_bytes(b"hello world")
     e2 = FileResponse(str(p)).headers["ETag"]
     assert e1 != e2
