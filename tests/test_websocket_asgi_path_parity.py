@@ -167,7 +167,13 @@ async def test_a_receive_before_accept_is_an_api_error_either_way(bounding):
     "exc", [ConnectionResetError("reset"), BrokenPipeError("pipe"), OSError("gone")]
 )
 async def test_a_dead_peer_send_becomes_a_disconnect(method, exc):
-    """A handler catches one exception on every transport, not a socket error."""
+    """A handler catches one exception on every transport, not a socket error.
+
+    This is the single home for send-error normalisation. A module named for
+    the `WebSocketState` enum carried two hand-written cases covering one
+    method and one exception each; both are subsets of this matrix, which also
+    asserts the close code and the `__cause__` they did not.
+    """
     ws = _dead_socket(exc)
     payload = "hi" if method == "send_text" else b"hi"
     with pytest.raises(WebSocketDisconnect) as caught:

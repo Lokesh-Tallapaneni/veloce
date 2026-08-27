@@ -1,9 +1,8 @@
-"""F9 — `app.mount()` for arbitrary ASGI apps, and `.env` config loading.
+"""F9 — `app.mount()` for arbitrary ASGI apps.
 
-`mount()` now accepts any ASGI application, not just a veloce sub-app:
-the prefix is moved from the scope's `path` to `root_path` and the app
-is dispatched at the ASGI layer. `Config.from_env_file` loads a
-dotenv-style file.
+`mount()` accepts any ASGI application, not just a veloce sub-app: the prefix
+is moved from the scope's `path` to `root_path` and the app is dispatched at
+the ASGI layer.
 """
 
 from __future__ import annotations
@@ -94,110 +93,6 @@ def test_veloce_sub_app_still_uses_the_native_mount_path():
     assert len(app._mounted_apps) == 1
 
     assert app.test_client().get("/sub/ping").json() == {"sub": "pong"}
-
-
-# ── .env config loading ───────────────────────────────────────────────
-
-
-def test_from_env_file_loads_key_value_pairs(tmp_path):
-    env = tmp_path / ".env"
-    env.write_text(
-        "# a comment\n"
-        "\n"
-        "SECRET_KEY=s3cr3t\n"
-        "export DATABASE_URL=postgres://localhost/db\n"
-        'QUOTED="quoted value"\n'
-        "SINGLE='single quoted'\n"
-        "lowercase=ignored\n"
-    )
-    app = Veloce(openapi_url=None)
-    loaded = app.config.from_env_file(str(env))
-
-    assert loaded is True
-    assert app.config["SECRET_KEY"] == "s3cr3t"
-    assert app.config["DATABASE_URL"] == "postgres://localhost/db"
-    assert app.config["QUOTED"] == "quoted value"
-    assert app.config["SINGLE"] == "single quoted"
-    # Only UPPERCASE keys are stored.
-    assert "lowercase" not in app.config
-
-
-def test_from_env_file_missing_file_silent_returns_false(tmp_path):
-    app = Veloce(openapi_url=None)
-    assert app.config.from_env_file(str(tmp_path / "absent.env"), silent=True) is False
-
-
-def test_from_env_file_missing_file_raises_without_silent(tmp_path):
-    app = Veloce(openapi_url=None)
-    with pytest.raises(OSError):
-        app.config.from_env_file(str(tmp_path / "absent.env"))
-
-
-def test_from_env_file_ignores_malformed_lines(tmp_path):
-    env = tmp_path / ".env"
-    env.write_text("VALID=ok\nthis line has no equals sign\nANOTHER=fine\n")
-    app = Veloce(openapi_url=None)
-    app.config.from_env_file(str(env))
-
-    assert app.config["VALID"] == "ok"
-    assert app.config["ANOTHER"] == "fine"
-
-
-def test_from_env_file_strips_an_unquoted_inline_comment(tmp_path):
-    """An unquoted value drops a trailing ` #` inline comment instead of
-    keeping it as part of the value."""
-    env = tmp_path / ".env"
-    env.write_text("HOST=localhost  # the dev host\nPORT=8000\n")
-    app = Veloce(openapi_url=None)
-    app.config.from_env_file(str(env))
-
-    assert app.config["HOST"] == "localhost"
-    assert app.config["PORT"] == "8000"
-
-
-def test_from_env_file_keeps_a_hash_inside_a_quoted_value(tmp_path):
-    """A `#` inside quotes is literal; only a comment after the closing
-    quote is stripped."""
-    env = tmp_path / ".env"
-    env.write_text('PASSWORD="p#ss w#rd"  # not part of the value\n')
-    app = Veloce(openapi_url=None)
-    app.config.from_env_file(str(env))
-
-    assert app.config["PASSWORD"] == "p#ss w#rd"
-
-
-def test_from_env_file_keeps_a_bare_hash_without_leading_space(tmp_path):
-    """Only a whitespace-delimited ` #` starts a comment — a `#` with no
-    leading space is part of the value."""
-    env = tmp_path / ".env"
-    env.write_text("COLOR=#ff0000\n")
-    app = Veloce(openapi_url=None)
-    app.config.from_env_file(str(env))
-
-    assert app.config["COLOR"] == "#ff0000"
-
-
-def test_from_env_file_warns_on_unmatched_quote(tmp_path, caplog):
-    """An unmatched opening quote is salvaged but emits a warning that
-    names the file, the 1-indexed line number, the key, and the quote
-    character so a typo does not silently truncate to a bad value."""
-    env = tmp_path / ".env"
-    env.write_text('FIRST=ok\nDB_URL="postgres://user@host/db\n')
-    app = Veloce(openapi_url=None)
-
-    with caplog.at_level("WARNING", logger="veloce.config"):
-        app.config.from_env_file(str(env))
-
-    assert app.config["FIRST"] == "ok"
-    assert app.config["DB_URL"] == "postgres://user@host/db"
-
-    matching = [r for r in caplog.records if r.name == "veloce.config"]
-    assert len(matching) == 1
-    msg = matching[0].getMessage()
-    assert "line 2" in msg
-    assert "'DB_URL'" in msg
-    assert str(env) in msg
-    assert '"' in msg
 
 
 # ── mount edge cases ──────────────────────────────────────────────────

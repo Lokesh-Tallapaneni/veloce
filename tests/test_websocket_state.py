@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from tests._native_ws import mark_accepted
-from veloce import Veloce, WebSocketDisconnect
+from veloce import Veloce
 from veloce.testclient import TestClient
 from veloce.websocket import WebSocket, WebSocketState
 from veloce.websocket import WebSocketState as TopState
@@ -61,53 +60,6 @@ def test_state_disconnected_after_peer_close():
 def test_state_importable_from_top_level():
 
     assert TopState is WebSocketState
-
-
-# -- OSError normalization on the ASGI send path ----------------------
-
-
-async def test_send_oserror_normalized_to_disconnect():
-
-    import pytest
-
-    async def receive():
-        return {"type": "websocket.connect"}
-
-    async def send(message):
-        if message.get("type") == "websocket.send":
-            raise BrokenPipeError("peer gone")
-
-    ws = mark_accepted(
-        WebSocket.from_asgi({"type": "websocket", "path": "/", "headers": []}, receive, send)
-    )
-
-    async def run():
-        with pytest.raises(WebSocketDisconnect):
-            await ws.send_text("hi")
-        assert ws._closed is True
-
-    await run()
-
-
-async def test_send_bytes_connectionreset_normalized():
-
-    import pytest
-
-    async def receive():
-        return {"type": "websocket.connect"}
-
-    async def send(message):
-        raise ConnectionResetError("reset")
-
-    ws = mark_accepted(
-        WebSocket.from_asgi({"type": "websocket", "path": "/", "headers": []}, receive, send)
-    )
-
-    async def run():
-        with pytest.raises(WebSocketDisconnect):
-            await ws.send_bytes(b"x")
-
-    await run()
 
 
 # -- `ws.state` scratch namespace + slotted connection object ---------
