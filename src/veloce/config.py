@@ -229,6 +229,35 @@ def _coerce_env_value(key: str, value: Any, current: Any) -> Any:
     return value
 
 
+_SILENT_MISS = object()
+
+
+def _read_config_file(
+    filename: str,
+    mode: str,
+    reader: Callable[[Any], Any],
+    *,
+    silent: bool,
+    encoding: str | None = None,
+) -> Any:
+    """Open `filename`, hand the handle to `reader`, and honour `silent=`.
+
+    Returns `_SILENT_MISS` when the file could not be opened and the caller
+    asked for silence, so `silent=` means one thing across every loader rather
+    than three hand-copied try/except blocks that can drift apart. `encoding`
+    stays the caller's choice: `from_env_file` pins utf-8 and `from_file`
+    leaves a text-mode load on the platform default, and collapsing that
+    difference here would change what one of them reads.
+    """
+    try:
+        with open(filename, mode, encoding=encoding) as handle:
+            return reader(handle)
+    except OSError:
+        if silent:
+            return _SILENT_MISS
+        raise
+
+
 class Config(dict[str, Any]):
     """A dict that knows how to load itself from common config sources.
 
@@ -388,13 +417,9 @@ class Config(dict[str, Any]):
         """
         module = types.ModuleType("veloce_config")
         module.__file__ = filename
-        try:
-            with open(filename, "rb") as f:
-                source = f.read()
-        except OSError:
-            if silent:
-                return False
-            raise
+        source = _read_config_file(filename, "rb", lambda handle: handle.read(), silent=silent)
+        if source is _SILENT_MISS:
+            return False
         # Compile + exec into the module namespace. Errors raised by the
         # config file itself propagate - they're legitimate misconfig
         # and silently swallowing them would mask real bugs.
@@ -429,13 +454,11 @@ class Config(dict[str, Any]):
         using both reads two different keys depending on how it was started -
         pick one of the two and use it on every path.
         """
-        try:
-            with open(filename, encoding="utf-8") as handle:
-                lines = handle.readlines()
-        except OSError:
-            if silent:
-                return False
-            raise
+        lines = _read_config_file(
+            filename, "r", lambda handle: handle.readlines(), silent=silent, encoding="utf-8"
+        )
+        if lines is _SILENT_MISS:
+            return False
         parsed = _parse_env_lines(lines, source=filename)
         defaults = self.default_config()
         typed = {
@@ -524,13 +547,9 @@ class Config(dict[str, Any]):
         through `from_mapping`.
         """
         mode = "r" if text else "rb"
-        try:
-            with open(filename, mode) as f:
-                data = load(f)
-        except OSError:
-            if silent:
-                return False
-            raise
+        data = _read_config_file(filename, mode, load, silent=silent)
+        if data is _SILENT_MISS:
+            return False
         if not isinstance(data, Mapping):
             raise TypeError(
                 f"config loader {load!r} returned {type(data).__name__}, expected a mapping"

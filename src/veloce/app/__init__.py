@@ -1,9 +1,9 @@
 """Application package — gateway preserving the `veloce.app` import paths.
 
 The implementation is `veloce.app.core` - the `Veloce` class and its
-construction - plus fifteen focused sibling modules mixed into it: `asgi`,
-`background`, `contexts`, `dispatch`, `errors`, `lifecycle`, `mcp`,
-`middleware`, `mounting`, `openapi`, `plugins`, `serving`, `templating`,
+construction - plus sixteen focused sibling modules mixed into it: `asgi`,
+`background`, `contexts`, `dispatch`, `errors`, `introspection`, `lifecycle`,
+`mcp`, `middleware`, `mounting`, `openapi`, `plugins`, `serving`, `templating`,
 `testing` and `urls`.
 
 This gateway re-exports the `veloce.app` surface by name, so every

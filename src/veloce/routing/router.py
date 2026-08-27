@@ -2281,7 +2281,6 @@ class Router:
         anchor = path_params.pop("_anchor", None)
 
         template, param_names = self._named_routes[name]
-        path = template
         consumed: set[str] = set()
         for pname in param_names:
             if pname not in path_params:

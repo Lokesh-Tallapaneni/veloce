@@ -97,11 +97,17 @@ def unquote_value(value: str) -> str:
 def split_outside_quotes(value: str, delimiter: str) -> list[str]:
     """Split `value` on `delimiter`, but never inside a double-quoted string.
 
-    Walks `value` once tracking an `in_quotes` flag; a `\\<char>` escape is
-    skipped so an escaped quote or delimiter never terminates a token. Returns
-    the raw (still-quoted) substrings WITHOUT stripping quotes or whitespace -
-    callers do that. Mirrors `parse_header_params`' inner escape handling so the
-    two walkers stay consistent.
+    Walks `value` once tracking an `in_quotes` flag. A `\\<char>` escape is
+    skipped **only inside a quoted string**, which is the whole of what RFC 9110
+    Sec. 5.6.4 defines `quoted-pair` for: outside one a backslash is an ordinary
+    octet and must not hide the following delimiter. Honouring it everywhere
+    lets a sender suppress a delimiter the rest of the stack still sees, and
+    `Forwarded:` reaches here attacker-supplied.
+
+    Returns the raw (still-quoted) substrings WITHOUT stripping quotes or
+    whitespace - callers do that. `parse_header_params` walks the same grammar
+    with the same rule; `tests/test_header_walker_agreement.py` holds them to it
+    rather than a comment claiming they agree.
     """
     parts: list[str] = []
     buf: list[str] = []
@@ -110,7 +116,7 @@ def split_outside_quotes(value: str, delimiter: str) -> list[str]:
     n = len(value)
     while i < n:
         ch = value[i]
-        if ch == "\\" and i + 1 < n:
+        if in_quotes and ch == "\\" and i + 1 < n:
             buf.append(ch)
             buf.append(value[i + 1])
             i += 2

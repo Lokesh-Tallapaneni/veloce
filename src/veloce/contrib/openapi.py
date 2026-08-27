@@ -1409,6 +1409,24 @@ def _scheme_definition(scheme: Any) -> tuple[str, dict] | None:
     return type(scheme).__name__, definition
 
 
+def _dependency_params(target: Any) -> collections.abc.Iterator[tuple[Any, Any, Any]]:
+    """Yield `(parameter, marker, annotation)` for each parameter of `target`.
+
+    The descent step both dependency-graph walkers take: introspect, then read
+    each parameter's marker however it was spelled. Written twice, a change to
+    how a marker is recognised reaches one walker and not the other - and the
+    two answer questions (which security schemes guard this route; does
+    anything here consume validated input) that must agree about what the graph
+    contains. The annotation is the resolved one, falling back to whatever the
+    signature carries. Yields nothing for a target that cannot be introspected.
+    """
+    sig, hints = _handler_intro(target)
+    if sig is None:
+        return
+    for param in sig.parameters.values():
+        yield param, _param_marker(param, hints), hints.get(param.name, param.annotation)
+
+
 def _collect_security_requirements(
     info: Any, registry: dict[str, dict]
 ) -> list[dict[str, list[str]]]:
@@ -1460,11 +1478,7 @@ def _collect_security_requirements(
             return
         seen.add(id(inner))
 
-        sig, hints = _handler_intro(inner)
-        if sig is None:
-            return
-        for param in sig.parameters.values():
-            default = _param_marker(param, hints)
+        for _param, default, _annotation in _dependency_params(inner):
             if isinstance(default, Depends):
                 visit(default)
 
@@ -1472,12 +1486,7 @@ def _collect_security_requirements(
     for d in info.dependencies or ():
         visit(d)
     # Plus anything in the handler's own parameter defaults.
-    handler = info.handler
-    sig, hints = _handler_intro(handler)
-    if sig is None:
-        return requirements
-    for param in sig.parameters.values():
-        default = _param_marker(param, hints)
+    for _param, default, _annotation in _dependency_params(info.handler):
         if isinstance(default, Depends):
             visit(default)
     return requirements
@@ -1501,11 +1510,7 @@ def _dependency_graph_has_validatable(info: Any) -> bool:
         if dep_callable is None or id(dep_callable) in seen:
             return False
         seen.add(id(dep_callable))
-        sig, hints = _handler_intro(dep_callable)
-        if sig is None:
-            return False
-        for param in sig.parameters.values():
-            default = _param_marker(param, hints)
+        for _param, default, annotation in _dependency_params(dep_callable):
             if isinstance(default, Depends):
                 target = default.dependency
                 if _scheme_definition(target) is not None:
@@ -1515,7 +1520,7 @@ def _dependency_graph_has_validatable(info: Any) -> bool:
                 continue
             if isinstance(default, ParamBase):
                 return True
-            if _is_model_type(hints.get(param.name, param.annotation)):
+            if _is_model_type(annotation):
                 return True
         return False
 

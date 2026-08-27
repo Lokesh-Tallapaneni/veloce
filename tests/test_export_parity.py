@@ -132,6 +132,7 @@ UNEXPORTED: dict[str, str] = {
     "app.background.BackgroundTasksMixin": "composition unit of Veloce; not constructed by application code",
     "app.dispatch.DispatchMixin": "composition unit of Veloce; not constructed by application code",
     "app.errors.ErrorsMixin": "composition unit of Veloce; not constructed by application code",
+    "app.introspection.IntrospectionMixin": "composition unit of Veloce; not constructed by application code",
     "app.lifecycle.LifecycleMixin": "composition unit of Veloce; not constructed by application code",
     "app.mcp.MCPMixin": "composition unit of Veloce; not constructed by application code",
     "app.middleware.MiddlewareMixin": "composition unit of Veloce; not constructed by application code",

@@ -229,7 +229,7 @@ class HttpProtocol(asyncio.Protocol):
     # request line + headers + body must complete within this budget,
     # otherwise the connection is dropped with 408. Bounds how long a
     # deliberately slow client can pin a connection open.
-    REQUEST_TIMEOUT = 30  # seconds
+    REQUEST_TIMEOUT = _Config.default_config()["REQUEST_TIMEOUT"]
 
     # How many parsed-but-unserved pipelined requests a connection will hold
     # before it stops reading the socket. Transport flow control is otherwise
@@ -374,6 +374,20 @@ class HttpProtocol(asyncio.Protocol):
             self._has_expect_continue = True
         self.headers.append((name, value))
 
+    def _reset_header_state(self) -> None:
+        """Clear the per-message header-parse buffers and their derived flags.
+
+        The parser keeps advancing through pipelined bytes, so a follow-up
+        request's `on_url` / `on_header` would append into the live lists.
+        Every site that finishes with a message clears the same five fields;
+        held as parallel copies, a sixth field is reset in some of them.
+        """
+        self.url = b""
+        self.headers = []
+        self._header_bytes_total = 0
+        self._raw_content_length = None
+        self._has_expect_continue = False
+
     def on_headers_complete(self) -> None:
         """Headers are fully parsed - build the Request and dispatch it now.
 
@@ -460,12 +474,8 @@ class HttpProtocol(asyncio.Protocol):
         # on_header would otherwise append into the same live lists. The
         # already-built Request holds its own copies.
         self._current_source = source
-        self.url = b""
-        self.headers = []
-        self._header_bytes_total = 0
+        self._reset_header_state()
         self._headers_done = True
-        self._raw_content_length = None
-        self._has_expect_continue = False
         # Match ONCE here and thread the result into `handle_request`, exactly
         # as `_asgi_app` does, so the radix tree is not walked twice. `_dispatch`
         # also needs the match before the handler starts, to know whether this
@@ -627,11 +637,7 @@ class HttpProtocol(asyncio.Protocol):
         if self._request_timer is not None:
             self._request_timer.cancel()
             self._request_timer = None
-        self.url = b""
-        self.headers = []
-        self._header_bytes_total = 0
-        self._raw_content_length = None
-        self._has_expect_continue = False
+        self._reset_header_state()
 
         # Dispatch the handler through the shared core. Tracked in `_active_tasks`
         # with the generic done-callback (logs unhandled errors) and held in

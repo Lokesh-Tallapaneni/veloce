@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- `ProxyFix` counts `Forwarded:` hops correctly when an element carries a backslash; one outside a quoted string hid the following comma, merging the trusted proxy's element into the client's and putting attacker text into `request.remote_addr`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
 - The built-in server serves a request whose target is split across two reads; it answered `400`, and measured `MAX_URL_SIZE` against the last fragment rather than the whole target. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 - `request.authorization` and `HTTPBasic` decode a `Basic` payload through one implementation, so a header with extra whitespace no longer yields credentials from one and a `401` from the other. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

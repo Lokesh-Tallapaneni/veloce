@@ -145,6 +145,36 @@ def _require_app_attr(app: Any, attr: str, hint: str) -> None:
 # ── Subcommands ───────────────────────────────────────────
 
 
+def _import_uvicorn() -> Any | None:
+    """Return the `uvicorn` module, or `None` when the extra is not installed."""
+    try:
+        import uvicorn
+    except ImportError:
+        return None
+    return uvicorn
+
+
+def _serve_builtin(app: Any, args: argparse.Namespace, *, reload: bool = False) -> None:
+    """Serve `app` on the built-in server, telling the operator that is what happened.
+
+    The notice is not optional: falling through to a different server in
+    silence leaves someone who believes they are on uvicorn with no way to find
+    out from the output. `veloce mcp run --transport http` reaches this too, and
+    its stdio sibling documents stderr as the only channel it may write to,
+    which is where this goes.
+    """
+    print(
+        "uvicorn is not installed - serving with veloce's built-in server. "
+        "Install veloceframework[uvicorn] for the recommended production server.",
+        file=sys.stderr,
+    )
+    # The native server takes `bind_all=True` rather than an all-interfaces host.
+    if args.host in ("0.0.0.0", "::"):
+        app.run(port=args.port, bind_all=True, reload=reload)
+    else:
+        app.run(host=args.host, port=args.port, reload=reload)
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
     """`veloce run` - serve the app under uvicorn, or the built-in server.
 
@@ -157,11 +187,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
     _apply_env_file(args)
     app = _load_app(args.app)
 
-    try:
-        import uvicorn
-    except ImportError:
-        uvicorn = None  # type: ignore[assignment]
-
+    uvicorn = _import_uvicorn()
     if uvicorn is not None:
         uvicorn.run(
             args.app,
@@ -180,11 +206,6 @@ def _cmd_run(args: argparse.Namespace) -> int:
             f"{args.app!r} has no built-in server to fall back to; install "
             "veloceframework[uvicorn] to serve it under uvicorn."
         )
-    print(
-        "uvicorn is not installed - serving with veloce's built-in server. "
-        "Install veloceframework[uvicorn] for the recommended production server.",
-        file=sys.stderr,
-    )
     # The built-in server is single-process; --workers>1 needs uvicorn or the
     # gunicorn VeloceWorker, so warn and run one process rather than passing a
     # count `run()` would reject.
@@ -194,11 +215,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
             "process); install veloceframework[uvicorn] for multiple workers.",
             file=sys.stderr,
         )
-    # The native server takes `bind_all=True` rather than an all-interfaces host.
-    if args.host in ("0.0.0.0", "::"):
-        app.run(port=args.port, bind_all=True, reload=args.reload)
-    else:
-        app.run(host=args.host, port=args.port, reload=args.reload)
+    _serve_builtin(app, args, reload=args.reload)
     return 0
 
 
@@ -334,21 +351,14 @@ def _cmd_mcp_run(args: argparse.Namespace) -> int:
         return 0
 
     app.mount_mcp(transport="http", path=args.path, sessions=args.sessions)
-    try:
-        import uvicorn
-    except ImportError:
-        uvicorn = None  # type: ignore[assignment]
-
+    uvicorn = _import_uvicorn()
     if uvicorn is not None:
         # The app object is passed rather than its import string: the mount above
         # happened on *this* instance, and re-importing would serve one without it.
         uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
         return 0
 
-    if args.host in ("0.0.0.0", "::"):
-        app.run(port=args.port, bind_all=True)
-    else:
-        app.run(host=args.host, port=args.port)
+    _serve_builtin(app, args)
     return 0
 
 

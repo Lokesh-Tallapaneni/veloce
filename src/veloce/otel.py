@@ -360,7 +360,7 @@ def _instrument_live(
         span.update_name(_span_name(metrics.route, metrics.method))
         _enrich_span(span, metrics, on_span)
 
-    _enrich_live_span._veloce_otel_bridge = True  # type: ignore[attr-defined]
+    setattr(_enrich_live_span, _BRIDGE_MARKER, True)
     app.add_instrumentation(_enrich_live_span, exclude_routes=exclude_routes)
     # Install the live span wrapper OUTERMOST so it wraps every other ASGI
     # middleware: the server span must exist before any of them run, and their
@@ -552,6 +552,6 @@ def instrument_with_otel(
 
     # Tag the hook so a later `instrument_with_otel(app)` finds it and skips a
     # duplicate registration (see the idempotency guard above).
-    _emit_span._veloce_otel_bridge = True  # type: ignore[attr-defined]
+    setattr(_emit_span, _BRIDGE_MARKER, True)
     app.add_instrumentation(_emit_span, exclude_routes=exclude_routes)
     return _emit_span

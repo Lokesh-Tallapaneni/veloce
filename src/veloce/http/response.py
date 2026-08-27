@@ -258,7 +258,7 @@ class Response:
         self._charset: str = ""
         self._ct_params: dict[str, str] = {}
 
-    # ── `body` ────────────────────────────────────────────
+    # ── `body` ────────────────────────────────────────────────
     # Backed by `_body` so the setter can invalidate the encode cache.
     # Middleware that mutates `response.body = new_bytes` after a prior
     # `.encode()` call would otherwise emit stale bytes + wrong
@@ -287,7 +287,7 @@ class Response:
             self.headers[stored] = str(len(value))
         self._encoded = None
 
-    # ── `media_type` alias ────────────────────────────────
+    # ── `media_type` alias ────────────────────────────────────
     # ASGI servers name this attribute `media_type`; veloce's
     # canonical name is `content_type`. Expose both names so code that
     # uses either name reads and writes cleanly.
@@ -305,7 +305,7 @@ class Response:
         # takes effect on the next `encode()` call.
         self._encoded = None
 
-    # ── `mimetype` ────────────────────────────────────────
+    # ── `mimetype` ────────────────────────────────────────────
     # `mimetype` is the bare media type, with no parameters.
     # Setting it preserves the existing `charset` parameter.
 
@@ -371,7 +371,7 @@ class Response:
         self.content_type = f"{value}; charset={cs}" if had_charset else value
         self._encoded = None
 
-    # ── `status` line ─────────────────────────────────────
+    # ── `status` line ─────────────────────────────────────────
     # `response.status` is the full status line
     # ("200 OK"), with `status_code` as the bare int. veloce's
     # canonical field is `status_code`; `status` is the string view.
@@ -400,6 +400,8 @@ class Response:
             head = stripped.split(None, 1)[0]
             self.status_code = int(head)
         self._encoded = None
+
+    # ── Wire encoding ─────────────────────────────────────────
 
     def encode(self, keep_alive: bool = True) -> bytes:
         """Encode to raw HTTP/1.1 bytes - called once, cached.
@@ -435,6 +437,8 @@ class Response:
         if keep_alive:
             self._encoded = encoded
         return encoded
+
+    # ── Cookies ───────────────────────────────────────────────
 
     def set_cookie(
         self,
@@ -524,6 +528,8 @@ class Response:
         else:
             self.headers[HEADER_SET_COOKIE] = raw_value
 
+    # ── Body and its measurements ─────────────────────────────
+
     @property
     def content_length(self) -> int:
         """Length of the response body in bytes.
@@ -583,6 +589,8 @@ class Response:
         self.headers[HEADER_CONTENT_LENGTH] = str(n)
         self._encoded = None
         return n
+
+    # ── Validators and dates ──────────────────────────────────
 
     @property
     def last_modified(self) -> datetime | None:
@@ -725,6 +733,8 @@ class Response:
         # `Content-Length`; no separate invalidation or refresh needed.
         self.body = value
 
+    # ── Caching and negotiation ───────────────────────────────
+
     def set_cache_control(
         self,
         max_age: int | None = None,
@@ -851,6 +861,8 @@ class Response:
         self.headers[HEADER_ALLOW] = hs.to_header()
         self._encoded = None
 
+    # ── Authentication challenge ──────────────────────────────
+
     @property
     def www_authenticate(self) -> str | None:
         """The `WWW-Authenticate` challenge header - RFC 9110 Sec. 11.6.1.
@@ -897,6 +909,8 @@ class Response:
         else:
             self.headers[name] = value
         self._encoded = None
+
+    # ── Single-value header accessors ─────────────────────────
 
     @property
     def content_encoding(self) -> str | None:
@@ -1047,6 +1061,8 @@ class Response:
             self.headers[HEADER_AGE] = str(int(value))
         self._encoded = None
 
+    # ── ETags ─────────────────────────────────────────────────
+
     def set_etag(self, etag: str, weak: bool = False) -> None:
         """Set the `ETag` header from an explicit value.
 
@@ -1098,6 +1114,8 @@ class Response:
         `resp.cache_control.no_store`, etc.
         """
         return CacheControl(header_get(self.headers, HEADER_CACHE_CONTROL) or "")
+
+    # ── Iteration ─────────────────────────────────────────────
 
     def iter_encoded(self) -> Any:
         """Yield the response body.
@@ -1186,6 +1204,8 @@ class Response:
         self.headers[HEADER_ETAG] = etag
         self._encoded = None
         return etag
+
+    # ── Conditional requests ──────────────────────────────────
 
     def make_conditional(self, request: Any) -> Response:
         """Downgrade this response to 304 on a precondition match.
@@ -1312,6 +1332,8 @@ class Response:
         header_pop(self.headers, HEADER_CONTENT_LENGTH)
         self.headers[HEADER_CONTENT_LENGTH] = representation_length
         self._encoded = None
+
+    # ── Content-Disposition and cookie removal ────────────────
 
     def set_content_disposition(
         self, disposition: str = HEADER_VALUE_ATTACHMENT, filename: str | None = None

@@ -396,31 +396,37 @@ class RateLimitMiddleware(Middleware):
             return await self._process_strategy(request, strategy)
         return await self._process_legacy(request)
 
-    async def _process_strategy(
-        self, request: Request, strategy: RateLimitStrategy
-    ) -> Response | None:
-        # Rebuild the per-route map when the app's route table changes (its
-        # generation counter is bumped on every route mutation and frozen once
-        # serving), so a route added after the first request is honored. The
-        # check is a single int compare per request.
+    def _route_override(self, request: Request) -> RateLimitStrategy | None:
+        """Return the strategy this route declares for itself, or `None`.
+
+        Rebuilds the per-route map when the app's route table changes (its
+        generation counter is bumped on every route mutation and frozen once
+        serving), so a route added after the first request is honored. The
+        check is a single int compare per request; a map with no entries
+        costs one truthiness test more.
+        """
         app = request.app
         gen = app._gen if app is not None else None
         per_route = self._route_strategies
         if per_route is None or gen != self._route_strategies_gen:
             per_route = self._build_route_strategies(request, gen)
-        # No per-route limits: the common path stays a single client-keyed
-        # evaluation with no extra lookup.
-        if per_route:
-            route = request.url_rule
-            override = per_route.get(route) if route is not None else None
-            if override is not None:
-                strategy = override
-                # Scope the key to the route so an overridden route keeps its own
-                # per-client counter, separate from the default budget.
-                key = f"{route}\x00{self._bucket_key(request)}"
-            else:
-                key = self._bucket_key(request)
+        if not per_route:
+            return None
+        route = request.url_rule
+        return per_route.get(route) if route is not None else None
+
+    async def _process_strategy(
+        self, request: Request, strategy: RateLimitStrategy
+    ) -> Response | None:
+        override = self._route_override(request)
+        if override is not None:
+            strategy = override
+            # Scope the key to the route so an overridden route keeps its own
+            # per-client counter, separate from the default budget.
+            key = f"{request.url_rule}\x00{self._bucket_key(request)}"
         else:
+            # No per-route limit: the common path stays a single client-keyed
+            # evaluation with no extra lookup.
             key = self._bucket_key(request)
         # Wall-clock time so the same key on a shared backend agrees across
         # workers and hosts; the strategy refills/counts against it.
@@ -549,24 +555,17 @@ class RateLimitMiddleware(Middleware):
         # route is evaluated by the strategy machinery and never reaches the
         # sliding log below. Its counter is keyed by route as well as client,
         # so the tagged budget and the default budget stay independent - the
-        # same scoping `_process_strategy` applies to an override.
-        app = request.app
-        gen = app._gen if app is not None else None
-        per_route = self._route_strategies
-        if per_route is None or gen != self._route_strategies_gen:
-            per_route = self._build_route_strategies(request, gen)
-        # No tagged route anywhere: the sliding log below is reached with one
-        # int compare and one truthiness test added, and no backend is built.
-        if per_route:
-            route = request.url_rule
-            tagged = per_route.get(route) if route is not None else None
-            if tagged is not None:
-                if self._backend is None:
-                    self._backend = InMemoryRateLimitBackend()
-                # Delegate rather than restate the evaluation: `_process_strategy`
-                # resolves this same route to the same tag, scopes the key, and
-                # refuses identically, so a tag means one thing in both modes.
-                return await self._process_strategy(request, tagged)
+        # same scoping `_process_strategy` applies to an override. With no
+        # tagged route the sliding log below is reached with one int compare
+        # and one truthiness test added, and no backend is built.
+        tagged = self._route_override(request)
+        if tagged is not None:
+            if self._backend is None:
+                self._backend = InMemoryRateLimitBackend()
+            # Delegate rather than restate the evaluation: `_process_strategy`
+            # resolves this same route to the same tag, scopes the key, and
+            # refuses identically, so a tag means one thing in both modes.
+            return await self._process_strategy(request, tagged)
 
         client = self._bucket_key(request)
         now = time.monotonic()
