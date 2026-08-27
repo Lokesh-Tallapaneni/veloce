@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import pytest
 
+from tests._openapi import document
 from veloce import Veloce
 from veloce.testclient import TestClient
 
@@ -32,26 +33,22 @@ def _app(**kwargs) -> Veloce:
     return app
 
 
-def _schema(app: Veloce) -> dict:
-    return TestClient(app).get("/openapi.json").json()
-
-
 # ── the schema describes the app, not the docs ───────────────────────
 
 
 def test_the_schema_lists_only_the_apps_own_routes():
     """The defect: three documentation operations in every document."""
-    assert list(_schema(_app())["paths"]) == ["/x"]
+    assert list(document(_app())["paths"]) == ["/x"]
 
 
 @pytest.mark.parametrize("path", ["/openapi.json", "/docs", "/redoc"])
 def test_a_documentation_route_is_not_in_the_schema(path):
-    assert path not in _schema(_app())["paths"]
+    assert path not in document(_app())["paths"]
 
 
 def test_no_operation_carries_the_openapi_tag():
     """That tag existed only on the three routes that are now excluded."""
-    schema = _schema(_app())
+    schema = document(_app())
     tags = [op.get("tags") for ops in schema["paths"].values() for op in ops.values()]
     assert all(t is None or "openapi" not in t for t in tags)
 
@@ -86,7 +83,7 @@ def test_the_docs_page_still_finds_the_schema():
 
 
 def test_the_apps_own_route_is_still_described():
-    schema = _schema(_app())
+    schema = document(_app())
     assert schema["paths"]["/x"]["get"]["operationId"] == "x_get"
 
 
@@ -102,13 +99,13 @@ def test_a_route_asking_to_be_excluded_still_is():
     async def internal() -> dict:
         return {}
 
-    assert list(_schema(app)["paths"]) == ["/public"]
+    assert list(document(app)["paths"]) == ["/public"]
 
 
 def test_an_app_with_no_routes_has_an_empty_paths_object():
     """Previously it had three - its own documentation endpoints."""
     app = Veloce()
-    assert _schema(app)["paths"] == {}
+    assert document(app)["paths"] == {}
 
 
 def test_the_document_is_still_valid():

@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
+from tests._openapi import parameters
 from veloce import Path, Query, Veloce
 from veloce.testclient import TestClient
-
-
-def _params(schema: dict, path: str, method: str = "get") -> list[dict]:
-    return schema["paths"][path][method].get("parameters", [])
 
 
 def test_query_title_emitted():
@@ -20,7 +17,7 @@ def test_query_title_emitted():
     with TestClient(app) as client:
         schema = client.get("/openapi.json").json()
 
-    params = _params(schema, "/search")
+    params = parameters(schema, "/search")
     q = [p for p in params if p["name"] == "q"][0]
     assert q["schema"]["title"] == "Search Term"
 
@@ -35,7 +32,7 @@ def test_path_title_emitted():
     with TestClient(app) as client:
         schema = client.get("/openapi.json").json()
 
-    params = _params(schema, "/items/{item_id}")
+    params = parameters(schema, "/items/{item_id}")
     p = [p for p in params if p["name"] == "item_id"][0]
     assert p["schema"]["title"] == "Item Identifier"
 
@@ -50,7 +47,7 @@ def test_no_title_key_when_unset():
     with TestClient(app) as client:
         schema = client.get("/openapi.json").json()
 
-    q = [p for p in _params(schema, "/plain") if p["name"] == "q"][0]
+    q = [p for p in parameters(schema, "/plain") if p["name"] == "q"][0]
     assert "title" not in q["schema"]
 
 
@@ -64,6 +61,6 @@ def test_title_coexists_with_description():
     with TestClient(app) as client:
         schema = client.get("/openapi.json").json()
 
-    q = [p for p in _params(schema, "/both") if p["name"] == "q"][0]
+    q = [p for p in parameters(schema, "/both") if p["name"] == "q"][0]
     assert q["schema"]["title"] == "The Query"
     assert q["schema"]["description"] == "What to find"

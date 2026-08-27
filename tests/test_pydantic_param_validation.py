@@ -13,6 +13,7 @@ from decimal import Decimal
 from enum import Enum
 from typing import Literal
 
+from tests._openapi import parameters
 from tests.conftest import make_request
 from veloce import Cookie, Header, Query, Veloce
 from veloce.contrib.openapi import get_openapi_schema
@@ -186,9 +187,7 @@ async def test_invalid_int_fast_path_still_422():
 
 
 def _param_schema(app: Veloce, path: str, name: str, method: str = "get") -> dict:
-    schema = get_openapi_schema(app)
-    params = schema["paths"][path][method].get("parameters", [])
-    for p in params:
+    for p in parameters(get_openapi_schema(app), path, method):
         if p["name"] == name:
             return p["schema"]
     raise AssertionError(f"parameter {name!r} not found in {path}")

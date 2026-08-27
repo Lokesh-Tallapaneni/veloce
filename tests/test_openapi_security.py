@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from tests._openapi import document
 from veloce import (
     APIKeyCookie,
     APIKeyHeader,
@@ -13,12 +14,6 @@ from veloce import (
     Security,
     Veloce,
 )
-from veloce.testclient import TestClient
-
-
-def _spec(app: Veloce) -> dict:
-    return TestClient(app).get("/openapi.json").json()
-
 
 # ── OAuth2 Password Bearer ────────────────────────────────────────────
 
@@ -34,7 +29,7 @@ def test_oauth2_password_bearer_emits_scheme():
     async def me(token: str = Security(oauth, scopes=["read"])):
         return {"token": token}
 
-    spec = _spec(app)
+    spec = document(app)
     schemes = spec["components"]["securitySchemes"]
     assert "OAuth2PasswordBearer" in schemes
     scheme = schemes["OAuth2PasswordBearer"]
@@ -60,7 +55,7 @@ def test_http_bearer_emits_scheme():
     async def x(token: str = Security(bearer)):
         return {}
 
-    spec = _spec(app)
+    spec = document(app)
     assert spec["components"]["securitySchemes"]["HTTPBearer"] == {
         "type": "http",
         "scheme": "bearer",
@@ -76,7 +71,7 @@ def test_http_basic_emits_scheme():
     async def x(creds=Security(basic)):
         return {}
 
-    spec = _spec(app)
+    spec = document(app)
     assert spec["components"]["securitySchemes"]["HTTPBasic"] == {
         "type": "http",
         "scheme": "basic",
@@ -94,7 +89,7 @@ def test_apikey_header_emits_scheme():
     async def x(key: str = Security(api_key)):
         return {}
 
-    schemes = _spec(app)["components"]["securitySchemes"]
+    schemes = document(app)["components"]["securitySchemes"]
     assert schemes["APIKeyHeader"] == {"type": "apiKey", "in": "header", "name": "X-API-Key"}
 
 
@@ -106,7 +101,7 @@ def test_apikey_query_emits_scheme():
     async def x(key: str = Security(api_key)):
         return {}
 
-    assert _spec(app)["components"]["securitySchemes"]["APIKeyQuery"] == {
+    assert document(app)["components"]["securitySchemes"]["APIKeyQuery"] == {
         "type": "apiKey",
         "in": "query",
         "name": "api_key",
@@ -121,7 +116,7 @@ def test_apikey_cookie_emits_scheme():
     async def x(key: str = Security(api_key)):
         return {}
 
-    assert _spec(app)["components"]["securitySchemes"]["APIKeyCookie"] == {
+    assert document(app)["components"]["securitySchemes"]["APIKeyCookie"] == {
         "type": "apiKey",
         "in": "cookie",
         "name": "session",
@@ -145,7 +140,7 @@ def test_multiple_routes_share_one_scheme_entry():
     async def b(t: str = Security(bearer)):
         return {}
 
-    schemes = _spec(app)["components"]["securitySchemes"]
+    schemes = document(app)["components"]["securitySchemes"]
     assert list(schemes.keys()) == ["HTTPBearer"]
 
 
@@ -157,7 +152,7 @@ def test_no_security_means_no_security_section():
     async def x():
         return {}
 
-    spec = _spec(app)
+    spec = document(app)
     op = spec["paths"]["/x"]["get"]
     assert "security" not in op
     # And no securitySchemes component if nothing uses it.
@@ -175,7 +170,7 @@ def test_plain_depends_does_not_register_a_scheme():
     async def me(user=Depends(get_user)):
         return user
 
-    spec = _spec(app)
+    spec = document(app)
     assert "securitySchemes" not in spec.get("components", {})
     assert "security" not in spec["paths"]["/me"]["get"]
 
@@ -193,6 +188,6 @@ def test_security_nested_inside_depends_still_collected():
     async def me(user=Depends(get_current_user)):
         return user
 
-    spec = _spec(app)
+    spec = document(app)
     assert "HTTPBearer" in spec["components"]["securitySchemes"]
     assert spec["paths"]["/me"]["get"]["security"] == [{"HTTPBearer": []}]

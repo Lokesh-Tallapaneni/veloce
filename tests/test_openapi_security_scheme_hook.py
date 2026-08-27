@@ -16,6 +16,7 @@ import warnings
 
 import pytest
 
+from tests._openapi import document
 from veloce import (
     APIKeyCookie,
     APIKeyHeader,
@@ -62,10 +63,6 @@ class UndescribedAuth(SecurityScheme):
         return {"user": 1}
 
 
-def _schema(app: Veloce) -> dict:
-    return TestClient(app).get("/openapi.json").json()
-
-
 # ── the defect ───────────────────────────────────────────────────────
 
 
@@ -77,7 +74,7 @@ def test_a_custom_scheme_is_published_not_dropped():
     async def secret(user=Depends(CertAuth())):
         return user
 
-    schema = _schema(app)
+    schema = document(app)
     assert schema["components"]["securitySchemes"]["CertAuth"] == {
         "type": "apiKey",
         "in": "header",
@@ -97,7 +94,7 @@ def test_the_document_agrees_with_what_the_route_actually_does():
     client = TestClient(app)
     assert client.get("/secret").status_code == 401
     assert client.get("/secret", headers={"x-cert": "abc"}).status_code == 200
-    assert _schema(app)["paths"]["/secret"]["get"]["security"] == [{"CertAuth": []}]
+    assert document(app)["paths"]["/secret"]["get"]["security"] == [{"CertAuth": []}]
 
 
 def test_a_custom_scheme_is_published_like_a_built_in():
@@ -111,7 +108,7 @@ def test_a_custom_scheme_is_published_like_a_built_in():
     async def b(u=Depends(HTTPBearer())):
         return {}
 
-    paths = _schema(app)["paths"]
+    paths = document(app)["paths"]
     assert paths["/a"]["get"]["security"] == [{"CertAuth": []}]
     assert paths["/b"]["get"]["security"] == [{"HTTPBearer": []}]
 
@@ -176,7 +173,7 @@ def test_oauth2_scopes_reach_the_operation_requirement():
     async def scoped(user=Security(scheme, scopes=["read"])):
         return {}
 
-    assert _schema(app)["paths"]["/scoped"]["get"]["security"] == [
+    assert document(app)["paths"]["/scoped"]["get"]["security"] == [
         {"OAuth2PasswordBearer": ["read"]}
     ]
 
@@ -194,7 +191,7 @@ def test_a_scheme_that_cannot_describe_itself_warns():
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        _schema(app)
+        document(app)
     messages = [str(w.message) for w in caught]
     assert any("UndescribedAuth" in m and "openapi_scheme()" in m for m in messages)
 
@@ -212,7 +209,7 @@ def test_an_ordinary_dependency_does_not_warn():
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        _schema(app)
+        document(app)
     assert [str(w.message) for w in caught if "openapi_scheme" in str(w.message)] == []
 
 
@@ -225,7 +222,7 @@ def test_a_described_scheme_does_not_warn():
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        _schema(app)
+        document(app)
     assert [str(w.message) for w in caught if "openapi_scheme" in str(w.message)] == []
 
 
@@ -252,7 +249,7 @@ def test_a_scheme_returning_an_empty_object_is_treated_as_undescribed():
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        schema = _schema(app)
+        schema = document(app)
     assert "security" not in schema["paths"]["/x"]["get"]
     assert any("EmptyAuth" in str(w.message) for w in caught)
 
@@ -269,7 +266,7 @@ def test_two_routes_sharing_a_scheme_share_one_component_entry():
     async def b(u=Depends(scheme)):
         return u
 
-    schema = _schema(app)
+    schema = document(app)
     assert list(schema["components"]["securitySchemes"]) == ["CertAuth"]
     assert schema["paths"]["/a"]["get"]["security"] == [{"CertAuth": []}]
     assert schema["paths"]["/b"]["get"]["security"] == [{"CertAuth": []}]
@@ -286,7 +283,7 @@ def test_a_scheme_reached_through_a_nested_dependency_is_published():
     async def deep(user=Depends(current_user)):
         return user
 
-    assert _schema(app)["paths"]["/deep"]["get"]["security"] == [{"CertAuth": []}]
+    assert document(app)["paths"]["/deep"]["get"]["security"] == [{"CertAuth": []}]
 
 
 def test_an_api_key_subclass_must_declare_its_openapi_location():
@@ -306,4 +303,4 @@ def test_an_unguarded_route_publishes_no_security_key():
     async def open_route():
         return {}
 
-    assert "security" not in _schema(app)["paths"]["/open"]["get"]
+    assert "security" not in document(app)["paths"]["/open"]["get"]

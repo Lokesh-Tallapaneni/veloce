@@ -27,10 +27,6 @@ def _app(**kwargs) -> Veloce:
     return app
 
 
-def _schema(app: Veloce) -> dict:
-    return TestClient(app).get("/openapi.json").json()
-
-
 # ── instance_path names a definite directory ─────────────────────────
 
 

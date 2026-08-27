@@ -19,14 +19,10 @@ import logging
 
 import pytest
 
+from tests._openapi import document
 from veloce import Blueprint, Depends, JSONResponse, Veloce
 from veloce.exceptions import DuplicateRouteError
 from veloce.testclient import TestClient
-
-
-def _schema(app: Veloce) -> dict:
-    return TestClient(app).get("/openapi.json").json()
-
 
 # ── the options exist ────────────────────────────────────────────────
 
@@ -238,7 +234,7 @@ def test_blueprint_tags_reach_the_schema():
 
     app = Veloce()
     app.register_blueprint(bp)
-    assert _schema(app)["paths"]["/bp/x"]["get"]["tags"] == ["admin"]
+    assert document(app)["paths"]["/bp/x"]["get"]["tags"] == ["admin"]
 
 
 def test_a_route_tag_is_kept_alongside_the_blueprint_tag():
@@ -250,7 +246,7 @@ def test_a_route_tag_is_kept_alongside_the_blueprint_tag():
 
     app = Veloce()
     app.register_blueprint(bp)
-    assert set(_schema(app)["paths"]["/bp/x"]["get"]["tags"]) == {"admin", "reports"}
+    assert set(document(app)["paths"]["/bp/x"]["get"]["tags"]) == {"admin", "reports"}
 
 
 def test_several_blueprint_tags_all_apply():
@@ -262,7 +258,7 @@ def test_several_blueprint_tags_all_apply():
 
     app = Veloce()
     app.register_blueprint(bp)
-    assert set(_schema(app)["paths"]["/bp/x"]["get"]["tags"]) == {"admin", "internal"}
+    assert set(document(app)["paths"]["/bp/x"]["get"]["tags"]) == {"admin", "internal"}
 
 
 def test_a_blueprint_without_tags_adds_none():
@@ -274,7 +270,7 @@ def test_a_blueprint_without_tags_adds_none():
 
     app = Veloce()
     app.register_blueprint(bp)
-    assert "tags" not in _schema(app)["paths"]["/bp/x"]["get"]
+    assert "tags" not in document(app)["paths"]["/bp/x"]["get"]
 
 
 def test_a_parent_blueprint_tag_reaches_a_nested_route():
@@ -288,7 +284,7 @@ def test_a_parent_blueprint_tag_reaches_a_nested_route():
     parent.register_blueprint(child)
     app = Veloce()
     app.register_blueprint(parent)
-    assert _schema(app)["paths"]["/p/c/x"]["get"]["tags"] == ["parent"]
+    assert document(app)["paths"]["/p/c/x"]["get"]["tags"] == ["parent"]
 
 
 def test_a_tag_list_is_not_shared_between_blueprints():
@@ -323,7 +319,7 @@ def test_both_options_apply_to_the_same_blueprint():
     app = Veloce()
     app.register_blueprint(bp)
     assert TestClient(app).get("/bp/x").json() == {"v": "second"}
-    assert _schema(app)["paths"]["/bp/x"]["get"]["tags"] == ["admin"]
+    assert document(app)["paths"]["/bp/x"]["get"]["tags"] == ["admin"]
 
 
 def test_the_other_router_options_still_forward():
