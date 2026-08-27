@@ -126,3 +126,31 @@ def _reset_principal():
     set_principal(None)
     yield
     set_principal(None)
+
+
+@pytest.fixture(autouse=True)
+def _no_task_outlives_its_loop():
+    """Fail the test that leaves a pending task in `HttpProtocol._active_tasks`.
+
+    That set is process-wide and pruned by each task's done callback, which a
+    loop closed with the task still pending never runs. `Veloce._graceful_shutdown`
+    then waits on it for `GRACEFUL_DRAIN_TIMEOUT`: one module leaked seventy-one
+    of them and the one later test that calls that method spent the full **thirty
+    seconds** - seventeen percent of the suite's wall clock - waiting on tasks
+    whose loop was gone, while finishing instantly when run on its own.
+
+    Checked here rather than as a source scan because the shape varies: a
+    `finally: loop.close()`, a fixture, a helper class owning a loop for its
+    lifetime. `tests/_loops.py` is the fix; this is what notices a new one.
+    """
+    from veloce.serving.protocol import HttpProtocol
+
+    yield
+    leaked = [task for task in HttpProtocol._active_tasks if not task.done()]
+    HttpProtocol._active_tasks.difference_update(leaked)
+    assert not leaked, (
+        f"{len(leaked)} task(s) left pending in HttpProtocol._active_tasks. A "
+        "loop closed with tasks still on it never runs their done callbacks, so "
+        "they stay in that process-wide set for the rest of the session. Use "
+        "`tests/_loops.py`'s `protocol_loop()` or `close_drained(loop)`."
+    )

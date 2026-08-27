@@ -75,8 +75,17 @@ def _feed(chunks: list[bytes], *, turns: int = 40) -> NativeTransport:
             loop.run_until_complete(asyncio.sleep(0))
         return transport
     finally:
-        for task in asyncio.all_tasks(loop):
+        # Cancelling is not enough: a cancelled task runs its done callbacks
+        # only when the loop runs again, and `HttpProtocol._active_tasks` is a
+        # process-wide set pruned by exactly those callbacks. Closing here
+        # instead left every connection's server loop in that set for the rest
+        # of the session, so a later test calling `_graceful_shutdown` waited
+        # the full `GRACEFUL_DRAIN_TIMEOUT` on tasks whose loop was gone.
+        pending = asyncio.all_tasks(loop)
+        for task in pending:
             task.cancel()
+        if pending:
+            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
         loop.close()
 
 

@@ -120,6 +120,15 @@ def test_save_can_be_called_multiple_times():
     assert a.getvalue() == b.getvalue() == b"abc"
 
 
+# ── The UploadFile object itself ─────────────────────────────────────
+
+
+async def test_async_with_closes_the_file():
+    async with UploadFile(filename="test.txt", file=io.BytesIO(b"hello")) as f:
+        assert await f.read() == b"hello"
+    assert f.file.closed
+
+
 async def test_upload_file_read():
     f = UploadFile(filename="test.txt", file=io.BytesIO(b"hello"))
     data = await f.read()
@@ -170,15 +179,7 @@ async def test_multipart_file_upload():
     assert data["size"] == 11
 
 
-class TestUploadFileContextManager:
-    """Test UploadFile async context manager."""
-
-    async def test_async_with(self):
-        async with UploadFile(filename="test.txt", file=io.BytesIO(b"hello")) as f:
-            data = await f.read()
-            assert data == b"hello"
-        # File should be closed after exiting context
-        assert f.file.closed
+# ── Reads stay off the loop only when they must ────────────
 
 
 async def test_uploadfile_read_does_not_block_on_spilled_spool():

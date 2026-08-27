@@ -29,6 +29,7 @@ import asyncio
 
 import pytest
 
+from tests._loops import protocol_loop
 from veloce import Veloce
 from veloce.serving.protocol import HttpProtocol
 
@@ -79,12 +80,8 @@ def _app() -> Veloce:
 
 @pytest.fixture
 def loop():
-    loop = asyncio.new_event_loop()
-    yield loop
-    for task in asyncio.all_tasks(loop):
-        task.cancel()
-    loop.run_until_complete(asyncio.sleep(0))
-    loop.close()
+    with protocol_loop() as made:
+        yield made
 
 
 def _connect(loop, **config):

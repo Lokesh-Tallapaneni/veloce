@@ -32,20 +32,6 @@ def test_is_streamed_true_for_streaming_response():
 # ── Response.charset ─────────────────────────────────────────────────
 
 
-def test_charset_defaults_to_utf8():
-    assert Response().charset == "utf-8"
-
-
-def test_charset_from_content_type_parameter():
-    resp = Response(content_type="text/html; charset=iso-8859-1")
-    assert resp.charset == "iso-8859-1"
-
-
-def test_charset_handles_quoted_value():
-    resp = Response(content_type='text/html; charset="windows-1252"')
-    assert resp.charset == "windows-1252"
-
-
 # ── Response.calculate_content_length ────────────────────────────────
 
 

@@ -10,6 +10,11 @@ Three sites genuinely stay synchronous, because they pair the sync `TestClient`
 (which drives its own loop) with a direct call into the app - and a sync client
 cannot run inside an already-running loop. They use `asyncio.run`, which creates
 a loop and closes it.
+
+Closing is not the whole of it. A loop closed with tasks still pending never
+runs their done callbacks, and `HttpProtocol._active_tasks` is a process-wide
+set pruned by exactly those - so `tests/_loops.py` drains before closing, and
+`close_drained` / `protocol_loop` count as closing here.
 """
 
 from __future__ import annotations
@@ -21,7 +26,10 @@ import pytest
 
 TESTS = pathlib.Path(__file__).resolve().parent
 MAKES_LOOP = ("new_event_loop()", "get_event_loop_policy()")
-CLOSES = (".close()", "asyncio.run(")
+# `.close()` alone matched any close in the body - a transport's, a file's -
+# so a function that closed something else passed without closing its loop.
+# These name the loop.
+CLOSES = ("loop.close()", "close_drained(", "protocol_loop(", "asyncio.run(")
 
 
 def _functions_that_make_a_loop() -> list[tuple[str, str, int, str]]:

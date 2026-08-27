@@ -5,6 +5,8 @@ Exercises each fix from the framework boundary via TestClient.
 
 from __future__ import annotations
 
+import pytest
+
 from veloce import Request, Veloce
 from veloce.http.datastructures import FormData
 from veloce.testclient import TestClient
@@ -249,15 +251,26 @@ def test_a_none_cap_lifts_the_limit_for_a_urlencoded_body():
     assert response.json()["n"] == _OVER_DEFAULT
 
 
-def test_both_encodings_answer_the_same_cap_the_same_way():
-    """One config value, one meaning, whichever encoding was sent."""
-    for config in ({"MAX_FORM_PARTS": None}, {}, {"MAX_FORM_PARTS": 2000}):
-        client = _form_client(**config)
-        u_body, u_headers = _urlencoded(_OVER_DEFAULT)
-        m_body, m_headers = _multipart(_OVER_DEFAULT)
-        urlencoded = client.post("/f", content=u_body, headers=u_headers).status_code
-        multipart = client.post("/f", content=m_body, headers=m_headers).status_code
-        assert urlencoded == multipart, config
+@pytest.mark.parametrize(
+    "config",
+    [
+        pytest.param({"MAX_FORM_PARTS": None}, id="uncapped"),
+        pytest.param({}, id="default"),
+        pytest.param({"MAX_FORM_PARTS": 2000}, id="above-the-body"),
+    ],
+)
+def test_both_encodings_answer_the_same_cap_the_same_way(config):
+    """One config value, one meaning, whichever encoding was sent.
+
+    Parametrized rather than looped so the report says *which* configuration
+    disagreed. The three parses are the point and cost the same either way.
+    """
+    client = _form_client(**config)
+    u_body, u_headers = _urlencoded(_OVER_DEFAULT)
+    m_body, m_headers = _multipart(_OVER_DEFAULT)
+    urlencoded = client.post("/f", content=u_body, headers=u_headers).status_code
+    multipart = client.post("/f", content=m_body, headers=m_headers).status_code
+    assert urlencoded == multipart
 
 
 def test_the_default_cap_still_refuses_an_oversized_multipart_body():

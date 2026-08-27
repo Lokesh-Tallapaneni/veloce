@@ -17,6 +17,7 @@ import asyncio
 import contextlib
 from concurrent.futures import ThreadPoolExecutor
 
+from tests._loops import close_drained
 from tests._protocol import _drain_loop, _FakeTransport, _run_until
 from veloce import Veloce
 from veloce.config import Config
@@ -46,7 +47,7 @@ def test_request_timer_arms_on_first_data():
         assert proto._request_timer is not None
         assert proto._keep_alive_handle is None
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_request_timeout_emits_408_and_closes():
@@ -66,7 +67,7 @@ def test_request_timeout_emits_408_and_closes():
         assert b"408" in emitted
         assert proto._request_timer is None
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_oversized_url_emits_414_and_closes():
@@ -88,7 +89,7 @@ def test_oversized_url_emits_414_and_closes():
         assert transport.closed is True
         assert proto._oversized is True
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_oversized_single_header_emits_431_and_closes():
@@ -108,7 +109,7 @@ def test_oversized_single_header_emits_431_and_closes():
         assert b"Connection: close" in emitted
         assert transport.closed is True
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_cumulative_headers_exceeds_total_cap_emits_431():
@@ -133,7 +134,7 @@ def test_cumulative_headers_exceeds_total_cap_emits_431():
         assert transport.closed is True
         assert proto._header_bytes_total <= MAX_TOTAL_HEADERS_SIZE
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_normal_small_request_is_not_rejected():
@@ -156,7 +157,7 @@ def test_normal_small_request_is_not_rejected():
         # (Request, body_source, keep_alive, route_match).
         assert any(req.path == "/hello" for req, _src, _ka, _m in proto._request_queue)
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_connection_closed_after_oversized_rejection():
@@ -177,7 +178,7 @@ def test_connection_closed_after_oversized_rejection():
         proto.data_received(b"more junk")
         assert len(transport.writes) == writes_before
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_connection_lost_cancels_request_timer():
@@ -191,7 +192,7 @@ def test_connection_lost_cancels_request_timer():
         proto.connection_lost(None)
         assert proto._request_timer is None
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_pipelined_responses_preserve_request_order():
@@ -235,7 +236,7 @@ def test_pipelined_responses_preserve_request_order():
         assert b_status > a_pos
         assert b_status < b_pos
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_chunked_trailers_do_not_leak_into_next_pipelined_request():
@@ -274,7 +275,7 @@ def test_chunked_trailers_do_not_leak_into_next_pipelined_request():
         assert b'"got":5' in emitted
         assert b'"trailer":null' in emitted, "trailer field leaked into the next request"
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_split_packet_pipelined_followup_dispatches_with_real_url():
@@ -335,7 +336,7 @@ def test_split_packet_pipelined_followup_dispatches_with_real_url():
         assert b"500" not in emitted
         assert b"504" not in emitted
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_split_packet_followup_does_not_double_arm_timers():
@@ -381,7 +382,7 @@ def test_split_packet_followup_does_not_double_arm_timers():
         proto.data_received(b"\r\n")
         _drain_loop(loop, proto)
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_single_request_dispatches_and_keeps_alive():
@@ -408,7 +409,7 @@ def test_single_request_dispatches_and_keeps_alive():
         assert transport.closed is False
         assert not proto._request_queue
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_head_response_omits_body_keeps_content_length():
@@ -438,7 +439,7 @@ def test_head_response_omits_body_keeps_content_length():
         # But no body bytes follow the header terminator.
         assert body == b""
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_keep_alive_serves_second_sequential_request():
@@ -473,7 +474,7 @@ def test_keep_alive_serves_second_sequential_request():
         assert emitted.find(b'"r":"a"') < emitted.find(b'"r":"b"')
         assert transport.closed is False
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_connection_close_header_closes_after_response():
@@ -499,7 +500,7 @@ def test_connection_close_header_closes_after_response():
         assert transport.closed is True
         assert not proto._request_queue
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_connection_lost_mid_pipeline_cancels_server_loop():
@@ -540,7 +541,7 @@ def test_connection_lost_mid_pipeline_cancels_server_loop():
             loop.run_until_complete(server_loop)
         assert server_loop.done()
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_streaming_handler_receives_chunks_as_fed():
@@ -589,7 +590,7 @@ def test_streaming_handler_receives_chunks_as_fed():
         emitted = b"".join(transport.writes)
         assert b'"n":2' in emitted
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_body_ignoring_handler_does_not_wedge_next_pipelined_request():
@@ -631,7 +632,7 @@ def test_body_ignoring_handler_does_not_wedge_next_pipelined_request():
         assert b"500" not in emitted
         assert transport.closed is False
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_body_ignoring_handler_blocks_in_drain_until_eof_then_serves_next_fifo():
@@ -692,7 +693,7 @@ def test_body_ignoring_handler_blocks_in_drain_until_eof_then_serves_next_fifo()
         assert b"500" not in emitted
         assert transport.closed is False
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_connection_lost_unblocks_a_drain_awaiting_eof():
@@ -730,7 +731,7 @@ def test_connection_lost_unblocks_a_drain_awaiting_eof():
             loop.run_until_complete(server_loop)
         assert server_loop.done()
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_oversized_streamed_body_rejected_413_mid_stream():
@@ -765,7 +766,7 @@ def test_oversized_streamed_body_rejected_413_mid_stream():
         assert b"Content Too Large" in emitted
         assert transport.closed is True
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_declared_content_length_over_limit_rejected_413_before_body():
@@ -792,7 +793,7 @@ def test_declared_content_length_over_limit_rejected_413_before_body():
         # Rejected before dispatch — no request was queued for the server loop.
         assert not proto._request_queue
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_slowloris_timer_arms_across_body_window():
@@ -838,7 +839,7 @@ def test_slowloris_timer_arms_across_body_window():
             with contextlib.suppress(asyncio.CancelledError):
                 loop.run_until_complete(server_loop)
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_slow_consumer_triggers_pause_then_resume_across_reads():
@@ -905,7 +906,7 @@ def test_slow_consumer_triggers_pause_then_resume_across_reads():
         emitted = b"".join(transport.writes)
         assert b"200" in emitted
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_single_segment_burst_exceeds_chunk_bound_but_byte_cap_holds():
@@ -962,7 +963,7 @@ def test_single_segment_burst_exceeds_chunk_bound_but_byte_cap_holds():
         emitted = b"".join(transport.writes)
         assert b"413" in emitted
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_drain_resumes_then_second_burst_repauses_still_reaches_eof():
@@ -1047,7 +1048,7 @@ def test_drain_resumes_then_second_burst_repauses_still_reaches_eof():
         assert b"500" not in emitted
         assert transport.closed is False
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_paused_connection_with_body_ignoring_handler_resumes_and_drains():
@@ -1120,7 +1121,7 @@ def test_paused_connection_with_body_ignoring_handler_resumes_and_drains():
         assert b"500" not in emitted
         assert transport.closed is False
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_connection_lost_while_paused_unblocks_drain():
@@ -1167,7 +1168,7 @@ def test_connection_lost_while_paused_unblocks_drain():
             loop.run_until_complete(server_loop)
         assert server_loop.done()
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_streaming_handler_timeout_does_not_race_drain_with_live_consumer():
@@ -1245,7 +1246,7 @@ def test_streaming_handler_timeout_does_not_race_drain_with_live_consumer():
         assert seen == [b"abc"]
         assert b"500" not in emitted
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def _reset_connection_counter() -> None:
@@ -1284,7 +1285,7 @@ def test_connection_limit_emits_503():
     finally:
         proto1.connection_lost(None)
         _reset_connection_counter()
-        loop.close()
+        close_drained(loop)
 
 
 def test_connection_limit_releases_on_disconnect():
@@ -1318,7 +1319,7 @@ def test_connection_limit_releases_on_disconnect():
     finally:
         proto2.connection_lost(None)
         _reset_connection_counter()
-        loop.close()
+        close_drained(loop)
 
 
 def test_serve_loop_stops_at_boundary_when_keep_serving_false():
@@ -1364,7 +1365,7 @@ def test_serve_loop_stops_at_boundary_when_keep_serving_false():
         finally:
             HttpProtocol.should_keep_serving = None
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_serve_loop_continues_when_keep_serving_true():
@@ -1400,7 +1401,7 @@ def test_serve_loop_continues_when_keep_serving_true():
         finally:
             HttpProtocol.should_keep_serving = None
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_connection_count_is_thread_safe():
@@ -1435,7 +1436,7 @@ def test_connection_count_is_thread_safe():
             if p._counted:
                 p.connection_lost(None)
         _reset_connection_counter()
-        loop.close()
+        close_drained(loop)
 
 
 def test_expect_100_continue_emits_interim_before_response():
@@ -1476,7 +1477,7 @@ def test_expect_100_continue_emits_interim_before_response():
         assert interim_pos < final_pos, "interim must precede the final response"
         assert b'"len":3' in emitted
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_no_expect_header_does_not_emit_interim():
@@ -1500,7 +1501,7 @@ def test_no_expect_header_does_not_emit_interim():
         assert b"100 Continue" not in emitted
         assert b"200" in emitted
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_expect_100_continue_not_sent_to_http_10_client():
@@ -1526,7 +1527,7 @@ def test_expect_100_continue_not_sent_to_http_10_client():
         emitted = b"".join(transport.writes)
         assert b"100 Continue" not in emitted
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_expect_100_continue_over_limit_yields_413_not_interim():
@@ -1555,7 +1556,7 @@ def test_expect_100_continue_over_limit_yields_413_not_interim():
         assert transport.closed is True
         assert not proto._request_queue
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_request_timeout_honours_config_override():
@@ -1582,7 +1583,7 @@ def test_request_timeout_honours_config_override():
         assert b"408" in emitted
         assert proto._request_timer is None
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_keep_alive_timeout_honours_config_override():
@@ -1605,7 +1606,7 @@ def test_keep_alive_timeout_honours_config_override():
 
         assert transport.closed is True
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_timeout_defaults_unchanged():
@@ -1641,7 +1642,7 @@ def test_protocol_oversize_url_emits_414():
         assert emitted.startswith(b"HTTP/1.1 414 "), emitted[:64]
         assert transport.closed is True
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_protocol_oversize_single_header_emits_431():
@@ -1658,7 +1659,7 @@ def test_protocol_oversize_single_header_emits_431():
         assert emitted.startswith(b"HTTP/1.1 431 "), emitted[:64]
         assert transport.closed is True
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_protocol_cumulative_headers_emit_431():
@@ -1681,4 +1682,4 @@ def test_protocol_cumulative_headers_emit_431():
         assert emitted.startswith(b"HTTP/1.1 431 "), emitted[:64]
         assert transport.closed is True
     finally:
-        loop.close()
+        close_drained(loop)
