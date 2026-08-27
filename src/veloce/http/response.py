@@ -244,7 +244,17 @@ class Response:
         self._encoded: bytes | None = None
         self._body = body
         self.content_type = content_type
-        self.headers = headers or {}
+        # Copy on the way in, for the reason `HTTPException.__init__` already
+        # records: this mapping becomes the response's `headers`, which response
+        # middleware (CORS / Session / SecurityHeaders) and `set_cookie` mutate
+        # in place. Aliasing the caller's dict lets one request's `Set-Cookie`
+        # accumulate on a handler-held constant and ship on every later
+        # response - a module-level `HEADERS = {"X-App-Version": "1.0"}` reused
+        # across routes is the ordinary shape that leaks, and what leaks is a
+        # signed session cookie belonging to a different user. The error path
+        # was given this rule; the success path is the far more common one.
+        # `None` stays free: no copy, just the fresh dict it always allocated.
+        self.headers = dict(headers) if headers else {}
         # Optional `BackgroundTask` or `BackgroundTasks` fired by the
         # dispatch layer after this response is built. None when no task
         # is attached. `Response(content=..., background=BackgroundTask(fn))`.
