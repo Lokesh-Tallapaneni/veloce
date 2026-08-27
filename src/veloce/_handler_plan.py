@@ -964,7 +964,11 @@ def build_plan(
             # static default on a marker is shared across every request, so an
             # in-place mutation by one handler leaks into the next. Point the
             # author at `default_factory`, which builds a fresh value per call.
-            if default.default_factory is None and isinstance(default.default, (list, dict, set)):
+            # `default` and `default_factory` are mutually exclusive, so a
+            # mutable `default` is exactly "the author wrote a static mutable
+            # default". The marker copies it per request now; still point them
+            # at the spelling that says so.
+            if isinstance(default.default, (list, dict, set)):
                 _warn_shared_mutable_default(param_name, default.default)
             # `payload: Payload = Body()` declares the same thing as a bare
             # `payload: Payload`, so it must validate the same way. Recorded here

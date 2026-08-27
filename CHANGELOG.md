@@ -189,7 +189,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `veloce.routing.params` is removed; import the markers from `veloce` or `veloce.routing`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Fixed
-
+- A grouped parameter's schema walk reports failure instead of silently publishing the field without its `ge` / `le` / `title`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `Query(default=[])` and other mutable marker defaults are copied per request. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `client.session_transaction()` applies the middleware's own age ceiling, so a cookie a request would refuse no longer loads. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 - A status-code error handler taking `(request, exc)` is called correctly on the unhandled-exception and `405` paths; it raised `TypeError` out of dispatch. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

@@ -34,6 +34,8 @@ Usage::
 
 from __future__ import annotations
 
+import copy
+import functools
 import re
 from collections.abc import Callable
 from decimal import Decimal
@@ -173,8 +175,16 @@ class ParamBase:
             raise ValueError("default and default_factory are mutually exclusive")
         self.default = default
         # When set, `default_factory` is invoked on every missing-value resolve
-        # so each request receives an independent object, preventing the
-        # shared-mutable aliasing a static `Query(default=[])` would cause.
+        # so each request receives an independent object. A static mutable
+        # default is that same aliasing hazard written the other way: one list
+        # on one marker, handed out by identity, so an in-place mutation by one
+        # request is visible to the next. Wrap it in a copying factory here -
+        # the one place the interpreter and both compiled resolvers read - so
+        # `Query(default=[])` is as safe as the bare `tag: list[str] = []` the
+        # plan builder already guards. `self.default` keeps the declared value
+        # so the published schema still shows it.
+        if default_factory is None and isinstance(default, (list, dict, set)):
+            default_factory = functools.partial(copy.deepcopy, default)
         self.default_factory = default_factory
         self.alias = alias
         self.title = title
