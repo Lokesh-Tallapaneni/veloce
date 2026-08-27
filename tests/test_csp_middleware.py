@@ -164,12 +164,12 @@ def test_lazy_materialization_without_handler_read():
     assert "'nonce-" in r.headers["Content-Security-Policy"]
 
 
-def test_init_misuse():
-    # `ValueError`, not `AssertionError`: `python -O` strips asserts, and the
-    # middleware used to construct from an empty configuration under it and then
-    # emit no header. See `test_csp_requires_a_policy_under_o.py`.
-    with pytest.raises(ValueError):
-        CSPMiddleware()
+def test_a_non_string_policy_is_a_type_error():
+    # The empty-configuration refusal is next door in
+    # `test_csp_refusal_under_optimisation.py`, which also covers the part that
+    # matters about it - that it is a `ValueError` rather than an `assert`, so
+    # `python -O` cannot strip it. Asserting it here too said less and said it
+    # twice.
     with pytest.raises(TypeError):
         CSPMiddleware(policy=123)  # type: ignore[arg-type]
 

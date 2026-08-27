@@ -232,23 +232,50 @@ def test_an_offset_value_yields_a_stdlib_timezone(value: str):
     assert parsed.tzinfo is None or type(parsed.tzinfo) is datetime.timezone
 
 
-def test_the_two_paths_agree_across_everything_the_gate_admits():
-    """The fuzz that justified the split, run rather than asserted."""
-    admitted = 0
-    for year in ("2026", "0001", "9999"):
-        for month in ("01", "02", "12", "13"):
-            for day in ("01", "28", "31", "32"):
-                for sep in ("T", " "):
-                    for time_part in ("12:30:00", "25:00:00", "12:30", "12:30:00.123456"):
-                        for zone in ("", "Z", "+00:00", "-00:00", "+05:30", "-08:00"):
-                            value = f"{year}-{month}-{day}{sep}{time_part}{zone}"
-                            if converters._DATETIME_RE.match(value) is None:
-                                continue
-                            admitted += 1
-                            assert converters.DateTimeConverter().match(value) == _stdlib(value), (
-                                value
-                            )
-    assert admitted > 1000
+# The grid the accelerated and stdlib parsers must agree across. Deliberately
+# includes month 13, day 32 and hour 25: `_DATETIME_RE` is a *shape* gate, not
+# a validity check, so it admits all of these and agreeing on refusing them is
+# as much the property as agreeing on accepting the rest.
+GRID = [
+    f"{year}-{month}-{day}{sep}{time_part}{zone}"
+    for year in ("2026", "0001", "9999")
+    for month in ("01", "02", "12", "13")
+    for day in ("01", "28", "31", "32")
+    for sep in ("T", " ")
+    for time_part in ("12:30:00", "25:00:00", "12:30", "12:30:00.123456")
+    for zone in ("", "Z", "+00:00", "-00:00", "+05:30", "-08:00")
+]
+
+
+def test_the_gate_admits_the_whole_grid():
+    """It is a shape check. The `continue` this replaced never once fired.
+
+    The loop it guarded carried `assert admitted > 1000` with no explanation;
+    the real number is every value in the grid, which is what makes the
+    agreement below a statement about all of them rather than an unknown
+    subset.
+    """
+    assert len(GRID) == 2304
+    assert [v for v in GRID if converters._DATETIME_RE.match(v) is None] == []
+
+
+def test_the_two_paths_agree_across_the_whole_grid():
+    """The fuzz that justified the split, run rather than asserted.
+
+    Every disagreement is reported, not just the first: a parser change that
+    breaks one shape usually breaks a family of them, and the family is the
+    useful diagnostic.
+    """
+    converter = converters.DateTimeConverter()
+    disagreements = [value for value in GRID if converter.match(value) != _stdlib(value)]
+    assert disagreements == [], f"{len(disagreements)} values parse differently"
+
+
+def test_the_grid_exercises_both_outcomes():
+    """Both paths refusing everything would satisfy the agreement above."""
+    converter = converters.DateTimeConverter()
+    outcomes = {converter.match(value)[0] for value in GRID}
+    assert outcomes == {True, False}
 
 
 # ── the fallback, for an environment without the package ─────────────

@@ -16,6 +16,24 @@ import sys
 import pytest
 
 import veloce
+from veloce._handler_plan import HandlerPlan
+from veloce.contrib.mcp.context import MCPContext
+from veloce.contrib.mcp.session import MCPSession
+from veloce.contrib.mcp.tasks import MCPTask
+from veloce.http.datastructures import (
+    Cookies,
+    FormData,
+    Headers,
+    QueryParams,
+    State,
+    UploadFile,
+)
+from veloce.http.request import Request
+from veloce.http.response import FileResponse, Response
+from veloce.routing.router import RouteInfo, RouteMatch
+from veloce.sessions import Session
+from veloce.sse import EventSourceResponse, ServerSentEvent
+from veloce.websocket import WebSocket
 
 
 def _all_veloce_classes() -> dict[str, type]:
@@ -36,11 +54,78 @@ def _all_veloce_classes() -> dict[str, type]:
     return found
 
 
-@pytest.mark.parametrize("qualname, cls", sorted(_all_veloce_classes().items()))
-def test_declared_slots_are_not_defeated_by_an_unslotted_base(qualname: str, cls: type) -> None:
-    if not ("__slots__" in cls.__dict__ and not issubclass(cls, BaseException)):
-        pytest.skip("no own __slots__")
+def _classes_declaring_slots() -> list[tuple[str, type]]:
+    """The classes this module has anything to say about.
 
+    Filtered here rather than skipped in the body: parametrizing over every
+    class in the package reported 135 skips that meant only "this class has no
+    `__slots__`", and a genuine skip would have been invisible among them.
+    Exception classes are excluded by the style guide - they do not declare
+    `__slots__`.
+    """
+    return sorted(
+        (qualname, cls)
+        for qualname, cls in _all_veloce_classes().items()
+        if "__slots__" in cls.__dict__ and not issubclass(cls, BaseException)
+    )
+
+
+SLOTTED = _classes_declaring_slots()
+
+
+def _subclasses_of_slotted_bases() -> list[tuple[str, type]]:
+    """Classes inheriting a base that actually manages its layout with slots.
+
+    A base declaring `__slots__ = ()` - `Auditable`, the transport protocols -
+    is a marker that adds no storage, and its subclasses are free to carry a
+    `__dict__`: middleware is built once at registration, and a user subclass
+    setting its own config attributes in `__init__` is the supported shape.
+    The rule applies where a base declares real slots, because there the
+    subclass silently undoes what the base paid for.
+    """
+    return sorted(
+        (qualname, cls)
+        for qualname, cls in _all_veloce_classes().items()
+        if not issubclass(cls, BaseException)
+        and any(_claims_no_dict(base) for base in cls.__mro__[1:] if base is not object)
+    )
+
+
+def _claims_no_dict(base: type) -> bool:
+    """True when `base`'s own `__slots__` is a real, dict-free layout claim.
+
+    Two shapes are not: an empty `__slots__ = ()`, which is a marker adding no
+    storage, and one that lists `"__dict__"` - `pydantic.BaseModel` does, so a
+    model subclass must *not* declare slots of its own.
+    """
+    declared = base.__dict__.get("__slots__")
+    return bool(declared) and "__dict__" not in declared
+
+
+INHERITS_SLOTS = _subclasses_of_slotted_bases()
+
+
+@pytest.mark.parametrize(("qualname", "cls"), INHERITS_SLOTS, ids=[q for q, _c in INHERITS_SLOTS])
+def test_a_subclass_of_a_slotted_base_declares_its_own(qualname: str, cls: type) -> None:
+    """The reverse of the check below, which the docstring promised and nothing made.
+
+    Without this, dropping `__slots__ = ()` from a subclass does not fail
+    anything - the class simply stops being collected by the scan above, so a
+    silent regression reads as one fewer test.
+    """
+    assert "__slots__" in cls.__dict__, (
+        f"{qualname} inherits `__slots__` but declares none, so its instances "
+        "carry a `__dict__` and the base's declaration buys nothing"
+    )
+
+
+def test_the_scan_found_the_slotted_classes() -> None:
+    """A filter that matched nothing would make every case below vanish."""
+    assert len(SLOTTED) > 50, f"only {len(SLOTTED)} classes declare __slots__"
+
+
+@pytest.mark.parametrize(("qualname", "cls"), SLOTTED, ids=[q for q, _c in SLOTTED])
+def test_declared_slots_are_not_defeated_by_an_unslotted_base(qualname: str, cls: type) -> None:
     if cls.__dictoffset__ != 0:
         culprits = [
             base.__name__
@@ -53,56 +138,40 @@ def test_declared_slots_are_not_defeated_by_an_unslotted_base(qualname: str, cls
         )
 
 
-def test_hot_path_objects_are_slotted() -> None:
-    """The objects built per request, per connection, or per route match carry
-    no per-instance `__dict__` - that is the point of slotting them."""
-    from veloce._handler_plan import HandlerPlan
-    from veloce.http.datastructures import (
-        Cookies,
-        FormData,
-        Headers,
-        QueryParams,
-        State,
-        UploadFile,
-    )
-    from veloce.http.request import Request
-    from veloce.http.response import Response
-    from veloce.routing.router import RouteInfo, RouteMatch
-    from veloce.sessions import Session
-    from veloce.websocket import WebSocket
-
-    for cls in (
-        Request,
-        Response,
-        WebSocket,
-        Session,
-        Headers,
-        QueryParams,
-        Cookies,
-        FormData,
-        UploadFile,
-        State,
-        RouteInfo,
-        RouteMatch,
-        HandlerPlan,
-    ):
-        assert cls.__dictoffset__ == 0, f"{cls.__name__} regained a per-instance __dict__"
+# The objects built per request, per connection, per route match, per message
+# or per event. Naming them explicitly - rather than only checking whatever
+# happens to declare `__slots__` - is what makes a *removed* declaration a
+# failure rather than one fewer case.
+HOT_PATH_CLASSES = [
+    Request,
+    Response,
+    WebSocket,
+    Session,
+    Headers,
+    QueryParams,
+    Cookies,
+    FormData,
+    UploadFile,
+    State,
+    RouteInfo,
+    RouteMatch,
+    HandlerPlan,
+    MCPSession,
+    MCPContext,
+    MCPTask,
+    ServerSentEvent,
+    EventSourceResponse,
+    FileResponse,
+]
 
 
-def test_contrib_hot_path_objects_are_slotted() -> None:
-    """The same holds for the objects contrib builds per message or per event."""
-    from veloce.contrib.mcp.context import MCPContext
-    from veloce.contrib.mcp.session import MCPSession
-    from veloce.contrib.mcp.tasks import MCPTask
-    from veloce.http.response import FileResponse
-    from veloce.sse import EventSourceResponse, ServerSentEvent
+@pytest.mark.parametrize("cls", HOT_PATH_CLASSES, ids=lambda c: c.__name__)
+def test_a_hot_path_object_carries_no_dict(cls: type) -> None:
+    """No per-instance `__dict__` - that is the point of slotting them."""
+    assert cls.__dictoffset__ == 0, f"{cls.__name__} regained a per-instance __dict__"
 
-    for cls in (
-        MCPSession,
-        MCPContext,
-        MCPTask,
-        ServerSentEvent,
-        EventSourceResponse,
-        FileResponse,
-    ):
-        assert cls.__dictoffset__ == 0, f"{cls.__name__} regained a per-instance __dict__"
+
+@pytest.mark.parametrize("cls", HOT_PATH_CLASSES, ids=lambda c: c.__name__)
+def test_a_hot_path_object_is_in_the_scan_too(cls: type) -> None:
+    """The named list and the package-wide scan must not disagree."""
+    assert cls in [scanned for _q, scanned in SLOTTED]

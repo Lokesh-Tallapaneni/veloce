@@ -1,5 +1,8 @@
 """`CSPMiddleware` refuses an empty configuration even with asserts stripped.
 
+Named `test_csp_requires_a_policy_under_o.py` until now - a sentence truncated
+mid-word, which said neither what it covered nor what "under o" meant.
+
 The constructor validated its arguments with `assert`:
 
     assert policy is not None or report_only_policy is not None, (

@@ -8,6 +8,7 @@ ASGI pipeline real clients hit.
 
 from __future__ import annotations
 
+import pytest
 from pydantic import BaseModel
 
 from veloce import File, Form, Header, Query, Request, UploadFile, Veloce
@@ -32,16 +33,18 @@ def _fetch_openapi(app: Veloce) -> dict:
     return resp.json()
 
 
-def test_openapi_helper_split_end_to_end_full_surface() -> None:
+@pytest.fixture(scope="module")
+def full_surface() -> dict:
+    """The document for one app exercising every emission concern at once.
+
+    Built once and asserted on eight times. It used to be one test making
+    fourteen assertions across those eight concerns, so the first failure hid
+    the other seven and the report named the test rather than what broke.
+    """
     bearer = HTTPBearer()
     app = Veloce(title="PolishWave2 API", version="9.9.9")
 
-    @app.post(
-        "/items/{item_id}",
-        response_model=_ItemOut,
-        status_code=201,
-        tags=["x"],
-    )
+    @app.post("/items/{item_id}", response_model=_ItemOut, status_code=201, tags=["x"])
     async def create_item(
         request: Request,
         item_id: int,
@@ -56,38 +59,58 @@ def test_openapi_helper_split_end_to_end_full_surface() -> None:
     async def item_created(request: Request, body: _CreateItem):
         return {}
 
-    doc = _fetch_openapi(app)
+    return _fetch_openapi(app)
 
-    assert doc["info"]["title"] == "PolishWave2 API"
-    assert doc["info"]["version"] == "9.9.9"
 
-    assert "/items/{item_id}" in doc["paths"]
-    op = doc["paths"]["/items/{item_id}"]["post"]
+def _operation(doc: dict) -> dict:
+    return doc["paths"]["/items/{item_id}"]["post"]
 
-    body_content = op["requestBody"]["content"]
-    assert "application/json" in body_content
-    schema_ref = body_content["application/json"]["schema"]
-    assert schema_ref == {"$ref": "#/components/schemas/_CreateItem"}
 
-    schemas = doc["components"]["schemas"]
+def test_the_info_block_carries_the_apps_title_and_version(full_surface: dict) -> None:
+    assert full_surface["info"]["title"] == "PolishWave2 API"
+    assert full_surface["info"]["version"] == "9.9.9"
+
+
+def test_the_registered_path_is_described(full_surface: dict) -> None:
+    assert "/items/{item_id}" in full_surface["paths"]
+
+
+def test_the_request_body_refers_to_the_model(full_surface: dict) -> None:
+    content = _operation(full_surface)["requestBody"]["content"]
+    assert "application/json" in content
+    assert content["application/json"]["schema"] == {"$ref": "#/components/schemas/_CreateItem"}
+
+
+def test_the_body_model_is_a_component_with_typed_properties(full_surface: dict) -> None:
+    schemas = full_surface["components"]["schemas"]
     assert "_CreateItem" in schemas
-    create_props = schemas["_CreateItem"]["properties"]
-    assert create_props["name"]["type"] == "string"
-    assert create_props["price"]["type"] == "number"
+    properties = schemas["_CreateItem"]["properties"]
+    assert properties["name"]["type"] == "string"
+    assert properties["price"]["type"] == "number"
 
-    assert "201" in op["responses"]
-    assert "_ItemOut" in schemas
 
-    sec_schemes = doc["components"]["securitySchemes"]
-    assert sec_schemes["HTTPBearer"] == {"type": "http", "scheme": "bearer"}
-    assert op["security"] == [{"HTTPBearer": []}]
+def test_the_declared_status_code_and_response_model_are_emitted(full_surface: dict) -> None:
+    assert "201" in _operation(full_surface)["responses"]
+    assert "_ItemOut" in full_surface["components"]["schemas"]
 
-    param_names = {p["name"] for p in op.get("parameters", [])}
-    assert {"item_id", "q", "h"}.issubset(param_names)
 
-    assert doc["webhooks"]["item.created"]["post"]["requestBody"]["content"]["application/json"][
-        "schema"
-    ] == {"$ref": "#/components/schemas/_CreateItem"}
+def test_the_security_scheme_is_declared_and_referenced(full_surface: dict) -> None:
+    schemes = full_surface["components"]["securitySchemes"]
+    assert schemes["HTTPBearer"] == {"type": "http", "scheme": "bearer"}
+    assert _operation(full_surface)["security"] == [{"HTTPBearer": []}]
+
+
+def test_every_parameter_source_reaches_the_document(full_surface: dict) -> None:
+    """Path, query and header - three sources, one parameter list."""
+    names = {p["name"] for p in _operation(full_surface).get("parameters", [])}
+    assert {"item_id", "q", "h"}.issubset(names)
+
+
+def test_a_webhook_body_refers_to_the_same_component(full_surface: dict) -> None:
+    webhook = full_surface["webhooks"]["item.created"]["post"]
+    assert webhook["requestBody"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/_CreateItem"
+    }
 
 
 def test_openapi_multipart_request_body_end_to_end() -> None:

@@ -1,4 +1,11 @@
-"""StaticFiles conditional GET — ETag + Last-Modified + If-Modified-Since (ST3)."""
+"""StaticFiles conditional GET — ETag + Last-Modified + If-Modified-Since (ST3).
+
+The single home for weak-ETag comparison. `test_routing_e2e.py`, a module about
+routing, carried its own `static_app` fixture and two weak-ETag round trips that
+asserted exactly what `test_if_none_match_strong_form_matches_weak_server_etag`
+and `test_if_none_match_weak_form_matches_weak_server_etag` assert here - with
+the RFC 9110 Sec. 13.1.2 reasoning that says why. They are gone.
+"""
 
 from __future__ import annotations
 
