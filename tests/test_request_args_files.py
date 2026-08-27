@@ -60,14 +60,12 @@ def test_args_preserves_duplicate_keys():
 # ── Request.files ───────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_files_empty_for_non_multipart():
     req = _req()
     files = await req.files()
     assert len(files) == 0
 
 
-@pytest.mark.asyncio
 async def test_files_empty_for_urlencoded_form():
     req = _req(
         body=b"a=1&b=2",
@@ -78,7 +76,6 @@ async def test_files_empty_for_urlencoded_form():
     assert len(files) == 0
 
 
-@pytest.mark.asyncio
 async def test_files_extracts_uploads_from_multipart():
     boundary = "----testbound"
     body = (
@@ -101,7 +98,6 @@ async def test_files_extracts_uploads_from_multipart():
     assert "title" not in files
 
 
-@pytest.mark.asyncio
 async def test_files_handles_multiple_uploads_under_one_field_name():
     """Several files sharing one field name must yield exactly that many
     entries — not N×N duplicates from re-`getlist`-ing each repeated key."""
@@ -127,7 +123,6 @@ async def test_files_handles_multiple_uploads_under_one_field_name():
 # ── Request.files debug-mode missing-key diagnostics ────────────────
 
 
-@pytest.mark.asyncio
 async def test_files_missing_key_is_bare_keyerror_without_debug():
     req = _req(
         body=b"avatar=oops",
@@ -142,7 +137,6 @@ async def test_files_missing_key_is_bare_keyerror_without_debug():
     assert str(exc.value) == "'avatar'"
 
 
-@pytest.mark.asyncio
 async def test_files_missing_key_hints_enctype_for_plain_form_field():
     req = _req(
         body=b"avatar=oops",
@@ -159,7 +153,6 @@ async def test_files_missing_key_hints_enctype_for_plain_form_field():
     assert 'enctype="multipart/form-data"' in msg
 
 
-@pytest.mark.asyncio
 async def test_files_missing_key_hints_json_body():
     req = _req(
         body=b'{"avatar": "x"}',
@@ -172,7 +165,6 @@ async def test_files_missing_key_hints_json_body():
     assert "JSON request" in str(exc.value)
 
 
-@pytest.mark.asyncio
 async def test_files_missing_key_hints_no_multipart_body():
     req = _req(app=_AppStub(debug=True))
     files = await req.files()
@@ -181,7 +173,6 @@ async def test_files_missing_key_hints_no_multipart_body():
     assert "multipart/form-data" in str(exc.value)
 
 
-@pytest.mark.asyncio
 async def test_files_present_key_returns_upload_in_debug_mode():
     boundary = "----testbound"
     body = (

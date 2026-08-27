@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from tests.conftest import make_request
 from veloce import Request, Veloce
 from veloce.http.request import State
@@ -47,7 +45,6 @@ def test_app_state_isolated_per_app():
 
 
 class TestAppState:
-    @pytest.mark.asyncio
     async def test_app_state(self):
         app = Veloce(openapi_url=None)
         app.state["config"] = {"debug": True}

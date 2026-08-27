@@ -5,8 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 
-import pytest
-
 from tests.conftest import make_request
 from veloce import BackgroundTask, BackgroundTasks, Request, Response, Veloce
 
@@ -39,7 +37,6 @@ async def _until(predicate, *, turns: int = 2000) -> None:
     raise AssertionError("the background task never ran")
 
 
-@pytest.mark.asyncio
 async def test_response_carries_single_background_task():
     log: list[str] = []
 
@@ -62,7 +59,6 @@ async def test_response_carries_single_background_task():
     assert log == ["fired"]
 
 
-@pytest.mark.asyncio
 async def test_response_carries_background_tasks_collection():
     """A `BackgroundTasks` (plural) collection also works via the same kwarg."""
     log: list[str] = []
@@ -81,7 +77,6 @@ async def test_response_carries_background_tasks_collection():
     assert log == ["a", "b"]
 
 
-@pytest.mark.asyncio
 async def test_response_without_background_does_not_break():
     app = Veloce(debug=True, openapi_url=None)
 
@@ -94,7 +89,6 @@ async def test_response_without_background_does_not_break():
     assert resp.body == b"ok"
 
 
-@pytest.mark.asyncio
 async def test_async_background_task():
     """Async BackgroundTask is awaited as a coroutine."""
     log: list[str] = []
@@ -118,7 +112,6 @@ async def test_async_background_task():
     assert log == ["async-fired"]
 
 
-@pytest.mark.asyncio
 async def test_background_task_exception_does_not_break_response():
     """A failing background task is logged but never breaks the response."""
 
@@ -149,7 +142,6 @@ async def test_background_task_exception_does_not_break_response():
     assert ran == ["boom"]
 
 
-@pytest.mark.asyncio
 async def test_response_background_with_di_injected_tasks_coexist():
     """A handler can mix both shapes: DI-injected BackgroundTasks AND a
     Response(background=...) attachment. Both fire."""
@@ -175,7 +167,6 @@ async def test_response_background_with_di_injected_tasks_coexist():
 # ── Shutdown drain: background tasks are not orphaned ────────────────
 
 
-@pytest.mark.asyncio
 async def test_response_background_task_is_drained_on_shutdown():
     """A still-running response background task is tracked and cancelled-and-
     drained on shutdown, not orphaned. Pre-fix it was a bare `create_task`
@@ -211,7 +202,6 @@ async def test_response_background_task_is_drained_on_shutdown():
     assert not app._spawned_anon
 
 
-@pytest.mark.asyncio
 async def test_di_injected_background_tasks_are_drained_on_shutdown():
     """The DI-injected `BackgroundTasks` queue goes through the same tracked
     spawn path, so its work is drained on shutdown too."""

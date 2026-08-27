@@ -549,7 +549,6 @@ def test_explicit_override_wins_over_decorator():
 
 
 class TestRateLimitMiddlewareE2E:
-    @pytest.mark.asyncio
     async def test_rate_limit(self):
         app = Veloce(openapi_url=None)
         app.add_middleware(RateLimitMiddleware(max_requests=2, window_seconds=60))
@@ -571,7 +570,6 @@ class TestRateLimitMiddlewareE2E:
         resp = await app.handle_request(make_request(headers=ua))
         assert resp.status_code == 429
 
-    @pytest.mark.asyncio
     async def test_rate_limit_headers_on_success(self):
         """Successful responses carry X-RateLimit-Limit/Remaining/Reset."""
         app = Veloce(openapi_url=None)
@@ -595,7 +593,6 @@ class TestRateLimitMiddlewareE2E:
         resp = await app.handle_request(make_request(headers=ua))
         assert resp.headers["X-RateLimit-Remaining"] == "3"
 
-    @pytest.mark.asyncio
     async def test_rate_limit_headers_on_429(self):
         """A 429 carries X-RateLimit-* plus Retry-After."""
         app = Veloce(openapi_url=None)
@@ -618,7 +615,6 @@ class TestRateLimitMiddlewareE2E:
         assert 0 <= int(rejected.headers["X-RateLimit-Reset"]) <= 60
         assert "Retry-After" in rejected.headers
 
-    @pytest.mark.asyncio
     async def test_clientless_requests_do_not_share_bucket(self):
         """Two anonymous requests with no shared signals must not collide."""
         app = Veloce(openapi_url=None)

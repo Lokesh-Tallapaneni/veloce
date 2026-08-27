@@ -210,7 +210,6 @@ def test_logging_middleware_preserves_preconfigured_level(access_logger_state):
 class TestMiddlewareHTTPDecorator:
     """Test @app.middleware('http') with the call_next pattern."""
 
-    @pytest.mark.asyncio
     async def test_middleware_http_modifies_response(self):
         import orjson
 
@@ -232,7 +231,6 @@ class TestMiddlewareHTTPDecorator:
         assert resp.headers.get("X-Process") == "true"
         assert orjson.loads(resp.body)["value"] == 42
 
-    @pytest.mark.asyncio
     async def test_middleware_http_short_circuit(self):
         app = Veloce(openapi_url=None)
 
@@ -256,7 +254,6 @@ class TestMiddlewareHTTPDecorator:
         resp = await app.handle_request(make_request(path="/allowed"))
         assert resp.status_code == 200
 
-    @pytest.mark.asyncio
     async def test_multiple_http_middleware_chain(self):
         app = Veloce(openapi_url=None)
         order = []

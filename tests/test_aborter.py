@@ -72,7 +72,6 @@ class TestAbort:
             abort(403, "Forbidden")
         assert exc_info.value.detail == "Forbidden"
 
-    @pytest.mark.asyncio
     async def test_abort_in_handler(self):
         app = Veloce(openapi_url=None)
 

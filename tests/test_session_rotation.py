@@ -67,7 +67,6 @@ def test_rotation_requires_non_empty_list():
 # ── End-to-end round trip ────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_round_trip_via_middleware():
     """process_request reads, handler mutates, process_response signs."""
     mw = SessionMiddleware(secret_key="k" * 32)
@@ -89,7 +88,6 @@ async def test_round_trip_via_middleware():
     assert decoded == {"hit": 1}
 
 
-@pytest.mark.asyncio
 async def test_tampered_cookie_yields_empty_session():
     """Garbage in the cookie → empty session, not a 500."""
     mw = SessionMiddleware(secret_key="k" * 32)

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from tests.conftest import make_request
 from veloce import HTMLResponse, JSONResponse, Request, Veloce
 from veloce.testclient import TestClient
@@ -134,7 +132,6 @@ def test_decorator_and_imperative_equivalent():
 
 
 class TestRegisterErrorHandler:
-    @pytest.mark.asyncio
     async def test_register_by_status_code(self):
         app = Veloce(openapi_url=None)
 
@@ -147,7 +144,6 @@ class TestRegisterErrorHandler:
         assert resp.status_code == 404
         assert b"custom" in resp.body
 
-    @pytest.mark.asyncio
     async def test_register_by_exception_class(self):
         app = Veloce(openapi_url=None)
 
@@ -168,7 +164,6 @@ class TestRegisterErrorHandler:
 
 
 class TestStatusCodeHandlers:
-    @pytest.mark.asyncio
     async def test_custom_404_handler(self):
         app = Veloce(openapi_url=None)
 
@@ -180,7 +175,6 @@ class TestStatusCodeHandlers:
         assert resp.status_code == 404
         assert b"Custom 404" in resp.body
 
-    @pytest.mark.asyncio
     async def test_custom_500_handler(self):
         app = Veloce(openapi_url=None)
 

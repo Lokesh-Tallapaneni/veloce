@@ -5,8 +5,6 @@ Exercises each fix from the framework boundary via TestClient.
 
 from __future__ import annotations
 
-import pytest
-
 from veloce import Request, Veloce
 from veloce.http.datastructures import FormData
 from veloce.testclient import TestClient
@@ -281,7 +279,6 @@ def test_an_explicit_cap_is_still_enforced_for_both():
 # subsystems behind opaque tracker tags.
 
 
-@pytest.mark.asyncio
 async def test_urlencoded_form_repeated_fields():
     req = Request(
         method="POST",

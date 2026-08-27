@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from tests.conftest import make_request
 from veloce import Depends, Veloce
 from veloce.testclient import TestClient
@@ -73,7 +71,6 @@ def test_provider_method_and_property_share_storage():
 
 
 class TestDependencyOverrides:
-    @pytest.mark.asyncio
     async def test_override(self):
         app = Veloce(openapi_url=None)
 

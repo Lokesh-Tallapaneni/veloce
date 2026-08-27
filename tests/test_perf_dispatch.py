@@ -15,7 +15,6 @@ class TestPerformance:
     run. Opt in with `pytest -m perf` on a quiet machine.
     """
 
-    @pytest.mark.asyncio
     async def test_simple_route_under_50us(self):
         """Sanity check: simple route should complete in under 50 microseconds."""
         import time

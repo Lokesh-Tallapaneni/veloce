@@ -58,7 +58,6 @@ def test_add_url_rule_with_view_func_still_works():
 
 
 class TestAddUrlRule:
-    @pytest.mark.asyncio
     async def test_add_url_rule(self):
         app = Veloce(openapi_url=None)
 

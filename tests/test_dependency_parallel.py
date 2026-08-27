@@ -16,8 +16,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
-
 from veloce import Depends, Security, Veloce
 from veloce._handler_plan import (
     _slot_parallel_safe,
@@ -139,7 +137,6 @@ def test_yield_dependency_still_tears_down_in_order():
     assert events == ["enter", "plain", "handler", "exit"]
 
 
-@pytest.mark.asyncio
 async def test_group_end_helper_stops_at_security_dependency():
     """`parallel_group_end` refuses to expand past a Security() slot."""
     from types import SimpleNamespace
@@ -169,7 +166,6 @@ async def test_group_end_helper_stops_at_security_dependency():
     assert end == 2
 
 
-@pytest.mark.asyncio
 async def test_group_end_helper_refuses_nested_security():
     """An outer plain `Depends` whose sub_plan transitively contains
     a Security() slot must not be parallelised — the shared

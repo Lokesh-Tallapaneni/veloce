@@ -16,7 +16,6 @@ def _req(path: str = "/") -> Request:
     return make_request(method="GET", path=path, query_string="", headers={}, body=b"")
 
 
-@pytest.mark.asyncio
 async def test_sync_yield_dependency_teardown_runs():
     app = Veloce(debug=True, openapi_url=None)
     events: list[str] = []
@@ -38,7 +37,6 @@ async def test_sync_yield_dependency_teardown_runs():
     assert events == ["setup", "handler:session", "teardown"]
 
 
-@pytest.mark.asyncio
 async def test_async_yield_dependency_teardown_runs():
     app = Veloce(debug=True, openapi_url=None)
     events: list[str] = []
@@ -60,7 +58,6 @@ async def test_async_yield_dependency_teardown_runs():
     assert events == ["setup", "handler:async-session", "teardown"]
 
 
-@pytest.mark.asyncio
 async def test_teardown_runs_even_on_handler_exception():
     app = Veloce(debug=True, openapi_url=None)
     events: list[str] = []
@@ -84,7 +81,6 @@ async def test_teardown_runs_even_on_handler_exception():
     assert events.index("teardown") > events.index("handler:about-to-raise")
 
 
-@pytest.mark.asyncio
 async def test_multiple_yield_deps_tear_down_in_reverse():
     """Most recently set-up dependency must tear down first
     (contextlib.ExitStack semantics)."""
@@ -115,7 +111,6 @@ async def test_multiple_yield_deps_tear_down_in_reverse():
     assert teardown_order == ["inner-teardown", "outer-teardown"]
 
 
-@pytest.mark.asyncio
 async def test_mixed_sync_and_async_yield_deps():
     app = Veloce(debug=True, openapi_url=None)
     events: list[str] = []
@@ -141,7 +136,6 @@ async def test_mixed_sync_and_async_yield_deps():
     assert "async-teardown" in events
 
 
-@pytest.mark.asyncio
 async def test_yield_dep_raises_if_no_value_yielded():
     """A generator dependency that exits without yielding is a programming
     error — the resolver surfaces it instead of swallowing it silently."""
@@ -160,7 +154,6 @@ async def test_yield_dep_raises_if_no_value_yielded():
     assert resp.status_code == 500
 
 
-@pytest.mark.asyncio
 async def test_yield_dep_teardown_exception_does_not_break_response():
     """A teardown that raises must not crash the response cycle."""
     app = Veloce(debug=True, openapi_url=None)
@@ -185,7 +178,6 @@ async def test_yield_dep_teardown_exception_does_not_break_response():
     assert "teardown-trying" in events
 
 
-@pytest.mark.asyncio
 async def test_yield_dep_teardown_exception_fires_got_request_exception():
     """A swallowed teardown failure is still observable: it is delivered to
     `got_request_exception` receivers so error trackers see it even though
@@ -217,7 +209,6 @@ async def test_yield_dep_teardown_exception_fires_got_request_exception():
         got_request_exception.disconnect(on_exc)
 
 
-@pytest.mark.asyncio
 async def test_yield_dep_teardown_exception_propagates_when_configured():
     """Under PROPAGATE_EXCEPTIONS the aggregated teardown failure re-raises,
     so a test suite fails on a broken teardown instead of passing on the
@@ -237,7 +228,6 @@ async def test_yield_dep_teardown_exception_propagates_when_configured():
         await app.handle_request(_req("/x"))
 
 
-@pytest.mark.asyncio
 async def test_teardown_request_runs_even_when_yield_teardown_propagates():
     """Under PROPAGATE_EXCEPTIONS a failing yield-dependency teardown still
     re-raises, but `teardown_request` (and the rest of the finally) runs first -
@@ -264,7 +254,6 @@ async def test_teardown_request_runs_even_when_yield_teardown_propagates():
     assert events == ["teardown_request"]
 
 
-@pytest.mark.asyncio
 async def test_yield_dep_state_does_not_leak_across_requests():
     """The resolver's teardown stack must be cleared between requests so
     a stale entry from request N doesn't fire on request N+1."""
@@ -289,7 +278,6 @@ async def test_yield_dep_state_does_not_leak_across_requests():
     assert events.count("teardown") == 2
 
 
-@pytest.mark.asyncio
 async def test_concurrent_requests_keep_independent_teardown_stacks():
     """Two requests in flight at once must not share teardown state: a
     request being dispatched must not wipe an already-parked request's
@@ -346,7 +334,6 @@ async def test_concurrent_requests_keep_independent_teardown_stacks():
     assert events.index("teardown:a") > events.index("handler:a:done")
 
 
-@pytest.mark.asyncio
 async def test_teardown_exception_during_error_unwind_is_logged_and_chain_continues(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

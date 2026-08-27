@@ -36,7 +36,6 @@ def _make_ws() -> tuple[WebSocket, _FakeTransport]:
 # ── W2: accept(subprotocol=, headers=) ─────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_accept_writes_basic_handshake():
     ws, transport = _make_ws()
     await ws.accept()
@@ -47,7 +46,6 @@ async def test_accept_writes_basic_handshake():
     assert "Sec-WebSocket-Accept:" in response
 
 
-@pytest.mark.asyncio
 async def test_accept_echoes_subprotocol_when_set():
     ws, transport = _make_ws()
     await ws.accept(subprotocol="graphql-ws")
@@ -55,7 +53,6 @@ async def test_accept_echoes_subprotocol_when_set():
     assert "Sec-WebSocket-Protocol: graphql-ws" in response
 
 
-@pytest.mark.asyncio
 async def test_accept_emits_extra_response_headers():
     ws, transport = _make_ws()
     await ws.accept(headers={"X-Custom": "v", "X-Other": "w"})
@@ -64,7 +61,6 @@ async def test_accept_emits_extra_response_headers():
     assert "X-Other: w" in response
 
 
-@pytest.mark.asyncio
 async def test_accept_omits_subprotocol_when_not_provided():
     """No `subprotocol=` arg → no `Sec-WebSocket-Protocol` line."""
     ws, transport = _make_ws()
@@ -75,7 +71,6 @@ async def test_accept_omits_subprotocol_when_not_provided():
 # ── W5: send_json(mode="text"|"binary") ──────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_send_json_default_mode_is_text():
     ws, transport = _make_ws()
     await ws.accept()
@@ -86,7 +81,6 @@ async def test_send_json_default_mode_is_text():
     assert frame[0] == 0x81
 
 
-@pytest.mark.asyncio
 async def test_send_json_binary_mode_uses_binary_frame():
     ws, transport = _make_ws()
     await ws.accept()
@@ -97,7 +91,6 @@ async def test_send_json_binary_mode_uses_binary_frame():
     assert frame[0] == 0x82
 
 
-@pytest.mark.asyncio
 async def test_send_json_invalid_mode_rejected():
     ws, _ = _make_ws()
     await ws.accept()
@@ -105,7 +98,6 @@ async def test_send_json_invalid_mode_rejected():
         await ws.send_json({"a": 1}, mode="bogus")
 
 
-@pytest.mark.asyncio
 async def test_send_json_roundtrip_payload():
     ws, transport = _make_ws()
     await ws.accept()
@@ -119,7 +111,6 @@ async def test_send_json_roundtrip_payload():
 # ── W6: close(code, reason) ────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_close_without_reason_emits_2byte_payload():
     ws, transport = _make_ws()
     await ws.accept()
@@ -133,7 +124,6 @@ async def test_close_without_reason_emits_2byte_payload():
     assert transport.closed is True
 
 
-@pytest.mark.asyncio
 async def test_close_with_short_reason():
     ws, transport = _make_ws()
     await ws.accept()
@@ -147,7 +137,6 @@ async def test_close_with_short_reason():
     assert frame[4:10] == b"policy"
 
 
-@pytest.mark.asyncio
 async def test_close_truncates_long_reason_to_123_bytes():
     """Reason longer than 123 bytes must be truncated (per RFC 6455 §5.5.1)."""
     ws, transport = _make_ws()
@@ -160,7 +149,6 @@ async def test_close_truncates_long_reason_to_123_bytes():
     assert frame[1] == 125
 
 
-@pytest.mark.asyncio
 async def test_close_truncates_at_utf8_boundary():
     """A truncated reason must not break in the middle of a codepoint."""
     ws, transport = _make_ws()
@@ -178,7 +166,6 @@ async def test_close_truncates_at_utf8_boundary():
     assert all(c == "あ" for c in reason_decoded)
 
 
-@pytest.mark.asyncio
 async def test_close_idempotent():
     """Calling close twice does not write a second close frame."""
     ws, transport = _make_ws()

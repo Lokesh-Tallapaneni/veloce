@@ -7,7 +7,6 @@ import pytest
 from veloce import Veloce
 
 
-@pytest.mark.asyncio
 async def test_lifespan_context_runs_startup_and_shutdown():
     app = Veloce()
     events: list[str] = []
@@ -25,14 +24,12 @@ async def test_lifespan_context_runs_startup_and_shutdown():
     assert events == ["startup", "shutdown"]
 
 
-@pytest.mark.asyncio
 async def test_lifespan_context_yields_the_app():
     app = Veloce()
     async with app.lifespan_context() as bound:
         assert bound is app
 
 
-@pytest.mark.asyncio
 async def test_lifespan_context_runs_lifespan_cm():
     import contextlib
 
@@ -50,7 +47,6 @@ async def test_lifespan_context_runs_lifespan_cm():
     assert order == ["enter", "exit"]
 
 
-@pytest.mark.asyncio
 async def test_lifespan_context_double_enter_raises():
     app = Veloce()
     mgr = app.lifespan_context()
@@ -59,7 +55,6 @@ async def test_lifespan_context_double_enter_raises():
             await mgr.__aenter__()
 
 
-@pytest.mark.asyncio
 async def test_lifespan_context_reusable_after_exit():
     app = Veloce()
     count: list[int] = []
@@ -76,7 +71,6 @@ async def test_lifespan_context_reusable_after_exit():
 
 
 class TestLifespan:
-    @pytest.mark.asyncio
     async def test_lifespan_startup_shutdown(self):
         log = []
 

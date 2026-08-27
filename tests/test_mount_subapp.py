@@ -11,7 +11,6 @@ from veloce.testclient import TestClient
 
 
 class TestMountSubApps:
-    @pytest.mark.asyncio
     async def test_mount(self):
         main = Veloce(openapi_url=None)
         sub = Veloce(openapi_url=None)
@@ -85,7 +84,6 @@ class TestMountedRequestCarriesTheConnection:
         body = b"".join(m.get("body", b"") for m in chunks[1:])
         return orjson.loads(body)
 
-    @pytest.mark.asyncio
     async def test_the_connection_properties_match_the_top_level_route(self):
         app = self._probe_app("top")
         app.mount("/sub", self._probe_app("mount"))
@@ -98,7 +96,6 @@ class TestMountedRequestCarriesTheConnection:
         assert mounted["is_secure"] is top["is_secure"] is True
         assert mounted["url"] == top["url"]
 
-    @pytest.mark.asyncio
     async def test_the_mount_still_rewrites_what_it_owns(self):
         """Carrying the scope forward must not carry the parent's path with it."""
         app = self._probe_app("top")
@@ -109,7 +106,6 @@ class TestMountedRequestCarriesTheConnection:
         assert mounted["root_path"] == "/sub"
         assert mounted["path"] == "/p"
 
-    @pytest.mark.asyncio
     async def test_a_sub_app_is_checked_against_its_own_body_limit(self):
         """The derived request must not inherit the parent's enforcement flag."""
         main = Veloce(openapi_url=None)

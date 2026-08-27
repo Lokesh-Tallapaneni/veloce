@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from tests.conftest import make_request
 from veloce import Request, Response, Veloce
 from veloce.blueprints import Blueprint
@@ -13,7 +11,6 @@ def _req(path: str = "/") -> Request:
     return make_request(method="GET", path=path, query_string="", headers={}, body=b"")
 
 
-@pytest.mark.asyncio
 async def test_teardown_appcontext_fires_on_each_request():
     app = Veloce(debug=True, openapi_url=None)
     events: list = []
@@ -36,7 +33,6 @@ async def test_teardown_appcontext_fires_on_each_request():
     assert all(exc is None for _, exc in events)
 
 
-@pytest.mark.asyncio
 async def test_teardown_appcontext_receives_exception():
     """When a handler raises and Veloce cannot catch it, the hook
     sees the exception."""
@@ -63,7 +59,6 @@ async def test_teardown_appcontext_receives_exception():
     assert str(captured[0]) == "kaboom"
 
 
-@pytest.mark.asyncio
 async def test_teardown_appcontext_runs_even_when_route_404s():
     """A 404 still ends a request → teardown_appcontext fires."""
     app = Veloce(debug=True, openapi_url=None)
@@ -77,7 +72,6 @@ async def test_teardown_appcontext_runs_even_when_route_404s():
     assert "teardown" in events
 
 
-@pytest.mark.asyncio
 async def test_multiple_teardown_hooks_all_fire():
     app = Veloce(debug=True, openapi_url=None)
     events: list = []
@@ -98,7 +92,6 @@ async def test_multiple_teardown_hooks_all_fire():
     assert events == ["first", "second"]
 
 
-@pytest.mark.asyncio
 async def test_async_teardown_hook_awaited():
     app = Veloce(debug=True, openapi_url=None)
     events: list = []
@@ -115,7 +108,6 @@ async def test_async_teardown_hook_awaited():
     assert events == ["async-teardown"]
 
 
-@pytest.mark.asyncio
 async def test_teardown_hook_exception_is_logged_not_propagated():
     """A teardown hook that raises must not break the response."""
     app = Veloce(debug=True, openapi_url=None)
@@ -133,7 +125,6 @@ async def test_teardown_hook_exception_is_logged_not_propagated():
     assert resp.status_code == 200
 
 
-@pytest.mark.asyncio
 async def test_app_before_hook_shortcircuit_skips_blueprint_teardown():
     """An app-level before_request short-circuit fires the app teardown_request
     hook but not the matched blueprint's — the dispatcher only records the
@@ -167,7 +158,6 @@ async def test_app_before_hook_shortcircuit_skips_blueprint_teardown():
     assert events == ["app"]
 
 
-@pytest.mark.asyncio
 async def test_blueprint_teardown_fires_on_normal_dispatch():
     """When dispatch reaches the blueprint's handler, both the app-level and
     the blueprint teardown_request hooks fire."""

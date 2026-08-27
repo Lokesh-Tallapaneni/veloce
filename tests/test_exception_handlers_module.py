@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import orjson
-import pytest
 
 from veloce import JSONResponse, Query, Request, ValidationError, Veloce
 from veloce.exceptions import (
@@ -15,14 +14,12 @@ from veloce.exceptions import (
 )
 
 
-@pytest.mark.asyncio
 async def test_http_exception_handler_renders_detail():
     resp = await http_exception_handler(None, HTTPException(404, "missing"))
     assert resp.status_code == 404
     assert orjson.loads(resp.body) == {"detail": "missing", "status_code": 404}
 
 
-@pytest.mark.asyncio
 async def test_http_exception_handler_uses_subclass_description():
     resp = await http_exception_handler(None, NotFound())
     assert resp.status_code == 404
@@ -30,14 +27,12 @@ async def test_http_exception_handler_uses_subclass_description():
     assert "detail" in orjson.loads(resp.body)
 
 
-@pytest.mark.asyncio
 async def test_http_exception_handler_propagates_headers():
     exc = HTTPException(401, "no", headers={"WWW-Authenticate": "Basic"})
     resp = await http_exception_handler(None, exc)
     assert resp.headers["WWW-Authenticate"] == "Basic"
 
 
-@pytest.mark.asyncio
 async def test_request_validation_handler_renders_422():
     errors = [{"loc": ["query", "x"], "msg": "required", "type": "missing"}]
     resp = await request_validation_exception_handler(None, RequestValidationError(errors))
@@ -45,7 +40,6 @@ async def test_request_validation_handler_renders_422():
     assert orjson.loads(resp.body) == {"detail": errors}
 
 
-@pytest.mark.asyncio
 async def test_request_validation_handler_empty_errors():
     resp = await request_validation_exception_handler(None, RequestValidationError([]))
     assert orjson.loads(resp.body) == {"detail": []}
@@ -65,7 +59,6 @@ def test_request_validation_error_is_subclass_of_validation_error():
     assert RequestValidationError([{"loc": ["x"], "msg": "m", "type": "t"}]).status_code == 422
 
 
-@pytest.mark.asyncio
 async def test_resolver_raises_request_validation_error_specifically():
     """A missing required Query parameter must raise the new subclass —
     not the bare ValidationError."""
@@ -89,7 +82,6 @@ async def test_resolver_raises_request_validation_error_specifically():
     assert b'"req_validation":true' in resp.body
 
 
-@pytest.mark.asyncio
 async def test_existing_validation_error_handler_still_catches():
     """A handler registered for ValidationError must still catch the new
     subclass via the MRO walk introduced in E3."""

@@ -228,7 +228,6 @@ def test_invalid_raw_regex_pattern_raises_at_registration():
 # ── End-to-end via Veloce app ──────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_app_int_path_param_typed():
     app = Veloce(debug=True, openapi_url=None)
 
@@ -243,7 +242,6 @@ async def test_app_int_path_param_typed():
     assert b'"type":"int"' in resp.body
 
 
-@pytest.mark.asyncio
 async def test_app_int_path_param_404_on_non_int():
     app = Veloce(debug=True, openapi_url=None)
 
@@ -256,7 +254,6 @@ async def test_app_int_path_param_404_on_non_int():
     assert resp.status_code == 404
 
 
-@pytest.mark.asyncio
 async def test_app_path_converter():
     app = Veloce(debug=True, openapi_url=None)
 

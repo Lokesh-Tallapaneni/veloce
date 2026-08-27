@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from tests.conftest import make_request
 from veloce import Request, Veloce
 
@@ -72,7 +70,6 @@ def test_static_map_does_not_clobber_explicit_head():
 # ── ASGI path: HEAD has no body, but Content-Length is real ─────────
 
 
-@pytest.mark.asyncio
 async def test_head_has_empty_body_via_asgi():
     app = Veloce(debug=True, openapi_url=None)
 
@@ -108,7 +105,6 @@ async def test_head_has_empty_body_via_asgi():
     assert received["headers"][b"content-length"] == b"17"  # len('{"hello":"world"}')
 
 
-@pytest.mark.asyncio
 async def test_get_unchanged_after_head_change():
     """Sanity: regular GET still returns the full body."""
     app = Veloce(debug=True, openapi_url=None)

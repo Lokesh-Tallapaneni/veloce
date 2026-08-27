@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from veloce import Blueprint, Veloce
 
 
@@ -93,7 +91,6 @@ def test_no_router_responses_yields_empty_route_responses():
     assert match.route_info.responses == {}
 
 
-@pytest.mark.asyncio
 async def test_router_responses_inherited_via_nested_blueprint():
     parent = Blueprint("p", url_prefix="/p", responses={503: {"description": "Down"}})
     child = Blueprint("c", url_prefix="/c")

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import orjson
-import pytest
 
 from veloce import Request, Veloce
 
@@ -48,7 +47,6 @@ def test_root_path_none_scope_safe():
     assert r.script_root == ""
 
 
-@pytest.mark.asyncio
 async def test_mounted_veloce_subapp_sees_mount_prefix_as_root_path():
     """A route inside a mounted Veloce sub-app sees `request.root_path` set to the
     mount prefix, the same as a mounted ASGI app does."""
@@ -67,7 +65,6 @@ async def test_mounted_veloce_subapp_sees_mount_prefix_as_root_path():
     assert orjson.loads(resp.body) == {"root_path": "/gateway", "script_root": "/gateway"}
 
 
-@pytest.mark.asyncio
 async def test_mounted_subapp_slash_redirect_keeps_mount_prefix():
     """A trailing-slash redirect inside a mounted sub-app must point at the
     parent-visible path (with the mount prefix), not the sub-app-local path."""
@@ -89,7 +86,6 @@ async def test_mounted_subapp_slash_redirect_keeps_mount_prefix():
     assert resp.headers["Location"] == "/sub/ping/"
 
 
-@pytest.mark.asyncio
 async def test_top_level_slash_redirect_unaffected():
     """A top-level app (root_path == "") still redirects to a bare path."""
     app = Veloce(openapi_url=None)

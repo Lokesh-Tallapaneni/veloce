@@ -14,7 +14,6 @@ def test_url_for_no_app_raises():
         req.url_for("anything")
 
 
-@pytest.mark.asyncio
 async def test_url_for_resolves_static_route():
     app = Veloce(openapi_url=None)
 
@@ -29,7 +28,6 @@ async def test_url_for_resolves_static_route():
     assert orjson.loads(resp.body)["url"] == "/dashboard"
 
 
-@pytest.mark.asyncio
 async def test_url_for_with_path_params():
     app = Veloce(openapi_url=None)
 
@@ -44,7 +42,6 @@ async def test_url_for_with_path_params():
     assert orjson.loads(resp.body)["url"] == "/items/42"
 
 
-@pytest.mark.asyncio
 async def test_url_for_unknown_route_raises_build_error():
     from veloce import BuildError
 

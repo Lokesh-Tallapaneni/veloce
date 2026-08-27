@@ -12,7 +12,6 @@ from veloce.http.response import FileResponse
 class TestFileResponseAsync:
     """FileResponse.from_path() reads files in executor."""
 
-    @pytest.mark.asyncio
     async def test_from_path_reads_file(self, tmp_path):
         test_file = tmp_path / "test.txt"
         test_file.write_text("async file content")
@@ -21,12 +20,10 @@ class TestFileResponseAsync:
         assert resp.body == b"async file content"
         assert resp.status_code == 200
 
-    @pytest.mark.asyncio
     async def test_from_path_missing_file(self, tmp_path):
         with pytest.raises(FileNotFoundError):
             await FileResponse.from_path(str(tmp_path / "nope.txt"))
 
-    @pytest.mark.asyncio
     async def test_from_path_with_attachment(self, tmp_path):
         test_file = tmp_path / "report.pdf"
         test_file.write_bytes(b"%PDF-fake")
@@ -34,7 +31,6 @@ class TestFileResponseAsync:
         resp = await FileResponse.from_path(str(test_file), filename="report.pdf")
         assert b"attachment" in resp.headers.get("Content-Disposition", "").encode()
 
-    @pytest.mark.asyncio
     async def test_from_path_small_file_inline(self, tmp_path):
         # A file at/below the inline threshold is read on the loop (no executor
         # hop) and still returns the full body.
@@ -48,7 +44,6 @@ class TestFileResponseAsync:
         assert resp.status_code == 200
         assert resp.headers.get("ETag")
 
-    @pytest.mark.asyncio
     async def test_from_path_large_file_streams_the_whole_body(self, tmp_path):
         # A file above the threshold is streamed off disk in executor-read
         # chunks rather than held whole, so the bytes arrive from `_stream`
@@ -67,7 +62,6 @@ class TestFileResponseAsync:
         streamed = b"".join([chunk async for chunk in resp._stream])
         assert streamed == body
 
-    @pytest.mark.asyncio
     async def test_from_path_directory_rejected(self, tmp_path):
         # A non-regular path (directory) is rejected like a missing file.
         with pytest.raises(FileNotFoundError):
@@ -77,7 +71,6 @@ class TestFileResponseAsync:
 class TestSendFromDirectoryAsync:
     """Async version of send_from_directory."""
 
-    @pytest.mark.asyncio
     async def test_send_file_async(self, tmp_path):
         test_file = tmp_path / "data.csv"
         # Write bytes directly: `write_text` would translate `\n` to the
@@ -92,7 +85,6 @@ class TestSendFromDirectoryAsync:
 class TestStaticFilesAsync:
     """StaticFiles handler uses executor for all file I/O."""
 
-    @pytest.mark.asyncio
     async def test_static_file_served_async(self, tmp_path):
         static_dir = tmp_path / "static"
         static_dir.mkdir()
@@ -106,7 +98,6 @@ class TestStaticFilesAsync:
         assert resp.status_code == 200
         assert b"body { color: red; }" in resp.body
 
-    @pytest.mark.asyncio
     async def test_static_etag_caching(self, tmp_path):
         static_dir = tmp_path / "static"
         static_dir.mkdir()
@@ -125,7 +116,6 @@ class TestStaticFilesAsync:
         )
         assert resp2.status_code == 304
 
-    @pytest.mark.asyncio
     async def test_static_directory_traversal_blocked(self, tmp_path):
         static_dir = tmp_path / "static"
         static_dir.mkdir()
@@ -139,7 +129,6 @@ class TestStaticFilesAsync:
 class TestGZipAsync:
     """GZip compression runs in executor."""
 
-    @pytest.mark.asyncio
     async def test_gzip_compresses_large_body(self):
         from veloce.middleware.compression import GZipMiddleware
 
@@ -151,7 +140,6 @@ class TestGZipAsync:
         assert result.headers.get("Content-Encoding") == "gzip"
         assert len(result.body) < 1000
 
-    @pytest.mark.asyncio
     async def test_gzip_skips_small_body(self):
         from veloce.middleware.compression import GZipMiddleware
 
@@ -172,7 +160,6 @@ class TestNoSyncIOInHotPath:
     Opt in with `pytest -m perf` on a quiet machine.
     """
 
-    @pytest.mark.asyncio
     async def test_json_route_is_pure_async(self):
         """A simple JSON route should never touch the filesystem or block."""
         app = Veloce(openapi_url=None)

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from tests.conftest import make_request
 from veloce import (
     Depends,
@@ -43,7 +41,6 @@ def test_security_scopes_repr():
 # ── End-to-end: scopes flow from Security() to the auth callable ─────
 
 
-@pytest.mark.asyncio
 async def test_scopes_reach_sub_dependency():
     app = Veloce(debug=True, openapi_url=None)
     seen: dict = {}
@@ -62,7 +59,6 @@ async def test_scopes_reach_sub_dependency():
     assert seen["scope_str"] == "read:profile"
 
 
-@pytest.mark.asyncio
 async def test_scopes_accumulate_across_nested_security():
     """`Security(inner, scopes=["a"])` then `Security(outer, scopes=["b"])`
     chained must give the innermost auth callable the union of both."""
@@ -85,7 +81,6 @@ async def test_scopes_accumulate_across_nested_security():
     assert seen["base"] == ["outer", "inner"]
 
 
-@pytest.mark.asyncio
 async def test_scopes_do_not_leak_between_requests():
     """Two requests in sequence must not share the resolver's scope stack."""
     app = Veloce(debug=True, openapi_url=None)
@@ -108,7 +103,6 @@ async def test_scopes_do_not_leak_between_requests():
     assert captured == [["A"], ["B"]]
 
 
-@pytest.mark.asyncio
 async def test_plain_depends_does_not_push_scopes():
     """A non-Security dependency wraps its sub-plan without changing the
     accumulated scope list."""
@@ -132,7 +126,6 @@ async def test_plain_depends_does_not_push_scopes():
     assert seen["scopes"] == ["only-from-security"]
 
 
-@pytest.mark.asyncio
 async def test_no_security_chain_yields_empty_scopes():
     """A `SecurityScopes` parameter without any Security() above it
     receives an empty list, not None."""
@@ -172,7 +165,6 @@ def test_security_scopes_in_veloce_exports():
 
 
 class TestSecurityDependency:
-    @pytest.mark.asyncio
     async def test_security_with_scopes(self):
         import orjson
 
@@ -190,7 +182,6 @@ class TestSecurityDependency:
         data = orjson.loads(resp.body)
         assert data["token"] == "mytoken"
 
-    @pytest.mark.asyncio
     async def test_security_inherits_depends(self):
         # Security is a subclass of Depends
         security = HTTPBearer()

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from tests.conftest import make_request
 from veloce import Request, Veloce, g
 
@@ -15,7 +13,6 @@ def _req(path: str) -> Request:
 # ── url_value_preprocessor ────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_preprocessor_pops_path_param_into_g():
     app = Veloce(debug=True, openapi_url=None)
     captured: dict = {}
@@ -39,7 +36,6 @@ async def test_preprocessor_pops_path_param_into_g():
     assert captured["endpoint"] == "users_index"
 
 
-@pytest.mark.asyncio
 async def test_preprocessor_does_not_pop_means_handler_still_sees_value():
     """A preprocessor that only reads (no pop) leaves the value intact."""
     app = Veloce(debug=True, openapi_url=None)
@@ -59,7 +55,6 @@ async def test_preprocessor_does_not_pop_means_handler_still_sees_value():
     assert captured["tag"] == "red"
 
 
-@pytest.mark.asyncio
 async def test_multiple_preprocessors_run_in_registration_order():
     app = Veloce(debug=True, openapi_url=None)
     order: list[str] = []
@@ -162,7 +157,6 @@ def test_no_processors_registered_is_unchanged():
 # ── End-to-end interplay ─────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_preprocessor_and_defaults_combine_for_i18n_pattern():
     """Common pattern: strip `lang` segment in preprocessor, re-inject
     in url_defaults so links built inside the handler are scoped."""

@@ -25,7 +25,6 @@ def test_session_unavailable_raises_runtime_error():
 # ── With SessionMiddleware ────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_session_is_writable_dict_inside_handler():
     app = Veloce(debug=True, openapi_url=None)
     app.add_middleware(SessionMiddleware(secret_key="x" * 32))
@@ -43,7 +42,6 @@ async def test_session_is_writable_dict_inside_handler():
     assert captured["initial"] == {}
 
 
-@pytest.mark.asyncio
 async def test_session_mutations_are_visible_via_state():
     """The property and `_state["session"]` are the same dict — mutating
     one shows up in the other."""

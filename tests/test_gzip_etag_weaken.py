@@ -8,8 +8,6 @@ malformed tags are left untouched.
 
 from __future__ import annotations
 
-import pytest
-
 from tests.conftest import make_request
 from veloce import Request, Response
 from veloce.middleware.compression import GZipMiddleware
@@ -29,7 +27,6 @@ def _big_json() -> bytes:
     return b'{"data":"' + b"a" * 2000 + b'"}'
 
 
-@pytest.mark.asyncio
 async def test_strong_etag_weakened_after_gzip():
     mw = GZipMiddleware(minimum_size=10)
     resp = Response(status_code=200, body=_big_json(), content_type="application/json")
@@ -39,7 +36,6 @@ async def test_strong_etag_weakened_after_gzip():
     assert out.headers["ETag"] == "W/" + original
 
 
-@pytest.mark.asyncio
 async def test_weak_etag_not_double_weakened():
     mw = GZipMiddleware(minimum_size=10)
     resp = Response(status_code=200, body=_big_json(), content_type="application/json")
@@ -49,7 +45,6 @@ async def test_weak_etag_not_double_weakened():
     assert out.headers["ETag"] == weak  # unchanged, no W/W/
 
 
-@pytest.mark.asyncio
 async def test_no_etag_not_fabricated():
     mw = GZipMiddleware(minimum_size=10)
     resp = Response(status_code=200, body=_big_json(), content_type="application/json")
@@ -58,7 +53,6 @@ async def test_no_etag_not_fabricated():
     assert "ETag" not in out.headers
 
 
-@pytest.mark.asyncio
 async def test_strong_etag_left_strong_when_not_compressed():
     # Body below minimum_size: compression is skipped, ETag stays strong.
     mw = GZipMiddleware(minimum_size=10_000)
@@ -69,7 +63,6 @@ async def test_strong_etag_left_strong_when_not_compressed():
     assert out.headers["ETag"] == original
 
 
-@pytest.mark.asyncio
 async def test_lowercase_etag_key_is_weakened():
     mw = GZipMiddleware(minimum_size=10)
     resp = Response(status_code=200, body=_big_json(), content_type="application/json")
@@ -79,7 +72,6 @@ async def test_lowercase_etag_key_is_weakened():
     assert out.headers["etag"] == 'W/"deadbeef"'
 
 
-@pytest.mark.asyncio
 async def test_mixedcase_etag_key_is_weakened():
     # Field names are case-insensitive (RFC 9110 Sec. 5.1): a handler-set
     # `Etag` (any casing) must be located and weakened in place under that
@@ -94,7 +86,6 @@ async def test_mixedcase_etag_key_is_weakened():
     assert "ETag" not in out.headers
 
 
-@pytest.mark.asyncio
 async def test_malformed_unquoted_etag_left_untouched():
     mw = GZipMiddleware(minimum_size=10)
     resp = Response(status_code=200, body=_big_json(), content_type="application/json")

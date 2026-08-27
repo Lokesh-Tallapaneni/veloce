@@ -12,7 +12,6 @@ def _req(path: str = "/") -> Request:
     return make_request(method="GET", path=path, query_string="", headers={}, body=b"")
 
 
-@pytest.mark.asyncio
 async def test_default_catches_exception_and_returns_500():
     """No config flag set → exceptions are caught, 500 returned."""
     app = Veloce(openapi_url=None)  # not debug, not testing
@@ -25,7 +24,6 @@ async def test_default_catches_exception_and_returns_500():
     assert resp.status_code == 500
 
 
-@pytest.mark.asyncio
 async def test_propagate_exceptions_true_reraises():
     """`PROPAGATE_EXCEPTIONS=True` → handler exception escapes dispatch."""
     app = Veloce(openapi_url=None)
@@ -39,7 +37,6 @@ async def test_propagate_exceptions_true_reraises():
         await app.handle_request(_req("/boom"))
 
 
-@pytest.mark.asyncio
 async def test_propagate_exceptions_false_overrides_implicit():
     """Explicit `PROPAGATE_EXCEPTIONS=False` wins even when DEBUG+TESTING
     are set. Lets users opt out of propagation in test+debug mode."""
@@ -57,7 +54,6 @@ async def test_propagate_exceptions_false_overrides_implicit():
     assert resp.status_code == 500
 
 
-@pytest.mark.asyncio
 async def test_propagate_implicit_when_debug_and_testing():
     """Both DEBUG and TESTING set → implicit propagation, no explicit flag needed."""
     app = Veloce(openapi_url=None)
@@ -72,7 +68,6 @@ async def test_propagate_implicit_when_debug_and_testing():
         await app.handle_request(_req("/boom"))
 
 
-@pytest.mark.asyncio
 async def test_debug_alone_does_not_propagate():
     """Just DEBUG without TESTING is NOT propagating — Veloce still
     catches and returns a 500 (the existing debug-traceback rendering uses
@@ -90,7 +85,6 @@ async def test_debug_alone_does_not_propagate():
     assert resp.status_code == 500
 
 
-@pytest.mark.asyncio
 async def test_registered_handler_still_wins_over_propagate():
     """If a user has registered a handler for the exception type, that
     handler runs even when PROPAGATE_EXCEPTIONS=True — propagation only
@@ -112,7 +106,6 @@ async def test_registered_handler_still_wins_over_propagate():
     assert resp.status_code == 599
 
 
-@pytest.mark.asyncio
 async def test_propagate_exceptions_env_string_false_is_off():
     """An env-file loader stores `PROPAGATE_EXCEPTIONS=false` as the string
     `"false"`; it must read as off, not as a truthy non-empty string."""
@@ -127,7 +120,6 @@ async def test_propagate_exceptions_env_string_false_is_off():
     assert resp.status_code == 500
 
 
-@pytest.mark.asyncio
 async def test_propagate_exceptions_env_string_true_reraises():
     """The string `"true"` from an env source enables propagation."""
     app = Veloce(openapi_url=None)
@@ -141,7 +133,6 @@ async def test_propagate_exceptions_env_string_true_reraises():
         await app.handle_request(_req("/boom"))
 
 
-@pytest.mark.asyncio
 async def test_http_exception_not_propagated():
     """The PROPAGATE flag only affects the generic `except Exception`
     branch. HTTPExceptions are framework-managed and always produce a

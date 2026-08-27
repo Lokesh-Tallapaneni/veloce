@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from veloce import Request
 
 
@@ -84,7 +82,6 @@ def _multipart_body(boundary: str, parts: list[tuple[str, str]]) -> bytes:
     return "\r\n".join(lines).encode()
 
 
-@pytest.mark.asyncio
 async def test_multipart_form_repeated_fields():
     boundary = "veloceboundary123"
     body = _multipart_body(

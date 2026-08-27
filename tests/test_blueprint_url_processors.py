@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from tests.conftest import make_request
 from veloce import Blueprint, Request, Veloce, g
 
@@ -15,7 +13,6 @@ def _req(path: str = "/api/x/page") -> Request:
 # ── url_value_preprocessor ───────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_blueprint_preprocessor_runs_for_blueprint_routes():
     bp = Blueprint("api", url_prefix="/api")
     seen: list[dict] = []
@@ -41,7 +38,6 @@ async def test_blueprint_preprocessor_runs_for_blueprint_routes():
     assert seen and seen[0]["lang"] == "en"
 
 
-@pytest.mark.asyncio
 async def test_blueprint_preprocessor_does_not_fire_on_other_routes():
     bp = Blueprint("api", url_prefix="/api")
     fired: list[str] = []

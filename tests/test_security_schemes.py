@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from tests.conftest import make_request
 from veloce import (
     APIKeyCookie,
@@ -18,7 +16,6 @@ from veloce import (
 
 
 class TestSecurity:
-    @pytest.mark.asyncio
     async def test_http_bearer(self):
         app = Veloce(openapi_url=None)
         security = HTTPBearer()
@@ -35,7 +32,6 @@ class TestSecurity:
 
         assert orjson.loads(resp.body)["token"] == "mytoken123"
 
-    @pytest.mark.asyncio
     async def test_http_bearer_missing(self):
         app = Veloce(openapi_url=None)
         security = HTTPBearer()
@@ -47,7 +43,6 @@ class TestSecurity:
         resp = await app.handle_request(make_request(path="/protected"))
         assert resp.status_code == 401
 
-    @pytest.mark.asyncio
     async def test_http_basic(self):
         app = Veloce(openapi_url=None)
         security = HTTPBasic()
@@ -67,7 +62,6 @@ class TestSecurity:
 
         assert orjson.loads(resp.body)["user"] == "admin"
 
-    @pytest.mark.asyncio
     async def test_api_key_header(self):
         app = Veloce(openapi_url=None)
         api_key = APIKeyHeader(name="X-API-Key")
@@ -81,7 +75,6 @@ class TestSecurity:
         )
         assert resp.status_code == 200
 
-    @pytest.mark.asyncio
     async def test_api_key_query(self):
         app = Veloce(openapi_url=None)
         api_key = APIKeyQuery(name="api_key")
@@ -93,7 +86,6 @@ class TestSecurity:
         resp = await app.handle_request(make_request(path="/data", query_string="api_key=mykey"))
         assert resp.status_code == 200
 
-    @pytest.mark.asyncio
     async def test_api_key_cookie(self):
         app = Veloce(openapi_url=None)
         api_key = APIKeyCookie(name="token")
@@ -107,7 +99,6 @@ class TestSecurity:
         )
         assert resp.status_code == 200
 
-    @pytest.mark.asyncio
     async def test_oauth2_password_bearer(self):
         app = Veloce(openapi_url=None)
         oauth2 = OAuth2PasswordBearer(token_url="/token")

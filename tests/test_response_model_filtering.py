@@ -22,7 +22,6 @@ place where this would have been caught.
 
 from __future__ import annotations
 
-import pytest
 from pydantic import BaseModel
 
 from tests.conftest import make_request
@@ -159,7 +158,6 @@ def test_a_required_field_that_survives_filtering_stays_required():
 
 
 class TestResponseModelFiltering:
-    @pytest.mark.asyncio
     async def test_include_in_schema_false(self):
         app = Veloce(openapi_url=None)
 

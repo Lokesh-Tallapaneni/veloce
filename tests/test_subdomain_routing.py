@@ -19,7 +19,6 @@ def _req(path: str, host: str) -> Request:
     )
 
 
-@pytest.mark.asyncio
 async def test_subdomain_match_by_leftmost_label_without_server_name():
     app = Veloce(debug=True, openapi_url=None)
 
@@ -35,7 +34,6 @@ async def test_subdomain_match_by_leftmost_label_without_server_name():
     assert orjson.loads(r.body) == {"hit": "api"}
 
 
-@pytest.mark.asyncio
 async def test_subdomain_mismatch_returns_404():
     app = Veloce(debug=True, openapi_url=None)
 
@@ -47,7 +45,6 @@ async def test_subdomain_mismatch_returns_404():
     assert r.status_code == 404
 
 
-@pytest.mark.asyncio
 async def test_subdomain_match_with_server_name_configured():
     app = Veloce(debug=True, openapi_url=None)
     app.config["SERVER_NAME"] = "example.com"
@@ -60,7 +57,6 @@ async def test_subdomain_match_with_server_name_configured():
     assert r.status_code == 200
 
 
-@pytest.mark.asyncio
 async def test_subdomain_wildcard_matches_any_subdomain():
     app = Veloce(debug=True, openapi_url=None)
 
@@ -74,7 +70,6 @@ async def test_subdomain_wildcard_matches_any_subdomain():
     assert r2.status_code == 200
 
 
-@pytest.mark.asyncio
 async def test_subdomain_apex_does_not_match_wildcard():
     app = Veloce(debug=True, openapi_url=None)
     app.config["SERVER_NAME"] = "example.com"

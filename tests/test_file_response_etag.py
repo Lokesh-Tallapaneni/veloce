@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import re
 
-import pytest
-
 from veloce import FileResponse
 
 _ETAG_RE = re.compile(r'^W/"[0-9a-f]{32}"$')
@@ -59,7 +57,6 @@ def test_sync_caller_supplied_lowercase_etag_wins(tmp_path):
 # ── Async factory ─────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_async_emits_etag(tmp_path):
     p = tmp_path / "a.txt"
     p.write_bytes(b"hello")
@@ -67,7 +64,6 @@ async def test_async_emits_etag(tmp_path):
     assert _ETAG_RE.match(resp.headers["ETag"])
 
 
-@pytest.mark.asyncio
 async def test_async_caller_supplied_etag_wins(tmp_path):
     p = tmp_path / "a.txt"
     p.write_bytes(b"x")

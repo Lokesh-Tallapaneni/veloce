@@ -30,7 +30,6 @@ def static(tmp_path):
 # ── If-Match (weak file ETags fail closed; only `*` succeeds) ─────────
 
 
-@pytest.mark.asyncio
 async def test_if_match_concrete_tag_returns_412(static):
     sf, _ = static
     # First fetch the file's own (weak) ETag, then send it back as If-Match.
@@ -41,7 +40,6 @@ async def test_if_match_concrete_tag_returns_412(static):
     assert "ETag" in resp.headers and "Last-Modified" in resp.headers
 
 
-@pytest.mark.asyncio
 async def test_if_match_wildcard_returns_200(static):
     sf, _ = static
     resp = await sf.handle(_req("/static/blob.bin", {"if-match": "*"}))
@@ -49,7 +47,6 @@ async def test_if_match_wildcard_returns_200(static):
     assert len(resp.body) == 100
 
 
-@pytest.mark.asyncio
 async def test_if_match_wildcard_on_missing_file_is_not_found(static):
     sf, _ = static
     # The precondition only runs once the file resolves; a missing path
@@ -61,7 +58,6 @@ async def test_if_match_wildcard_on_missing_file_is_not_found(static):
 # ── If-Unmodified-Since ──────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_if_unmodified_since_earlier_than_mtime_returns_412(static):
     sf, path = static
     import os
@@ -71,7 +67,6 @@ async def test_if_unmodified_since_earlier_than_mtime_returns_412(static):
     assert resp.status_code == 412
 
 
-@pytest.mark.asyncio
 async def test_if_unmodified_since_not_older_returns_200(static):
     sf, path = static
     import os
@@ -84,7 +79,6 @@ async def test_if_unmodified_since_not_older_returns_200(static):
 # ── Precedence: If-Match outranks If-Unmodified-Since (§13.2.2) ───────
 
 
-@pytest.mark.asyncio
 async def test_if_match_takes_precedence_over_if_unmodified_since(static):
     sf, path = static
     import os
@@ -101,7 +95,6 @@ async def test_if_match_takes_precedence_over_if_unmodified_since(static):
     assert resp.status_code == 412
 
 
-@pytest.mark.asyncio
 async def test_satisfied_if_match_wildcard_suppresses_failing_ius(static):
     sf, path = static
     import os
@@ -116,14 +109,12 @@ async def test_satisfied_if_match_wildcard_suppresses_failing_ius(static):
 # ── Regression: read-side conditionals unchanged ─────────────────────
 
 
-@pytest.mark.asyncio
 async def test_plain_get_still_200(static):
     sf, _ = static
     resp = await sf.handle(_req("/static/blob.bin"))
     assert resp.status_code == 200
 
 
-@pytest.mark.asyncio
 async def test_if_none_match_still_304(static):
     sf, _ = static
     base = await sf.handle(_req("/static/blob.bin"))

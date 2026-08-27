@@ -51,7 +51,6 @@ def test_view_functions_returns_snapshot():
     assert "bogus" not in app.view_functions
 
 
-@pytest.mark.asyncio
 async def test_endpoint_decorator_replaces_handler():
     """`@app.endpoint("name")` attaches a new handler to an existing route."""
     app = Veloce(debug=True, openapi_url=None)
@@ -67,7 +66,6 @@ async def test_endpoint_decorator_replaces_handler():
     assert orjson.loads(resp.body) == {"v": "new"}
 
 
-@pytest.mark.asyncio
 async def test_endpoint_decorator_reclassifies_sync_handler():
     """Attaching a sync view to a stub route must reclassify the route -
     the stub is async (fast-path eligible on a bare app), the replacement is
@@ -88,7 +86,6 @@ async def test_endpoint_decorator_reclassifies_sync_handler():
     assert orjson.loads(resp.body) == {"v": "sync"}
 
 
-@pytest.mark.asyncio
 async def test_endpoint_decorator_keeps_async_fast_path():
     """An async replacement stays fast-path eligible on a bare app."""
     app = Veloce(openapi_url=None)

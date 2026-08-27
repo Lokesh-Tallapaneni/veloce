@@ -276,7 +276,6 @@ async def test_verify_and_needs_update_async_matches_sync():
     assert await verify_and_needs_update_async(stored, "wrong") == (False, False)
 
 
-@pytest.mark.asyncio
 async def test_hash_and_verify_password_async_round_trip():
     """`hash_password_async` / `verify_password_async` are async-safe
     wrappers around the scrypt KDF. Round-tripping a credential must
@@ -288,7 +287,6 @@ async def test_hash_and_verify_password_async_round_trip():
     assert await verify_password_async(stored, "wrong-password") is False
 
 
-@pytest.mark.asyncio
 async def test_hash_password_async_does_not_block_the_loop():
     """A handler calling `hash_password_async` leaves the loop free meanwhile.
 

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from tests.conftest import make_request
 
 
@@ -45,7 +43,6 @@ class TestRequestEnhancements:
         req = make_request(headers={"content-length": "42"})
         assert req.content_length == 42
 
-    @pytest.mark.asyncio
     async def test_text(self):
         req = make_request(body=b"hello world")
         text = await req.text()

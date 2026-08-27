@@ -42,14 +42,12 @@ def test_caller_supplied_last_modified_wins(fixture_file):
     assert resp.headers["Last-Modified"] == "Mon, 01 Jan 2024 00:00:00 GMT"
 
 
-@pytest.mark.asyncio
 async def test_async_from_path_emits_last_modified(fixture_file):
     path, mtime = fixture_file
     resp = await FileResponse.from_path(str(path))
     assert resp.headers["Last-Modified"] == formatdate(mtime, usegmt=True)
 
 
-@pytest.mark.asyncio
 async def test_async_from_path_caller_last_modified_wins(fixture_file):
     path, _ = fixture_file
     resp = await FileResponse.from_path(

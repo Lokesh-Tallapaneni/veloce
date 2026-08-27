@@ -9,8 +9,6 @@ taken where expected, rejected where not, and that both paths agree.
 
 from __future__ import annotations
 
-import pytest
-
 from tests.conftest import make_request
 from veloce import BackgroundTasks, Depends, Query, Response, Security, Veloce
 from veloce._constants import STATE_INJECTED_RESPONSE
@@ -182,7 +180,6 @@ async def test_shared_dependency_resolved_once_and_identical():
 # ── End-to-end through the dispatcher ────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_compiled_chain_end_to_end():
     app = Veloce(debug=True, openapi_url=None)
 
@@ -209,7 +206,6 @@ async def test_compiled_chain_end_to_end():
     )
 
 
-@pytest.mark.asyncio
 async def test_override_falls_back_and_applies():
     # With an active override the compiled body (which bakes in the original
     # callable) must not be used; the interpreter applies the override instead.
@@ -230,7 +226,6 @@ async def test_override_falls_back_and_applies():
     assert b'"v":"overridden"' in resp.body
 
 
-@pytest.mark.asyncio
 async def test_offload_dependency_through_compiled_path():
     # A sync dependency marked offload=True runs through the thread pool; the
     # compiled body emits `await offload(...)` for it, same result as inline.
@@ -281,7 +276,6 @@ def test_response_slot_with_a_dependency_compiles():
     assert _compiles(handler) is True
 
 
-@pytest.mark.asyncio
 async def test_compiled_and_interpreted_paths_store_under_the_same_key():
     """Both bind the injected Response into `request._state` under
     `STATE_INJECTED_RESPONSE` - the constant `app/dispatch.py` reads."""
@@ -310,7 +304,6 @@ async def test_compiled_and_interpreted_paths_store_under_the_same_key():
     assert plan.compiled_graph_resolver is not _NOT_COMPILABLE
 
 
-@pytest.mark.asyncio
 async def test_compiled_path_hands_one_response_to_dependency_and_handler():
     """The emitted body reuses an existing entry rather than overwriting it, so
     a dependency that already injected `Response` shares the handler's object."""
@@ -330,7 +323,6 @@ async def test_compiled_path_hands_one_response_to_dependency_and_handler():
     assert kwargs["response"].headers["X-From-Dep"] == "yes"
 
 
-@pytest.mark.asyncio
 async def test_compiled_response_injection_merges_end_to_end():
     """Through the full dispatch: the status the handler set on the compiled
     path's injected Response reaches the wire."""
@@ -351,7 +343,6 @@ async def test_compiled_response_injection_merges_end_to_end():
     assert _compiles(teapot) is True
 
 
-@pytest.mark.asyncio
 async def test_compiled_path_untouched_response_leaves_the_sentinel_unmerged():
     """`status_code = 0` must never surface; the dispatcher treats it as
     "handler never set it"."""

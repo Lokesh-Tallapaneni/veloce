@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from tests.conftest import make_request
 from veloce import CSRFMiddleware, Request, Veloce
 from veloce.testclient import TestClient
@@ -22,7 +20,6 @@ def _req(method: str, path: str = "/x", headers: dict | None = None, body: bytes
 # ── Safe methods bypass the check ────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_safe_method_no_cookie_passes_and_mints_cookie():
     app = Veloce(debug=True, openapi_url=None)
     app.add_middleware(CSRFMiddleware(token_factory=lambda: "DETERMINISTIC"))
@@ -37,7 +34,6 @@ async def test_safe_method_no_cookie_passes_and_mints_cookie():
     assert "csrf_token=DETERMINISTIC" in set_cookie
 
 
-@pytest.mark.asyncio
 async def test_query_is_safe_and_bypasses_csrf():
     # QUERY is safe (RFC 10008), so the default safe-method set exempts it from
     # the token check the same way GET is exempted.
@@ -55,7 +51,6 @@ async def test_query_is_safe_and_bypasses_csrf():
 # ── State-changing methods require matching token ────────────────────
 
 
-@pytest.mark.asyncio
 async def test_post_without_cookie_is_refused():
     app = Veloce(debug=True, openapi_url=None)
     app.add_middleware(CSRFMiddleware())
@@ -71,7 +66,6 @@ async def test_post_without_cookie_is_refused():
     assert orjson.loads(resp.body) == {"detail": "CSRF cookie missing"}
 
 
-@pytest.mark.asyncio
 async def test_post_with_matching_header_passes():
     app = Veloce(debug=True, openapi_url=None)
     app.add_middleware(CSRFMiddleware())
@@ -92,7 +86,6 @@ async def test_post_with_matching_header_passes():
     assert resp.status_code == 200
 
 
-@pytest.mark.asyncio
 async def test_post_with_mismatched_header_refused():
     app = Veloce(debug=True, openapi_url=None)
     app.add_middleware(CSRFMiddleware())
@@ -116,7 +109,6 @@ async def test_post_with_mismatched_header_refused():
 # ── Form-field fallback ──────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_post_with_matching_form_field_passes():
     app = Veloce(debug=True, openapi_url=None)
     app.add_middleware(CSRFMiddleware())
@@ -141,7 +133,6 @@ async def test_post_with_matching_form_field_passes():
 # ── Cookie-mint idempotency ──────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_existing_cookie_not_overwritten():
     app = Veloce(debug=True, openapi_url=None)
     app.add_middleware(CSRFMiddleware(token_factory=lambda: "NEW"))
@@ -158,7 +149,6 @@ async def test_existing_cookie_not_overwritten():
 # ── Custom header / form-field names ─────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_custom_header_name_honored():
     app = Veloce(debug=True, openapi_url=None)
     app.add_middleware(CSRFMiddleware(header_name="X-XSRF-TOKEN"))
@@ -513,7 +503,6 @@ def test_post_with_csrf_form_field_as_uploadfile_is_refused():
     assert resp.json() == {"detail": "CSRF token mismatch"}
 
 
-@pytest.mark.asyncio
 async def test_csrf_header_and_form_paths_use_same_check():
     """Header and form branches must accept and reject the same shapes.
 

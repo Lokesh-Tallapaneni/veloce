@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from tests.conftest import make_request
 from veloce import Request, Veloce
 from veloce.config import Config
@@ -99,7 +97,6 @@ class TestAppConfig:
 class TestConfigAndExtensions:
     """Test config, secret_key, extensions."""
 
-    @pytest.mark.asyncio
     async def test_config_accessible_from_request(self):
         import orjson
 
@@ -113,7 +110,6 @@ class TestConfigAndExtensions:
         resp = await app.handle_request(make_request(path="/config"))
         assert orjson.loads(resp.body)["key"] == "secret123"
 
-    @pytest.mark.asyncio
     async def test_secret_key_from_request(self):
         import orjson
 

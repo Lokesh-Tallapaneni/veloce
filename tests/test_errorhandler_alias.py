@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from tests.conftest import make_request
 from veloce import HTTPException, Request, Veloce
 
@@ -12,7 +10,6 @@ def _req(path: str = "/x") -> Request:
     return make_request(method="GET", path=path, query_string="", headers={}, body=b"")
 
 
-@pytest.mark.asyncio
 async def test_errorhandler_status_code():
     app = Veloce(debug=True, openapi_url=None)
 
@@ -28,7 +25,6 @@ async def test_errorhandler_status_code():
     assert body == {"oops": "missing", "path": "/nope"}
 
 
-@pytest.mark.asyncio
 async def test_errorhandler_exception_class():
     app = Veloce(debug=True, openapi_url=None)
 
@@ -60,7 +56,6 @@ def test_errorhandler_is_same_object_as_exception_handler():
     )
 
 
-@pytest.mark.asyncio
 async def test_errorhandler_for_httpexception_base():
     """Registering against the base HTTPException catches subclasses via MRO."""
     app = Veloce(debug=True, openapi_url=None)

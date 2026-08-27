@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from tests.conftest import make_request
 from veloce import Request, Response, Veloce
 
@@ -15,7 +13,6 @@ def _req() -> Request:
 # ── preprocess_request ───────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_preprocess_runs_hooks_in_order():
     app = Veloce()
     calls: list[int] = []
@@ -33,7 +30,6 @@ async def test_preprocess_runs_hooks_in_order():
     assert calls == [1, 2]
 
 
-@pytest.mark.asyncio
 async def test_preprocess_short_circuits_on_first_non_none():
     app = Veloce()
 
@@ -52,7 +48,6 @@ async def test_preprocess_short_circuits_on_first_non_none():
 # ── process_response ─────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_process_response_runs_hooks_reversed():
     app = Veloce()
     order: list[int] = []
@@ -73,7 +68,6 @@ async def test_process_response_runs_hooks_reversed():
     assert order == [2, 1]
 
 
-@pytest.mark.asyncio
 async def test_process_response_replaces_when_hook_returns_new():
     app = Veloce()
 
@@ -86,7 +80,6 @@ async def test_process_response_replaces_when_hook_returns_new():
     assert out.body == b"replaced"
 
 
-@pytest.mark.asyncio
 async def test_process_response_keeps_response_when_hook_returns_none():
     app = Veloce()
 

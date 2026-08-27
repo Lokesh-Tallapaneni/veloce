@@ -121,7 +121,6 @@ def test_namespace_doc_arg_is_accepted():
 # ── Framework integration ────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_request_started_fires_on_dispatch():
     app = Veloce(debug=True, openapi_url=None)
     fired = []
@@ -142,7 +141,6 @@ async def test_request_started_fires_on_dispatch():
         request_started.disconnect(on_start)
 
 
-@pytest.mark.asyncio
 async def test_request_finished_fires_with_response():
     app = Veloce(debug=True, openapi_url=None)
     captured = []
@@ -163,7 +161,6 @@ async def test_request_finished_fires_with_response():
         request_finished.disconnect(on_done)
 
 
-@pytest.mark.asyncio
 async def test_request_tearing_down_always_fires():
     """Even on a clean request, teardown signal fires."""
     app = Veloce(debug=True, openapi_url=None)
@@ -185,7 +182,6 @@ async def test_request_tearing_down_always_fires():
         request_tearing_down.disconnect(on_tear)
 
 
-@pytest.mark.asyncio
 async def test_got_request_exception_fires_on_error():
     app = Veloce(debug=True, openapi_url=None)
     seen = []

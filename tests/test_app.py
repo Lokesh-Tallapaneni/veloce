@@ -27,7 +27,6 @@ def app():
 
 
 class TestBasicRoutes:
-    @pytest.mark.asyncio
     async def test_get_dict_response(self, app):
         @app.get("/")
         async def index(request: Request):
@@ -37,7 +36,6 @@ class TestBasicRoutes:
         assert response.status_code == 200
         assert b'"hello"' in response.body
 
-    @pytest.mark.asyncio
     async def test_get_string_response(self, app):
         @app.get("/text")
         async def text(request: Request):
@@ -47,7 +45,6 @@ class TestBasicRoutes:
         assert response.status_code == 200
         assert response.body == b"hello"
 
-    @pytest.mark.asyncio
     async def test_html_response(self, app):
         @app.get("/html")
         async def html(request: Request):
@@ -57,12 +54,10 @@ class TestBasicRoutes:
         assert response.status_code == 200
         assert b"<h1>Hi</h1>" in response.body
 
-    @pytest.mark.asyncio
     async def test_404(self, app):
         response = await app.handle_request(make_request(path="/nope"))
         assert response.status_code == 404
 
-    @pytest.mark.asyncio
     async def test_method_not_allowed(self, app):
         @app.get("/only-get")
         async def only_get(request: Request):
@@ -73,7 +68,6 @@ class TestBasicRoutes:
 
 
 class TestPathParams:
-    @pytest.mark.asyncio
     async def test_string_param(self, app):
         @app.get("/hello/{name}")
         async def hello(name: str):
@@ -82,7 +76,6 @@ class TestPathParams:
         response = await app.handle_request(make_request(path="/hello/alice"))
         assert b"alice" in response.body
 
-    @pytest.mark.asyncio
     async def test_int_param(self, app):
         @app.get("/items/{item_id}")
         async def get_item(item_id: int):
@@ -94,7 +87,6 @@ class TestPathParams:
 
 
 class TestQueryParams:
-    @pytest.mark.asyncio
     async def test_query_params(self, app):
         @app.get("/search")
         async def search(q: str = "", page: int = 1):
@@ -106,7 +98,6 @@ class TestQueryParams:
         assert response.status_code == 200
         assert b"test" in response.body
 
-    @pytest.mark.asyncio
     async def test_default_query_params(self, app):
         @app.get("/list")
         async def list_items(limit: int = 10):
@@ -118,7 +109,6 @@ class TestQueryParams:
 
 
 class TestRequestBody:
-    @pytest.mark.asyncio
     async def test_pydantic_body(self, app):
         class Item(BaseModel):
             name: str
@@ -142,7 +132,6 @@ class TestRequestBody:
         assert response.status_code == 200
         assert b"Widget" in response.body
 
-    @pytest.mark.asyncio
     async def test_invalid_body_validation(self, app):
         class Item(BaseModel):
             name: str
@@ -164,7 +153,6 @@ class TestRequestBody:
 
 
 class TestDependencyInjection:
-    @pytest.mark.asyncio
     async def test_sync_dependency(self, app):
         def get_db():
             return {"connected": True}
@@ -177,7 +165,6 @@ class TestDependencyInjection:
         assert response.status_code == 200
         assert b"true" in response.body
 
-    @pytest.mark.asyncio
     async def test_async_dependency(self, app):
         async def get_user(request: Request):
             return {"user": "admin"}
@@ -189,7 +176,6 @@ class TestDependencyInjection:
         response = await app.handle_request(make_request(path="/user"))
         assert b"admin" in response.body
 
-    @pytest.mark.asyncio
     async def test_dependency_raises(self, app):
         def auth_required(request: Request):
             raise HTTPException(401, "Unauthorized")
@@ -203,7 +189,6 @@ class TestDependencyInjection:
 
 
 class TestMiddleware:
-    @pytest.mark.asyncio
     async def test_cors_preflight(self, app):
         app.add_middleware(CORSMiddleware(allow_origins=["*"]))
 
@@ -221,7 +206,6 @@ class TestMiddleware:
         assert response.status_code == 204
         assert "Access-Control-Allow-Origin" in response.headers
 
-    @pytest.mark.asyncio
     async def test_cors_response_headers(self, app):
         app.add_middleware(CORSMiddleware(allow_origins=["http://localhost:3000"]))
 
@@ -239,7 +223,6 @@ class TestMiddleware:
 
 
 class TestExceptionHandlers:
-    @pytest.mark.asyncio
     async def test_custom_exception_handler(self, app):
         @app.exception_handler(HTTPException)
         async def custom_handler(request: Request, exc: HTTPException):
@@ -253,7 +236,6 @@ class TestExceptionHandlers:
         assert response.status_code == 418
         assert b"custom_error" in response.body
 
-    @pytest.mark.asyncio
     async def test_unhandled_exception_debug(self, app):
         @app.get("/crash")
         async def crash(request: Request):
@@ -265,7 +247,6 @@ class TestExceptionHandlers:
 
 
 class TestRouterInclusion:
-    @pytest.mark.asyncio
     async def test_included_router(self, app):
         api = Router(prefix="/api/v1")
 
@@ -280,7 +261,6 @@ class TestRouterInclusion:
 
 
 class TestResponseTypes:
-    @pytest.mark.asyncio
     async def test_redirect(self, app):
         @app.get("/old")
         async def old(request: Request):
@@ -290,7 +270,6 @@ class TestResponseTypes:
         assert response.status_code == 307
         assert response.headers["Location"] == "/new"
 
-    @pytest.mark.asyncio
     async def test_pydantic_model_response(self, app):
         class Item(BaseModel):
             name: str
@@ -319,7 +298,6 @@ class TestResponseTypes:
 
 
 class TestSyncHandlers:
-    @pytest.mark.asyncio
     async def test_sync_handler(self, app):
         @app.get("/sync")
         def sync_handler(request: Request):

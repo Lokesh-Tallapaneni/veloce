@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import pytest
-
 from tests.conftest import make_request
 from veloce import Blueprint, JSONResponse, Request, Response, TestClient, Veloce
 from veloce.helpers import after_this_request
 
 
 class TestRequestHooks:
-    @pytest.mark.asyncio
     async def test_before_request(self):
         app = Veloce(openapi_url=None)
         log = []
@@ -27,7 +24,6 @@ class TestRequestHooks:
         await app.handle_request(make_request(path="/test"))
         assert log == ["GET /test"]
 
-    @pytest.mark.asyncio
     async def test_before_request_short_circuit(self):
         app = Veloce(openapi_url=None)
 
@@ -44,7 +40,6 @@ class TestRequestHooks:
         resp = await app.handle_request(make_request(path="/blocked"))
         assert resp.status_code == 403
 
-    @pytest.mark.asyncio
     async def test_after_request(self):
         app = Veloce(openapi_url=None)
 

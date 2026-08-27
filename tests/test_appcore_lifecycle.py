@@ -21,7 +21,6 @@ from veloce.testclient import TestClient
 # -- AsyncExitStack lifespan unwind ----------------------------------
 
 
-@pytest.mark.asyncio
 async def test_partial_startup_failure_unwinds_acquired_resources():
     """A startup handler that raises unwinds the lifespan CM already entered."""
     order: list[str] = []
@@ -49,7 +48,6 @@ async def test_partial_startup_failure_unwinds_acquired_resources():
     assert order == ["cm-enter", "startup", "cm-exit"]
 
 
-@pytest.mark.asyncio
 async def test_clean_startup_then_shutdown_runs_teardowns_in_reverse():
     order: list[str] = []
 
@@ -77,7 +75,6 @@ async def test_clean_startup_then_shutdown_runs_teardowns_in_reverse():
     assert order == ["cm-enter", "shutdown-second", "shutdown-first", "cm-exit"]
 
 
-@pytest.mark.asyncio
 @pytest.mark.skipif(sys.version_info < (3, 11), reason="ExceptionGroup requires 3.11+")
 async def test_shutdown_runs_all_teardowns_and_groups_failures():
     ran: list[str] = []
@@ -112,7 +109,6 @@ async def test_shutdown_runs_all_teardowns_and_groups_failures():
     assert ValueError in kinds and KeyError in kinds
 
 
-@pytest.mark.asyncio
 async def test_standalone_shutdown_without_startup_runs_handlers():
     """`_run_lifecycle('shutdown')` with no prior startup still runs handlers."""
     fired: list[str] = []
@@ -219,7 +215,6 @@ def test_add_instrumentation_lock_relaxed_under_debug():
 # -- app.spawn -------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_spawn_runs_and_is_drained_on_shutdown():
     app = Veloce()
     started = asyncio.Event()
@@ -245,7 +240,6 @@ async def test_spawn_runs_and_is_drained_on_shutdown():
     assert app.get_spawned_task("worker") is None
 
 
-@pytest.mark.asyncio
 async def test_task_spawned_in_on_shutdown_is_drained():
     # The spawned-task drain runs AFTER the on_shutdown handlers, so a task a
     # teardown callback spawns via app.spawn(...) is still cancelled and drained
@@ -283,7 +277,6 @@ async def test_task_spawned_in_on_shutdown_is_drained():
     assert app.get_spawned_task("late") is None
 
 
-@pytest.mark.asyncio
 async def test_spawn_duplicate_name_raises():
     app = Veloce()
 
@@ -300,7 +293,6 @@ async def test_spawn_duplicate_name_raises():
     await app._run_lifecycle("shutdown")
 
 
-@pytest.mark.asyncio
 async def test_cancel_spawned_task_by_name():
     app = Veloce()
 
@@ -331,7 +323,6 @@ def test_spawn_without_running_loop_raises():
 # -- ASGI lifespan.shutdown.failed -----------------------------------
 
 
-@pytest.mark.asyncio
 async def test_asgi_lifespan_shutdown_failed_message():
     app = Veloce()
 

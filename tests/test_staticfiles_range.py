@@ -29,7 +29,6 @@ def static(tmp_path):
 # ── Plain GET emits Accept-Ranges ────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_plain_get_advertises_accept_ranges(static):
     sf, _ = static
     resp = await sf.handle(_req("/static/blob.bin"))
@@ -41,7 +40,6 @@ async def test_plain_get_advertises_accept_ranges(static):
 # ── Open-ended ranges ────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_range_open_end(static):
     """`bytes=10-` returns bytes 10..end."""
     sf, _ = static
@@ -51,7 +49,6 @@ async def test_range_open_end(static):
     assert resp.body == b"0123456789" * 9
 
 
-@pytest.mark.asyncio
 async def test_range_closed(static):
     """`bytes=0-9` returns first 10 bytes inclusive."""
     sf, _ = static
@@ -61,7 +58,6 @@ async def test_range_closed(static):
     assert resp.body == b"0123456789"
 
 
-@pytest.mark.asyncio
 async def test_range_suffix(static):
     """`bytes=-20` returns last 20 bytes."""
     sf, _ = static
@@ -71,7 +67,6 @@ async def test_range_suffix(static):
     assert resp.body == (b"0123456789" * 10)[-20:]
 
 
-@pytest.mark.asyncio
 async def test_range_end_past_eof_clamped(static):
     """`bytes=90-1000` over a 100-byte file → 90-99/100, not 416."""
     sf, _ = static
@@ -84,7 +79,6 @@ async def test_range_end_past_eof_clamped(static):
 # ── 416 for fully unsatisfiable ──────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_range_start_past_eof_returns_416(static):
     sf, _ = static
     resp = await sf.handle(_req("/static/blob.bin", {"range": "bytes=200-300"}))
@@ -95,7 +89,6 @@ async def test_range_start_past_eof_returns_416(static):
 # ── Headers preserved alongside Content-Range ────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_partial_response_keeps_etag_and_last_modified(static):
     sf, _ = static
     resp = await sf.handle(_req("/static/blob.bin", {"range": "bytes=0-9"}))
@@ -107,7 +100,6 @@ async def test_partial_response_keeps_etag_and_last_modified(static):
 # ── If-Range gate (RFC 9110 Sec. 13.1.5) ──────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_if_range_weak_etag_serves_full_200(static):
     """RFC 9110 Sec. 13.1.5 mandates STRONG comparison for an If-Range ETag.
     Veloce emits weak file ETags, so even a byte-identical weak ETag cannot
@@ -121,7 +113,6 @@ async def test_if_range_weak_etag_serves_full_200(static):
     assert "Content-Range" not in resp.headers
 
 
-@pytest.mark.asyncio
 async def test_if_range_exact_date_serves_206(static):
     """An If-Range HTTP-date that exactly matches the file's Last-Modified
     authorizes the range resume (RFC 9110 Sec. 13.1.5 exact-match rule)."""
@@ -134,7 +125,6 @@ async def test_if_range_exact_date_serves_206(static):
     assert len(resp.body) == 10
 
 
-@pytest.mark.asyncio
 async def test_if_range_stale_etag_serves_full_200(static):
     """A Range with a stale If-Range ETag downgrades to a full 200, not a 206 slice."""
     sf, _ = static
@@ -146,7 +136,6 @@ async def test_if_range_stale_etag_serves_full_200(static):
     assert "Content-Range" not in resp.headers
 
 
-@pytest.mark.asyncio
 async def test_if_range_stale_date_serves_full_200(static):
     """An If-Range HTTP-date older than the file's mtime downgrades to a full 200."""
     sf, _ = static
@@ -191,7 +180,6 @@ def strong_static(tmp_path):
     return _StrongEtagStatic(directory=str(tmp_path), prefix="/static")
 
 
-@pytest.mark.asyncio
 async def test_if_range_strong_etag_match_serves_206(strong_static):
     """Both validators strong and byte-identical - the resume is authorized."""
     resp = await strong_static.handle(
@@ -201,7 +189,6 @@ async def test_if_range_strong_etag_match_serves_206(strong_static):
     assert resp.body == b"0123456789"
 
 
-@pytest.mark.asyncio
 async def test_if_range_strong_etag_mismatch_serves_full_200(strong_static):
     """A different opaque tag means the representation changed - full 200."""
     resp = await strong_static.handle(
@@ -211,7 +198,6 @@ async def test_if_range_strong_etag_mismatch_serves_full_200(strong_static):
     assert len(resp.body) == 100
 
 
-@pytest.mark.asyncio
 async def test_if_range_weak_client_token_against_strong_server_serves_200(strong_static):
     """A `W/` marker on the client side alone defeats the strong comparison."""
     resp = await strong_static.handle(
@@ -221,7 +207,6 @@ async def test_if_range_weak_client_token_against_strong_server_serves_200(stron
     assert len(resp.body) == 100
 
 
-@pytest.mark.asyncio
 async def test_if_range_lowercase_w_prefix_is_not_an_entity_tag(strong_static):
     """RFC 9110 Sec. 8.8.3 spells the weak marker `W/`, case-sensitively, so
     `w/"x"` parses as neither an entity-tag nor an HTTP-date. The unparseable
@@ -234,7 +219,6 @@ async def test_if_range_lowercase_w_prefix_is_not_an_entity_tag(strong_static):
     assert resp.body == b"0123456789"
 
 
-@pytest.mark.asyncio
 async def test_if_range_ows_padded_server_etag_still_matches(tmp_path):
     """OWS around a field value is not part of it (RFC 9110 Sec. 5.5), so a
     padded server tag still satisfies the client's echo of it."""
@@ -247,7 +231,6 @@ async def test_if_range_ows_padded_server_etag_still_matches(tmp_path):
     assert resp.body == b"0123456789"
 
 
-@pytest.mark.asyncio
 async def test_if_range_star_is_ignored_and_range_is_honored(static):
     """`*` is neither an entity-tag nor an HTTP-date; RFC 9110 Sec. 13.1.5 says
     an unparseable If-Range is ignored, leaving the Range in force."""
@@ -257,7 +240,6 @@ async def test_if_range_star_is_ignored_and_range_is_honored(static):
     assert resp.body == b"0123456789"
 
 
-@pytest.mark.asyncio
 async def test_if_range_agrees_with_if_match_on_the_same_validators(strong_static):
     """The two preconditions run one comparison function, so a token that
     satisfies If-Match also authorizes an If-Range resume."""

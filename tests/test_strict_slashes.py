@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from tests.conftest import make_request
 from veloce import Request, Veloce
 
@@ -15,7 +13,6 @@ def _req(path: str) -> Request:
 # ── Default (strict) ─────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_default_redirects_when_slash_mismatches():
     """Default behaviour — `/x/` redirects to `/x` (or vice versa)."""
     app = Veloce(debug=True, openapi_url=None)
@@ -32,7 +29,6 @@ async def test_default_redirects_when_slash_mismatches():
 # ── strict_slashes=False ─────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_strict_slashes_false_matches_both_forms():
     app = Veloce(debug=True, openapi_url=None)
 
@@ -51,7 +47,6 @@ async def test_strict_slashes_false_matches_both_forms():
     assert orjson.loads(resp2.body) == {"ok": True}
 
 
-@pytest.mark.asyncio
 async def test_strict_slashes_false_with_trailing_form_too():
     """Registering with the slashed form + strict_slashes=False also
     accepts the unslashed form."""
@@ -67,7 +62,6 @@ async def test_strict_slashes_false_with_trailing_form_too():
     assert resp2.status_code == 200
 
 
-@pytest.mark.asyncio
 async def test_registering_slashed_sibling_keeps_unslashed_match():
     """Registering `/users/` must not flip the already-registered `/users`
     route to a slash redirect — the two share one radix node."""
@@ -95,7 +89,6 @@ async def test_registering_slashed_sibling_keeps_unslashed_match():
     assert orjson.loads(resp_post.body) == {"slashed": True}
 
 
-@pytest.mark.asyncio
 async def test_strict_slashes_only_affects_decorated_route():
     """Other routes still follow the global redirect_slashes policy."""
     app = Veloce(debug=True, openapi_url=None)

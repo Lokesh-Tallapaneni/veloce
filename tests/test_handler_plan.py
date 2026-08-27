@@ -196,7 +196,6 @@ def _make_request(**kw):
     return Request(**defaults)
 
 
-@pytest.mark.asyncio
 async def test_route_info_carries_plan(app: Veloce):
     @app.get("/x")
     async def x(q: str = Query(default="y")):
@@ -210,7 +209,6 @@ async def test_route_info_carries_plan(app: Veloce):
     assert info.handler_plan.slots[0].kind == K_PARAM_MARKER
 
 
-@pytest.mark.asyncio
 async def test_handler_with_depends_still_resolves(app: Veloce):
     def get_user():
         return {"id": 1}
@@ -224,7 +222,6 @@ async def test_handler_with_depends_still_resolves(app: Veloce):
     assert b'"id":1' in resp.body
 
 
-@pytest.mark.asyncio
 async def test_dependency_overrides_still_work(app: Veloce):
     def real():
         return "real"
@@ -241,7 +238,6 @@ async def test_dependency_overrides_still_work(app: Veloce):
     assert b'"fake"' in resp.body
 
 
-@pytest.mark.asyncio
 async def test_plan_avoids_inspect_signature_on_hot_path(app: Veloce, monkeypatch):
     # The plan must be consulted; `inspect.signature` should not be called
     # again from inside DependencyResolver during a request.

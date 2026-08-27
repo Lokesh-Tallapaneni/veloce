@@ -108,7 +108,6 @@ def _req(path="/"):
     return make_request(method="GET", path=path, query_string="", headers={}, body=b"")
 
 
-@pytest.mark.asyncio
 async def test_handler_on_specific_subclass_catches_that_subclass():
     app = Veloce(debug=True, openapi_url=None)
 
@@ -127,7 +126,6 @@ async def test_handler_on_specific_subclass_catches_that_subclass():
     assert b'"oops":"no such thing"' in resp.body
 
 
-@pytest.mark.asyncio
 async def test_handler_on_base_class_catches_subclass():
     """Registering a handler against `HTTPException` should catch every
     typed subclass via the MRO walk — not just direct instances."""
@@ -159,7 +157,6 @@ async def test_handler_on_base_class_catches_subclass():
     assert b'"caught":"Forbidden"' in r2.body
 
 
-@pytest.mark.asyncio
 async def test_specific_handler_wins_over_base():
     """A `NotFound` handler should fire instead of an `HTTPException`
     handler when a `NotFound` is raised — the MRO walks specific first."""
@@ -186,7 +183,6 @@ async def test_specific_handler_wins_over_base():
     assert b'"by":"specific"' in resp.body
 
 
-@pytest.mark.asyncio
 async def test_handler_for_user_exception_via_mro():
     """A handler on a user-defined base catches its subclasses."""
     app = Veloce(debug=True, openapi_url=None)
@@ -215,7 +211,6 @@ async def test_handler_for_user_exception_via_mro():
     assert b'"app_error":"UserNotFound"' in resp.body
 
 
-@pytest.mark.asyncio
 async def test_handler_on_exception_catches_unhandled():
     """The existing fallback to `Exception` still works via the same MRO."""
     app = Veloce(debug=True, openapi_url=None)

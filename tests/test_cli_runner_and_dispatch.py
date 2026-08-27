@@ -44,7 +44,6 @@ def test_test_cli_runner_drives_app_cli_command():
 # ── dispatch_request / full_dispatch_request ─────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_dispatch_request_alias_runs_handler():
     app = Veloce(debug=True, openapi_url=None)
 
@@ -58,7 +57,6 @@ async def test_dispatch_request_alias_runs_handler():
     assert orjson.loads(resp.body) == {"hit": True}
 
 
-@pytest.mark.asyncio
 async def test_full_dispatch_request_alias_runs_handler():
     app = Veloce(debug=True, openapi_url=None)
 

@@ -64,7 +64,6 @@ def test_openid_connect_auto_error_raises_401():
 # ── OpenAPI emission ─────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_auth_code_bearer_emits_openapi_security_scheme():
     app = Veloce(debug=True, openapi_url="/openapi.json")
     oauth2 = OAuth2AuthorizationCodeBearer(
@@ -92,7 +91,6 @@ async def test_auth_code_bearer_emits_openapi_security_scheme():
     assert flow["scopes"] == {"read:items": "Read items"}
 
 
-@pytest.mark.asyncio
 async def test_openid_connect_emits_openapi_security_scheme():
     app = Veloce(debug=True, openapi_url="/openapi.json")
     oidc = OpenIdConnect(openIdConnectUrl="https://ex.com/.well-known/openid-configuration")

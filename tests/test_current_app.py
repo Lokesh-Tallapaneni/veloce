@@ -46,7 +46,6 @@ def test_the_binding_does_not_outlive_the_context():
     assert bool(current_app) is False
 
 
-@pytest.mark.asyncio
 async def test_current_app_bound_inside_handler():
     app = Veloce(debug=True, openapi_url=None)
     app.config["MY_KEY"] = "value-from-config"

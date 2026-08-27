@@ -12,7 +12,6 @@ def _req(path: str) -> Request:
     return make_request(method="GET", path=path, query_string="", headers={}, body=b"")
 
 
-@pytest.mark.asyncio
 async def test_nested_blueprint_combines_prefixes():
     api = Blueprint("api", url_prefix="/api")
     users = Blueprint("users", url_prefix="/users")
@@ -32,7 +31,6 @@ async def test_nested_blueprint_combines_prefixes():
     assert orjson.loads(resp.body) == {"uid": "42"}
 
 
-@pytest.mark.asyncio
 async def test_nested_prefix_override():
     """url_prefix passed to register_blueprint(child, ...) takes precedence."""
     parent = Blueprint("p", url_prefix="/p")
@@ -55,7 +53,6 @@ async def test_nested_prefix_override():
     assert r2.status_code == 404
 
 
-@pytest.mark.asyncio
 async def test_child_hooks_fire_under_parent_gate():
     """A hook on the child blueprint runs for the nested path."""
     parent = Blueprint("p", url_prefix="/p")
@@ -79,7 +76,6 @@ async def test_child_hooks_fire_under_parent_gate():
     assert seen == ["/p/c/x"]
 
 
-@pytest.mark.asyncio
 async def test_child_errorhandler_inherited():
     """An errorhandler on the child catches exceptions on nested routes."""
     parent = Blueprint("p", url_prefix="/p")

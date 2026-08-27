@@ -226,7 +226,6 @@ async def test_request_id_generated_when_header_empty():
     assert request._state["request_id"]
 
 
-@pytest.mark.asyncio
 async def test_logging_middleware_does_not_leak_on_handler_exception(caplog):
     """A handler that raises must not leave state behind in the
     middleware. The fix moves the start-time onto `request._state`,
@@ -243,7 +242,6 @@ async def test_logging_middleware_does_not_leak_on_handler_exception(caplog):
     assert "__veloce_logging_start" in req._state
 
 
-@pytest.mark.asyncio
 async def test_logging_middleware_durations_are_per_request():
     """Two concurrent requests must each see their own start time —
     no id() collision via a shared dict."""

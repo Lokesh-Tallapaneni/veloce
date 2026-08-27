@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import pytest
-
 from tests.conftest import make_request
 from veloce import Request, Veloce
 from veloce.middleware import RequestIDMiddleware
 
 
 class TestRequestIDMiddleware:
-    @pytest.mark.asyncio
     async def test_request_id_middleware(self):
         app = Veloce(openapi_url=None)
         app.add_middleware(RequestIDMiddleware())
@@ -22,7 +19,6 @@ class TestRequestIDMiddleware:
         resp = await app.handle_request(make_request())
         assert "X-Request-ID" in resp.headers
 
-    @pytest.mark.asyncio
     async def test_request_id_preserved(self):
         app = Veloce(openapi_url=None)
         app.add_middleware(RequestIDMiddleware())

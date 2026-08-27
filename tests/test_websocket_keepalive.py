@@ -93,7 +93,6 @@ def test_set_idle_timeout_validates_and_updates():
 # ── Timeout fires on a silent peer (ASGI mode) ───────────────────────
 
 
-@pytest.mark.asyncio
 async def test_idle_timeout_closes_1001_and_raises_disconnect():
     async def never() -> dict:
         # A silent peer: never delivers a frame.
@@ -114,7 +113,6 @@ async def test_idle_timeout_closes_1001_and_raises_disconnect():
     assert ws._closed is True
 
 
-@pytest.mark.asyncio
 async def test_idle_timeout_applies_to_receive_bytes():
     async def never() -> dict:
         await asyncio.sleep(3600)
@@ -129,7 +127,6 @@ async def test_idle_timeout_applies_to_receive_bytes():
     assert sent[-1]["code"] == WS_1001_GOING_AWAY
 
 
-@pytest.mark.asyncio
 async def test_idle_timeout_applies_to_raw_receive():
     async def never() -> dict:
         await asyncio.sleep(3600)
@@ -144,7 +141,6 @@ async def test_idle_timeout_applies_to_raw_receive():
     assert sent[-1]["code"] == WS_1001_GOING_AWAY
 
 
-@pytest.mark.asyncio
 async def test_iter_text_loop_unwinds_cleanly_on_idle_timeout():
     async def never() -> dict:
         await asyncio.sleep(3600)
@@ -164,7 +160,6 @@ async def test_iter_text_loop_unwinds_cleanly_on_idle_timeout():
 # ── Activity resets the window ───────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_activity_resets_idle_window():
     # Three frames arrive each well within the idle window; the timeout
     # must not fire while the peer keeps sending.
@@ -190,7 +185,6 @@ async def test_activity_resets_idle_window():
 # ── idle_timeout=None preserves current behavior ─────────────────────
 
 
-@pytest.mark.asyncio
 async def test_none_idle_timeout_does_not_close_on_slow_peer():
     async def receive() -> dict:
         await asyncio.sleep(0.03)
@@ -205,7 +199,6 @@ async def test_none_idle_timeout_does_not_close_on_slow_peer():
     assert sent == []
 
 
-@pytest.mark.asyncio
 async def test_none_idle_timeout_explicit_timeout_still_raises_timeouterror():
     async def never() -> dict:
         await asyncio.sleep(3600)
@@ -225,7 +218,6 @@ async def test_none_idle_timeout_explicit_timeout_still_raises_timeouterror():
 # ── Interaction between idle_timeout and an explicit per-call timeout ─
 
 
-@pytest.mark.asyncio
 async def test_smaller_per_call_timeout_wins_over_idle_timeout():
     async def never() -> dict:
         await asyncio.sleep(3600)
@@ -243,7 +235,6 @@ async def test_smaller_per_call_timeout_wins_over_idle_timeout():
     assert ws._closed is False
 
 
-@pytest.mark.asyncio
 async def test_idle_timeout_wins_when_smaller_than_per_call_timeout():
     async def never() -> dict:
         await asyncio.sleep(3600)
@@ -262,7 +253,6 @@ async def test_idle_timeout_wins_when_smaller_than_per_call_timeout():
 # ── Raw-transport mode (queue-backed) ────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_raw_mode_idle_timeout_closes_1001():
     transport = _FakeTransport()
     ws = mark_accepted(WebSocket(transport, {"sec-websocket-key": "k"}, idle_timeout=0.02))
@@ -283,7 +273,6 @@ async def test_raw_mode_idle_timeout_closes_1001():
     assert transport.closed is True
 
 
-@pytest.mark.asyncio
 async def test_raw_mode_activity_delivers_before_idle_close():
     transport = _FakeTransport()
     ws = mark_accepted(WebSocket(transport, {"sec-websocket-key": "k"}, idle_timeout=0.2))
@@ -294,7 +283,6 @@ async def test_raw_mode_activity_delivers_before_idle_close():
     assert transport.closed is False
 
 
-@pytest.mark.asyncio
 async def test_raw_mode_idle_window_is_per_completed_message():
     """In raw-transport mode the idle window bounds each COMPLETE message: a
     fragmented message that fully assembles within the window is delivered.
@@ -318,7 +306,6 @@ async def test_raw_mode_idle_window_is_per_completed_message():
     assert transport.closed is False
 
 
-@pytest.mark.asyncio
 async def test_raw_mode_silent_after_frame_still_idle_closes():
     """Once frames stop arriving the idle window must still fire: a single
     frame followed by silence past the window trips a clean 1001 close."""

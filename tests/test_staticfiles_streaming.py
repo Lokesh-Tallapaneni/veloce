@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import pytest
-
 from veloce import Veloce
 from veloce.contrib.staticfiles import StaticFiles
 from veloce.http.response import StreamingResponse
 from veloce.testclient import TestClient
 
 
-@pytest.mark.asyncio
 async def test_handle_returns_streamingresponse_for_large_files(tmp_path):
     """Files at or above `STREAM_THRESHOLD` come back as `StreamingResponse`.
 
@@ -37,7 +34,6 @@ async def test_handle_returns_streamingresponse_for_large_files(tmp_path):
     assert resp.headers["ETag"]
 
 
-@pytest.mark.asyncio
 async def test_handle_returns_buffered_response_for_small_files(tmp_path):
     """Files below the threshold keep the single-message buffered path."""
     sf = StaticFiles(directory=str(tmp_path), prefix="/s")

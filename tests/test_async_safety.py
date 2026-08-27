@@ -45,7 +45,6 @@ class TestTaskStrongReferences:
 class TestSyncHandlerOffloading:
     """Verify sync handlers don't block the event loop."""
 
-    @pytest.mark.asyncio
     async def test_sync_handler_runs_correctly(self):
         """Sync handler should still return the right result even through executor."""
         app = Veloce(openapi_url=None)
@@ -63,7 +62,6 @@ class TestSyncHandlerOffloading:
 
         assert orjson.loads(resp.body)["sync"] is True
 
-    @pytest.mark.asyncio
     async def test_async_handler_still_works(self):
         app = Veloce(openapi_url=None)
 
@@ -79,7 +77,6 @@ class TestSyncHandlerOffloading:
 class TestStreamingResponse:
     """Verify streaming responses produce correct output."""
 
-    @pytest.mark.asyncio
     async def test_streaming_response_has_stream_to(self):
         async def generate():
             for i in range(3):
@@ -91,7 +88,6 @@ class TestStreamingResponse:
         encoded = resp.encode()
         assert b"Transfer-Encoding: chunked" in encoded
 
-    @pytest.mark.asyncio
     async def test_streaming_response_returned_from_handler(self):
         app = Veloce(openapi_url=None)
 
@@ -123,7 +119,6 @@ class TestGracefulShutdownStructure:
         app = Veloce()
         assert hasattr(app, "_graceful_shutdown")
 
-    @pytest.mark.asyncio
     async def test_teardown_appcontext_not_fired_on_shutdown(self):
         """teardown_appcontext is per-request only; _graceful_shutdown
         must not duplicate it."""
@@ -151,7 +146,6 @@ class TestPerformanceAfterFixes:
     actually exercise these checks.
     """
 
-    @pytest.mark.asyncio
     async def test_async_handler_under_50us(self):
         import time
 
@@ -174,7 +168,6 @@ class TestPerformanceAfterFixes:
         avg_us = sum(times) / len(times) / 1000
         assert avg_us < 100, f"Avg {avg_us:.1f}us exceeds 100us budget"
 
-    @pytest.mark.asyncio
     async def test_sync_handler_adds_little_over_its_executor_hop(self):
         """Dispatching a sync handler costs its thread hop plus this framework's
         dispatch, and dispatch is the only part of that this framework controls.

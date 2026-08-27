@@ -41,7 +41,6 @@ def _req(path: str = "/", query: str = "") -> Request:
 # ── Finding 13: scope-aware dependency cache ───────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_scope_sensitive_dependency_not_collapsed_across_scope_sets():
     """The canonical repro: the same auth callable referenced with two scope
     sets in one request resolves twice, each with the right scopes."""
@@ -64,7 +63,6 @@ async def test_scope_sensitive_dependency_not_collapsed_across_scope_sets():
     assert resp.body == b'{"a":["read"],"b":["read","write"]}'
 
 
-@pytest.mark.asyncio
 async def test_same_scope_set_still_cached_once():
     """Two references with the SAME scope set still collapse to one call."""
     app = Veloce(debug=True, openapi_url=None)
@@ -85,7 +83,6 @@ async def test_same_scope_set_still_cached_once():
     assert len(calls) == 1
 
 
-@pytest.mark.asyncio
 async def test_security_not_reading_scopes_still_cached_once():
     """A Security() dep that never reads `SecurityScopes` is scope-insensitive:
     different scope sets keep the cheap identity cache, so it runs once."""
@@ -107,7 +104,6 @@ async def test_security_not_reading_scopes_still_cached_once():
     assert len(calls) == 1
 
 
-@pytest.mark.asyncio
 async def test_plain_depends_still_cached_once():
     """Plain `Depends` (no scopes) keeps the single-call cache untouched."""
     app = Veloce(debug=True, openapi_url=None)
@@ -126,7 +122,6 @@ async def test_plain_depends_still_cached_once():
     assert resp.body == b'{"a":42,"b":42}'
 
 
-@pytest.mark.asyncio
 async def test_use_cache_false_security_runs_each_time():
     """`use_cache=False` is independent of scope sensitivity."""
     app = Veloce(debug=True, openapi_url=None)
@@ -150,7 +145,6 @@ async def test_use_cache_false_security_runs_each_time():
 # ── Finding 14: teardown exception aggregation ─────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_run_teardowns_runs_all_then_raises():
     """Every teardown runs in reverse order even when earlier ones fail; the
     failures are re-raised together instead of being swallowed."""
@@ -199,7 +193,6 @@ async def test_run_teardowns_runs_all_then_raises():
         assert isinstance(raised, RuntimeError)
 
 
-@pytest.mark.asyncio
 async def test_run_teardowns_clean_does_not_raise():
     """A clean teardown chain returns normally - no allocation, no raise."""
     r = DependencyResolver()
@@ -217,7 +210,6 @@ async def test_run_teardowns_clean_does_not_raise():
     assert order == ["done"]
 
 
-@pytest.mark.asyncio
 async def test_run_teardowns_does_not_double_count_request_error():
     """The request exception thrown into a teardown re-emerging unchanged is
     not aggregated as a teardown failure."""
@@ -236,7 +228,6 @@ async def test_run_teardowns_does_not_double_count_request_error():
     await r.run_teardowns(req_exc)
 
 
-@pytest.mark.asyncio
 async def test_run_teardowns_chains_from_request_error():
     """A genuine teardown failure during error handling chains from the
     original request exception."""
@@ -258,7 +249,6 @@ async def test_run_teardowns_chains_from_request_error():
     assert ei.value.__cause__ is req_exc
 
 
-@pytest.mark.asyncio
 async def test_yield_dependency_teardown_failure_does_not_break_response():
     """End to end: a failing teardown is logged at the dispatcher and the
     response is still delivered intact."""

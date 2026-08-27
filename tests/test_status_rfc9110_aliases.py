@@ -6,8 +6,6 @@ alongside the legacy ones, both pointing at the same integer code.
 
 from __future__ import annotations
 
-import pytest
-
 from tests.conftest import make_request
 from veloce import Request, Veloce, status
 
@@ -61,7 +59,6 @@ class TestStatusModule:
         assert status.HTTP_429_TOO_MANY_REQUESTS == 429
         assert status.HTTP_500_INTERNAL_SERVER_ERROR == 500
 
-    @pytest.mark.asyncio
     async def test_status_code_in_route(self):
         app = Veloce(openapi_url=None)
 

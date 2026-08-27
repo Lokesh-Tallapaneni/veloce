@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import pytest
-
 from veloce import Veloce
 
 
 class TestOnEventDecorators:
     """Test startup/shutdown event decorators."""
 
-    @pytest.mark.asyncio
     async def test_on_event_startup(self):
         app = Veloce(openapi_url=None)
         log = []
@@ -22,7 +19,6 @@ class TestOnEventDecorators:
         await app._run_lifecycle("startup")
         assert "started" in log
 
-    @pytest.mark.asyncio
     async def test_on_event_shutdown(self):
         app = Veloce(openapi_url=None)
         log = []
@@ -34,7 +30,6 @@ class TestOnEventDecorators:
         await app._run_lifecycle("shutdown")
         assert "stopped" in log
 
-    @pytest.mark.asyncio
     async def test_on_startup_decorator(self):
         app = Veloce(openapi_url=None)
         log = []

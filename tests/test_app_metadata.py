@@ -5,8 +5,6 @@ from __future__ import annotations
 import asyncio
 import os
 
-import pytest
-
 from tests.conftest import make_request
 from veloce import Request, Veloce
 
@@ -54,7 +52,6 @@ def test_got_first_request_false_initially():
     assert app.got_first_request is False
 
 
-@pytest.mark.asyncio
 async def test_got_first_request_true_after_dispatch():
     app = Veloce(debug=True, openapi_url=None)
 

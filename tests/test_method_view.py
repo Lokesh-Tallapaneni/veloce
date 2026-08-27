@@ -58,7 +58,6 @@ def test_sync_method_rejected_at_definition():
 # ── dispatch picks the right method, 405 otherwise ──────────────────
 
 
-@pytest.mark.asyncio
 async def test_dispatch_picks_matching_method():
     class V(MethodView):
         async def get(self, request):
@@ -72,7 +71,6 @@ async def test_dispatch_picks_matching_method():
     assert result == {"ok": "post"}
 
 
-@pytest.mark.asyncio
 async def test_dispatch_missing_method_raises_405_with_allow_header():
     class V(MethodView):
         async def get(self, request):
@@ -87,7 +85,6 @@ async def test_dispatch_missing_method_raises_405_with_allow_header():
 # ── Round trip through Veloce ────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_round_trip_through_app():
     app = Veloce(debug=True, openapi_url=None)
 
@@ -109,7 +106,6 @@ async def test_round_trip_through_app():
     assert orjson.loads(resp_post.body) == {"verb": "POST"}
 
 
-@pytest.mark.asyncio
 async def test_fresh_instance_per_request():
     """Each request constructs a new instance — request-state isolation."""
     # Keep references to every instance for the whole test so their

@@ -20,7 +20,6 @@ def _req(path: str, query_string: str = "") -> Request:
 # ── Directory trailing-slash redirect (html mode) ──
 
 
-@pytest.mark.asyncio
 async def test_subdir_index_slashless_redirects(tmp_path):
     docs = tmp_path / "docs"
     docs.mkdir()
@@ -32,7 +31,6 @@ async def test_subdir_index_slashless_redirects(tmp_path):
     assert resp.headers["Location"] == "/s/docs/"
 
 
-@pytest.mark.asyncio
 async def test_subdir_index_with_slash_serves_index(tmp_path):
     docs = tmp_path / "docs"
     docs.mkdir()
@@ -45,7 +43,6 @@ async def test_subdir_index_with_slash_serves_index(tmp_path):
     assert resp.content_type.startswith("text/html")
 
 
-@pytest.mark.asyncio
 async def test_redirect_preserves_query_string(tmp_path):
     docs = tmp_path / "docs"
     docs.mkdir()
@@ -56,7 +53,6 @@ async def test_redirect_preserves_query_string(tmp_path):
     assert resp.headers["Location"] == "/s/docs/?v=2&lang=en"
 
 
-@pytest.mark.asyncio
 async def test_redirect_status_308(tmp_path):
     docs = tmp_path / "docs"
     docs.mkdir()
@@ -71,13 +67,11 @@ async def test_redirect_status_308(tmp_path):
     assert resp.status_code == HTTP_308_PERMANENT_REDIRECT
 
 
-@pytest.mark.asyncio
 async def test_invalid_redirect_status_rejected(tmp_path):
     with pytest.raises(ValueError, match="redirect_status must be 307 or 308"):
         StaticFiles(directory=str(tmp_path), prefix="/s", html=True, redirect_status=301)
 
 
-@pytest.mark.asyncio
 async def test_subdir_no_index_without_html_is_miss(tmp_path):
     docs = tmp_path / "docs"
     docs.mkdir()
@@ -88,7 +82,6 @@ async def test_subdir_no_index_without_html_is_miss(tmp_path):
     assert await sf.handle(_req("/s/docs/")) is None
 
 
-@pytest.mark.asyncio
 async def test_subdir_without_index_no_redirect(tmp_path):
     # html=True but no index.html in the subdir → no redirect, falls to 404 path.
     docs = tmp_path / "docs"
@@ -98,7 +91,6 @@ async def test_subdir_without_index_no_redirect(tmp_path):
     assert await sf.handle(_req("/s/docs")) is None
 
 
-@pytest.mark.asyncio
 async def test_directory_index_listing_supersedes_when_no_index_html(tmp_path):
     # html + directory_index, subdir without index.html → listing of the subdir.
     docs = tmp_path / "docs"
@@ -110,7 +102,6 @@ async def test_directory_index_listing_supersedes_when_no_index_html(tmp_path):
     assert "a.txt" in resp.body.decode()
 
 
-@pytest.mark.asyncio
 async def test_index_html_wins_over_directory_listing(tmp_path):
     # When both index.html exists and directory_index is on, the index file is
     # served (after the slash redirect), not a generated listing.
@@ -126,7 +117,6 @@ async def test_index_html_wins_over_directory_listing(tmp_path):
 # ── 404.html custom not-found page (html mode) ──
 
 
-@pytest.mark.asyncio
 async def test_custom_404_html_served(tmp_path):
     (tmp_path / "404.html").write_text("<h1>Gone</h1>")
     sf = StaticFiles(directory=str(tmp_path), prefix="/s", html=True)
@@ -137,7 +127,6 @@ async def test_custom_404_html_served(tmp_path):
     assert resp.content_type.startswith("text/html")
 
 
-@pytest.mark.asyncio
 async def test_no_404_html_returns_none(tmp_path):
     # html=True but no 404.html present → fall through to dispatch 404 (None).
     (tmp_path / "a.txt").write_text("x")
@@ -145,14 +134,12 @@ async def test_no_404_html_returns_none(tmp_path):
     assert await sf.handle(_req("/s/missing.txt")) is None
 
 
-@pytest.mark.asyncio
 async def test_404_html_not_used_without_html_mode(tmp_path):
     (tmp_path / "404.html").write_text("<h1>Gone</h1>")
     sf = StaticFiles(directory=str(tmp_path), prefix="/s")
     assert await sf.handle(_req("/s/missing.txt")) is None
 
 
-@pytest.mark.asyncio
 async def test_404_html_directly_requestable(tmp_path):
     # The 404.html file is still a normal asset when requested by name.
     (tmp_path / "404.html").write_text("<h1>Gone</h1>")
@@ -162,7 +149,6 @@ async def test_404_html_directly_requestable(tmp_path):
     assert resp.body == b"<h1>Gone</h1>"
 
 
-@pytest.mark.asyncio
 async def test_existing_file_unaffected_by_html_dir_logic(tmp_path):
     (tmp_path / "app.js").write_text("console.log(1)")
     sf = StaticFiles(directory=str(tmp_path), prefix="/s", html=True)

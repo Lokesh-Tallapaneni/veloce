@@ -9,7 +9,6 @@ from veloce import Request, Veloce, g
 
 
 class TestGObject:
-    @pytest.mark.asyncio
     async def test_g_per_request(self):
         app = Veloce(openapi_url=None)
 

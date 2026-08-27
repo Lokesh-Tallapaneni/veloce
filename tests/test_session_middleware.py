@@ -4,15 +4,12 @@ from __future__ import annotations
 
 import logging
 
-import pytest
-
 from tests.conftest import make_request
 from veloce import Request, SessionMiddleware, Veloce
 from veloce.testclient import TestClient
 
 
 class TestSessions:
-    @pytest.mark.asyncio
     async def test_session_set_and_read(self):
         app = Veloce(openapi_url=None)
         app.add_middleware(SessionMiddleware(secret_key="test-secret-key"))

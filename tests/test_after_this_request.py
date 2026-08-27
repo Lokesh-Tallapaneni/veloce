@@ -17,7 +17,6 @@ def test_outside_request_raises():
         after_this_request(lambda req, resp: None)
 
 
-@pytest.mark.asyncio
 async def test_one_shot_callback_runs_for_current_request_only():
     app = Veloce(debug=True, openapi_url=None)
     fired: list[int] = []
@@ -41,7 +40,6 @@ async def test_one_shot_callback_runs_for_current_request_only():
     assert fired == [1]
 
 
-@pytest.mark.asyncio
 async def test_callback_can_mutate_response():
     app = Veloce(debug=True, openapi_url=None)
 
@@ -57,7 +55,6 @@ async def test_callback_can_mutate_response():
     assert resp.headers["X-Late"] == "yes"
 
 
-@pytest.mark.asyncio
 async def test_callback_runs_after_global_after_request():
     app = Veloce(debug=True, openapi_url=None)
     order: list[str] = []
@@ -78,7 +75,6 @@ async def test_callback_runs_after_global_after_request():
     assert order == ["global", "one_shot"]
 
 
-@pytest.mark.asyncio
 async def test_multiple_callbacks_drain_in_registration_order():
     app = Veloce(debug=True, openapi_url=None)
     order: list[int] = []

@@ -4,13 +4,10 @@ from __future__ import annotations
 
 import logging
 
-import pytest
-
 from veloce import HTTPException, JSONResponse, Veloce
 from veloce.exceptions import Forbidden, NotFound
 
 
-@pytest.mark.asyncio
 async def test_handle_http_exception_default_body():
     app = Veloce(debug=True, openapi_url=None)
     resp = await app.handle_http_exception(NotFound("missing"))
@@ -22,7 +19,6 @@ async def test_handle_http_exception_default_body():
     assert orjson.loads(resp.body) == {"detail": "missing", "status_code": 404}
 
 
-@pytest.mark.asyncio
 async def test_handle_http_exception_uses_status_handler():
     app = Veloce(debug=True, openapi_url=None)
 
@@ -36,7 +32,6 @@ async def test_handle_http_exception_uses_status_handler():
     assert orjson.loads(resp.body) == {"custom": True}
 
 
-@pytest.mark.asyncio
 async def test_handle_http_exception_passes_headers():
     app = Veloce(debug=True, openapi_url=None)
     exc = Forbidden("nope")
@@ -45,14 +40,12 @@ async def test_handle_http_exception_passes_headers():
     assert resp.headers.get("X-Reason") == "private"
 
 
-@pytest.mark.asyncio
 async def test_handle_user_exception_http_routes_through_http_path():
     app = Veloce(debug=True, openapi_url=None)
     resp = await app.handle_user_exception(NotFound("nope"))
     assert resp.status_code == 404
 
 
-@pytest.mark.asyncio
 async def test_handle_user_exception_arbitrary_with_handler():
     app = Veloce(debug=True, openapi_url=None)
 
@@ -69,7 +62,6 @@ async def test_handle_user_exception_arbitrary_with_handler():
     assert orjson.loads(resp.body) == {"err": "boom"}
 
 
-@pytest.mark.asyncio
 async def test_handle_user_exception_unhandled_returns_500(caplog):
     app = Veloce(debug=True, openapi_url=None)
     caplog.set_level(logging.ERROR, logger=app.logger.name)
@@ -93,7 +85,6 @@ def test_log_exception_calls_logger(caplog):
     assert any("Exception on request" in r.message for r in caplog.records)
 
 
-@pytest.mark.asyncio
 async def test_handle_http_exception_bare():
     """Untyped HTTPException (no detail/headers) gets sensible defaults."""
     app = Veloce(debug=True, openapi_url=None)
