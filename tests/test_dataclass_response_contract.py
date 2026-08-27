@@ -38,8 +38,12 @@ from typing import TypedDict
 
 import pytest
 
-from veloce import Veloce
-from veloce._model_backend import resolve_response_contract, resolve_return_model
+from veloce import JSONResponse, Veloce
+from veloce._model_backend import (
+    resolve_response_contract,
+    resolve_return_model,
+    shape_through_model,
+)
 from veloce.testclient import TestClient
 
 
@@ -127,13 +131,11 @@ def test_the_two_spellings_agree():
 
 
 def test_the_shaper_filters_an_unrelated_dataclass_instance():
-    from veloce._model_backend import shape_through_model
 
     assert shape_through_model(Private(id=1, secret="s"), Public) == {"id": 1}
 
 
 def test_the_shaper_still_filters_a_mapping():
-    from veloce._model_backend import shape_through_model
 
     assert shape_through_model({"id": 1, "extra": "x"}, Public) == {"id": 1}
 
@@ -142,16 +144,12 @@ def test_the_shaper_still_refuses_a_non_conforming_value():
     """Filtering must not become "accept anything"."""
     from pydantic import ValidationError
 
-    from veloce._model_backend import shape_through_model
-
     with pytest.raises(ValidationError):
         shape_through_model({"nope": 1}, Public)
 
 
 def test_the_shaper_refuses_a_value_of_the_wrong_type():
     from pydantic import ValidationError
-
-    from veloce._model_backend import shape_through_model
 
     with pytest.raises(ValidationError):
         shape_through_model({"id": "not-an-int"}, Public)
@@ -247,7 +245,6 @@ def test_an_unrepresentable_return_declares_no_contract_on_either_door(annotatio
 
 def test_a_response_return_annotation_declares_no_contract():
     """A transport class is a shape, not a model - the opt-out that needs no opt-out."""
-    from veloce import JSONResponse
 
     def handler(): ...
 

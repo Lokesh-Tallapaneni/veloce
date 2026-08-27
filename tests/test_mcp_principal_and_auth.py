@@ -19,6 +19,7 @@ from tests._mcp_shared import (
 )
 from veloce import (
     Principal,
+    Request,
     Veloce,
     current_principal,
     set_principal,
@@ -120,8 +121,6 @@ def test_tool_reads_current_principal():
 
 def test_request_is_mcp_true_over_mcp():
     app = Veloce(openapi_url=None)
-
-    from veloce import Request
 
     @app.get("/probe", expose_as_mcp_tool=True, mcp_description="Probe")
     async def probe(request: Request) -> dict:

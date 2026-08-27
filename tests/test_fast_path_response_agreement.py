@@ -29,6 +29,7 @@ import pytest
 from pydantic import BaseModel
 
 from veloce import Response, Veloce, status
+from veloce._handler_plan import K_REQUEST
 from veloce.testclient import TestClient
 
 
@@ -109,7 +110,6 @@ def test_a_fast_eligible_route_has_no_response_slot_and_no_dependencies():
     so a plan with no slots (trivial) or exactly one `K_REQUEST` slot
     (request-only) can never have it set.
     """
-    from veloce._handler_plan import K_REQUEST
 
     for _m, path, info in _fast_eligible(_kitchen_sink()):
         slots = info.handler_plan.slots

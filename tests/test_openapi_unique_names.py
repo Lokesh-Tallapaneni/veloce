@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import pytest
 
+from veloce import Veloce
 from veloce.contrib.openapi import SchemaRegistry, _unique_component_name
 
 # ── the shared loop ──────────────────────────────────────────────────
@@ -78,8 +79,6 @@ def test_two_models_with_the_same_name_get_distinct_components():
     """The negative that matters: a name collision in `components/schemas` is
     silent - the document still validates, it just describes one of them wrong."""
     from pydantic import BaseModel
-
-    from veloce import Veloce
 
     def make_app() -> Veloce:
         app = Veloce(title="T", version="1")

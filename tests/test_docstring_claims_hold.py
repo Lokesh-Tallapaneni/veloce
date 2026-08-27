@@ -37,6 +37,11 @@ from veloce import (
     has_app_context,
     has_request_context,
 )
+from veloce.app.asgi import _build_asgi_headers
+from veloce.app.mcp import MCPToolRegistration
+from veloce.app.urls import URLRule
+from veloce.dependency import DependencyResolver
+from veloce.http.dates import http_date
 from veloce.testclient import TestClient
 
 # ── has_request_context is True during dispatch ──────────────────────
@@ -86,7 +91,6 @@ def test_a_test_request_context_still_binds_one():
 
 def test_a_trivial_route_allocates_no_resolver():
     """The docstring named a dispatcher call site that does not exist."""
-    from veloce.dependency import DependencyResolver
 
     made: list[int] = []
     resets: list[int] = []
@@ -195,13 +199,11 @@ def test_there_is_one_payload_builder():
 
 
 def test_the_header_builder_takes_only_the_headers():
-    from veloce.app.asgi import _build_asgi_headers
 
     assert list(inspect.signature(_build_asgi_headers).parameters) == ["headers"]
 
 
 def test_a_content_length_is_reported_and_emitted():
-    from veloce.app.asgi import _build_asgi_headers
 
     emitted, has_ct, has_cl = _build_asgi_headers({"Content-Length": "3"})
     assert has_cl is True
@@ -225,7 +227,6 @@ def test_a_response_still_reaches_the_client_whole():
 
 
 def test_urlrule_exposes_its_three_fields():
-    from veloce.app.urls import URLRule
 
     rule = URLRule("/x", ["GET"], "x")
     assert (rule.rule, rule.methods, rule.endpoint) == ("/x", ["GET"], "x")
@@ -234,14 +235,12 @@ def test_urlrule_exposes_its_three_fields():
 @pytest.mark.parametrize("attribute", ["defaults", "host", "subdomain"])
 def test_urlrule_has_no_other_attributes(attribute):
     """The docstring promised `defaults`, `host`, "etc." - `__slots__` forbids them."""
-    from veloce.app.urls import URLRule
 
     with pytest.raises(AttributeError):
         getattr(URLRule("/x", ["GET"], "x"), attribute)
 
 
 def test_urlrule_still_unpacks():
-    from veloce.app.urls import URLRule
 
     rule, methods, endpoint = URLRule("/x", ["GET"], "x")
     assert (rule, methods, endpoint) == ("/x", ["GET"], "x")
@@ -353,6 +352,9 @@ def test_the_registrations_are_records_rather_than_tuples():
     the writer and a reader in another subpackage had to agree on, with nothing
     checking that they did. The two prose descriptions had already drifted - one
     called the ninth tool field `declared`, the other `annotations`."""
+    # Deferred: this module asserts things about `app/mcp.py`'s source and
+    # records, and importing the MCP mixin at module top would pull the
+    # optional subpackage in for every other test in the file.
     from veloce.app.mcp import (
         MCPCompleterRegistration,
         MCPPromptRegistration,
@@ -381,8 +383,6 @@ def test_a_registration_is_immutable():
     """Frozen, so a consumer cannot rewrite what a decorator declared."""
     import dataclasses
 
-    from veloce.app.mcp import MCPToolRegistration
-
     app = Veloce(openapi_url=None)
 
     @app.mcp_tool(description="Add")
@@ -410,7 +410,6 @@ def test_no_date_header_is_emitted():
 
 def test_http_date_still_formats_the_current_time():
     """The function is real and cached; only the claim about its caller was wrong."""
-    from veloce.http.dates import http_date
 
     assert http_date(None).endswith("GMT")
     assert http_date(None) == http_date(None)

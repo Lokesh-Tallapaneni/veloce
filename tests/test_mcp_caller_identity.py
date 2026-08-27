@@ -39,7 +39,8 @@ Without a carrier at all - a stdio server - there is nothing to inherit, so
 
 from __future__ import annotations
 
-from veloce import Middleware, Veloce, rate_limit
+from veloce import Middleware, Request, Veloce, rate_limit
+from veloce.contrib.mcp.plan_bridge import _build_request
 from veloce.middleware.security import RateLimitMiddleware
 from veloce.ratelimit import FixedWindow
 from veloce.testclient import TestClient
@@ -147,7 +148,6 @@ def test_a_native_tool_call_also_carries_the_caller():
     Asserted through the injected `Request` rather than through middleware: a
     native tool has no route, so no request middleware is replayed around it.
     """
-    from veloce import Request
 
     app = Veloce(title="T", version="1", openapi_url=None)
 
@@ -275,7 +275,6 @@ def test_a_tool_argument_still_cannot_forge_a_header():
 
 def test_a_replay_without_a_carrier_still_serves():
     """A stdio server has no carrier: nothing to inherit, and no crash."""
-    from veloce.contrib.mcp.plan_bridge import _build_request
 
     request = _build_request("tool", {"a": 1})
     assert request.client_host is None

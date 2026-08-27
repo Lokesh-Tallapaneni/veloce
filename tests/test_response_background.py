@@ -6,7 +6,16 @@ import asyncio
 import logging
 
 from tests.conftest import make_request
-from veloce import BackgroundTask, BackgroundTasks, Request, Response, Veloce
+from veloce import (
+    BackgroundTask,
+    BackgroundTasks,
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    Request,
+    Response,
+    Veloce,
+)
 
 
 def _req(path: str = "/x") -> Request:
@@ -240,7 +249,6 @@ def test_response_default_background_is_none():
 def test_convenience_subclasses_accept_background():
     """JSON/HTML/PlainText responses forward `background=` to the base Response,
     so a BackgroundTask can be attached to them the same way it can to Response."""
-    from veloce import HTMLResponse, JSONResponse, PlainTextResponse
 
     task = BackgroundTask(lambda: None)
     assert JSONResponse({"ok": True}, background=task).background is task

@@ -26,6 +26,7 @@ import re
 import pytest
 
 from veloce import Veloce
+from veloce.contrib import openapi
 from veloce.routing.router import RouteInfo
 
 #: The `RouteInfo` fields the lowering reads directly.
@@ -97,7 +98,6 @@ def test_a_configured_app_has_the_attribute(field):
 
 @pytest.mark.parametrize("field", _INFO_FIELDS + _APP_FIELDS)
 def test_the_lowering_does_not_guard_the_field(field):
-    from veloce.contrib import openapi
 
     source = inspect.getsource(openapi)
     for obj in ("info", "app", "route_info"):

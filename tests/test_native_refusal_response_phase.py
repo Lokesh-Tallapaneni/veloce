@@ -32,7 +32,7 @@ import asyncio
 
 import pytest
 
-from veloce import CORSMiddleware, SecurityHeadersMiddleware, Veloce
+from veloce import CORSMiddleware, Middleware, SecurityHeadersMiddleware, Veloce
 from veloce.serving.protocol import HttpProtocol
 
 _ORIGIN = "https://ok.example"
@@ -264,7 +264,6 @@ def test_an_app_with_no_response_middleware_still_refuses():
 
 def test_middleware_that_raises_does_not_swallow_the_refusal():
     """A refusal must reach the client even if the response phase fails."""
-    from veloce import Middleware
 
     class Broken(Middleware):
         async def process_response(self, request, response):

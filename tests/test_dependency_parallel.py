@@ -23,6 +23,7 @@ from veloce._handler_plan import (
     compute_parallel_groups,
     parallel_group_end,
 )
+from veloce.dependency import K_DEPENDS
 from veloce.testclient import TestClient
 
 
@@ -141,8 +142,6 @@ async def test_group_end_helper_stops_at_security_dependency():
     """`parallel_group_end` refuses to expand past a Security() slot."""
     from types import SimpleNamespace
 
-    from veloce.dependency import K_DEPENDS
-
     plain = SimpleNamespace(
         kind=K_DEPENDS,
         target_type=None,
@@ -173,8 +172,6 @@ async def test_group_end_helper_refuses_nested_security():
     push/pop pairs across sibling tasks.
     """
     from types import SimpleNamespace
-
-    from veloce.dependency import K_DEPENDS
 
     # An inner Security slot reachable through outer plain's sub_plan.
     inner_sec = SimpleNamespace(

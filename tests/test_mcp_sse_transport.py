@@ -20,6 +20,10 @@ import pytest
 
 from tests._mcp import SSEStream
 from veloce import AsyncTestClient, MCPContext, Veloce
+from veloce.contrib.mcp import MCPAuth
+from veloce.contrib.mcp.server import MCPServer
+from veloce.contrib.mcp.transports.sse import register_sse_transport
+from veloce.principal import Principal
 
 
 def _app(**mount: object) -> Veloce:
@@ -357,7 +361,6 @@ async def test_a_disallowed_origin_cannot_post():
 
 
 async def test_an_unauthenticated_stream_is_challenged():
-    from veloce.contrib.mcp import MCPAuth
 
     app = _app(
         auth=MCPAuth(
@@ -371,7 +374,6 @@ async def test_an_unauthenticated_stream_is_challenged():
 
 
 async def test_an_unauthenticated_post_is_challenged():
-    from veloce.contrib.mcp import MCPAuth
 
     app = _app(
         auth=MCPAuth(
@@ -386,8 +388,6 @@ async def test_an_unauthenticated_post_is_challenged():
 
 
 async def test_an_authenticated_client_is_served():
-    from veloce.contrib.mcp import MCPAuth
-    from veloce.principal import Principal
 
     app = _app(
         auth=MCPAuth(
@@ -423,8 +423,6 @@ async def test_an_authenticated_client_is_served():
 
 def _task_app() -> tuple[Veloce, object]:
     """An app whose SSE transport is registered explicitly, so the server is reachable."""
-    from veloce.contrib.mcp.server import MCPServer
-    from veloce.contrib.mcp.transports.sse import register_sse_transport
 
     app = Veloce(title="LegacySSE", version="1.0.0", openapi_url=None)
 

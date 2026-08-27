@@ -22,6 +22,8 @@ from __future__ import annotations
 import ast
 import pathlib
 
+from veloce import Veloce
+
 TESTS = pathlib.Path(__file__).resolve().parent
 
 #: Modules still constructing `Request(...)` without the shared factory. This is
@@ -113,7 +115,6 @@ def test_the_factory_forwards_the_uncommon_ones():
     not have to fall back to hand construction - which is what created the
     duplication in the first place."""
     from tests.conftest import make_request
-    from veloce import Veloce
 
     app = Veloce(openapi_url=None)
     assert make_request(path="/x", app=app).app is app

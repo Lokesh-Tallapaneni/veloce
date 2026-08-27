@@ -30,7 +30,7 @@ import json
 
 import pytest
 
-from veloce import Veloce
+from veloce import EventSourceResponse, ServerSentEvent, Veloce
 from veloce.json_provider import DefaultJSONProvider
 
 INITIALIZE = {
@@ -223,7 +223,6 @@ def test_a_user_sse_stream_still_uses_the_provider():
     An application's own event stream is application data and must keep the
     dialect - the fix must not have taken it away from user code.
     """
-    from veloce import EventSourceResponse, ServerSentEvent
 
     app = Veloce(openapi_url=None)
     app.json_provider_class = ShoutingProvider

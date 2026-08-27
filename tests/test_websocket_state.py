@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from tests._native_ws import mark_accepted
-from veloce import Veloce
+from veloce import Veloce, WebSocketDisconnect
 from veloce.testclient import TestClient
 from veloce.websocket import WebSocket, WebSocketState
+from veloce.websocket import WebSocketState as TopState
 
 
 def test_state_enum_values():
@@ -58,7 +59,6 @@ def test_state_disconnected_after_peer_close():
 
 
 def test_state_importable_from_top_level():
-    from veloce.websocket import WebSocketState as TopState
 
     assert TopState is WebSocketState
 
@@ -69,8 +69,6 @@ def test_state_importable_from_top_level():
 async def test_send_oserror_normalized_to_disconnect():
 
     import pytest
-
-    from veloce import WebSocketDisconnect
 
     async def receive():
         return {"type": "websocket.connect"}
@@ -94,8 +92,6 @@ async def test_send_oserror_normalized_to_disconnect():
 async def test_send_bytes_connectionreset_normalized():
 
     import pytest
-
-    from veloce import WebSocketDisconnect
 
     async def receive():
         return {"type": "websocket.connect"}

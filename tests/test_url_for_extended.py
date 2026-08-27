@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import Request, Router, TestClient, Veloce
+from veloce import BuildError, Request, Router, TestClient, Veloce
 from veloce import url_for as top_level_url_for
 
 
@@ -96,7 +96,6 @@ def test_preferred_url_scheme_config():
 
 
 def test_missing_path_param_still_raises():
-    from veloce import BuildError
 
     app = _make_app()
     with pytest.raises(BuildError):
@@ -131,14 +130,11 @@ def test_url_for_missing_param():
     async def get_user(id: int):
         return {}
 
-    from veloce import BuildError
-
     with pytest.raises(BuildError):
         app.url_for("get_user")
 
 
 def test_url_for_unknown_route():
-    from veloce import BuildError
 
     app = Veloce(openapi_url=None)
     with pytest.raises(BuildError):

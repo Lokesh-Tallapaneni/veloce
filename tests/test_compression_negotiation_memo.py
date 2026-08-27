@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import CompressionMiddleware, Veloce
+from veloce import CompressionMiddleware, Response, Veloce
 from veloce.middleware.compression import _MAX_NEGOTIATED, _negotiate
 from veloce.testclient import TestClient
 
@@ -47,7 +47,6 @@ def _app() -> Veloce:
 
     @app.get("/x")
     async def x():
-        from veloce import Response
 
         return Response(body=BODY, content_type="text/plain")
 
@@ -81,7 +80,6 @@ def test_the_memo_agrees_with_the_negotiator(header):
 
     @app.get("/x")
     async def x():
-        from veloce import Response
 
         return Response(body=BODY, content_type="text/plain")
 
@@ -117,7 +115,6 @@ def test_the_memo_is_bounded():
 
     @app.get("/x")
     async def x():
-        from veloce import Response
 
         return Response(body=BODY, content_type="text/plain")
 
@@ -135,7 +132,6 @@ def test_a_real_header_still_resolves_after_a_flood():
 
     @app.get("/x")
     async def x():
-        from veloce import Response
 
         return Response(body=BODY, content_type="text/plain")
 

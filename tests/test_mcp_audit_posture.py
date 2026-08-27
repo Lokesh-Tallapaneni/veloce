@@ -27,6 +27,7 @@ import pytest
 
 from veloce import Veloce
 from veloce.audit import run
+from veloce.cli import main
 from veloce.contrib.mcp._posture import MCPEndpointPosture
 from veloce.contrib.mcp.auth import MCPAuth
 from veloce.principal import Principal
@@ -224,8 +225,6 @@ def test_veloce_check_fails_on_an_unauthenticated_endpoint(tmp_path, monkeypatch
     """The property the finding is about: the exposure reaches the exit code."""
     import sys
 
-    from veloce.cli import main
-
     module = tmp_path / "mcp_posture_app.py"
     module.write_text(
         "from veloce import SecurityHeadersMiddleware, Veloce\n"
@@ -245,8 +244,6 @@ def test_veloce_check_fails_on_an_unauthenticated_endpoint(tmp_path, monkeypatch
 
 def test_veloce_check_passes_once_it_is_configured(tmp_path, monkeypatch):
     import sys
-
-    from veloce.cli import main
 
     module = tmp_path / "mcp_secure_app.py"
     module.write_text(

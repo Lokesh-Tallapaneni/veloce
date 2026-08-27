@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from veloce import Request, Veloce
+from veloce.audit import AuditFailed
 from veloce.middleware.sessions import SessionMiddleware
 from veloce.testclient import TestClient
 
@@ -44,7 +45,6 @@ def test_secret_key_from_app_config_signs_sessions():
 def test_missing_secret_key_refuses_the_boot():
     """It used to raise on the first request: startup succeeded, health checks
     passed, and then every request through the middleware failed."""
-    from veloce.audit import AuditFailed
 
     app = Veloce(openapi_url=None)
     app.add_middleware(SessionMiddleware)

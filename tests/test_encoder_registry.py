@@ -8,8 +8,10 @@ from decimal import Decimal
 import orjson
 import pytest
 
+import veloce.encoders as enc
 from veloce import jsonable_encoder, register_encoder, unregister_encoder
 from veloce.encoders import orjson_default
+from veloce.secret import Secret
 
 # ── MRO-walk dispatch for scalar subclasses ──
 
@@ -120,7 +122,6 @@ def test_no_custom_encoder_is_noop():
 
 
 def test_custom_encoder_cannot_bypass_secret_guard():
-    from veloce.secret import Secret
 
     s = Secret("x")
     with pytest.raises(TypeError):
@@ -269,7 +270,6 @@ def test_orjson_default_resolves_scalar_subclass_without_registry():
 def test_resolved_encoder_cache_is_bounded(monkeypatch):
     """The MRO-walk cache evicts (FIFO) past its cap so dynamically minted
     classes cannot grow it without bound."""
-    import veloce.encoders as enc
 
     enc._RESOLVED_ENCODERS.clear()
     monkeypatch.setattr(enc, "_MAX_RESOLVED_ENCODERS", 4)

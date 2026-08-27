@@ -35,7 +35,21 @@ import pathlib
 
 import pytest
 
-from veloce import Veloce
+import veloce.status
+from veloce import Depends, SessionMiddleware, Veloce
+from veloce._protocol_constants import ASGI_EVENT_HTTP_DISCONNECT, ASGI_EVENT_HTTP_REQUEST
+from veloce.contrib.mcp import _helpers
+from veloce.contrib.mcp.server import (
+    _SUPPORTED_PROTOCOL_VERSIONS,
+    PRIOR_PROTOCOL_VERSION,
+    SERVED_PROTOCOL_VERSIONS,
+    MCPServer,
+)
+from veloce.contrib.mcp.session import META_CLIENT_CAPABILITIES, META_CLIENT_INFO
+from veloce.http._body import too_large_payload
+from veloce.http.cookies import dump_cookie
+from veloce.security.session import SessionAuth
+from veloce.testclient import TestClient
 
 SRC = pathlib.Path(__file__).resolve().parents[1] / "src" / "veloce"
 
@@ -83,7 +97,6 @@ def test_the_version_is_not_written_twice_in_the_builder():
 
 def test_the_two_doors_report_the_same_title():
     """The defect: the OpenAPI builder said "Veloce API", the MCP server "Veloce"."""
-    from veloce.contrib.mcp.server import MCPServer
 
     app = Veloce(openapi_url=None)
 
@@ -95,7 +108,6 @@ def test_the_two_doors_report_the_same_title():
 
 
 def test_the_two_doors_report_the_same_version():
-    from veloce.contrib.mcp.server import MCPServer
 
     app = Veloce(openapi_url=None)
 
@@ -107,7 +119,6 @@ def test_the_two_doors_report_the_same_version():
 
 
 def test_a_custom_title_reaches_both_doors():
-    from veloce.contrib.mcp.server import MCPServer
 
     app = Veloce(openapi_url=None, title="Orders", version="4.2")
 
@@ -155,14 +166,12 @@ def test_the_body_module_uses_the_canonical_status():
 
 
 def test_the_payload_still_carries_413():
-    from veloce.http._body import too_large_payload
 
     assert too_large_payload(10)["status_code"] == 413
 
 
 def test_the_canonical_status_is_importable_from_http():
     """The removed comment claimed this would be costly; it is not."""
-    import veloce.status
 
     assert veloce.status.HTTP_413_CONTENT_TOO_LARGE == 413
 
@@ -189,7 +198,6 @@ def test_the_body_module_uses_the_canonical_event_types():
 
 
 def test_the_event_types_still_match_the_wire():
-    from veloce._protocol_constants import ASGI_EVENT_HTTP_DISCONNECT, ASGI_EVENT_HTTP_REQUEST
 
     assert ASGI_EVENT_HTTP_REQUEST == "http.request"
     assert ASGI_EVENT_HTTP_DISCONNECT == "http.disconnect"
@@ -225,14 +233,12 @@ def test_a_cookie_label_is_referenced_not_respelled(name, value):
 )
 def test_the_label_still_reaches_the_error_message(kwargs, label):
     """Referencing the constant must not change what a user is told."""
-    from veloce.http.cookies import dump_cookie
 
     with pytest.raises(ValueError, match=label):
         dump_cookie(**kwargs)
 
 
 def test_a_valid_cookie_is_still_rendered():
-    from veloce.http.cookies import dump_cookie
 
     assert dump_cookie("k", "v", path="/").startswith("k=v")
 
@@ -247,7 +253,6 @@ def test_the_meta_keys_are_imported_not_respelled():
 
 
 def test_the_meta_keys_still_have_their_wire_values():
-    from veloce.contrib.mcp.session import META_CLIENT_CAPABILITIES, META_CLIENT_INFO
 
     assert META_CLIENT_INFO == "io.modelcontextprotocol/clientInfo"
     assert META_CLIENT_CAPABILITIES == "io.modelcontextprotocol/clientCapabilities"
@@ -270,7 +275,6 @@ def test_the_session_module_does_not_import_the_dispatch_core():
 
 def test_every_meta_key_has_one_definition():
     """All five, not just the two `session` reads."""
-    from veloce.contrib.mcp import _helpers
 
     keys = {
         "META_PROTOCOL_VERSION": "io.modelcontextprotocol/protocolVersion",
@@ -331,11 +335,6 @@ def test_the_prior_protocol_revision_has_one_definition():
 
 
 def test_the_prior_revision_is_still_served():
-    from veloce.contrib.mcp.server import (
-        _SUPPORTED_PROTOCOL_VERSIONS,
-        PRIOR_PROTOCOL_VERSION,
-        SERVED_PROTOCOL_VERSIONS,
-    )
 
     assert PRIOR_PROTOCOL_VERSION == "2025-06-18"
     assert PRIOR_PROTOCOL_VERSION in _SUPPORTED_PROTOCOL_VERSIONS
@@ -346,7 +345,6 @@ def test_the_prior_revision_is_still_served():
 
 
 def test_a_handshake_client_can_still_negotiate_the_prior_revision():
-    from veloce.testclient import TestClient
 
     app = Veloce(title="t", version="1", openapi_url=None)
 
@@ -374,9 +372,6 @@ def test_a_handshake_client_can_still_negotiate_the_prior_revision():
 
 def test_a_missing_credential_still_says_not_authenticated():
     """End to end: a session-guarded route refuses with the shared message."""
-    from veloce import Depends, SessionMiddleware
-    from veloce.security.session import SessionAuth
-    from veloce.testclient import TestClient
 
     app = Veloce(openapi_url=None)
     app.config["SECRET_KEY"] = "k"

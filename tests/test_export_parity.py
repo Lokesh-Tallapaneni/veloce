@@ -27,6 +27,7 @@ import importlib
 import pathlib
 
 import veloce
+from veloce.exceptions import NotImplemented_
 
 PACKAGE_ROOT = pathlib.Path(veloce.__file__).parent
 
@@ -476,7 +477,6 @@ def test_promoted_names_are_all_exported():
 
 
 def test_server_not_implemented_aliases_the_underscore_spelling():
-    from veloce.exceptions import NotImplemented_
 
     assert veloce.ServerNotImplemented is NotImplemented_
 

@@ -25,6 +25,8 @@ import pathlib
 import pytest
 
 from veloce import Veloce
+from veloce.contrib.mcp.icons import Icon
+from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.staticfiles import StaticFiles
 from veloce.testclient import TestClient
 
@@ -286,8 +288,6 @@ def test_disambiguate_operation_ids_is_honoured():
 
 
 def test_website_url_and_icons_reach_the_mcp_server():
-    from veloce.contrib.mcp.icons import Icon
-    from veloce.contrib.mcp.server import MCPServer
 
     icon = Icon(src="https://example.test/i.png")
     app = Veloce(openapi_url=None, website_url="https://example.test", mcp_icons=[icon])
@@ -297,7 +297,6 @@ def test_website_url_and_icons_reach_the_mcp_server():
 
 
 def test_an_unset_website_url_is_simply_absent():
-    from veloce.contrib.mcp.server import MCPServer
 
     info = MCPServer(Veloce(openapi_url=None))._server_info()
     assert "websiteUrl" not in info

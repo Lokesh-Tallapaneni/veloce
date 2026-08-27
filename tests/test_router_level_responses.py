@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from veloce import Blueprint, Veloce
+from veloce.contrib.openapi import get_openapi_schema
 
 
 def test_router_responses_merged_into_route():
@@ -21,8 +22,6 @@ def test_router_responses_merged_into_route():
 
     app = Veloce(debug=True, openapi_url="/openapi.json")
     app.register_blueprint(bp)
-
-    from veloce.contrib.openapi import get_openapi_schema
 
     schema = get_openapi_schema(app)
     op = schema["paths"]["/api/x"]["get"]
@@ -44,8 +43,6 @@ def test_route_responses_override_router_level():
 
     app = Veloce(debug=True, openapi_url="/openapi.json")
     app.register_blueprint(bp)
-
-    from veloce.contrib.openapi import get_openapi_schema
 
     schema = get_openapi_schema(app)
     op = schema["paths"]["/api/x"]["get"]
@@ -69,8 +66,6 @@ def test_router_responses_apply_to_every_route():
 
     app = Veloce(debug=True, openapi_url="/openapi.json")
     app.register_blueprint(bp)
-
-    from veloce.contrib.openapi import get_openapi_schema
 
     schema = get_openapi_schema(app)
     assert "500" in schema["paths"]["/api/a"]["get"]["responses"]
@@ -104,8 +99,6 @@ async def test_router_responses_inherited_via_nested_blueprint():
     # so the parent's router-level responses apply to it.
     app = Veloce(debug=True, openapi_url="/openapi.json")
     app.register_blueprint(parent)
-
-    from veloce.contrib.openapi import get_openapi_schema
 
     schema = get_openapi_schema(app)
     op = schema["paths"]["/p/c/x"]["get"]

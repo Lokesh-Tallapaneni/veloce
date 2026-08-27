@@ -22,8 +22,9 @@ from __future__ import annotations
 
 import pytest
 
+import veloce.signing
 from veloce import Request, Veloce
-from veloce.middleware.sessions import SessionMiddleware
+from veloce.middleware.sessions import ServerSessionMiddleware, SessionMiddleware
 from veloce.testclient import TestClient
 
 SECRET = "s3cret-key-for-tests"
@@ -38,7 +39,6 @@ def aged(monkeypatch):
     ceiling turns on. Moving the clock backwards for the signing call is both
     exact and instant.
     """
-    import veloce.signing
 
     def _aged(middleware, payload, seconds):
         real = veloce.signing.time.time
@@ -315,7 +315,6 @@ def test_the_wire_name_follows_a_custom_cookie_name():
 
 def test_the_server_backend_exposes_it_too():
     """It is on the base, so any backend answers."""
-    from veloce.middleware.sessions import ServerSessionMiddleware
 
     assert ServerSessionMiddleware(secure=True, cookie_prefix="host").wire_cookie_name == (
         "__Host-session"

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import Request, TestClient, Veloce
+from veloce import BuildError, Request, TestClient, Veloce
 from veloce.middleware.proxy_fix import ProxyFix
 
 
@@ -43,7 +43,6 @@ async def test_url_for_with_path_params():
 
 
 async def test_url_for_unknown_route_raises_build_error():
-    from veloce import BuildError
 
     app = Veloce(openapi_url=None)
 

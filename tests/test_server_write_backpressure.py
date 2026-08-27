@@ -11,7 +11,9 @@ import asyncio
 
 from tests._protocol import _FakeTransport
 from veloce import Veloce
+from veloce.http.response import StreamingResponse
 from veloce.serving.protocol import (
+    WRITE_BUFFER_HIGH_WATER,
     HttpProtocol,
 )
 
@@ -30,7 +32,6 @@ class _LimitTransport(_FakeTransport):
 def test_connection_made_arms_write_buffer_limit():
     """connection_made hands a high-water mark to the transport so asyncio
     fires pause_writing / resume_writing for the streaming path to await on."""
-    from veloce.serving.protocol import WRITE_BUFFER_HIGH_WATER
 
     loop = asyncio.new_event_loop()
     try:
@@ -172,7 +173,6 @@ def test_connection_lost_releases_parked_writer():
 def test_streaming_response_awaits_drain_per_chunk():
     """StreamingResponse.stream_to awaits the supplied drain after every chunk
     so a fast producer is throttled at the transport buffer."""
-    from veloce.http.response import StreamingResponse
 
     loop = asyncio.new_event_loop()
     try:
@@ -203,7 +203,6 @@ def test_streaming_response_awaits_drain_per_chunk():
 
 def test_streaming_response_without_drain_unchanged():
     """Omitting drain (the ASGI path) preserves the original chunk output."""
-    from veloce.http.response import StreamingResponse
 
     loop = asyncio.new_event_loop()
     try:

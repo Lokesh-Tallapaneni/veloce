@@ -17,6 +17,7 @@ import pytest
 from tests._mcp import call_error
 from veloce import Veloce
 from veloce.contrib.mcp import MCPServer
+from veloce.contrib.mcp.subscriptions import SubscriptionsCapability
 
 
 def _server() -> MCPServer:
@@ -58,8 +59,6 @@ async def test_the_rejection_still_explains_itself():
 def test_the_parameter_has_no_default():
     """What let both callers take the wrong value: a default nobody overrode."""
     import inspect
-
-    from veloce.contrib.mcp.subscriptions import SubscriptionsCapability
 
     parameter = inspect.signature(SubscriptionsCapability._require_session).parameters["method"]
     assert parameter.default is inspect.Parameter.empty

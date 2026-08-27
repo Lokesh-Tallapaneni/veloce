@@ -31,6 +31,7 @@ import pytest
 
 from veloce import Veloce
 from veloce.config import _coerce_env_typed, _coerce_env_value
+from veloce.contrib.mcp.server import MCPServer
 
 
 def _from_env(tmp_path, body: str) -> Veloce:
@@ -301,7 +302,6 @@ def test_one_bad_line_refuses_the_whole_file(tmp_path):
 
 def test_the_typed_value_reaches_the_component_that_uses_it(tmp_path):
     """End to end: a parsed int is what `asyncio.wait_for` would be handed."""
-    from veloce.contrib.mcp.server import MCPServer
 
     app = _from_env(tmp_path, "MCP_CALL_TIMEOUT=30\n")
     assert MCPServer(app)._call_timeout == 30

@@ -16,6 +16,9 @@ import pathlib
 
 import pytest
 
+from veloce import Veloce
+from veloce._internal import _current_app_var
+
 TESTS = pathlib.Path(__file__).resolve().parent
 PRIVATE = "_current_app_var"
 
@@ -51,8 +54,6 @@ def test_the_contextvar_is_only_ever_read(module: str, line: int, text: str) -> 
 
 def test_app_context_actually_restores_the_previous_binding() -> None:
     """The property the hand-written version had to remember."""
-    from veloce import Veloce
-    from veloce._internal import _current_app_var
 
     outer = Veloce(openapi_url=None)
     inner = Veloce(openapi_url=None)
@@ -67,8 +68,6 @@ def test_app_context_actually_restores_the_previous_binding() -> None:
 
 
 def test_app_context_restores_even_when_the_body_raises() -> None:
-    from veloce import Veloce
-    from veloce._internal import _current_app_var
 
     app = Veloce(openapi_url=None)
     with pytest.raises(ValueError, match="boom"), app.app_context():

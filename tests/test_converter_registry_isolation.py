@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import pytest
 
+import veloce
 from veloce import Veloce, register_converter, unregister_converter
+from veloce.routing import converters
 from veloce.routing.converters import Converter, StringConverter, parse_converter
 from veloce.testclient import TestClient
 
@@ -34,7 +36,6 @@ class _ShoutConverter(Converter):
 
 
 def _registry() -> dict:
-    from veloce.routing import converters
 
     return converters._CUSTOM
 
@@ -149,7 +150,6 @@ class TestUnregisterConverter:
             assert client.get("/x/abc").json() == {"value": "abc"}
 
     def test_it_is_reachable_from_the_top_level(self):
-        import veloce
 
         assert "unregister_converter" in veloce.__all__
         assert veloce.unregister_converter.__module__ == "veloce.routing.converters"

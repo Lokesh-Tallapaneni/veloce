@@ -15,6 +15,8 @@ import logging
 import pytest
 
 from veloce import DuplicateRouteError, Router, Veloce
+from veloce.exceptions import BuildError
+from veloce.http.response import HTMLResponse, PlainTextResponse
 from veloce.testclient import TestClient
 
 
@@ -193,7 +195,6 @@ def test_caught_duplicate_does_not_pollute_url_for():
 
     # The rejected route's name must not be reachable via url_for. Veloce wraps
     # the unknown-endpoint ValueError in BuildError.
-    from veloce.exceptions import BuildError
 
     with pytest.raises(BuildError):
         app.url_for("loser")
@@ -223,7 +224,6 @@ def test_override_replace_removes_old_name_reverse_entry():
     # An override replace under a DIFFERENT name must drop the replaced route's
     # reverse entry: the old route is gone from the handler table, so
     # url_for(old_name) must stop resolving while url_for(new_name) works.
-    from veloce.exceptions import BuildError
 
     app = Veloce(on_duplicate="override")
 
@@ -245,7 +245,6 @@ def test_override_replace_removes_old_name_reverse_entry():
 def test_warn_replace_removes_old_name_reverse_entry(caplog):
     # Same as the override case but on the `warn` policy: the replace still wins,
     # so the displaced name's reverse entry must be removed.
-    from veloce.exceptions import BuildError
 
     app = Veloce(on_duplicate="warn")
 
@@ -295,7 +294,6 @@ def test_partial_method_override_keeps_shared_name_alive():
 def test_full_replacement_still_drops_stale_name():
     # The single-method case is unchanged: a full replacement under a new name
     # leaves no live route carrying the old name, so it must stop reversing.
-    from veloce.exceptions import BuildError
 
     app = Veloce(on_duplicate="override")
 
@@ -382,7 +380,6 @@ def test_same_callable_different_exclude_middleware_is_a_conflict():
 def test_same_callable_different_response_class_is_a_conflict():
     # A different `response_class` changes how the return value is rendered, so
     # the second registration is a real conflict.
-    from veloce.http.response import HTMLResponse, PlainTextResponse
 
     app = Veloce()
 

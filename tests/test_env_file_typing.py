@@ -16,6 +16,7 @@ from __future__ import annotations
 import pytest
 
 from veloce import Veloce
+from veloce.audit import run
 from veloce.config import _ENV_FREE_FORM, _ENV_TYPED_NONE_DEFAULTS, Config
 from veloce.testclient import TestClient
 
@@ -126,7 +127,6 @@ def test_a_list_key_splits_on_commas(tmp_path):
 
 
 def test_a_silenced_id_from_an_env_file_actually_silences(tmp_path):
-    from veloce.audit import run
 
     app = _app_with_env(tmp_path, "SILENCED_AUDIT_IDS=hardening-headers-missing\n")
     app.config["SECRET_KEY"] = "k"

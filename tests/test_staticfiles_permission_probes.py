@@ -22,7 +22,7 @@ import os
 
 import pytest
 
-from veloce import Veloce
+from veloce import StaticFiles, Veloce
 from veloce.testclient import TestClient
 
 
@@ -45,7 +45,6 @@ def _client(root, **kwargs):
 
 
 def _static(root, **kwargs):
-    from veloce import StaticFiles
 
     return StaticFiles(directory=str(root), **kwargs)
 

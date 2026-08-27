@@ -20,12 +20,15 @@ from veloce import (
     Depends,
     HTTPException,
     JSONResponse,
+    Query,
     Response,
     Veloce,
+    g,
 )
 from veloce.contrib.mcp import plan_bridge
 from veloce.contrib.mcp.registry import build_registry
 from veloce.dependency import DependencyResolver
+from veloce.middleware.base import Middleware
 
 # -- Response shaping for exposed routes ------------------------------
 
@@ -259,7 +262,6 @@ def test_sub_dependency_query_marker_resolves_from_tool_args():
     from the tool arguments, the same way a top-level `Query` tool param does -
     not from the empty synthetic request (which would raise missing-parameter).
     The value also keeps its coerced type (an `int`, not the raw string)."""
-    from veloce import Query
 
     app = Veloce(openapi_url=None)
 
@@ -310,7 +312,6 @@ def test_sub_dependency_query_marker_coercion_failure_is_an_in_band_tool_error()
     later round added a rebuttal comment above the assertion rather than
     correcting the name and the prose, so the test read as self-contradictory.
     """
-    from veloce import Query
 
     app = Veloce(openapi_url=None)
 
@@ -461,7 +462,6 @@ def test_url_value_preprocessor_observed_over_mcp():
     for a route-backed tool over MCP, so a dependency reading
     `request.path_params` sees the rewrite and the handler reads the seeded
     `g` value - exactly as on the HTTP path."""
-    from veloce import g
 
     app = Veloce(openapi_url=None)
 
@@ -496,7 +496,6 @@ def test_sub_dependency_query_param_advertised_in_input_schema():
     input. The schema is what the agent reads to know which arguments to send;
     omitting it would advertise no inputs while `tools/call` rejected the call
     with invalid-params unless the value was supplied."""
-    from veloce import Query
 
     app = Veloce(openapi_url=None)
 
@@ -569,7 +568,6 @@ def test_request_middleware_process_request_runs_on_mcp_call():
     """An app `Middleware.process_request` runs for a route-backed MCP call, so
     a route depending on middleware-populated state behaves as it does over
     HTTP. The middleware here stamps `request.state`, which the handler reads."""
-    from veloce.middleware.base import Middleware
 
     app = Veloce(openapi_url=None)
 
@@ -594,7 +592,6 @@ def test_request_middleware_short_circuit_returns_response_and_runs_teardown():
     """A request middleware that short-circuits by returning a `Response` ends
     the MCP call with that response (shaped to an isError result), the handler
     never runs, and `teardown_request` still fires - mirroring the HTTP path."""
-    from veloce.middleware.base import Middleware
 
     app = Veloce(openapi_url=None)
     called: list[str] = []
@@ -630,7 +627,6 @@ def test_exclude_middleware_skips_middleware_on_mcp_call():
     middleware over MCP exactly as on the HTTP path. A short-circuiting excluded
     middleware therefore does NOT block the tool call, while a non-excluded
     middleware still runs and its effect is observable in the result."""
-    from veloce.middleware.base import Middleware
 
     app = Veloce(openapi_url=None)
     blocked: list[str] = []

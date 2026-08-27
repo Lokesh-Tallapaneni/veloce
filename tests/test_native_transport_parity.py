@@ -31,6 +31,7 @@ from veloce import (
     PlainTextResponse,
     Request,
     Response,
+    StreamingResponse,
     Veloce,
     status,
 )
@@ -402,7 +403,6 @@ def test_the_native_client_parses_a_chunked_response():
 
     @app.get("/stream")
     async def stream():
-        from veloce import StreamingResponse
 
         async def gen():
             yield b"one"

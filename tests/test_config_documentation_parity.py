@@ -20,6 +20,7 @@ import pytest
 
 from veloce import Veloce
 from veloce.config import _ENV_FREE_FORM, _ENV_TYPED_NONE_DEFAULTS, Config
+from veloce.contrib.mcp.server import MCPServer
 
 GUIDE = pathlib.Path(__file__).resolve().parents[1] / "docs" / "guide" / "configuration.md"
 
@@ -108,7 +109,6 @@ def test_a_watchdog_mapping_set_in_code_is_untouched():
 
 def test_the_mcp_server_reads_the_typed_values(tmp_path):
     """End to end: the declared default reaches the component that uses it."""
-    from veloce.contrib.mcp.server import MCPServer
 
     app = _from_env(tmp_path, "MCP_ENFORCE_LIFECYCLE=false\nMCP_RESOURCE_SUBSCRIPTIONS=false\n")
     server = MCPServer(app)

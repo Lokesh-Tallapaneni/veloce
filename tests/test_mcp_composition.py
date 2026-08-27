@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import Veloce
+from veloce import TestClient, Veloce
 from veloce.contrib.mcp.composition import mount_namespace
 from veloce.contrib.mcp.prompts import build_prompt_registry
 from veloce.contrib.mcp.registry import build_registry
@@ -187,7 +187,6 @@ def test_a_nested_mount_that_did_not_opt_in_stops_there():
 
 
 def test_the_sub_app_routes_still_serve_over_http():
-    from veloce import TestClient
 
     sub = Veloce(title="Sub", openapi_url=None)
 

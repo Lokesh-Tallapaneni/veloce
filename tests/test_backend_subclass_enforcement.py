@@ -29,9 +29,25 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import InMemoryCache
+from veloce import (
+    InMemoryCache,
+    MethodView,
+    RateLimitBackend,
+    RateLimitStrategy,
+    ServerSessionMiddleware,
+    Veloce,
+    View,
+    cached,
+)
+from veloce._internal import _require_methods
 from veloce.cache import Cache
+from veloce.contrib.mcp._registry_base import Registry
+from veloce.contrib.mcp.registry import ToolRegistry
+from veloce.json_provider import JSONProvider
+from veloce.routing import converters
+from veloce.routing.converters import _Converter
 from veloce.sessions import InMemorySessionStore, SessionStore
+from veloce.testclient import TestClient
 
 # ── an incomplete backend is refused at definition ───────────────────
 
@@ -172,8 +188,6 @@ async def test_a_custom_cache_still_works_end_to_end():
         async def delete(self, key: str) -> None:
             store.pop(key, None)
 
-    from veloce import cached
-
     calls: list[int] = []
 
     @cached(DictCache(), ttl=60)
@@ -187,8 +201,6 @@ async def test_a_custom_cache_still_works_end_to_end():
 
 
 def test_a_custom_session_store_still_works_end_to_end():
-    from veloce import ServerSessionMiddleware, Veloce
-    from veloce.testclient import TestClient
 
     saved: dict[str, dict] = {}
 
@@ -227,7 +239,6 @@ def test_a_custom_session_store_still_works_end_to_end():
 
 def test_a_strategy_without_slots_is_still_refused():
     """The pattern this check follows must keep working."""
-    from veloce import RateLimitStrategy
 
     with pytest.raises(TypeError, match="__slots__"):
 
@@ -236,7 +247,6 @@ def test_a_strategy_without_slots_is_still_refused():
 
 
 def test_a_backend_without_slots_is_still_refused():
-    from veloce import RateLimitBackend
 
     with pytest.raises(TypeError, match="__slots__"):
 
@@ -254,7 +264,6 @@ def test_a_backend_without_slots_is_still_refused():
 
 
 def test_a_view_without_dispatch_request_is_refused():
-    from veloce import View
 
     with pytest.raises(TypeError, match="dispatch_request"):
 
@@ -263,7 +272,6 @@ def test_a_view_without_dispatch_request_is_refused():
 
 
 def test_a_complete_view_is_accepted():
-    from veloce import View
 
     class Good(View):
         async def dispatch_request(self, *args, **kwargs):
@@ -275,7 +283,6 @@ def test_a_complete_view_is_accepted():
 def test_a_method_view_subclass_is_accepted():
     """`MethodView` supplies `dispatch_request`, so a verb-only subclass is fine
     - the shape almost every user of class-based views actually writes."""
-    from veloce import MethodView
 
     class UserView(MethodView):
         async def get(self):
@@ -285,7 +292,6 @@ def test_a_method_view_subclass_is_accepted():
 
 
 def test_a_converter_without_match_is_refused():
-    from veloce.routing.converters import _Converter
 
     with pytest.raises(TypeError, match="match"):
 
@@ -294,7 +300,6 @@ def test_a_converter_without_match_is_refused():
 
 
 def test_a_complete_converter_is_accepted():
-    from veloce.routing.converters import _Converter
 
     class Good(_Converter):
         __slots__ = ()
@@ -307,7 +312,6 @@ def test_a_complete_converter_is_accepted():
 
 def test_every_builtin_converter_satisfies_the_guard():
     """The negative direction: the guard must not have broken what ships."""
-    from veloce.routing import converters
 
     built_in = [
         obj
@@ -320,7 +324,6 @@ def test_every_builtin_converter_satisfies_the_guard():
 
 
 def test_a_json_provider_missing_a_half_is_refused():
-    from veloce.json_provider import JSONProvider
 
     with pytest.raises(TypeError, match="loads"):
 
@@ -330,7 +333,6 @@ def test_a_json_provider_missing_a_half_is_refused():
 
 
 def test_a_complete_json_provider_is_accepted():
-    from veloce.json_provider import JSONProvider
 
     class Good(JSONProvider):
         def dumps(self, obj, **kwargs):
@@ -345,13 +347,14 @@ def test_a_complete_json_provider_is_accepted():
 def test_the_shipped_json_provider_satisfies_the_guard():
     """Class definition is what the guard checks; `DefaultJSONProvider` takes an
     `app`, so importing it is the assertion - a failing guard raises on import."""
+    # Deferred with the rest of this module's imports: each test names the
+    # base it is about, so the reader sees the subject beside the assertion.
     from veloce.json_provider import DefaultJSONProvider, JSONProvider
 
     assert issubclass(DefaultJSONProvider, JSONProvider)
 
 
 def test_an_mcp_registry_missing_a_hook_is_refused():
-    from veloce.contrib.mcp._registry_base import Registry
 
     with pytest.raises(TypeError, match="_store|_key|_duplicate_message"):
 
@@ -360,7 +363,6 @@ def test_an_mcp_registry_missing_a_hook_is_refused():
 
 
 def test_the_shipped_mcp_registries_satisfy_the_guard():
-    from veloce.contrib.mcp.registry import ToolRegistry
 
     assert ToolRegistry is not None
 
@@ -368,7 +370,6 @@ def test_the_shipped_mcp_registries_satisfy_the_guard():
 def test_a_property_counts_as_implemented():
     """`Registry._store` is a property, not a method - the guard has to accept
     an override in whichever form the base declared."""
-    from veloce._internal import _require_methods
 
     class Base:
         @property

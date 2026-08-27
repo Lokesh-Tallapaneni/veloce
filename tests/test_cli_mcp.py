@@ -14,6 +14,7 @@ import textwrap
 
 import pytest
 
+from veloce import TestClient
 from veloce.cli import build_parser, main
 
 _APP_SOURCE = """
@@ -162,7 +163,6 @@ def _serves_mcp_at(app, path: str) -> bool:
     The transport registers its endpoint `include_in_schema=False`, so it is
     deliberately absent from `app.routes`; asking it to serve is the check.
     """
-    from veloce import TestClient
 
     response = TestClient(app).post(
         path,

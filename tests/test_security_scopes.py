@@ -12,6 +12,7 @@ from veloce import (
     SecurityScopes,
     Veloce,
 )
+from veloce import SecurityScopes as SS
 from veloce.testclient import TestClient
 
 
@@ -159,7 +160,6 @@ def test_security_scopes_via_testclient():
 
 def test_security_scopes_in_veloce_exports():
     """`from veloce import SecurityScopes` works."""
-    from veloce import SecurityScopes as SS
 
     assert SS is SecurityScopes
 

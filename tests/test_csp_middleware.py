@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+import veloce
 from veloce import CSPMiddleware, Response, TestClient, Veloce, csp_nonce
 
 
@@ -194,7 +195,6 @@ def test_public_import():
     middleware module. The body used to be the import alone, which this module
     already performs at the top - so it could not have failed here without
     failing collection first."""
-    import veloce
 
     assert veloce.CSPMiddleware is CSPMiddleware
     assert veloce.csp_nonce is csp_nonce

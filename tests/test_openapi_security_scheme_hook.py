@@ -28,6 +28,7 @@ from veloce import (
     Veloce,
 )
 from veloce.exceptions import Unauthorized
+from veloce.security.api_key import _APIKeyBase
 from veloce.security.base import SecurityScheme
 from veloce.security.oauth2 import (
     OAuth2AuthorizationCodeBearer,
@@ -290,7 +291,6 @@ def test_a_scheme_reached_through_a_nested_dependency_is_published():
 
 def test_an_api_key_subclass_must_declare_its_openapi_location():
     """Paired with `_source_attr`: an undeclared location publishes an empty `in`."""
-    from veloce.security.api_key import _APIKeyBase
 
     with pytest.raises(TypeError, match="_openapi_in"):
 

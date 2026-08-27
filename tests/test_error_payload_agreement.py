@@ -31,6 +31,7 @@ import json
 import pytest
 
 from veloce import Veloce
+from veloce.app.errors import http_exception_payload as app_copy
 from veloce.exceptions import (
     HTTPException,
     NotFound,
@@ -138,6 +139,5 @@ async def test_a_validation_errors_list_is_emitted_verbatim():
 
 def test_there_is_one_payload_builder():
     """`app.errors` re-exports rather than keeping a copy."""
-    from veloce.app.errors import http_exception_payload as app_copy
 
     assert app_copy is http_exception_payload

@@ -32,6 +32,7 @@ from pydantic import BaseModel
 
 from veloce import Veloce
 from veloce.contrib.mcp.completion import CompletionResult
+from veloce.contrib.openapi import _python_type_to_schema
 from veloce.testclient import TestClient
 
 INITIALIZE = {
@@ -133,14 +134,12 @@ def test_the_inferred_list_case_is_unchanged():
 
 def test_a_dict_schema_stays_open():
     """Deliberate: a typed value would advertise a shape the resolver rejects."""
-    from veloce.contrib.openapi import _python_type_to_schema
 
     assert _python_type_to_schema(dict[str, Any]) == {"type": "object"}
     assert _python_type_to_schema(dict[str, int]) == {"type": "object"}
 
 
 def test_any_still_renders_as_an_empty_schema():
-    from veloce.contrib.openapi import _python_type_to_schema
 
     assert _python_type_to_schema(Any) == {}
 

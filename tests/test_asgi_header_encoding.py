@@ -24,6 +24,7 @@ from __future__ import annotations
 import pytest
 
 from veloce import Response, Veloce
+from veloce._protocol_constants import SET_COOKIE_JOINER
 from veloce.app.asgi import _ENCODED_HEADER_NAMES, _build_asgi_headers
 from veloce.testclient import TestClient
 
@@ -142,7 +143,6 @@ def test_a_second_spelling_overwrites_the_first():
 
 
 def test_set_cookie_is_still_multi_valued():
-    from veloce._protocol_constants import SET_COOKIE_JOINER
 
     entries, _ct, _cl = _build_asgi_headers({"Set-Cookie": f"a=1{SET_COOKIE_JOINER}b=2"})
     assert [value for _name, value in entries] == [b"a=1", b"b=2"]

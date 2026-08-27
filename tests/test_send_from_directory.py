@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import pytest
 
+from veloce.exceptions import Forbidden
+from veloce.helpers import send_from_directory
+
 
 class TestSendFromDirectory:
     """Test send_from_directory helper."""
@@ -11,8 +14,6 @@ class TestSendFromDirectory:
     def test_send_existing_file(self, tmp_path):
         test_file = tmp_path / "hello.txt"
         test_file.write_text("Hello World")
-
-        from veloce.helpers import send_from_directory
 
         resp = send_from_directory(str(tmp_path), "hello.txt")
         assert resp.body == b"Hello World"
@@ -26,8 +27,6 @@ class TestSendFromDirectory:
         `/etc/passwd` it passed for the second reason. A real file one level up
         makes the distinction observable.
         """
-        from veloce.exceptions import Forbidden
-        from veloce.helpers import send_from_directory
 
         outside = tmp_path.parent / "outside-secret.txt"
         outside.write_text("SECRET")
@@ -39,22 +38,18 @@ class TestSendFromDirectory:
 
     def test_directory_traversal_is_refused_before_the_file_is_looked_up(self, tmp_path):
         """`Forbidden`, not `FileNotFoundError` - the guard runs first."""
-        from veloce.exceptions import Forbidden
-        from veloce.helpers import send_from_directory
 
         with pytest.raises(Forbidden):
             send_from_directory(str(tmp_path), "../../../etc/passwd")
 
     def test_an_absent_file_inside_the_root_is_not_forbidden(self, tmp_path):
         """The negative that gives the two above their meaning."""
-        from veloce.helpers import send_from_directory
 
         with pytest.raises(FileNotFoundError):
             send_from_directory(str(tmp_path), "absent.txt")
 
     def test_a_path_that_normalises_back_inside_the_root_is_served(self, tmp_path):
         """Refusing every `..` outright would break a legitimate path."""
-        from veloce.helpers import send_from_directory
 
         (tmp_path / "hello.txt").write_bytes(b"Hello World")
         assert send_from_directory(str(tmp_path), "sub/../hello.txt").body == b"Hello World"

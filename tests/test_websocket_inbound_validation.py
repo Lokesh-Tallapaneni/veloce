@@ -17,7 +17,7 @@ import pytest
 from tests._native_ws import delivered, mark_accepted, nothing_delivered
 from tests._ws_frames import client_frame as _client_frame
 from veloce.exceptions import WebSocketDisconnect
-from veloce.websocket import WebSocket, _Utf8Validator
+from veloce.websocket import _RAW_DISCONNECT, WebSocket, _Utf8Validator
 
 
 class _FakeTransport:
@@ -93,7 +93,6 @@ async def test_invalid_utf8_text_frame_closes_with_1007():
     assert _last_close_code(transport) == 1007
     # The bad bytes never reached the receive queue as data; the only thing
     # queued is the terminal disconnect sentinel that wakes a parked receiver.
-    from veloce.websocket import _RAW_DISCONNECT
 
     assert delivered(ws)[0] is _RAW_DISCONNECT
     assert nothing_delivered(ws)
@@ -119,7 +118,6 @@ async def test_unmasked_client_frame_closes_with_1002():
     assert transport.closed is True
     assert _last_close_code(transport) == 1002
     # The unmasked payload never reached the receive queue as data.
-    from veloce.websocket import _RAW_DISCONNECT
 
     assert delivered(ws)[0] is _RAW_DISCONNECT
 
@@ -248,7 +246,6 @@ async def test_rsv1_bit_set_closes_with_1002():
     assert transport.closed is True
     assert _last_close_code(transport) == 1002
     # Payload never reached the application queue.
-    from veloce.websocket import _RAW_DISCONNECT
 
     assert delivered(ws)[0] is _RAW_DISCONNECT
 

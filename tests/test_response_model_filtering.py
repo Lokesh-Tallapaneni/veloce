@@ -26,6 +26,7 @@ from pydantic import BaseModel
 
 from tests.conftest import make_request
 from veloce import Request, Veloce
+from veloce.contrib.openapi import get_openapi_schema
 from veloce.testclient import TestClient
 
 
@@ -163,8 +164,6 @@ async def test_include_in_schema_false():
     @app.get("/internal", include_in_schema=False)
     async def internal(request: Request):
         return {"secret": True}
-
-    from veloce.contrib.openapi import get_openapi_schema
 
     schema = get_openapi_schema(app)
     assert "/internal" not in schema["paths"]

@@ -142,7 +142,6 @@ async def test_control_chars_in_path_are_escaped(access_logger_state):
     # On the ASGI path the server percent-decodes the URL into request.path, so
     # a %0a/%0d arrives as a real newline/CR. The access line must escape those
     # control characters so an attacker cannot forge or split log records.
-    from veloce.http.response import Response
 
     logger = access_logger_state
     records: list[logging.LogRecord] = []
@@ -178,7 +177,6 @@ async def test_control_chars_in_path_are_escaped(access_logger_state):
 async def test_clean_path_is_logged_unchanged(access_logger_state):
     # A normal method / path contains no control characters, so the escape is a
     # no-op and the access line reads exactly as before.
-    from veloce.http.response import Response
 
     logger = access_logger_state
     records: list[logging.LogRecord] = []

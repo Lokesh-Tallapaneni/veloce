@@ -10,6 +10,8 @@ import uuid
 import pytest
 
 from veloce import Request, Veloce
+from veloce import routing as _routing
+from veloce.routing import converters as _conv
 from veloce.routing.converters import (
     AnyConverter,
     DateConverter,
@@ -26,6 +28,7 @@ from veloce.routing.converters import (
     parse_converter,
 )
 from veloce.routing.router import Router
+from veloce.testclient import TestClient
 
 # ── parse_converter ────────────────────────────────────────────────────
 
@@ -313,8 +316,6 @@ def test_float_converter_rejects_inf_and_nan():
 def test_module_int_digit_cap_not_in_public_surface():
     # The underscored cap must stay private — verify it's not re-exported
     # from the routing package gateway.
-    from veloce import routing as _routing
-    from veloce.routing import converters as _conv
 
     assert "_MAX_INT_DIGITS" not in dir(_routing)
     assert _conv._MAX_INT_DIGITS == 20
@@ -471,7 +472,6 @@ def _both_paths_app():
 
 
 def _client():
-    from veloce.testclient import TestClient
 
     return TestClient(_both_paths_app())
 
@@ -500,7 +500,6 @@ def test_what_the_converter_rejects_is_rejected_on_both_paths(value):
 
 def test_a_float_placeholder_does_not_swallow_an_int_route():
     """The dot stays required, so `123` is still an int and not a float."""
-    from veloce.testclient import TestClient
 
     app = Veloce(openapi_url=None)
 

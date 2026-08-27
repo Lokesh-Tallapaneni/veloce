@@ -24,6 +24,8 @@ import re
 
 import pytest
 
+import veloce.app
+
 POLICY = pathlib.Path(__file__).resolve().parent.parent / "docs" / "policies.md"
 
 # Gateways the policy is expected to enumerate. `veloce.sessions` and the
@@ -73,7 +75,6 @@ def test_each_gateway_declares_an_all(name):
 def test_veloce_itself_is_covered_by_the_policy():
     """The sharp end: `Veloce` is exported from `veloce.app`, so a policy that
     omits that gateway declares the framework's own entry point private."""
-    import veloce.app
 
     assert "Veloce" in veloce.app.__all__
     assert "veloce.app" in _listed_gateways()

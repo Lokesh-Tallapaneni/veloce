@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import pytest
 
+import veloce.signing
 from veloce import ServerSessionMiddleware, SessionMiddleware, Veloce
 from veloce.testclient import TestClient
 
@@ -238,7 +239,6 @@ def test_a_stale_cookie_is_not_loaded_into_the_transaction():
     """The behaviour the duplicated decode got wrong: the seam applies the same
     age ceiling a request does, so a cookie the app would refuse starts empty
     here rather than arriving pre-populated."""
-    import veloce.signing
 
     app = Veloce(openapi_url=None)
     app.config["SECRET_KEY"] = "k" * 32

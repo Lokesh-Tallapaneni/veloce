@@ -25,7 +25,7 @@ import urllib.parse
 import pytest
 
 from tests._mcp import SSEStream, auth
-from veloce import MCPContext, Veloce
+from veloce import AsyncTestClient, MCPContext, Veloce
 from veloce.contrib.mcp import MCPAuth
 from veloce.principal import Principal, current_principal
 
@@ -247,8 +247,6 @@ async def test_the_http_transport_reports_the_same_subject():
         return {"subject": None if principal is None else principal.subject}
 
     app.mount_mcp(transport="http", path="/mcp", auth=_auth())
-
-    from veloce import AsyncTestClient
 
     async with AsyncTestClient(app) as client:
         response = await client.post(

@@ -26,7 +26,8 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import Veloce
+from veloce import StaticFiles, Veloce
+from veloce.testclient import TestClient
 
 
 @pytest.fixture
@@ -100,7 +101,6 @@ def test_a_static_mount_over_an_asgi_mount_is_refused(assets):
 def test_a_static_handler_mounted_through_mount_is_also_visible(assets):
     """`mount()` routes a `.prefix`/`.handle` object into the static registry;
     it must be visible to the next check, not just appended."""
-    from veloce import StaticFiles
 
     app = Veloce(openapi_url=None)
     app.mount("/assets", StaticFiles(directory=assets, must_exist=False))
@@ -156,7 +156,6 @@ def test_the_default_static_prefix_still_works(assets):
 
 def test_a_static_mount_still_serves_its_files(assets):
     """The check must not damage what it guards."""
-    from veloce.testclient import TestClient
 
     app = Veloce(openapi_url=None)
     app.mount_static("/assets", assets, must_exist=False)
@@ -164,7 +163,6 @@ def test_a_static_mount_still_serves_its_files(assets):
 
 
 def test_a_sub_app_mount_still_serves_its_routes(assets):
-    from veloce.testclient import TestClient
 
     app = Veloce(openapi_url=None)
     app.mount("/api", _sub())

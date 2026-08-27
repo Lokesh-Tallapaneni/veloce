@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import BadRequest, Request
+from veloce import BadRequest, Request, Veloce
 
 
 def _json_req(body: bytes) -> Request:
@@ -96,7 +96,6 @@ def _app_stub(**config):
 
 
 def test_malformed_json_masked_by_default():
-    from veloce.exceptions import BadRequest
 
     req = _json_req(b"{not valid json")
     with pytest.raises(BadRequest) as exc:
@@ -108,7 +107,6 @@ def test_malformed_json_masked_by_default():
 
 
 def test_debug_detail_attached_regardless_of_verbose():
-    from veloce.exceptions import BadRequest
 
     req = _json_req(b"{bad")
     with pytest.raises(BadRequest) as exc:
@@ -117,7 +115,6 @@ def test_debug_detail_attached_regardless_of_verbose():
 
 
 def test_verbose_flag_surfaces_reason():
-    from veloce.exceptions import BadRequest
 
     req = _json_req(b"{bad")
     req.app = _app_stub(JSON_ERRORS_VERBOSE=True)
@@ -127,7 +124,6 @@ def test_verbose_flag_surfaces_reason():
 
 
 def test_debug_config_also_surfaces_reason():
-    from veloce.exceptions import BadRequest
 
     # A real Config always carries JSON_ERRORS_VERBOSE (seeded False), so DEBUG
     # must still surface the reason via an explicit OR - not a dict-default
@@ -140,8 +136,6 @@ def test_debug_config_also_surfaces_reason():
 
 
 def test_debug_app_constructor_surfaces_reason_end_to_end():
-    from veloce import Veloce
-    from veloce.exceptions import BadRequest
 
     # Through a real Veloce(debug=True) app (real Config) - guards the dead
     # DEBUG-fallback regression a bare-dict stub could hide.
@@ -155,8 +149,6 @@ def test_debug_app_constructor_surfaces_reason_end_to_end():
 
 async def test_async_and_sync_paths_agree_on_masked_detail():
 
-    from veloce.exceptions import BadRequest
-
     sync_req = _json_req(b"{bad")
     with pytest.raises(BadRequest) as sync_exc:
         sync_req.get_json()
@@ -169,7 +161,6 @@ async def test_async_and_sync_paths_agree_on_masked_detail():
 
 
 def test_string_false_flags_do_not_surface_reason():
-    from veloce.exceptions import BadRequest
 
     # Dotenv string "false" for both flags must stay masked, not treated truthy.
     req = _json_req(b"{bad")

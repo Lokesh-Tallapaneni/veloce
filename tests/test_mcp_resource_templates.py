@@ -14,6 +14,7 @@ from __future__ import annotations
 import pytest
 
 from veloce import Veloce
+from veloce.contrib.mcp.resources import _template_specificity, build_resource_registry
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.session import MCPSession
 
@@ -185,14 +186,12 @@ async def test_the_listing_advertises_the_template_verbatim():
 
 def test_a_reserved_variable_binds_its_path_parameter():
     """`{+path}` names `path`, so the operator is not part of the name."""
-    from veloce.contrib.mcp.resources import build_resource_registry
 
     registry = build_resource_registry(_app("file://{+path}"))
     assert registry.templates()[0].uri_param_names == ("path",)
 
 
 def test_a_template_variable_that_names_no_path_parameter_is_refused():
-    from veloce.contrib.mcp.resources import build_resource_registry
 
     with pytest.raises(ValueError, match="must match its path parameters"):
         build_resource_registry(_app("file://{+wrong}"))
@@ -200,7 +199,6 @@ def test_a_template_variable_that_names_no_path_parameter_is_refused():
 
 def test_an_unrecognised_placeholder_is_not_taken_as_a_variable():
     """`{-x}` is not an RFC 6570 form this server serves; it is not a binding."""
-    from veloce.contrib.mcp.resources import build_resource_registry
 
     with pytest.raises(ValueError, match="must match its path parameters"):
         build_resource_registry(_app("file://{-x}"))
@@ -285,7 +283,6 @@ async def test_the_catch_all_still_serves_the_rest(catch_all_first: bool):
 
 
 def test_specificity_counts_the_literal_characters():
-    from veloce.contrib.mcp.resources import _template_specificity
 
     assert _template_specificity("docs://{+path}/meta") > _template_specificity("docs://{+path}")
     assert _template_specificity("docs://index") == len("docs://index")

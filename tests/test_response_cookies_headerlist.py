@@ -6,6 +6,7 @@ import pytest
 
 from veloce import Request, Response
 from veloce.app.asgi import _build_asgi_headers
+from veloce.exceptions import PreconditionFailed
 
 # ── cookies ──────────────────────────────────────────────────────────
 
@@ -241,7 +242,6 @@ def test_an_if_match_the_response_satisfies_is_not_refused(spelling: str):
 
 @pytest.mark.parametrize("spelling", SPELLINGS)
 def test_an_if_match_the_response_fails_is_still_refused(spelling: str):
-    from veloce.exceptions import PreconditionFailed
 
     with pytest.raises(PreconditionFailed):
         _tagged(spelling).check_preconditions(_Conditional(if_match=('"other"',)))

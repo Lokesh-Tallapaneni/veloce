@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from veloce import Veloce
 from veloce.contrib.staticfiles import StaticFiles
+from veloce.http.request import Request
 from veloce.http.response import StreamingResponse
 from veloce.testclient import TestClient
 
@@ -19,8 +20,6 @@ async def test_handle_returns_streamingresponse_for_large_files(tmp_path):
     sf.STREAM_THRESHOLD = 1024  # exercise the path with a small file
     payload = b"x" * 4096
     (tmp_path / "big.bin").write_bytes(payload)
-
-    from veloce.http.request import Request
 
     req = Request(method="GET", path="/s/big.bin", query_string="", headers={}, body=b"")
     resp = await sf.handle(req)
@@ -38,8 +37,6 @@ async def test_handle_returns_buffered_response_for_small_files(tmp_path):
     """Files below the threshold keep the single-message buffered path."""
     sf = StaticFiles(directory=str(tmp_path), prefix="/s")
     (tmp_path / "small.txt").write_bytes(b"hi")
-
-    from veloce.http.request import Request
 
     req = Request(method="GET", path="/s/small.txt", query_string="", headers={}, body=b"")
     resp = await sf.handle(req)

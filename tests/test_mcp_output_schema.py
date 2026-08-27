@@ -25,10 +25,16 @@ from tests._mcp_shared import (
     _list_tools,
 )
 from veloce import (
+    EventSourceResponse,
     HTTPException,
     JSONResponse,
+    PlainTextResponse,
+    ServerSentEvent,
+    StreamingResponse,
     Veloce,
 )
+from veloce.contrib.mcp import _tasks as mcp_tasks
+from veloce.contrib.mcp.server import LATEST_PROTOCOL_VERSION
 
 # -- Output schema + structured content -------------------------------
 
@@ -163,7 +169,6 @@ def test_response_model_route_returning_response_emits_filtered_structured_conte
 def test_response_model_route_streaming_response_emits_filtered_structured_content():
     """A streamed Response on a response_model route is buffered, decoded, and
     re-filtered through response_model so structuredContent conforms."""
-    from veloce import StreamingResponse
 
     app = Veloce(openapi_url=None)
 
@@ -270,7 +275,6 @@ def test_pure_tool_conforming_dict_return_is_validated():
 def test_response_model_route_plaintext_response_does_not_crash():
     """A response_model route whose handler returns a non-JSON `Response` emits a
     text block without crashing into a JSON-RPC transport error."""
-    from veloce import PlainTextResponse
 
     app = Veloce(openapi_url=None)
 
@@ -295,7 +299,6 @@ def test_response_model_route_plaintext_response_does_not_crash():
 def test_response_model_route_sse_response_does_not_crash():
     """A response_model route whose handler returns an SSE stream is drained and
     emitted as text without crashing the re-filter."""
-    from veloce import EventSourceResponse, ServerSentEvent
 
     app = Veloce(openapi_url=None)
 
@@ -321,8 +324,6 @@ def test_response_model_route_sse_response_does_not_crash():
 def test_slow_stream_times_out_in_band(monkeypatch):
     """A streamed result that does not complete within the drain budget yields an
     in-band error and does not hang the serve loop."""
-    from veloce import StreamingResponse
-    from veloce.contrib.mcp import _tasks as mcp_tasks
 
     monkeypatch.setattr(mcp_tasks, "_STREAM_DRAIN_TIMEOUT", 0.05)
 
@@ -347,8 +348,6 @@ def test_slow_stream_times_out_in_band(monkeypatch):
 def test_oversized_stream_closes_producer_promptly(monkeypatch):
     """The size-cap path closes the producing generator so its finally runs
     immediately, not only at GC."""
-    from veloce import StreamingResponse
-    from veloce.contrib.mcp import _tasks as mcp_tasks
 
     monkeypatch.setattr(mcp_tasks, "_STREAM_BUFFER_LIMIT", 8)
 
@@ -376,8 +375,6 @@ def test_oversized_stream_closes_producer_promptly(monkeypatch):
 def test_slow_stream_with_awaiting_cleanup_stays_in_budget(monkeypatch):
     """A generator whose teardown awaits cannot re-wedge the serve loop past the
     drain deadline: the cleanup aclose() is itself bounded."""
-    from veloce import StreamingResponse
-    from veloce.contrib.mcp import _tasks as mcp_tasks
 
     monkeypatch.setattr(mcp_tasks, "_STREAM_DRAIN_TIMEOUT", 0.05)
 
@@ -504,7 +501,6 @@ def test_return_annotation_route_filters_raw_dict():
 def test_protocol_version_2025_03_26_not_echoed():
     """2025-03-26 is not advertised as supported (it lacks outputSchema etc.), so
     a request for it falls back to the latest supported revision."""
-    from veloce.contrib.mcp.server import LATEST_PROTOCOL_VERSION
 
     app = Veloce(openapi_url=None)
     resp = _initialize(app, {"protocolVersion": "2025-03-26"})

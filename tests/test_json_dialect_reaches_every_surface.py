@@ -16,8 +16,9 @@ from __future__ import annotations
 import pytest
 
 from veloce import JSONResponse, Veloce
+from veloce._internal import dumps_current, dumps_for
 from veloce.helpers import jsonify
-from veloce.json_provider import DefaultJSONProvider
+from veloce.json_provider import DefaultJSONProvider, resolve_dumps
 from veloce.sse import EventSourceResponse, ServerSentEvent
 from veloce.testclient import TestClient
 
@@ -234,8 +235,6 @@ def test_an_app_with_no_dialect_configured_is_byte_identical():
 
 def test_the_encode_funnel_is_reachable_from_the_lower_layer():
     """It moved to `_internal` so `http.response` can call it without a cycle."""
-    from veloce._internal import dumps_current, dumps_for
-    from veloce.json_provider import resolve_dumps
 
     assert dumps_for(None, {"a": 1}) == b'{"a":1}'
     assert dumps_current({"a": 1}) == b'{"a":1}'

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import Request
+from veloce import Request, Response, Veloce
 from veloce.http.cookies import dump_cookie, parse_cookie
 from veloce.http.datastructures import Cookies
+from veloce.middleware.sessions import ServerSessionMiddleware, SessionMiddleware
+from veloce.testclient import TestClient
 
 
 def test_dump_cookie_basic():
@@ -84,7 +86,6 @@ def test_dump_cookie_accepts_valid_token_names(good):
 
 
 def test_set_cookie_propagates_name_validation():
-    from veloce import Response
 
     with pytest.raises(ValueError, match="cookie name"):
         Response().set_cookie("bad name", "v")
@@ -126,7 +127,6 @@ def test_parse_cookie_round_trip():
 
 
 def _req(headers):
-    from veloce.http.request import Request
 
     return Request(method="GET", path="/", query_string="", headers=headers, body=b"")
 
@@ -177,7 +177,6 @@ def test_cookies_cached():
 
 @pytest.mark.parametrize("value", ["lax", "Lax", "LAX", " lax "])
 def test_any_casing_or_padding_renders_the_canonical_attribute(value):
-    from veloce import Response
 
     response = Response(body=b"x")
     response.set_cookie("k", "v", samesite=value)
@@ -186,7 +185,6 @@ def test_any_casing_or_padding_renders_the_canonical_attribute(value):
 
 @pytest.mark.parametrize("value", ["", "   ", "\t"])
 def test_a_blank_samesite_omits_the_attribute(value):
-    from veloce import Response
 
     response = Response(body=b"x")
     response.set_cookie("k", "v", samesite=value)
@@ -194,7 +192,6 @@ def test_a_blank_samesite_omits_the_attribute(value):
 
 
 def test_an_unrecognised_samesite_is_still_refused():
-    from veloce import Response
 
     response = Response(body=b"x")
     with pytest.raises(ValueError, match="samesite"):
@@ -204,9 +201,6 @@ def test_an_unrecognised_samesite_is_still_refused():
 @pytest.mark.parametrize("value", ["  ", "lax", "STRICT", ""])
 def test_both_session_backends_answer_a_samesite_the_same_way(value):
     """The defect: one raised on every response where the other stayed silent."""
-    from veloce import Veloce
-    from veloce.middleware.sessions import ServerSessionMiddleware, SessionMiddleware
-    from veloce.testclient import TestClient
 
     def render(middleware) -> str:
         app = Veloce(openapi_url=None)
@@ -233,9 +227,6 @@ def test_both_session_backends_answer_a_samesite_the_same_way(value):
 
 def test_a_session_delete_cookie_agrees_with_its_write():
     """`_delete_cookie` passed the raw value while `_render_cookie` capitalised."""
-    from veloce import Veloce
-    from veloce.middleware.sessions import SessionMiddleware
-    from veloce.testclient import TestClient
 
     app = Veloce(openapi_url=None)
     app.secret_key = "k"

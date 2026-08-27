@@ -12,6 +12,7 @@ attaches can reach the next client's response.
 from __future__ import annotations
 
 from veloce import MCPContext, Veloce
+from veloce.contrib.mcp._helpers import _attach_result_meta
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.session import MCPSession
 
@@ -125,7 +126,6 @@ async def test_each_call_starts_with_an_empty_slot():
 
 async def test_a_handler_cannot_displace_the_protocol_own_meta():
     """A task marker or subscription id answers the client's request, not the tool's."""
-    from veloce.contrib.mcp._helpers import _attach_result_meta
 
     result = {"content": [], "_meta": {"protocol": "owns-this"}}
     attached = _attach_result_meta(result, {"protocol": "handler-tried", "mine": 1})

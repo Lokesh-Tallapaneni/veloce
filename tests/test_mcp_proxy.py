@@ -14,11 +14,12 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import Veloce
+from veloce import Principal, Veloce
 from veloce.contrib.mcp.proxy import add_mcp_proxy
 from veloce.contrib.mcp.registry import build_registry
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.session import MCPSession
+from veloce.principal import set_principal
 
 
 def _upstream() -> tuple[Veloce, MCPServer]:
@@ -270,8 +271,6 @@ async def test_a_proxied_tool_can_require_a_scope():
 
 
 async def test_a_caller_without_the_scope_is_refused():
-    from veloce import Principal
-    from veloce.principal import set_principal
 
     _app, server = _upstream()
     gateway = Veloce(title="Gateway", openapi_url=None)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from tests.conftest import make_request
-from veloce import HTTPException, Veloce
+from veloce import HTTPException, JSONResponse, Veloce
 from veloce.exceptions import (
     BadRequest,
     Conflict,
@@ -113,7 +113,6 @@ async def test_handler_on_specific_subclass_catches_that_subclass():
 
     @app.exception_handler(NotFound)
     async def on_not_found(request, exc):
-        from veloce import JSONResponse
 
         return JSONResponse({"oops": "no such thing"}, status_code=404)
 
@@ -133,7 +132,6 @@ async def test_handler_on_base_class_catches_subclass():
 
     @app.exception_handler(HTTPException)
     async def on_http(request, exc):
-        from veloce import JSONResponse
 
         return JSONResponse(
             {"caught": type(exc).__name__, "code": exc.status_code},
@@ -164,13 +162,11 @@ async def test_specific_handler_wins_over_base():
 
     @app.exception_handler(HTTPException)
     async def on_http(request, exc):
-        from veloce import JSONResponse
 
         return JSONResponse({"by": "base"}, status_code=exc.status_code)
 
     @app.exception_handler(NotFound)
     async def on_nf(request, exc):
-        from veloce import JSONResponse
 
         return JSONResponse({"by": "specific"}, status_code=404)
 
@@ -195,7 +191,6 @@ async def test_handler_for_user_exception_via_mro():
 
     @app.exception_handler(AppError)
     async def on_app_err(request, exc):
-        from veloce import JSONResponse
 
         return JSONResponse(
             {"app_error": type(exc).__name__},
@@ -217,7 +212,6 @@ async def test_handler_on_exception_catches_unhandled():
 
     @app.exception_handler(Exception)
     async def fallback(request, exc):
-        from veloce import JSONResponse
 
         return JSONResponse({"fallback": str(exc)}, status_code=500)
 

@@ -20,7 +20,7 @@ from __future__ import annotations
 import pytest
 
 from veloce import Veloce
-from veloce.contrib.mcp import MCPServer
+from veloce.contrib.mcp import MCPServer, registry, safety
 
 
 def _server_with(method: str) -> MCPServer:
@@ -75,7 +75,6 @@ def test_neither_module_asserts_a_verb_based_gate():
     the phrase is absent, so there is no sentence for a later edit to turn back
     into a claim.
     """
-    from veloce.contrib.mcp import registry, safety
 
     for module in (registry, safety):
         text = (module.__doc__ or "").lower()
@@ -85,7 +84,6 @@ def test_neither_module_asserts_a_verb_based_gate():
 
 
 def test_the_registry_docstring_says_exposure_is_verb_blind():
-    from veloce.contrib.mcp import registry
 
     text = (registry.__doc__ or "").lower()
     assert "whatever its http method" in text or "regardless of http verb" in text

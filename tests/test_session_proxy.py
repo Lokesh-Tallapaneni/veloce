@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from veloce import Request, Veloce, session
+from veloce.sessions import Session
 from veloce.testclient import TestClient
 
 
@@ -75,7 +76,6 @@ def test_session_proxy_setattr_forwards_to_session():
     # `session.permanent = True` must forward through the proxy to the
     # underlying Session (whose `permanent` property is backed by `_permanent`),
     # rather than raising AttributeError on the slotted proxy.
-    from veloce.sessions import Session
 
     app = Veloce()
     captured: dict = {}

@@ -14,9 +14,9 @@ import uuid
 
 import pytest
 
-from veloce import Veloce
+from veloce import Depends, TestClient, Veloce
 from veloce.contrib.openapi import get_openapi_schema
-from veloce.routing.converters import build_route_regex, is_regex_path
+from veloce.routing.converters import _CUSTOM, Converter, build_route_regex, is_regex_path
 from veloce.routing.router import Router
 
 # ── Classification at registration ───────────────────────────────
@@ -306,7 +306,6 @@ def test_include_with_extra_prefix():
 
 def test_include_applies_router_dependencies():
     """A real `Depends`, not a placeholder string: a bare entry is refused now."""
-    from veloce import Depends
 
     async def dep_a() -> str:
         return "a"
@@ -368,6 +367,8 @@ def test_collect_all_routes_includes_regex():
 
 
 def test_regex_route_dispatches():
+    # From the leaf, deliberately: module scope binds `TestClient` through
+    # the `veloce` gateway, and this checks the leaf path resolves too.
     from veloce.testclient import TestClient
 
     app = Veloce()
@@ -396,7 +397,6 @@ def test_regex_route_router_dependency_runs_exactly_once_after_include():
     """A regex route's router-level dependency must run once per request, not
     twice, after the sub-router is included into a parent — confirming
     `_merge_regex_routes` does not double-apply dependencies."""
-    from veloce import Depends, TestClient
 
     calls = {"sub": 0, "parent": 0}
 
@@ -488,7 +488,6 @@ def test_unknown_converter_in_partial_later_segment_raises():
 
 
 def test_custom_converter_in_later_segment_raises():
-    from veloce.routing.converters import _CUSTOM, Converter
 
     class _SlugConverter(Converter):
         __slots__ = ()

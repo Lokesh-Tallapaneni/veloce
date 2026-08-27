@@ -17,7 +17,9 @@ from __future__ import annotations
 import asyncio
 
 from veloce import Veloce
+from veloce.app.serving import ServingMixin
 from veloce.serving.protocol import HttpProtocol
+from veloce.workers import VeloceWorker
 
 
 class _FakeTransport(asyncio.Transport):
@@ -113,8 +115,6 @@ async def test_the_worker_source_orders_the_drain_first():
     """
     import inspect
 
-    from veloce.workers import VeloceWorker
-
     body = inspect.getsource(VeloceWorker._serve)
     # Scope to the teardown block: an earlier `wait_closed()` lives in the
     # start-up failure path, which is a different question. Comments are
@@ -130,8 +130,6 @@ async def test_the_worker_source_orders_the_drain_first():
 async def test_the_native_run_path_orders_the_drain_first():
     """`app.run()` had the same inversion via `async with server:`."""
     import inspect
-
-    from veloce.app.serving import ServingMixin
 
     body = _code_only(inspect.getsource(ServingMixin._serve))
     assert "start_graceful_drain()" in body

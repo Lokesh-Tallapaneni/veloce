@@ -29,6 +29,8 @@ import os
 
 import pytest
 
+from veloce import Veloce
+from veloce.testclient import TestClient
 from veloce.websocket import _UNMASK_BLOCK, _unmask
 
 MASK = b"\x01\x02\x03\x04"
@@ -173,8 +175,6 @@ def _client_frame(payload: bytes, opcode: int = 0x2) -> bytes:
 @pytest.mark.parametrize("length", [8, 1000, _UNMASK_BLOCK, _UNMASK_BLOCK * 2 + 77])
 def test_a_masked_frame_arrives_intact(length):
     """The parser must deliver exactly the bytes the client sent."""
-    from veloce import Veloce
-    from veloce.testclient import TestClient
 
     payload = os.urandom(length)
     app = Veloce(openapi_url=None)

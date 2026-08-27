@@ -16,7 +16,7 @@ from __future__ import annotations
 import pytest
 
 from veloce import Veloce
-from veloce.routing.converters import _Converter, register_converter
+from veloce.routing.converters import _BUILTIN, IntConverter, _Converter, register_converter
 from veloce.testclient import TestClient
 
 
@@ -159,7 +159,6 @@ def test_a_custom_converter_that_declares_nothing_is_treated_as_str():
 
 def test_a_custom_subclass_inherits_the_specificity_it_narrows():
     """The old exact-type lookup demoted a subclass of int to the widest score."""
-    from veloce.routing.converters import IntConverter
 
     class EvenIntConverter(IntConverter):
         __slots__ = ()
@@ -180,7 +179,6 @@ def test_a_custom_subclass_inherits_the_specificity_it_narrows():
 
 def test_every_built_in_converter_declares_a_specificity():
     """The gap that caused this: a converter nobody added to the table."""
-    from veloce.routing.converters import _BUILTIN
 
     undeclared = [
         name
@@ -191,6 +189,9 @@ def test_every_built_in_converter_declares_a_specificity():
 
 
 def test_the_declared_order_is_the_intended_order():
+    # Deferred: `_BUILTIN` is a mutable module-level registry, and importing
+    # it per test keeps each assertion reading the live object rather than a
+    # binding taken at collection.
     from veloce.routing.converters import _BUILTIN, AnyConverter
 
     by_name = {name: cls.specificity for name, cls in _BUILTIN.items()}

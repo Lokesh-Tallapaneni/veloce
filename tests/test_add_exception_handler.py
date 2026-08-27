@@ -211,7 +211,6 @@ def test_exception_handler_decorator_invalidates_mro_cache():
     # Register a handler AFTER the cache was populated.
     @app.exception_handler(ValueError)
     def handle_value_error(request, exc):
-        from veloce.http.response import JSONResponse
 
         return JSONResponse({"caught": str(exc)}, status_code=418)
 
@@ -233,7 +232,6 @@ def test_add_exception_handler_imperative_invalidates_mro_cache():
     assert client.get("/raise").status_code == 500
 
     def handle_key_error(request, exc):
-        from veloce.http.response import JSONResponse
 
         return JSONResponse({"key": str(exc)}, status_code=422)
 

@@ -49,6 +49,8 @@ from veloce.contrib.mcp.authorization import (
     _digest,
     _now,
 )
+from veloce.contrib.mcp.context import MCPContext
+from veloce.contrib.mcp.server import MCPServer
 from veloce.testclient import TestClient
 
 INITIALIZE = {
@@ -219,8 +221,6 @@ def test_an_unfiltered_tool_is_listed():
 
 def test_the_two_docstrings_agree_that_hiding_is_not_enforcement():
     """The defect was a contradiction; this fails if either side drifts back."""
-    from veloce.contrib.mcp.context import MCPContext
-    from veloce.contrib.mcp.server import MCPServer
 
     hide_doc = MCPContext.hide.__doc__ or ""
     candidates_doc = MCPServer._candidate_tools.__doc__ or ""

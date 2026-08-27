@@ -26,6 +26,10 @@ from veloce import (
 )
 from veloce.contrib.mcp import MCPSession
 from veloce.contrib.mcp.server import MCPServer
+from veloce.contrib.mcp.tasks import STATUS_COMPLETED
+from veloce.contrib.mcp.transports.event_store import SSEEventStore
+from veloce.contrib.mcp.transports.http import _stream_response
+from veloce.contrib.mcp.transports.session_store import HttpSessionStore
 
 # -- Streamable HTTP transport ----------------------------------------
 
@@ -214,7 +218,6 @@ def test_http_sse_concurrent_calls_do_not_cross_notifications():
 
 async def test_http_cancel_does_not_cross_connections():
     """One HTTP client's cancel must not cancel a peer's call with a colliding id."""
-    from veloce.contrib.mcp.transports.http import _stream_response
 
     app = Veloce(openapi_url=None)
     released = {"a": asyncio.Event(), "b": asyncio.Event()}
@@ -260,7 +263,6 @@ async def test_http_cancel_does_not_cross_connections():
 
 async def test_http_subscriptions_advertised_and_served_with_sessions():
     """Subscriptions advertise true and deliver updates over a stateful HTTP stream."""
-    from veloce.contrib.mcp.transports.http import _stream_response
 
     app = Veloce(openapi_url=None)
     app.config["MCP_RESOURCE_SUBSCRIPTIONS"] = True
@@ -554,7 +556,6 @@ def test_http_lifecycle_gating_enforced_with_sessions():
 
 async def test_http_session_store_evicts_idle_sessions():
     """An idle, never-DELETEd session is reclaimed by the store's idle TTL."""
-    from veloce.contrib.mcp.transports.session_store import HttpSessionStore
 
     store = HttpSessionStore(idle_ttl=0.0)
     sid, _session = await store.create()
@@ -564,7 +565,6 @@ async def test_http_session_store_evicts_idle_sessions():
 
 def test_event_store_caps_stream_count():
     """The event store evicts the oldest stream once the stream cap is exceeded."""
-    from veloce.contrib.mcp.transports.event_store import SSEEventStore
 
     store = SSEEventStore(max_streams=2)
     store.record("s1", 1, {"v": 1})
@@ -670,7 +670,6 @@ async def test_stdio_task_augmented_tool_can_sample():
     The loop is now the sole reader and settles the future, so there is nothing
     left to refuse.
     """
-    from veloce.contrib.mcp.tasks import STATUS_COMPLETED
 
     app = Veloce(openapi_url=None)
     app.debug = True

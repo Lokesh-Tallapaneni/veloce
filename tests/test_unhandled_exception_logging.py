@@ -20,7 +20,7 @@ import logging
 
 import pytest
 
-from veloce import Veloce
+from veloce import Blueprint, Request, Veloce
 from veloce.exceptions import HTTPException, NotFound
 from veloce.testclient import TestClient
 
@@ -169,7 +169,6 @@ def test_a_propagated_exception_is_not_also_logged(caplog):
 
 
 def test_a_blueprint_scoped_handler_also_suppresses_the_log(caplog):
-    from veloce import Blueprint
 
     app = Veloce(openapi_url=None, import_name="logprobe")
     bp = Blueprint("bp", url_prefix="/bp")
@@ -211,7 +210,6 @@ async def test_handle_user_exception_logs_without_a_request():
 
 
 async def test_handle_user_exception_names_the_request_when_given_one(caplog):
-    from veloce import Request
 
     app = _app()
     request = Request(method="PUT", path="/thing", query_string="", headers={}, body=b"")

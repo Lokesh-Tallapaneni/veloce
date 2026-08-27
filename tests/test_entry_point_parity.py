@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import Blueprint, GZipMiddleware, Veloce
+from veloce import Blueprint, GZipMiddleware, Response, Veloce
 from veloce.config import Config
 from veloce.testclient import TestClient
 
@@ -188,7 +188,6 @@ def _gzip_app() -> TestClient:
 
     @app.get("/x")
     async def x():
-        from veloce import Response
 
         return Response(body=b"x" * 5000, content_type="text/plain")
 

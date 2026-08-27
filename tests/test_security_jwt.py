@@ -6,6 +6,7 @@ import time
 
 import pytest
 
+from veloce import JWTError as TopJWTError
 from veloce import decode_jwt, encode_jwt
 from veloce._internal import _b64encode
 from veloce.security.jwt import (
@@ -185,7 +186,6 @@ def test_decode_rejects_empty_secret():
 
 
 def test_import_surface():
-    from veloce import JWTError as TopJWTError
     from veloce import decode_jwt as _dj  # noqa: F401
     from veloce import encode_jwt as _ej  # noqa: F401
 
@@ -202,6 +202,9 @@ def test_alg_none_is_refused_even_when_allow_listed():
     import base64
     import json
 
+    # From the leaf, deliberately: module scope binds the same name through
+    # the `veloce` gateway, and this asserts the leaf itself refuses
+    # `alg=none` rather than relying on the re-export to do it.
     from veloce.security.jwt import decode_jwt
 
     def b64(data: dict) -> str:

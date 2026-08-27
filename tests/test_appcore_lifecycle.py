@@ -16,6 +16,8 @@ import sys
 import pytest
 
 from veloce import SetupError, Veloce
+from veloce.http.request import Request
+from veloce.serving.protocol import HttpProtocol
 from veloce.testclient import TestClient
 
 # -- AsyncExitStack lifespan unwind ----------------------------------
@@ -355,7 +357,6 @@ async def test_asgi_lifespan_shutdown_failed_message():
 
 
 def test_begin_drain_closes_idle_connection():
-    from veloce.serving.protocol import HttpProtocol
 
     loop = asyncio.new_event_loop()
     try:
@@ -371,7 +372,6 @@ def test_begin_drain_closes_idle_connection():
 
 
 def test_start_graceful_drain_flips_live_connections():
-    from veloce.serving.protocol import HttpProtocol
 
     loop = asyncio.new_event_loop()
     try:
@@ -390,7 +390,6 @@ def test_draining_serves_inflight_request_and_declines_pipelined_followup():
     """Two pipelined requests: with the connection draining, the in-flight
     request is served in full and the pipelined follow-up is declined (the
     connection closes at the boundary instead of cancelling mid-pipeline)."""
-    from veloce.serving.protocol import HttpProtocol
 
     loop = asyncio.new_event_loop()
     try:
@@ -430,7 +429,6 @@ def test_draining_serves_inflight_request_and_declines_pipelined_followup():
 
 
 def _get(path: str):
-    from veloce.http.request import Request
 
     return Request(method="GET", path=path, query_string="", headers={}, body=b"")
 

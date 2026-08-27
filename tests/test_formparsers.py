@@ -6,6 +6,7 @@ import pytest
 
 from veloce import Request, TestClient, Veloce
 from veloce.exceptions import BadRequest, RequestEntityTooLarge
+from veloce.http.datastructures import UploadFile
 from veloce.http.formparsers import _parse_content_disposition, parse_multipart_form
 
 
@@ -112,7 +113,6 @@ def test_uploadfile_headers_isolated_across_parts():
 
 
 def test_uploadfile_accepts_plain_dict_headers():
-    from veloce.http.datastructures import UploadFile
 
     up = UploadFile(filename="x", headers={"X-A": "1"})
     assert up.headers["x-a"] == "1"

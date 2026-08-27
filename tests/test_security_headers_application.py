@@ -16,6 +16,7 @@ from __future__ import annotations
 import pytest
 
 from veloce import Request, Response, SecurityHeadersMiddleware, Veloce
+from veloce.http.response import header_present
 from veloce.testclient import TestClient
 
 REQUEST = Request(method="GET", path="/", query_string="", headers={}, body=b"")
@@ -193,7 +194,6 @@ async def test_the_result_matches_a_header_by_header_scan(hsts, csp, supplied):
     case-insensitive lookup per default - and requires the two to agree across
     every combination of configured defaults and handler-set headers.
     """
-    from veloce.http.response import header_present
 
     middleware = SecurityHeadersMiddleware(hsts_max_age=hsts, content_security_policy=csp)
 

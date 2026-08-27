@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from veloce import Response
+from veloce import FileResponse, Response
 
 
 def test_default_attachment():
@@ -80,8 +80,6 @@ def test_returns_header_value():
 
 def test_file_response_rejects_crlf_filename(tmp_path):
     import pytest
-
-    from veloce import FileResponse
 
     f = tmp_path / "d.bin"
     f.write_bytes(b"x")

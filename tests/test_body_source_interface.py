@@ -15,8 +15,9 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import Request
+from veloce import Request, Veloce
 from veloce.http._body import ASGIBodySource, BodySource, RequestBodySource
+from veloce.serving.protocol import HttpProtocol
 
 SOURCES = [RequestBodySource, ASGIBodySource]
 
@@ -124,9 +125,6 @@ class TestTheNativeProtocolReportsAVanishedClient:
     @staticmethod
     async def _protocol_with_streaming_route():
         import asyncio
-
-        from veloce import Veloce
-        from veloce.serving.protocol import HttpProtocol
 
         from ._protocol import _FakeTransport
 

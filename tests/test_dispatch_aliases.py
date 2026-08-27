@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from tests.conftest import make_request
 from veloce import Request, Response, Veloce
+from veloce.testclient import TestClient
 
 
 def _req() -> Request:
@@ -157,7 +158,6 @@ def test_make_response_matches_dispatch_for_an_unserialisable_value():
     stringification is the right default is a separate question - the point
     here is that one framework gives one answer.
     """
-    from veloce.testclient import TestClient
 
     app = Veloce(openapi_url=None)
 

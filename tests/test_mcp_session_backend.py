@@ -17,7 +17,7 @@ from typing import Any
 
 import pytest
 
-from veloce import Veloce
+from veloce import AsyncTestClient, Veloce
 from veloce.contrib.mcp.transports.session_store import (
     HttpSessionStore,
     SessionBackend,
@@ -246,8 +246,6 @@ async def test_a_client_initialized_on_one_worker_is_served_by_another():
     """The end-to-end shape: two apps, one backend, one client conversation."""
     import orjson
 
-    from veloce import AsyncTestClient
-
     backend = MemoryBackend()
     worker_a, worker_b = _app(), _app()
     worker_a.mount_mcp(transport="http", sessions=True, session_backend=backend)
@@ -265,7 +263,6 @@ async def test_a_client_initialized_on_one_worker_is_served_by_another():
 
 async def test_without_a_backend_the_other_worker_answers_not_found():
     """The behaviour a backend exists to fix, pinned so it stays visible."""
-    from veloce import AsyncTestClient
 
     worker_a, worker_b = _app(), _app()
     worker_a.mount_mcp(transport="http", sessions=True)
@@ -279,7 +276,6 @@ async def test_without_a_backend_the_other_worker_answers_not_found():
 
 
 async def test_a_delete_on_one_worker_ends_the_session_on_the_other():
-    from veloce import AsyncTestClient
 
     backend = MemoryBackend()
     worker_a, worker_b = _app(), _app()

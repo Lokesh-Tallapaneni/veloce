@@ -7,6 +7,7 @@ import sys
 
 import pytest
 
+from veloce import constant_time_compare as exported
 from veloce.safe import constant_time_compare, safe_join, secure_filename
 
 # ── constant_time_compare (S8) ───────────────────────────────────────
@@ -30,7 +31,6 @@ def test_constant_time_compare_type_mismatch_is_false():
 
 
 def test_constant_time_compare_exported_from_package():
-    from veloce import constant_time_compare as exported
 
     assert exported is constant_time_compare
 

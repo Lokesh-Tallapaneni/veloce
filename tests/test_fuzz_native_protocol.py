@@ -30,7 +30,7 @@ from hypothesis import strategies as st
 
 from tests._native_client import NativeTransport
 from veloce import Veloce
-from veloce.serving.protocol import HttpProtocol
+from veloce.serving.protocol import MAX_URL_SIZE, HttpProtocol
 
 CRLF = b"\r\n"
 
@@ -255,7 +255,6 @@ def test_an_oversized_target_is_measured_across_reads():
     `414` became a `400` - the request was refused for the wrong reason, and a
     limit measured per-fragment is not measuring the limit.
     """
-    from veloce.serving.protocol import MAX_URL_SIZE
 
     target = b"/" + b"a" * (MAX_URL_SIZE + 100)
     request = b"GET " + target + b" HTTP/1.1" + CRLF + b"host: x" + CRLF + CRLF
@@ -267,7 +266,6 @@ def test_an_oversized_target_is_measured_across_reads():
 
 def test_a_target_under_the_limit_is_still_served_when_split():
     """The negative: accumulating must not make an ordinary URL look oversized."""
-    from veloce.serving.protocol import MAX_URL_SIZE
 
     target = b"/" + b"a" * (MAX_URL_SIZE // 2)
     request = b"GET " + target + b" HTTP/1.1" + CRLF + b"host: x" + CRLF + CRLF

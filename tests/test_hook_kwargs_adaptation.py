@@ -30,6 +30,7 @@ from __future__ import annotations
 import pytest
 
 from veloce import Response, Veloce
+from veloce.app.dispatch import _adapt_hook_kwargs
 from veloce.testclient import TestClient
 
 # ── the exception handler ────────────────────────────────────────────
@@ -211,7 +212,6 @@ def test_both_helpers_treat_a_var_keyword_signature_the_same_way():
     Now it drives that adapter directly, with each caller's configuration, so it
     survives refactoring and fails only on an actual divergence.
     """
-    from veloce.app.dispatch import _adapt_hook_kwargs
 
     def var_keyword(**kwargs):
         return kwargs
@@ -229,7 +229,6 @@ def test_both_helpers_treat_a_var_keyword_signature_the_same_way():
 
 def test_the_adapter_offers_only_what_a_named_signature_asks_for():
     """The other half: a named signature gets exactly its parameters."""
-    from veloce.app.dispatch import _adapt_hook_kwargs
 
     def wants_both(request, response):
         return None
@@ -251,7 +250,6 @@ def test_the_adapter_offers_only_what_a_named_signature_asks_for():
 
 def test_the_adapter_caches_its_answer():
     """The cache is why the signature is inspected once rather than per request."""
-    from veloce.app.dispatch import _adapt_hook_kwargs
 
     def hook(request, response):
         return None
@@ -266,7 +264,6 @@ def test_the_adapter_caches_its_answer():
 def test_an_unhashable_callable_still_adapts():
     """`contextlib.suppress(TypeError)` around the cache write exists for this;
     without it an unhashable callable would raise instead of being adapted."""
-    from veloce.app.dispatch import _adapt_hook_kwargs
 
     class Unhashable:
         __hash__ = None  # type: ignore[assignment]
@@ -366,7 +363,6 @@ def test_a_non_weakref_able_hook_runs_on_every_request():
 
 def test_a_weakref_able_hook_is_still_cached():
     """The negative: tolerating the uncacheable case must not disable caching."""
-    from veloce.app.dispatch import _adapt_hook_kwargs
 
     def hook(request, response):
         return None

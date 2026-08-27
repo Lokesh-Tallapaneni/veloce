@@ -11,6 +11,11 @@ from __future__ import annotations
 import importlib
 
 import veloce
+from veloce.http import Request, UploadFile
+from veloce.middleware import Middleware, SessionMiddleware
+from veloce.routing import Query, Router
+from veloce.security import HTTPBasic, OAuth2PasswordBearer
+from veloce.serving import HttpProtocol
 
 VELOCE_ALL = {
     "APIKeyCookie",
@@ -412,41 +417,34 @@ def test_veloce_app_paths_resolve():
 
 
 def test_routing_subpackage():
-    from veloce.routing import Query, Router
 
     assert Router is not None
     assert Query is not None
 
 
 def test_http_subpackage():
-    from veloce.http import Request, UploadFile
 
     assert Request is not None
     assert UploadFile is not None
 
 
 def test_middleware_subpackage():
-    from veloce.middleware import (
-        Middleware,
-        SessionMiddleware,
-    )
+    # The import *is* the assertion: this module checks the subpackage
+    # publishes these names, so binding them at module top would move
+    # the failure to collection and out of the test that reports it.
 
     assert Middleware is not None
     assert SessionMiddleware is not None
 
 
 def test_security_subpackage():
-    from veloce.security import (
-        HTTPBasic,
-        OAuth2PasswordBearer,
-    )
+    # As above: importing here is what the test asserts.
 
     assert HTTPBasic is not None
     assert OAuth2PasswordBearer is not None
 
 
 def test_serving_subpackage():
-    from veloce.serving import HttpProtocol
 
     assert HttpProtocol is not None
 

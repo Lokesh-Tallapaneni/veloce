@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from veloce import Veloce
+from veloce.blueprints import Blueprint
 
 
 def test_url_value_preprocessors_starts_empty():
@@ -68,7 +69,6 @@ def test_url_default_functions_returns_snapshot():
 
 def test_url_processors_collected_from_blueprints():
     """Blueprint-registered processors are bucketed under the blueprint's name."""
-    from veloce.blueprints import Blueprint
 
     app = Veloce()
     bp = Blueprint("api", url_prefix="/api")

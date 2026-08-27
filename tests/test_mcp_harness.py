@@ -23,6 +23,7 @@ from tests._mcp import (
     call_raw,
 )
 from veloce import Veloce
+from veloce.contrib.mcp import MCPServer
 
 _INIT = {
     "jsonrpc": "2.0",
@@ -47,7 +48,6 @@ def _app() -> Veloce:
 
 
 def _server(app: Veloce):
-    from veloce.contrib.mcp import MCPServer
 
     return MCPServer(app)
 

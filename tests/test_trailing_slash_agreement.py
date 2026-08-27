@@ -21,6 +21,7 @@ from __future__ import annotations
 import pytest
 
 from veloce import Veloce
+from veloce.routing import router
 
 
 def _app(registered: str, *, strict: bool | None = None, both: bool = False) -> Veloce:
@@ -107,8 +108,6 @@ def test_root_is_never_treated_as_trailing_slash():
 def test_the_predicate_is_used_by_both_consumers():
     """The structural half: neither may grow its own copy again."""
     import inspect
-
-    from veloce.routing import router
 
     for name in ("_match_tree", "get_allowed_methods"):
         source = inspect.getsource(getattr(router.Router, name))

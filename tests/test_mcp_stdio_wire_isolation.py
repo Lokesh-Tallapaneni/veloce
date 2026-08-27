@@ -21,6 +21,11 @@ import sys
 
 import pytest
 
+from veloce import Veloce
+from veloce.contrib.mcp.server import MCPServer
+from veloce.contrib.mcp.transports import stdio
+from veloce.contrib.mcp.transports.stdio import _isolated_wire
+
 _HEADER = """
 import asyncio
 import subprocess
@@ -171,7 +176,6 @@ def test_a_handler_reading_stdin_cannot_steal_the_next_request(tmp_path):
 
 async def test_the_standard_descriptors_are_restored_after_serving():
     """A library that diverts descriptors and does not put them back is a trap."""
-    from veloce.contrib.mcp.transports.stdio import _isolated_wire
 
     before = (os.fstat(0), os.fstat(1))
     with _isolated_wire() as (reader, writer):
@@ -182,9 +186,6 @@ async def test_the_standard_descriptors_are_restored_after_serving():
 
 async def test_a_second_server_is_refused_rather_than_left_to_contend():
     """Two servers would each divert the other's descriptors."""
-    from veloce import Veloce
-    from veloce.contrib.mcp.server import MCPServer
-    from veloce.contrib.mcp.transports import stdio
 
     app = Veloce(title="Twice", openapi_url=None)
 
@@ -202,7 +203,6 @@ async def test_a_second_server_is_refused_rather_than_left_to_contend():
 
 async def test_the_claim_is_released_even_when_serving_raises():
     """A failed run must not leave the process unable to serve again."""
-    from veloce.contrib.mcp.transports import stdio
 
     class _Boom(Exception):
         pass

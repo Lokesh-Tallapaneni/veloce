@@ -10,7 +10,8 @@ worse than one that stays silent.
 
 from __future__ import annotations
 
-from veloce import HTMLResponse, PlainTextResponse, Veloce
+from veloce import APIRouter, HTMLResponse, PlainTextResponse, Veloce
+from veloce.contrib.mcp.resources import build_resource_registry
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.session import MCPSession
 
@@ -154,8 +155,6 @@ async def test_a_route_without_the_parameter_still_registers():
 
 def test_the_declaration_survives_a_router_merge():
     """`include_router` rebuilds each route; the declaration must be carried."""
-    from veloce import APIRouter
-    from veloce.contrib.mcp.resources import build_resource_registry
 
     router = APIRouter(prefix="/sub")
 

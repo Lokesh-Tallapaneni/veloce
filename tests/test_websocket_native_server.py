@@ -24,7 +24,8 @@ import struct
 
 import pytest
 
-from veloce import Veloce, WebSocket, status
+from veloce import Veloce, WebSocket, current_app, status
+from veloce.helpers import g
 from veloce.middleware.security import (
     TrustedHostMiddleware,
     WebSocketOriginMiddleware,
@@ -304,8 +305,6 @@ async def test_native_handler_has_app_context():
     # same way the ASGI path does, so handlers and helpers that read them work
     # under `Veloce.run()` instead of raising "Working outside of application
     # context".
-    from veloce import current_app
-    from veloce.helpers import g
 
     app = Veloce(openapi_url=None)
     app.config["WS_CONTEXT_MARKER"] = "bound"

@@ -23,7 +23,7 @@ import warnings
 
 import pytest
 
-from veloce import Blueprint, Depends, HTTPException, Request, Security, Veloce
+from veloce import Blueprint, Depends, HTTPException, Request, Router, Security, Veloce
 from veloce.security import APIKeyHeader
 from veloce.testclient import TestClient
 
@@ -59,7 +59,6 @@ def test_a_bare_callable_at_route_level_is_refused():
 
 
 def test_a_bare_callable_at_router_level_is_refused():
-    from veloce import Router
 
     router = Router(dependencies=[guard])
     with pytest.raises(TypeError, match="not a bare callable"):

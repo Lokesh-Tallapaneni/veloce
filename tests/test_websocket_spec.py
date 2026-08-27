@@ -9,7 +9,8 @@ import pytest
 
 from tests._native_ws import delivered, mark_accepted, nothing_delivered
 from tests._ws_frames import client_frame as _client_frame
-from veloce.websocket import WebSocket
+from veloce.exceptions import WebSocketDisconnect
+from veloce.websocket import _RAW_DISCONNECT, WebSocket
 
 
 class _FakeTransport:
@@ -208,7 +209,6 @@ async def test_websocket_raw_send_before_accept_raises():
 async def test_websocket_raw_send_after_close_raises():
     """`send()` after the connection is closed raises WebSocketDisconnect,
     matching send_text / send_bytes."""
-    from veloce.exceptions import WebSocketDisconnect
 
     ws, _ = _make_ws()
     await ws.accept()
@@ -267,7 +267,6 @@ async def test_websocket_data_frame_mid_fragmentation_is_protocol_error():
     protocol error (RFC 6455 §5.4) - only continuation frames may follow the
     opening frame, so the connection fails with 1002 and nothing is delivered."""
     ws, transport = _make_ws()
-    from veloce.websocket import _RAW_DISCONNECT
 
     ws.feed_data(_client_frame(0x1, b"abandoned-", fin=False))  # opens a fragment
     ws.feed_data(_client_frame(0x1, b"interrupt", fin=True))  # new data frame mid-stream
@@ -347,8 +346,6 @@ def test_receive_after_close_raises_disconnect():
     """A receive after the application closed the connection is a
     `WebSocketDisconnect`, matching the `send_*` close-state behaviour."""
     import asyncio
-
-    from veloce.exceptions import WebSocketDisconnect
 
     async def go() -> None:
         ws = mark_accepted(WebSocket(_FakeTransport(), {}))

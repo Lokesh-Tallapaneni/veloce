@@ -21,8 +21,10 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import Veloce
+from veloce import FileResponse, Veloce
+from veloce._internal import _quote_header_value
 from veloce.http.datastructures import Headers
+from veloce.security._utils import _quote_header_value as security_copy
 from veloce.testclient import TestClient
 
 BACKSLASH = chr(92)
@@ -123,7 +125,6 @@ def test_an_attachment_filename_round_trips(tmp_path, value):
 
     @app.get("/f")
     async def f():
-        from veloce import FileResponse
 
         return await FileResponse.from_path(str(path), filename=value)
 
@@ -159,7 +160,6 @@ def test_a_multipart_filename_round_trips(value):
 @pytest.mark.parametrize("value", AWKWARD)
 def test_every_producer_escapes_identically(value):
     """The property the four copies existed to satisfy and did not."""
-    from veloce._internal import _quote_header_value
 
     escaped = _quote_header_value(value)
     assert read_quoted('"' + escaped + '"') == (value, True)
@@ -167,14 +167,14 @@ def test_every_producer_escapes_identically(value):
 
 def test_the_security_alias_is_the_same_function():
     """`security/_utils` re-exports it rather than keeping a fourth copy."""
-    from veloce._internal import _quote_header_value
-    from veloce.security._utils import _quote_header_value as security_copy
 
     assert security_copy is _quote_header_value
 
 
 def test_a_realm_with_a_backslash_round_trips():
     """The WWW-Authenticate consumer, through the alias."""
+    # From the leaf, deliberately: module scope binds the same name from
+    # `_internal`, and this module's subject is that the two copies agree.
     from veloce.security._utils import _quote_header_value
 
     realm = "corp" + BACKSLASH + '"prod'

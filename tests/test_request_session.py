@@ -6,6 +6,7 @@ import pytest
 
 from tests.conftest import make_request
 from veloce import Request, SessionMiddleware, Veloce
+from veloce.testclient import TestClient
 
 
 def _req(path: str = "/") -> Request:
@@ -73,8 +74,6 @@ def test_session_round_trip_via_signed_cookie():
     @app.get("/get")
     async def get_it(request: Request):
         return {"count": request.session.get("count")}
-
-    from veloce.testclient import TestClient
 
     client = TestClient(app)
     client.get("/set")

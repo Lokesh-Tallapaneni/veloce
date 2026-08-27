@@ -30,6 +30,7 @@ import pytest
 
 from veloce import (
     HTMLResponse,
+    HTTPException,
     JSONResponse,
     ORJSONResponse,
     PlainTextResponse,
@@ -267,7 +268,6 @@ def test_a_405_is_still_json(cls):
 
 
 def test_a_raised_http_exception_is_still_json():
-    from veloce import HTTPException
 
     app = _app(default_response_class=HTMLResponse)
 

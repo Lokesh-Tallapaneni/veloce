@@ -25,6 +25,7 @@ import pytest
 
 from veloce import Veloce
 from veloce.middleware.security import WebSocketOriginMiddleware
+from veloce.serving.protocol import HttpProtocol
 
 _ALLOWED = "https://good.example"
 _EVIL = "https://evil.example"
@@ -144,7 +145,6 @@ class _FakeTransport(asyncio.Transport):
 
 def _native(path: str, origin: str | None) -> bytes:
     """Drive one raw handshake through the built-in server."""
-    from veloce.serving.protocol import HttpProtocol
 
     loop = asyncio.new_event_loop()
     try:

@@ -18,6 +18,8 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 from veloce import Request, Veloce
+from veloce.contrib.openapi import get_openapi_schema
+from veloce.middleware.security import CSPMiddleware
 from veloce.testclient import TestClient
 
 
@@ -173,8 +175,6 @@ def test_openapi_schema_generation():
     async def create_item(item: _OpenAPIItem):
         return item.model_dump()
 
-    from veloce.contrib.openapi import get_openapi_schema
-
     schema = get_openapi_schema(app)
 
     assert schema["info"]["title"] == "Test API"
@@ -230,8 +230,6 @@ def test_docs_pages_carry_the_csp_nonce():
     # otherwise the inline SwaggerUIBundle boot script cannot execute.
     import re
 
-    from veloce.middleware.security import CSPMiddleware
-
     app = Veloce()
     app.add_middleware(CSPMiddleware, policy="default-src 'self'; script-src {nonce}")
     client = app.test_client()
@@ -267,8 +265,6 @@ def test_deprecated_route():
     @app.get("/old", deprecated=True, summary="Old endpoint")
     async def old(request: Request):
         return {"old": True}
-
-    from veloce.contrib.openapi import get_openapi_schema
 
     schema = get_openapi_schema(app)
     assert schema["paths"]["/old"]["get"]["deprecated"] is True

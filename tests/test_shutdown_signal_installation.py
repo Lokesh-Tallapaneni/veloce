@@ -18,6 +18,7 @@ import pytest
 
 from veloce import Veloce
 from veloce.app.serving import ServingMixin
+from veloce.testclient import TestClient
 
 
 def _install(loop, on_shutdown):
@@ -131,7 +132,6 @@ def test_serve_no_longer_carries_the_platform_question() -> None:
 
 def test_serving_still_works_end_to_end() -> None:
     """The behaviour, not just the shape - through the public test client."""
-    from veloce.testclient import TestClient
 
     app = Veloce(openapi_url=None)
 

@@ -24,6 +24,7 @@ import pytest
 
 from veloce import Request, Veloce
 from veloce.middleware.base import Middleware
+from veloce.middleware.cors import CORSMiddleware
 from veloce.testclient import TestClient
 
 _LIMIT = 10
@@ -114,7 +115,6 @@ def test_a_pre_dispatch_rejection_carries_no_cors_header():
     phase has already run and it does carry the header - that asymmetry is the
     cost of refusing before reading, not an oversight.
     """
-    from veloce.middleware.cors import CORSMiddleware
 
     origin = {"origin": "https://site.example"}
     buffered = _client(

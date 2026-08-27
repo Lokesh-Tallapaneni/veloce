@@ -29,7 +29,7 @@ from typing import Union  # noqa: UP035 — exercises the typing.Union (not PEP 
 
 from pydantic import BaseModel
 
-from veloce import Form, Query, Request, Veloce
+from veloce import Body, Cookie, Form, Header, Query, Request, Veloce
 from veloce.contrib.openapi import _python_type_to_schema, get_openapi_schema
 
 
@@ -124,7 +124,6 @@ def test_bare_model_param_is_still_a_json_request_body() -> None:
 
 def test_explicit_body_model_is_a_json_request_body() -> None:
     # An explicit `Body()`-marked model is still a JSON request body $ref.
-    from veloce import Body
 
     app = Veloce()
 
@@ -140,7 +139,6 @@ def test_explicit_body_model_is_a_json_request_body() -> None:
 def test_header_and_cookie_model_markers_are_string_parameters() -> None:
     # A model carried by Header()/Cookie() is read from that source as a
     # JSON-document string, so it is a string `parameter`, not a requestBody.
-    from veloce import Cookie, Header
 
     app = Veloce()
 

@@ -11,8 +11,10 @@ import inspect
 
 import pytest
 
+import veloce.http.request as reqmod
 from tests.conftest import make_request
 from veloce import Request
+from veloce.exceptions import BadRequest
 
 
 def _req(body: bytes = b"", content_type: str = "application/json") -> Request:
@@ -59,7 +61,6 @@ def test_default_raises_on_malformed_json():
     # Malformed JSON now raises BadRequest (400) with a stable, body-independent
     # message instead of the raw decoder error - the sync path matches the async
     # one and no decoder internals leak into the production response.
-    from veloce.exceptions import BadRequest
 
     with pytest.raises(BadRequest) as exc:
         _req(b"not-json").get_json()
@@ -132,7 +133,6 @@ def test_get_json_raises_when_body_not_yet_buffered():
 
 def _count_loads(monkeypatch) -> dict:
     """Patch the module's orjson.loads with a call counter; return the counter."""
-    import veloce.http.request as reqmod
 
     calls = {"n": 0}
     real = reqmod.orjson.loads

@@ -7,6 +7,8 @@ import importlib.util
 import pytest
 
 from veloce import JSONResponse, ORJSONResponse, UJSONResponse, Veloce
+from veloce import ORJSONResponse as _ORJ
+from veloce import UJSONResponse as _UJ
 from veloce.testclient import TestClient
 
 # ── ORJSONResponse ─────────────────────────────────────────────────────
@@ -173,8 +175,6 @@ def test_ujson_response_raises_when_ujson_missing():
 
 
 def test_classes_in_veloce_exports():
-    from veloce import ORJSONResponse as _ORJ
-    from veloce import UJSONResponse as _UJ
 
     assert _ORJ is ORJSONResponse
     assert _UJ is UJSONResponse

@@ -30,7 +30,8 @@ import pytest
 
 from veloce import Veloce
 from veloce.contrib.staticfiles import StaticFiles
-from veloce.http.response import FileResponse
+from veloce.helpers import async_send_file
+from veloce.http.response import _INLINE_READ_MAX, FileResponse
 
 #: Comfortably over both streaming thresholds (`FileResponse` 64 KiB,
 #: `StaticFiles` 1 MiB) without making the suite slow.
@@ -243,7 +244,6 @@ async def test_a_range_request_buffers_its_slice(files):
 
 
 def test_the_thresholds_are_declared():
-    from veloce.http.response import _INLINE_READ_MAX
 
     assert _INLINE_READ_MAX == 64 * 1024
     assert StaticFiles.STREAM_THRESHOLD == 1024 * 1024
@@ -267,14 +267,12 @@ async def test_a_file_exactly_at_the_threshold_does_not_stream(tmp_path):
 
 
 async def test_async_send_file_streams_a_large_file(files):
-    from veloce.helpers import async_send_file
 
     response = await async_send_file(str(files / "big.bin"))
     assert response.is_streamed is True
 
 
 async def test_async_send_file_buffers_a_small_file(files):
-    from veloce.helpers import async_send_file
 
     response = await async_send_file(str(files / "small.bin"))
     assert response.is_streamed is False

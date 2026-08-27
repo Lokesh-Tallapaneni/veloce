@@ -13,6 +13,11 @@ import pytest
 
 from veloce import Veloce
 from veloce.app import _URLMap
+from veloce.background import BackgroundTask
+from veloce.blueprints import Blueprint
+from veloce.http.response import JSONResponse, Response
+from veloce.routing.router import Router
+from veloce.testclient import TestClient
 
 
 def _make_app() -> Veloce:
@@ -82,7 +87,6 @@ def test_url_map_cached_until_route_added():
 
 
 def test_caches_invalidated_by_register_blueprint():
-    from veloce.blueprints import Blueprint
 
     app = _make_app()
     routes_before = app.routes
@@ -99,7 +103,6 @@ def test_caches_invalidated_by_register_blueprint():
 
 
 def test_caches_invalidated_by_include_router():
-    from veloce.routing.router import Router
 
     app = _make_app()
     routes_before = app.routes
@@ -152,8 +155,6 @@ def test_bind_all_with_explicit_host_raises_value_error():
 
 def test_background_task_failure_is_logged(caplog):
 
-    from veloce.background import BackgroundTask
-
     app = Veloce(openapi_url=None)
 
     @app.get("/")
@@ -161,11 +162,7 @@ def test_background_task_failure_is_logged(caplog):
         async def boom():
             raise RuntimeError("kaboom")
 
-        from veloce.http.response import Response
-
         return Response(body=b"ok", background=BackgroundTask(boom))
-
-    from veloce.testclient import TestClient
 
     with caplog.at_level(logging.ERROR, logger=app.logger.name), TestClient(app) as client:
         resp = client.get("/")
@@ -192,8 +189,6 @@ def test_coerce_response_does_not_treat_duck_model_dump_as_pydantic():
     built from `result.model_dump()`, silently masking real bugs.
     """
 
-    from veloce.http.response import JSONResponse
-
     app = Veloce(openapi_url=None)
 
     class DuckTyped:
@@ -215,8 +210,6 @@ def test_coerce_response_does_not_treat_duck_model_dump_as_pydantic():
 
 def test_coerce_response_handles_real_pydantic_model():
     from pydantic import BaseModel
-
-    from veloce.http.response import JSONResponse
 
     class Item(BaseModel):
         name: str

@@ -23,19 +23,23 @@ from tests._mcp_shared import (
 from veloce import (
     JSONResponse,
     MCPContext,
+    Middleware,
     Principal,
+    Request,
     Veloce,
 )
 from veloce.contrib.mcp import MCPAuth
 from veloce.contrib.mcp.server import MCPServer
+from veloce.contrib.mcp.session import MCPSession
+from veloce.contrib.mcp.tasks import STATUS_CANCELLED, STATUS_COMPLETED, new_task
+from veloce.contrib.mcp.transports.event_store import SSEEventStore
+from veloce.contrib.mcp.transports.http import _stream_response
 
 # -- Hardening: single is_mcp check, Origin, metadata, provenance -----
 
 
 def test_exclude_middleware_and_is_mcp_cover_transport_and_replay():
     app = Veloce(openapi_url=None)
-
-    from veloce import Middleware
 
     class Auth(Middleware):
         async def process_request(self, request):
@@ -95,8 +99,6 @@ def test_principal_token_not_in_repr():
 
 def test_tool_argument_cannot_spoof_header_or_cookie():
     app = Veloce(openapi_url=None)
-
-    from veloce import Request
 
     @app.get(
         "/probe", expose_as_mcp_resource=False, mcp_description="Probe", expose_as_mcp_tool=True
@@ -560,6 +562,8 @@ def test_resume_get_rejects_unsupported_protocol_version():
 
 
 def test_event_store_replays_after_eviction_window():
+    # Deferred: one test needs the event store's internals, and the module
+    # top deliberately imports only the public transport surface.
     from veloce.contrib.mcp.transports.event_store import (
         _MAX_EVENTS_PER_STREAM,
         SSEEventStore,
@@ -577,7 +581,6 @@ def test_event_store_replays_after_eviction_window():
 
 
 def test_event_store_discards_unknown_stream_and_malformed_ids():
-    from veloce.contrib.mcp.transports.event_store import SSEEventStore
 
     store = SSEEventStore()
     store.record("s", 1, {"v": 1})
@@ -587,7 +590,6 @@ def test_event_store_discards_unknown_stream_and_malformed_ids():
 
 
 async def test_sse_disconnection_does_not_cancel_the_call():
-    from veloce.contrib.mcp.transports.http import _stream_response
 
     app = Veloce(openapi_url=None)
     started = asyncio.Event()
@@ -602,8 +604,6 @@ async def test_sse_disconnection_does_not_cancel_the_call():
         await release.wait()
         ran_to_completion.set()
         return "done"
-
-    from veloce.contrib.mcp.session import MCPSession
 
     stream = _stream_response(MCPServer(app), _mcp_call_body("work"), None, MCPSession())
     gen = stream._stream
@@ -697,11 +697,6 @@ async def test_notifications_cancelled_non_hashable_id_is_ignored():
 
 
 def test_task_settle_is_idempotent_after_cancel():
-    from veloce.contrib.mcp.tasks import (
-        STATUS_CANCELLED,
-        STATUS_COMPLETED,
-        new_task,
-    )
 
     # A `tasks/cancel` racing the runner's natural completion: the cancel settles
     # the task first, and the runner's later COMPLETED settle must not overwrite
@@ -731,7 +726,6 @@ async def test_initialize_request_is_not_cancellable():
 
 
 async def test_http_sse_call_is_cancelled_by_notification():
-    from veloce.contrib.mcp.transports.http import _stream_response
 
     app = Veloce(openapi_url=None)
     started = asyncio.Event()
@@ -744,8 +738,6 @@ async def test_http_sse_call_is_cancelled_by_notification():
         await release.wait()
         ran_to_completion.set()
         return "done"
-
-    from veloce.contrib.mcp.session import MCPSession
 
     server = MCPServer(app)
     # One connection: the cancel must arrive on the same session the call runs

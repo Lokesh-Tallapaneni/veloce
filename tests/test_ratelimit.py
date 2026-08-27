@@ -6,6 +6,7 @@ import pytest
 
 from tests.conftest import make_request
 from veloce import (
+    Blueprint,
     FixedWindow,
     InMemoryRateLimitBackend,
     RateLimitBackend,
@@ -16,7 +17,10 @@ from veloce import (
     SlidingWindow,
     TokenBucket,
     Veloce,
+    rate_limit,
 )
+from veloce.audit import run
+from veloce.ratelimit import RATE_LIMIT_ATTR
 from veloce.testclient import TestClient
 
 # ── FixedWindow ──────────────────────────────────────────────────────
@@ -349,7 +353,6 @@ def _req(app, path):
 def test_unknown_override_key_is_reported_not_raised_on_a_request():
     """It used to raise here, so silencing the startup finding - the documented
     way of accepting it - turned every request into a 500 instead."""
-    from veloce.audit import run
 
     app = Veloce(openapi_url=None)
 
@@ -410,7 +413,6 @@ def test_valid_override_key_starts_up_cleanly():
 
 
 def test_blueprint_override_key_needs_prefix():
-    from veloce import Blueprint
 
     app = Veloce(openapi_url=None)
     bp = Blueprint("api", url_prefix="/api")
@@ -421,7 +423,6 @@ def test_blueprint_override_key_needs_prefix():
 
     app.register_blueprint(bp)
     # The bare "/login" matches no route; the prefixed "/api/login" does.
-    from veloce.audit import run
 
     bad = RateLimitMiddleware(strategy=FixedWindow(10), overrides={"/login": FixedWindow(1)})
     bad_app = Veloce(openapi_url=None)
@@ -439,8 +440,6 @@ def test_blueprint_override_key_needs_prefix():
 
 
 def test_rate_limit_decorator_tags_handler():
-    from veloce import rate_limit
-    from veloce.ratelimit import RATE_LIMIT_ATTR
 
     strat = FixedWindow(5, 60)
 
@@ -452,14 +451,12 @@ def test_rate_limit_decorator_tags_handler():
 
 
 def test_rate_limit_decorator_requires_strategy():
-    from veloce import rate_limit
 
     with pytest.raises(TypeError, match="RateLimitStrategy"):
         rate_limit("nope")
 
 
 def test_rate_limit_decorator_applies_per_route():
-    from veloce import rate_limit
 
     app = Veloce(openapi_url=None)
     app.add_middleware(RateLimitMiddleware(strategy=FixedWindow(100, 60)))
@@ -486,7 +483,6 @@ def test_rate_limit_decorator_applies_to_hidden_route():
     # POST, an internal endpoint - the routes most worth throttling) must still
     # be enforced. The strategy scan walks hidden routes too, so the tag is not
     # silently dropped with the schema-only view.
-    from veloce import rate_limit
 
     app = Veloce(openapi_url=None)
     app.add_middleware(RateLimitMiddleware(strategy=FixedWindow(100, 60)))
@@ -505,7 +501,6 @@ def test_rate_limit_decorator_applies_to_hidden_route():
 def test_route_added_after_first_request_is_limited():
     # A route registered after the per-route cache was primed must still be
     # picked up (the cache rebuilds when the app's route generation advances).
-    from veloce import rate_limit
 
     app = Veloce(openapi_url=None)
     app.add_middleware(RateLimitMiddleware(strategy=FixedWindow(100, 60)))
@@ -527,7 +522,6 @@ def test_route_added_after_first_request_is_limited():
 
 
 def test_explicit_override_wins_over_decorator():
-    from veloce import rate_limit
 
     app = Veloce(openapi_url=None)
     # Decorator says 100/min, overrides says 1/min - the explicit map wins.
@@ -728,7 +722,6 @@ def test_strict_overrides_defaults_to_failing_startup():
 
 
 def _tagged_app(**middleware_kwargs) -> Veloce:
-    from veloce import rate_limit
 
     app = Veloce(openapi_url=None)
     app.add_middleware(RateLimitMiddleware(**middleware_kwargs))
@@ -820,7 +813,6 @@ async def test_distinct_clients_keep_distinct_tagged_buckets():
 
 def test_a_route_added_after_the_first_request_is_tagged():
     """The route table can grow; the tag map is rebuilt on generation change."""
-    from veloce import rate_limit
 
     app = Veloce(openapi_url=None)
     app.add_middleware(RateLimitMiddleware(max_requests=1000, window_seconds=60))

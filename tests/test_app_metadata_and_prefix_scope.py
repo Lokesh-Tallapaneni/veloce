@@ -29,6 +29,8 @@ from __future__ import annotations
 import pytest
 
 from veloce import Veloce
+from veloce.app.mounting import MountingMixin
+from veloce.contrib.openapi import _validate_document
 from veloce.testclient import TestClient
 
 # ── title and version are refused at construction ────────────────────
@@ -107,7 +109,6 @@ def test_a_title_needing_escaping_is_still_escaped():
 @pytest.mark.parametrize("field", ["title", "version"])
 def test_the_validator_rejects_a_missing_required_field(field):
     """The gap: `validate_openapi=True` passed a document it should reject."""
-    from veloce.contrib.openapi import _validate_document
 
     document = {"info": {"title": "t", "version": "1"}, "paths": {}}
     del document["info"][field]
@@ -118,7 +119,6 @@ def test_the_validator_rejects_a_missing_required_field(field):
 @pytest.mark.parametrize("value", [None, 123, ""])
 @pytest.mark.parametrize("field", ["title", "version"])
 def test_the_validator_rejects_a_non_string_required_field(field, value):
-    from veloce.contrib.openapi import _validate_document
 
     document = {"info": {"title": "t", "version": "1"}, "paths": {}}
     document["info"][field] = value
@@ -127,21 +127,18 @@ def test_the_validator_rejects_a_non_string_required_field(field, value):
 
 
 def test_the_validator_rejects_a_missing_info_object():
-    from veloce.contrib.openapi import _validate_document
 
     with pytest.raises(ValueError, match="`info` must be an object"):
         _validate_document({"paths": {}})
 
 
 def test_the_validator_accepts_a_well_formed_document():
-    from veloce.contrib.openapi import _validate_document
 
     _validate_document({"info": {"title": "t", "version": "1"}, "paths": {}})
 
 
 def test_the_validator_still_catches_a_dangling_ref():
     """The checks it already had must survive the new ones."""
-    from veloce.contrib.openapi import _validate_document
 
     document = {
         "info": {"title": "t", "version": "1"},
@@ -282,8 +279,6 @@ def test_the_app_still_serves_its_own_routes_without_a_schema():
 def test_the_docstrings_state_the_boundaries():
     """These were the gap; a future edit that drops them fails here."""
     import inspect
-
-    from veloce.app.mounting import MountingMixin
 
     assert "does not apply here" in inspect.getdoc(MountingMixin.mount)
     source = inspect.getsource(Veloce.__init__)

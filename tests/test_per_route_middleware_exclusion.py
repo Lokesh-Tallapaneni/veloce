@@ -13,7 +13,22 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import Middleware, Request, TestClient, Veloce
+from veloce import Blueprint, JSONResponse, Middleware, Request, TestClient, Veloce
+from veloce.middleware.compression import GZipMiddleware
+from veloce.middleware.conditional import ConditionalGetMiddleware
+from veloce.middleware.cors import CORSMiddleware
+from veloce.middleware.csrf import CSRFMiddleware
+from veloce.middleware.logging import LoggingMiddleware, RequestIDMiddleware
+from veloce.middleware.proxy_fix import ProxyFix
+from veloce.middleware.security import (
+    CSPMiddleware,
+    HTTPSRedirectMiddleware,
+    RateLimitMiddleware,
+    SecurityHeadersMiddleware,
+    TrustedHostMiddleware,
+    WebSocketOriginMiddleware,
+)
+from veloce.middleware.sessions import ServerSessionMiddleware, SessionMiddleware
 
 
 class _Tagger(Middleware):
@@ -102,7 +117,6 @@ def test_excluded_middleware_cannot_short_circuit():
 
     class Blocker(Middleware):
         async def process_request(self, request: Request):
-            from veloce import JSONResponse
 
             return JSONResponse({"blocked": True}, status_code=403)
 
@@ -237,7 +251,6 @@ def test_proxyfix_accepts_name_and_is_targetable_by_exclusion():
     # `add_middleware(ProxyFix, name="edge")` must instantiate (the override
     # used to raise TypeError), and a route-level `exclude_middleware=["edge"]`
     # must be able to target that instance by its overridden name.
-    from veloce.middleware.proxy_fix import ProxyFix
 
     app = Veloce(openapi_url=None)
     app.add_middleware(ProxyFix, name="edge", x_for=1, x_proto=1)
@@ -264,21 +277,6 @@ def test_proxyfix_accepts_name_and_is_targetable_by_exclusion():
 def _builtin_middleware_cases() -> list[tuple[type, dict]]:
     # Every built-in `Middleware` subclass with its own `__init__`, paired with
     # the minimal required args; `name=` is appended by the test below.
-    from veloce.middleware.compression import GZipMiddleware
-    from veloce.middleware.conditional import ConditionalGetMiddleware
-    from veloce.middleware.cors import CORSMiddleware
-    from veloce.middleware.csrf import CSRFMiddleware
-    from veloce.middleware.logging import LoggingMiddleware, RequestIDMiddleware
-    from veloce.middleware.proxy_fix import ProxyFix
-    from veloce.middleware.security import (
-        CSPMiddleware,
-        HTTPSRedirectMiddleware,
-        RateLimitMiddleware,
-        SecurityHeadersMiddleware,
-        TrustedHostMiddleware,
-        WebSocketOriginMiddleware,
-    )
-    from veloce.middleware.sessions import ServerSessionMiddleware, SessionMiddleware
 
     return [
         (CORSMiddleware, {}),
@@ -350,7 +348,6 @@ def test_blueprint_route_preserves_exclude_middleware():
     # Re-registering a blueprint route onto the app (`_readd_route`) must forward
     # `exclude_middleware`; otherwise a webhook route that opted out of a
     # middleware silently has it run again after `register_blueprint`.
-    from veloce import Blueprint
 
     bp = Blueprint("hooks")
 

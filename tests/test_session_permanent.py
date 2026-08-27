@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 
+import veloce.signing as signing
 from veloce import Request, Session, Veloce
 from veloce.middleware.sessions import SessionMiddleware
 from veloce.testclient import TestClient
@@ -18,7 +19,6 @@ def _sign_aged_cookie(mw: SessionMiddleware, payload: dict, age_seconds: int) ->
     Replay safety, not the client `Max-Age`, is what the server must enforce:
     an attacker keeps the stolen cookie regardless of its browser expiry.
     """
-    import veloce.signing as signing
 
     real_time = time.time
     try:

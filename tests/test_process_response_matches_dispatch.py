@@ -23,8 +23,8 @@ import asyncio
 
 import pytest
 
-from veloce import Request, Response, Veloce
-from veloce.helpers import after_this_request
+from veloce import Blueprint, Request, Response, Veloce
+from veloce.helpers import _current_request_var, after_this_request
 from veloce.testclient import TestClient
 
 
@@ -183,7 +183,6 @@ async def test_app_hooks_run_in_reverse_registration_order():
 
 
 async def test_blueprint_hooks_run_after_the_app_hooks():
-    from veloce import Blueprint
 
     app = Veloce(openapi_url=None)
     order = []
@@ -208,7 +207,6 @@ async def test_blueprint_hooks_run_after_the_app_hooks():
 
 
 async def test_another_blueprints_hook_does_not_run():
-    from veloce import Blueprint
 
     app = Veloce(openapi_url=None)
     ran = []
@@ -270,8 +268,6 @@ async def test_a_one_shot_callback_runs():
     request = _request()
     ran = []
 
-    from veloce.helpers import _current_request_var
-
     token = _current_request_var.set(request)
     try:
         after_this_request(lambda response: ran.append("one-shot"))
@@ -291,7 +287,6 @@ async def test_a_one_shot_callback_runs_after_the_global_hooks():
         order.append("global")
 
     request = _request()
-    from veloce.helpers import _current_request_var
 
     token = _current_request_var.set(request)
     try:

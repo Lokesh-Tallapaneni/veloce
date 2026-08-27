@@ -30,6 +30,7 @@ from pydantic import BaseModel
 
 from veloce import Response, Veloce
 from veloce._model_backend import resolve_response_contract, resolve_return_model
+from veloce.contrib.mcp.registry import build_registry
 
 
 class Model(BaseModel):
@@ -135,8 +136,6 @@ def test_a_dataclass_return_reaches_both_doors():
 
     info = next(i for _m, p, i in app._collect_all_routes() if p == "/p")
     assert info.response_model is Point
-
-    from veloce.contrib.mcp.registry import build_registry
 
     tool = build_registry(app).tools["mcp_point"]
     assert tool.output_schema is not None

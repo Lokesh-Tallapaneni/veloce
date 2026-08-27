@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import pytest
 
+import veloce.signing
 from veloce import check_reset_token, make_reset_token
 from veloce.security.reset_token import RESET_TOKEN_SALT
+from veloce.signing import Signer
 
 SECRET = "server-secret"
 STATE_A = b"user42:hashA"
@@ -30,7 +32,6 @@ def test_expired_returns_false(monkeypatch):
     for one assertion, and the module's whole runtime. Moving the clock back for
     the minting call is exact and instant.
     """
-    import veloce.signing
 
     real = veloce.signing.time.time
     monkeypatch.setattr(veloce.signing.time, "time", lambda: real() - 600)
@@ -79,7 +80,6 @@ def test_non_bytes_state_raises_typeerror():
 
 
 def test_version_mismatch_returns_false():
-    from veloce.signing import Signer
 
     signer = Signer(SECRET, RESET_TOKEN_SALT)
     import hashlib

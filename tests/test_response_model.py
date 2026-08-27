@@ -5,6 +5,7 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 from veloce import Veloce
+from veloce.http.response import JSONResponse
 from veloce.testclient import TestClient
 
 
@@ -83,7 +84,6 @@ def test_response_model_list_of_models():
 def test_response_model_not_applied_when_handler_returns_response():
     """If the handler returns a raw Response, response_model is bypassed —
     the user has taken explicit control of the wire format."""
-    from veloce.http.response import JSONResponse
 
     app = Veloce(debug=True, openapi_url=None)
 

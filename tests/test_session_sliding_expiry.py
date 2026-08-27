@@ -9,6 +9,7 @@ behavior - only a modifying write writes anything back.
 
 from __future__ import annotations
 
+import veloce.sessions as _sessions
 from veloce import (
     InMemorySessionStore,
     Request,
@@ -154,7 +155,6 @@ def test_server_read_only_restamps_when_on(monkeypatch):
     # (notably on Windows), which would make the restamp land on the identical
     # expiry. Drive a strictly increasing clock so the slide-forward is
     # deterministic regardless of platform resolution.
-    import veloce.sessions as _sessions
 
     clock = {"t": 1000.0}
 

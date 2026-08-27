@@ -13,6 +13,7 @@ from veloce import (
     Security,
     Veloce,
 )
+from veloce.contrib.openapi import get_openapi_schema
 
 
 def _req(headers: dict | None = None) -> Request:
@@ -77,8 +78,6 @@ async def test_auth_code_bearer_emits_openapi_security_scheme():
     async def get_items(token=Security(oauth2)):
         return []
 
-    from veloce.contrib.openapi import get_openapi_schema
-
     schema = get_openapi_schema(app)
     schemes = schema["components"]["securitySchemes"]
     assert "OAuth2AuthorizationCodeBearer" in schemes
@@ -98,8 +97,6 @@ async def test_openid_connect_emits_openapi_security_scheme():
     @app.get("/items")
     async def get_items(token=Security(oidc)):
         return []
-
-    from veloce.contrib.openapi import get_openapi_schema
 
     schema = get_openapi_schema(app)
     schemes = schema["components"]["securitySchemes"]

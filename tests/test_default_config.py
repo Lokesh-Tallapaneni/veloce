@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from tests.conftest import make_request
-from veloce import Request, Veloce
+from veloce import Request, SessionMiddleware, Veloce
 from veloce.config import Config
 
 
@@ -66,7 +66,6 @@ def test_each_app_gets_independent_config():
 
 def test_the_session_lifetime_default_lives_on_the_middleware():
     """It configures the cookie, so it belongs to the middleware, not config."""
-    from veloce import SessionMiddleware
 
     assert "PERMANENT_SESSION_LIFETIME" not in Veloce().config
     # 31 days in seconds - the default.

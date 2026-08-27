@@ -19,7 +19,10 @@ from __future__ import annotations
 
 import pytest
 
+from veloce import Veloce
 from veloce._header_parsing import parse_header_params, split_outside_quotes
+from veloce.middleware.proxy_fix import ProxyFix
+from veloce.testclient import TestClient
 
 BS = chr(92)
 
@@ -67,7 +70,6 @@ class TestForwardedHopSelectionIsNotEvadable:
 
     @staticmethod
     def _parse(header: str) -> dict[str, str]:
-        from veloce.middleware.proxy_fix import ProxyFix
 
         return ProxyFix.__new__(ProxyFix)._parse_forwarded(header, 1, 0, 1, 0)
 
@@ -85,9 +87,6 @@ class TestForwardedHopSelectionIsNotEvadable:
 
 def test_remote_addr_is_not_attacker_controlled_through_a_backslash() -> None:
     """End to end: the value a handler reads, through the real middleware."""
-    from veloce import Veloce
-    from veloce.middleware.proxy_fix import ProxyFix
-    from veloce.testclient import TestClient
 
     app = Veloce(openapi_url=None)
     app.add_middleware(ProxyFix(x_for=1, x_proto=0, x_host=0, x_prefix=0))

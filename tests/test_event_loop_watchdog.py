@@ -13,7 +13,7 @@ import time
 
 import pytest
 
-from veloce import EventLoopWatchdog, Veloce
+from veloce import Depends, EventLoopWatchdog, Veloce
 from veloce.watchdog import _classify_block
 
 
@@ -190,8 +190,6 @@ def test_report_attributes_the_stall_to_the_blocking_dependency(caplog):
     """A stall inside a dependency names the route and the dependency."""
     app = Veloce(debug=True, openapi_url=None)
     app.config["EVENT_LOOP_WATCHDOG"] = {"interval": 0.02, "stall_threshold": 0.05}
-
-    from veloce import Depends
 
     async def slow_dep():
         time.sleep(0.25)  # noqa: ASYNC251 — deliberately blocks the loop

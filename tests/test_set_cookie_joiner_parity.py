@@ -24,7 +24,10 @@ import pytest
 
 from tests._native_client import NativeClient
 from veloce import JSONResponse, Veloce
+from veloce._internal import _encode_response_head
 from veloce._protocol_constants import SET_COOKIE_JOINER
+from veloce.app.asgi import _build_asgi_headers
+from veloce.http.response import Response
 
 _COOKIES = [("a", "1"), ("b", "2"), ("c", "3")]
 
@@ -187,10 +190,6 @@ def test_no_splitter_hardcodes_the_separator():
     docstrings, and flagging those would make this guard noise.
     """
     import inspect
-
-    from veloce._internal import _encode_response_head
-    from veloce.app.asgi import _build_asgi_headers
-    from veloce.http.response import Response
 
     for name, func in (
         ("_build_asgi_headers", _build_asgi_headers),

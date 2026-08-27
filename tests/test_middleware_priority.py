@@ -8,6 +8,8 @@ set the chain is the plain registration order it has always been.
 from __future__ import annotations
 
 from veloce import Veloce
+from veloce.http.request import Request
+from veloce.http.response import Response
 from veloce.middleware import Middleware
 
 
@@ -27,11 +29,9 @@ def _recorder(label: str, log: list[str]) -> type[Middleware]:
 
 
 async def _drive(app: Veloce, log: list[str]) -> None:
-    from veloce.http.request import Request
 
     request = Request(method="GET", path="/", query_string="", headers={}, body=b"")
     await app._run_request_middleware(request)
-    from veloce.http.response import Response
 
     await app._run_response_middleware(request, Response(body=b""))
 

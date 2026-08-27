@@ -17,6 +17,7 @@ import inspect
 
 import pytest
 
+import veloce.app as app_package
 from veloce import Veloce
 from veloce.app.mcp import MCPMixin
 
@@ -68,8 +69,6 @@ def test_no_mixin_declares_slots():
     """
     import importlib
     import pkgutil
-
-    import veloce.app as app_package
 
     mixins: list[type] = []
     for info in pkgutil.iter_modules(app_package.__path__):

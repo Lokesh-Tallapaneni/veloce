@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 
 from veloce import HTTPException, JSONResponse, Veloce
+from veloce.contrib.mcp.server import MCPServer
+from veloce.contrib.mcp.transports.stdio import StdioTransport
 from veloce.exceptions import Forbidden, NotFound
 
 
@@ -101,9 +103,6 @@ async def test_error_body_is_identical_across_http_and_mcp_doors():
     MCP path routes through `handle_user_exception`; those two builders drifting
     apart is invisible in tests that only exercise one door."""
     import orjson
-
-    from veloce.contrib.mcp.server import MCPServer
-    from veloce.contrib.mcp.transports.stdio import StdioTransport
 
     app = Veloce(openapi_url=None)
 

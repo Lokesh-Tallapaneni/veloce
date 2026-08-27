@@ -14,6 +14,7 @@ from __future__ import annotations
 from veloce import Veloce
 from veloce.blueprints import Blueprint
 from veloce.http.request import Request
+from veloce.http.response import Response
 
 
 def _make_request(endpoint: str) -> Request:
@@ -100,8 +101,6 @@ def test_process_response_runs_matched_blueprint_hooks_reversed():
     app.register_blueprint(bp)
 
     import asyncio
-
-    from veloce.http.response import Response
 
     asyncio.run(app.process_response(_make_request("bp.handler"), Response()))
     # Reversed: app-level reverse-iterates first, then bp bucket reverse-iterates.

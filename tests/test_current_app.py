@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from veloce import Request, Veloce, current_app
+from veloce import current_app as ca
 from veloce.testclient import TestClient
 
 
@@ -106,7 +107,6 @@ def test_current_app_repr():
 
 def test_current_app_in_veloce_exports():
     """`from veloce import current_app` works."""
-    from veloce import current_app as ca
 
     assert ca is current_app
 

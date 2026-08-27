@@ -9,6 +9,7 @@ import types
 import pytest
 
 from veloce import FileResponse, Veloce
+from veloce.exceptions import Forbidden
 
 
 def test_static_folder_defaults_to_static():
@@ -110,7 +111,6 @@ def test_an_absolute_static_folder_is_used_as_is(tmp_path):
 
 def test_send_static_file_safe_join_blocks_traversal():
     """Path traversal via `..` raises 403 — safe_join refusal."""
-    from veloce.exceptions import Forbidden
 
     app = Veloce(openapi_url=None)
     app.static_folder = os.path.dirname(__file__)
@@ -136,7 +136,6 @@ async def test_send_static_file_async_serves_from_absolute_static_folder(tmp_pat
 
 
 async def test_send_static_file_async_blocks_traversal():
-    from veloce.exceptions import Forbidden
 
     app = Veloce(openapi_url=None)
     app.static_folder = os.path.dirname(__file__)

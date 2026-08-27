@@ -6,6 +6,7 @@ import pytest
 
 from veloce import Veloce
 from veloce.contrib.mcp import CompletionResult, CompletionsCapability
+from veloce.contrib.mcp.completion import _MAX_CONTEXT_ARGS
 from veloce.contrib.mcp.server import MCPServer
 
 
@@ -254,7 +255,6 @@ async def test_malformed_request_is_invalid_params(params):
 
 async def test_oversized_context_arguments_is_bounded():
     """An oversized client `context.arguments` is rejected, not materialized wholesale."""
-    from veloce.contrib.mcp.completion import _MAX_CONTEXT_ARGS
 
     app = Veloce()
 

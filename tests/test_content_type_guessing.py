@@ -15,6 +15,7 @@ import pytest
 
 from veloce import FileResponse, TestClient, Veloce
 from veloce._internal import MIME_OCTET_STREAM, guess_content_type
+from veloce.contrib.staticfiles import StaticFiles
 
 
 @pytest.mark.parametrize(
@@ -102,8 +103,6 @@ def test_a_served_file_and_a_static_file_are_named_alike(tmp_path):
     @app.get("/download")
     async def download() -> FileResponse:
         return FileResponse(str(tmp_path / "shared.css"))
-
-    from veloce.contrib.staticfiles import StaticFiles
 
     app.mount("/static", StaticFiles(directory=str(tmp_path)))
 

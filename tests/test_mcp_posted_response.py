@@ -15,6 +15,9 @@ from __future__ import annotations
 import pytest
 
 from veloce import TestClient, Veloce
+from veloce.contrib.mcp.server import MCPServer
+from veloce.contrib.mcp.session import MCPSession
+from veloce.contrib.mcp.transports import stdio
 
 _INVALID_REQUEST = -32600
 
@@ -114,8 +117,6 @@ def test_a_tool_call_is_still_answered():
 
 async def test_the_dispatcher_returns_nothing_for_a_response():
     """`None` is what tells a transport there is nothing to send back."""
-    from veloce.contrib.mcp.server import MCPServer
-    from veloce.contrib.mcp.session import MCPSession
 
     app = Veloce(title="Dispatch", openapi_url=None)
 
@@ -132,8 +133,6 @@ async def test_the_dispatcher_returns_nothing_for_a_response():
 async def test_stdio_still_resolves_a_reply_before_dispatch():
     """stdio owns pending requests, so it must keep intercepting replies itself."""
     import inspect
-
-    from veloce.contrib.mcp.transports import stdio
 
     source = inspect.getsource(stdio)
     assert '"method" not in message' in source

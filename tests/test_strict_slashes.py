@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from tests.conftest import make_request
-from veloce import Request, Veloce
+from veloce import Blueprint, Request, Veloce
+from veloce.routing.router import Router
+from veloce.testclient import TestClient
 
 
 def _req(path: str) -> Request:
@@ -123,7 +125,6 @@ async def test_strict_slashes_only_affects_decorated_route():
 
 
 def _tolerant_blueprint():
-    from veloce import Blueprint
 
     bp = Blueprint("bp", url_prefix="/bp")
 
@@ -135,7 +136,6 @@ def _tolerant_blueprint():
 
 
 def _tolerant_router():
-    from veloce.routing.router import Router
 
     sub = Router(prefix="/sub")
 
@@ -147,7 +147,6 @@ def _tolerant_router():
 
 
 def _client(app: Veloce):
-    from veloce.testclient import TestClient
 
     return TestClient(app)
 
@@ -182,7 +181,6 @@ def test_both_registration_paths_agree():
 
 
 def test_a_nested_blueprint_route_keeps_it_too():
-    from veloce import Blueprint
 
     parent = Blueprint("parent", url_prefix="/p")
     parent.register_blueprint(_tolerant_blueprint())
@@ -193,7 +191,6 @@ def test_a_nested_blueprint_route_keeps_it_too():
 
 def test_a_blueprint_route_without_the_override_stays_strict():
     """Carrying the flag must not make every blueprint route tolerant."""
-    from veloce import Blueprint
 
     bp = Blueprint("strict", url_prefix="/s")
 

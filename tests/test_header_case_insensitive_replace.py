@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import CORSMiddleware, Response, Veloce
+from veloce import CORSMiddleware, Response, SessionMiddleware, Veloce
 from veloce.http.response import header_get, header_key, header_pop, header_present
 from veloce.testclient import TestClient
 
@@ -240,7 +240,6 @@ def test_the_merged_vary_reaches_the_headerlist(stored):
 
 def test_a_session_response_keeps_a_hand_written_vary():
     """End to end: the middleware that runs `add_vary` on every response."""
-    from veloce import SessionMiddleware
 
     app = Veloce(openapi_url=None)
     app.config["SECRET_KEY"] = "k"

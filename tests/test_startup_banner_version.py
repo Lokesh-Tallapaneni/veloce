@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import veloce
 from veloce import Veloce
-from veloce._version import resolve_version
+from veloce._version import UNKNOWN_VERSION, resolve_version
 
 
 def _banner(app: Veloce, capsys, **kwargs) -> str:
@@ -97,7 +97,6 @@ def test_the_banner_is_three_lines(capsys):
 
 def test_the_resolved_version_is_not_the_unknown_sentinel():
     """In a working install the banner must show a real number."""
-    from veloce._version import UNKNOWN_VERSION
 
     assert resolve_version() != UNKNOWN_VERSION
 

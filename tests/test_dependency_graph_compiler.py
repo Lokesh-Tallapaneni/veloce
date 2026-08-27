@@ -10,7 +10,7 @@ taken where expected, rejected where not, and that both paths agree.
 from __future__ import annotations
 
 from tests.conftest import make_request
-from veloce import BackgroundTasks, Depends, Query, Response, Security, Veloce
+from veloce import BackgroundTasks, Body, Depends, Query, Response, Security, Veloce
 from veloce._constants import STATE_INJECTED_RESPONSE
 from veloce._handler_plan import build_plan
 from veloce._internal import offload
@@ -112,7 +112,6 @@ def test_scopeless_security_dependency_compiles():
 def test_body_marker_dependency_does_not_compile():
     # A dep that reads the JSON body (await request.json()) cannot be reached
     # from the synchronous parameter emit, so the graph stays on the interpreter.
-    from veloce import Body
 
     def needs_body(v: int = Body()):
         return v

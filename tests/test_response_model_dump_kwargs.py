@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from veloce import Veloce
+from veloce import Blueprint, Router, Veloce
 from veloce.testclient import TestClient
 
 # Module scope: this file uses PEP 563, so a model defined inside a test
@@ -431,7 +431,6 @@ def test_the_decorator_flag_is_the_supported_form():
 
 
 def test_a_blueprint_route_recomputes_the_mapping():
-    from veloce import Blueprint
 
     bp = Blueprint("shop", url_prefix="/shop")
 
@@ -447,7 +446,6 @@ def test_a_blueprint_route_recomputes_the_mapping():
 
 
 def test_an_included_router_route_recomputes_the_mapping():
-    from veloce import Router
 
     router = Router()
 
@@ -464,7 +462,6 @@ def test_an_included_router_route_recomputes_the_mapping():
 
 def test_a_copied_route_with_no_options_still_has_the_attribute():
     """An absent attribute would raise on the first response, not misbehave."""
-    from veloce import Blueprint
 
     bp = Blueprint("plain", url_prefix="/p")
 
@@ -482,7 +479,6 @@ def test_a_copied_route_with_no_options_still_has_the_attribute():
 def test_include_and_exclude_sets_survive_a_copy():
     """Collections are normalised in `__init__`; a copy must renormalise, not
     carry a half-converted value across."""
-    from veloce import Router
 
     router = Router()
 

@@ -14,8 +14,10 @@ import pytest
 
 from tests._native_ws import deliver, mark_accepted
 from tests._ws_frames import client_frame as _client_frame
+from veloce import Veloce
 from veloce.exceptions import WebSocketDisconnect
 from veloce.status import WS_1001_GOING_AWAY
+from veloce.testclient import TestClient
 from veloce.websocket import WebSocket
 
 
@@ -336,7 +338,6 @@ async def test_raw_mode_silent_after_frame_still_idle_closes():
 
 def _observed_timeout(**config) -> float | None:
     """The idle timeout the socket actually carries once dispatch has begun."""
-    from veloce import Veloce
 
     seen: dict[str, float | None] = {}
     app = Veloce(openapi_url=None)
@@ -347,8 +348,6 @@ def _observed_timeout(**config) -> float | None:
         await ws.accept()
         seen["timeout"] = ws._idle_timeout
         await ws.close()
-
-    from veloce.testclient import TestClient
 
     with TestClient(app).websocket_connect("/ws"):
         pass
@@ -367,8 +366,6 @@ def test_no_configured_window_leaves_the_socket_unbounded():
 
 def test_a_handler_can_still_override_the_configured_window():
     """`set_idle_timeout` is documented as the handler's own control."""
-    from veloce import Veloce
-    from veloce.testclient import TestClient
 
     seen: dict[str, float | None] = {}
     app = Veloce(openapi_url=None)

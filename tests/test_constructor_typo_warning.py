@@ -25,6 +25,7 @@ import warnings
 import pytest
 
 from veloce import Veloce
+from veloce.testclient import TestClient
 
 
 def _warnings_for(**kwargs) -> list[str]:
@@ -141,7 +142,6 @@ def test_a_correctly_spelled_parameter_produces_no_warning():
 
 def test_the_app_still_works_with_a_typo():
     """A warning, not a refusal - the app must still serve."""
-    from veloce.testclient import TestClient
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")

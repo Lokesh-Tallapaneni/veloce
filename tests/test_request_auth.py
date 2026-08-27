@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 
 from veloce import Authorization, Request
+from veloce import Authorization as AuthClass
 
 
 def _req(authz: str | None = None) -> Request:
@@ -136,7 +137,6 @@ def test_scheme_preserves_original_case():
 
 
 def test_authorization_in_veloce_exports():
-    from veloce import Authorization as AuthClass
 
     assert AuthClass is Authorization
 

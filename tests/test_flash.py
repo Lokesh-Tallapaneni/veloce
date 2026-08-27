@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from veloce import Request, Veloce
-from veloce.helpers import flash, get_flashed_messages
+from veloce.helpers import _current_request_var, flash, get_flashed_messages
+from veloce.http.response import RedirectResponse
 from veloce.middleware.sessions import SessionMiddleware
 from veloce.testclient import TestClient
 
@@ -145,7 +146,6 @@ def test_flash_survives_redirect_via_session():
     @app.post("/post")
     def post_handler():
         flash("created", "success")
-        from veloce.http.response import RedirectResponse
 
         return RedirectResponse("/show", status_code=303)
 
@@ -170,9 +170,6 @@ def test_flash_outside_session_raises_clear_error():
     helpful hint into a generic 500 is caught.
     """
     import pytest
-
-    from veloce.helpers import _current_request_var
-    from veloce.http.request import Request
 
     # Synthesise a request without a session so we can assert the
     # message directly. Going through `TestClient` would convert the

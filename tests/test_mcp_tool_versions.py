@@ -17,7 +17,8 @@ import orjson
 import pytest
 
 from veloce import Veloce
-from veloce.contrib.mcp.registry import build_registry
+from veloce.contrib.mcp.proxy import add_mcp_proxy
+from veloce.contrib.mcp.registry import _version_key, build_registry
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.session import MCPSession
 from veloce.contrib.mcp.transform import derive_tool
@@ -356,7 +357,6 @@ def test_what_a_tool_advertises_is_what_the_server_can_dispatch():
 
 async def test_a_proxied_tool_publishes_no_version_the_gateway_cannot_serve():
     """The upstream can answer `calc@1.0`; a gateway forwarding by name cannot."""
-    from veloce.contrib.mcp.proxy import add_mcp_proxy
 
     upstream = MCPServer(_versioned_app())
 
@@ -374,7 +374,6 @@ async def test_a_proxied_tool_publishes_no_version_the_gateway_cannot_serve():
 
 async def test_other_upstream_metadata_still_travels():
     """Only the block this server cannot honour is dropped."""
-    from veloce.contrib.mcp.proxy import add_mcp_proxy
 
     async def request(method: str, params: dict) -> dict:
         return {
@@ -458,7 +457,6 @@ async def test_two_non_numeric_labels_still_order():
 
 
 def test_ten_still_sorts_above_two():
-    from veloce.contrib.mcp.registry import _version_key
 
     assert max(["2.0", "10.0"], key=_version_key) == "10.0"
 

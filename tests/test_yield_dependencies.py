@@ -10,6 +10,7 @@ import pytest
 
 from tests.conftest import make_request
 from veloce import Depends, Request, Veloce
+from veloce.signals import got_request_exception
 
 
 def _req(path: str = "/") -> Request:
@@ -182,7 +183,6 @@ async def test_yield_dep_teardown_exception_fires_got_request_exception():
     """A swallowed teardown failure is still observable: it is delivered to
     `got_request_exception` receivers so error trackers see it even though
     the already-built response is returned unchanged."""
-    from veloce.signals import got_request_exception
 
     app = Veloce(debug=True, openapi_url=None)
     seen: list[BaseException | None] = []

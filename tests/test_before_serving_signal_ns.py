@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from veloce import Veloce
+from veloce import Veloce, signals
 
 
 async def test_before_serving_runs_on_startup():
@@ -48,7 +48,6 @@ async def test_before_serving_alongside_on_startup_both_fire():
 
 def test_signal_namespace_exposes_module():
     """`app.signal_namespace` is the `veloce.signals` module."""
-    from veloce import signals
 
     app = Veloce(openapi_url=None)
     assert app.signal_namespace is signals

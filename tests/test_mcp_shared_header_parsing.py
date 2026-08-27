@@ -28,7 +28,7 @@ from __future__ import annotations
 import pytest
 
 from tests._mcp import auth
-from veloce import Veloce
+from veloce import Depends, HTTPBearer, Veloce
 from veloce.contrib.mcp import MCPAuth
 from veloce.principal import Principal
 from veloce.testclient import TestClient
@@ -161,7 +161,6 @@ def test_a_missing_or_wrong_credential_is_refused(header):
 
 def test_the_two_doors_agree_on_what_a_token_is():
     """The property: one credential, one answer, whichever door reads it."""
-    from veloce import Depends, HTTPBearer
 
     app = Veloce(openapi_url=None)
 

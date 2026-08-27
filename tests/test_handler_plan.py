@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import BaseModel
 
+import veloce.dependency as dep
 from veloce import Depends, Header, Query, Request, Veloce
 from veloce._handler_plan import (
     K_BG_TASKS,
@@ -20,6 +21,7 @@ from veloce._handler_plan import (
 )
 from veloce.background import BackgroundTasks
 from veloce.http.datastructures import UploadFile
+from veloce.http.response import Response
 
 
 class _Item(BaseModel):
@@ -303,8 +305,6 @@ def test_response_import_is_module_level_in_dependency():
     module at import time. The previous inline `from veloce.http.response
     import Response` inside `_resolve_slots` paid an import-system
     lookup on every request whose handler injected a Response."""
-    import veloce.dependency as dep
-    from veloce.http.response import Response
 
     assert hasattr(dep, "Response")
     assert dep.Response is Response

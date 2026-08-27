@@ -28,6 +28,7 @@ from veloce._resolver_codegen import (
     _cached_source_keys,
     _register_source_key,
 )
+from veloce.testclient import TestClient
 
 
 @pytest.fixture(autouse=True)
@@ -58,8 +59,6 @@ def test_a_compiled_resolver_registers_its_source():
     async def chained(value: int = Depends(dep)):
         return {"value": value}
 
-    from veloce.testclient import TestClient
-
     with TestClient(app) as client:
         client.get("/chained?q=1")
 
@@ -76,8 +75,6 @@ def test_a_registered_source_is_tracked_for_eviction():
     @app.get("/q")
     async def q(a: int = 0):
         return {"a": a}
-
-    from veloce.testclient import TestClient
 
     with TestClient(app) as client:
         client.get("/q?a=1")

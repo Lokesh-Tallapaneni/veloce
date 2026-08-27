@@ -14,6 +14,7 @@ from __future__ import annotations
 import pytest
 
 from veloce import Veloce
+from veloce.contrib import staticfiles
 from veloce.contrib.staticfiles import StaticFiles
 from veloce.testclient import TestClient
 
@@ -120,8 +121,6 @@ def test_staticfiles_checks_search_perm_not_read_by_default(tmp_path, monkeypatc
     # Serving a known file needs X_OK (search); R_OK (read) is only for listing.
     import os
 
-    from veloce.contrib import staticfiles
-
     seen = {}
 
     def _spy(path, mode):
@@ -135,8 +134,6 @@ def test_staticfiles_checks_search_perm_not_read_by_default(tmp_path, monkeypatc
 
 def test_staticfiles_directory_index_requires_read_and_search(tmp_path, monkeypatch):
     import os
-
-    from veloce.contrib import staticfiles
 
     seen = {}
     monkeypatch.setattr(staticfiles.os, "access", lambda p, m: seen.update(mode=m) or True)

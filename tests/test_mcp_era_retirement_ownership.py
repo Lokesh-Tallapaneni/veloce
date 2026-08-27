@@ -21,12 +21,14 @@ from __future__ import annotations
 import pytest
 
 from veloce import Veloce
-from veloce.contrib.mcp.capabilities.base import Capability
+from veloce.contrib.mcp.capabilities.base import Capability, _ServerCapability
+from veloce.contrib.mcp.capabilities.concrete import LoggingCapability
 from veloce.contrib.mcp.server import (
     _CORE_HANDSHAKE_ONLY_METHODS,
     MODERN_PROTOCOL_VERSION,
     MCPServer,
 )
+from veloce.contrib.mcp.tasks import TasksCapability
 
 #: What the old hardcoded frozenset contained. The union must still equal it.
 HISTORIC_SET = frozenset({"logging/setLevel", "ping", "tasks/list", "tasks/result"})
@@ -130,7 +132,6 @@ def test_a_capability_does_not_advertise_what_it_retires():
 
 
 def test_logging_is_withheld_on_the_modern_revision():
-    from veloce.contrib.mcp.capabilities.concrete import LoggingCapability
 
     capability = next(c for c in _server()._capabilities if isinstance(c, LoggingCapability))
     assert capability.advertise(modern=True) is None
@@ -138,7 +139,6 @@ def test_logging_is_withheld_on_the_modern_revision():
 
 
 def test_tasks_withholds_list_on_the_modern_revision():
-    from veloce.contrib.mcp.tasks import TasksCapability
 
     app = Veloce(title="Tasked", version="1.0.0", openapi_url=None)
 
@@ -223,7 +223,6 @@ def test_a_method_no_capability_retires_is_served_on_both():
 
 def test_a_capability_retiring_a_method_has_it_refused():
     """The whole point: one edit, and the dispatcher follows."""
-    from veloce.contrib.mcp.capabilities.base import _ServerCapability
 
     class Extra(_ServerCapability):
         __slots__ = ()
@@ -247,7 +246,6 @@ def test_a_capability_retiring_a_method_has_it_refused():
 
 
 def test_a_capability_retiring_nothing_adds_nothing():
-    from veloce.contrib.mcp.capabilities.base import _ServerCapability
 
     class Quiet(_ServerCapability):
         __slots__ = ()

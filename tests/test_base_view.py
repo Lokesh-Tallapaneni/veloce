@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from tests.conftest import make_request
-from veloce import Request, Veloce, View
+from veloce import MethodView, Request, Veloce, View
 from veloce.testclient import TestClient
 
 
@@ -131,6 +131,5 @@ def test_decorators_are_applied():
 
 
 def test_methodview_still_subclasses_view():
-    from veloce import MethodView
 
     assert issubclass(MethodView, View)

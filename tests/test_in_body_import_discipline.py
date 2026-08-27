@@ -11,8 +11,17 @@ already binds the name is the one that decides whether the module can even be
 collected, so the inner one could not have failed independently.
 
 There are real reasons to import inside a body, and this guard allows all of
-them - it only rejects an import that binds exactly what a module-top import
-already binds, from the same place.
+them. It rejects two shapes that are never one of those reasons:
+
+  * an import binding exactly what a module-top import already binds - whether
+    from the same place, or by a different path to the same object
+    (`veloce.BadRequest` *is* `veloce.exceptions.BadRequest`);
+  * a `veloce.*` import inside a body of a module that never calls
+    `importorskip` or `pytest.skip`, where there is nothing to defer: `veloce`
+    is always importable, so the top of the module could bind it.
+
+A hoist of the second shape moved 410 imports out of 235 modules, and removing
+the copies it made redundant took 193 more.
 """
 
 from __future__ import annotations
@@ -71,6 +80,43 @@ def _redundant(path: pathlib.Path) -> list[str]:
             ):
                 offenders.append(f"{node.name}:{sub.lineno}")
     return offenders
+
+
+def _unjustified_first_party(path: pathlib.Path) -> list[str]:
+    """`veloce.*` imports inside a body where nothing could need deferring."""
+    text = path.read_text(encoding="utf-8")
+    if "importorskip" in text or "pytest.skip" in text:
+        return []
+    lines = text.split(chr(10))
+    tree = ast.parse(text, filename=str(path))
+    offenders: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for sub in ast.walk(node):
+            if not isinstance(sub, (ast.Import, ast.ImportFrom)) or sub.col_offset == 0:
+                continue
+            module = sub.module if isinstance(sub, ast.ImportFrom) else sub.names[0].name
+            if not module or module.split(".")[0] != "veloce":
+                continue
+            # A comment marks a deliberate deferral - a re-export check, or an
+            # import the test monkeypatches around. Above the statement is
+            # where the style guide puts one; trailing is accepted too.
+            above = lines[sub.lineno - 2].strip() if sub.lineno >= 2 else ""
+            if "#" in lines[sub.lineno - 1] or above.startswith("#"):
+                continue
+            offenders.append(f"{node.name}:{sub.lineno}")
+    return offenders
+
+
+@pytest.mark.parametrize("path", _modules(), ids=lambda p: p.name)
+def test_no_first_party_import_hides_inside_a_body(path):
+    offenders = _unjustified_first_party(path)
+    assert offenders == [], (
+        f"{path.name}: `veloce` is always importable and this module has no "
+        "skip guard, so these have nothing to defer - move them to the module "
+        f"top, or add a comment saying what the deferral is for: {offenders}"
+    )
 
 
 @pytest.mark.parametrize("path", _modules(), ids=lambda p: p.name)

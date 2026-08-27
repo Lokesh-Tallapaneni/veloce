@@ -36,6 +36,11 @@ import warnings
 import pytest
 import tomllib
 
+import veloce
+from veloce import Veloce
+from veloce._warnings import VeloceDeprecationWarning
+from veloce.testclient import TestClient
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 README = ROOT / "README.md"
 EXAMPLE = ROOT / "example_app.py"
@@ -89,8 +94,6 @@ def test_the_example_app_still_serves():
     """End to end: the migrated hooks must actually run."""
     import importlib.util
 
-    from veloce.testclient import TestClient
-
     spec = importlib.util.spec_from_file_location("_example_app_serve", EXAMPLE)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -101,8 +104,6 @@ def test_the_example_app_still_serves():
 
 def test_on_event_is_still_deprecated():
     """The negative: if it stopped warning, the test above would prove nothing."""
-    from veloce import Veloce
-    from veloce._warnings import VeloceDeprecationWarning
 
     app = Veloce(openapi_url=None)
     with pytest.warns(VeloceDeprecationWarning, match="on_event"):
@@ -135,7 +136,6 @@ def test_the_feature_table_mentions_each_shipped_area(area: str, needle: str):
 
 def test_every_named_symbol_in_the_feature_table_is_exported():
     """A table naming something that does not exist is worse than an omission."""
-    import veloce
 
     table = README.read_text(encoding="utf-8")
     section = table.split("## Feature surface", 1)[1].split("\n\n", 3)[1]

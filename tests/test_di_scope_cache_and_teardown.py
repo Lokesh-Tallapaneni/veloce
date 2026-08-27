@@ -31,6 +31,7 @@ from veloce import (
     SecurityScopes,
     Veloce,
 )
+from veloce import ConfigurationError as CE
 from veloce.dependency import DependencyResolver
 
 
@@ -372,7 +373,6 @@ def _registered(handler) -> bool:
 
 
 def test_configuration_error_in_exports():
-    from veloce import ConfigurationError as CE
 
     assert CE is ConfigurationError
 

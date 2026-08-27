@@ -8,9 +8,11 @@ anonymous caller over HTTP.
 
 from __future__ import annotations
 
+import veloce.security as security_pkg
 from veloce import Depends, Veloce, current_principal
 from veloce.middleware.sessions import SessionMiddleware
 from veloce.security import SessionAuth, login_session, logout_session
+from veloce.security.base import SecurityScheme
 from veloce.testclient import TestClient
 
 
@@ -214,8 +216,6 @@ def test_no_undescribed_scheme_warning_is_raised():
 
 def test_every_shipped_scheme_describes_itself():
     """Stated as the property, so a new scheme cannot reintroduce the gap."""
-    import veloce.security as security_pkg
-    from veloce.security.base import SecurityScheme
 
     undescribed = []
     for name in dir(security_pkg):

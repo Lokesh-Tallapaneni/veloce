@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import HTTPSRedirectMiddleware, TrustedHostMiddleware, Veloce
+from veloce import HTTPSRedirectMiddleware, Request, TrustedHostMiddleware, Veloce
 from veloce.testclient import TestClient
 
 # ── M6: TrustedHostMiddleware wildcards ────────────────────────────────
@@ -133,8 +133,6 @@ async def test_no_redirect_when_scope_scheme_https():
     """If the ASGI server says the transport is already HTTPS, no redirect."""
     # We can't easily inject scope.scheme through TestClient, so verify via
     # direct dispatch of a synthetic scope.
-
-    from veloce import Request
 
     app = Veloce(debug=True, openapi_url=None)
     app.add_middleware(HTTPSRedirectMiddleware())

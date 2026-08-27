@@ -17,7 +17,7 @@ from __future__ import annotations
 import pytest
 
 from veloce import Veloce
-from veloce._pipeline import build_request_middleware, build_response_middleware
+from veloce._pipeline import _implements, build_request_middleware, build_response_middleware
 from veloce.http.response import Response
 from veloce.middleware.base import Middleware
 from veloce.middleware.compression import CompressionMiddleware
@@ -99,7 +99,6 @@ def test_the_shipped_middleware_is_classified_as_documented(
     middleware: type, phase: str, expected: bool
 ) -> None:
     """The claim in the module docstring, checked against the actual classes."""
-    from veloce._pipeline import _implements
 
     instance = middleware.__new__(middleware)
     assert _implements(instance, phase) is expected

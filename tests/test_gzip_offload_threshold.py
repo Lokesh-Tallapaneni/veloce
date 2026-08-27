@@ -18,6 +18,7 @@ from __future__ import annotations
 import gzip
 
 from veloce import GZipMiddleware, Response, TestClient, Veloce
+from veloce.middleware import compression
 
 
 def _app(**kwargs) -> Veloce:
@@ -33,7 +34,6 @@ def _app(**kwargs) -> Veloce:
 
 def _count_offloads(monkeypatch, app: Veloce, size: int):
     """Serve `size` bytes and report how many times compression was offloaded."""
-    from veloce.middleware import compression
 
     calls: list = []
     real = compression.offload

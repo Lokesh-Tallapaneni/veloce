@@ -19,6 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from tests._protocol import _drain_loop, _FakeTransport, _run_until
 from veloce import Veloce
+from veloce.config import Config
 from veloce.http._body import DEFAULT_HIGH_WATER_CHUNKS
 from veloce.serving.protocol import (
     MAX_HEADER_SIZE,
@@ -1610,7 +1611,6 @@ def test_keep_alive_timeout_honours_config_override():
 def test_timeout_defaults_unchanged():
     """The class-attribute defaults and the seeded config keys both stay at the
     documented 75s / 30s, so an app that sets neither override is unaffected."""
-    from veloce.config import Config
 
     assert HttpProtocol.KEEP_ALIVE_TIMEOUT == 75
     assert HttpProtocol.REQUEST_TIMEOUT == 30

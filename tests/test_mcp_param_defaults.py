@@ -8,6 +8,7 @@ import orjson
 
 from veloce import Body, Query, Veloce
 from veloce.contrib.mcp.server import MCPServer
+from veloce.testclient import TestClient
 
 
 def _tool_app() -> Veloce:
@@ -142,8 +143,6 @@ async def test_a_mutable_default_is_not_shared_between_tool_calls():
 def test_both_doors_give_the_handler_its_own_value():
     """One handler, two doors: neither may see the other's mutations."""
     import asyncio
-
-    from veloce.testclient import TestClient
 
     app = _accumulating_app()
     server = MCPServer(app)

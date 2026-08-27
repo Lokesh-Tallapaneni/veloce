@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 
-from veloce import FileResponse, async_send_file, send_file
+from veloce import FileResponse, Request, Veloce, async_send_file, send_file
 
 
 def _make_file(tmp_path, name: str = "a.txt", content: bytes = b"hello") -> str:
@@ -71,7 +71,6 @@ def test_no_cache_control_outside_request_context(tmp_path):
 async def test_max_age_default_from_config(tmp_path):
     """`SEND_FILE_MAX_AGE_DEFAULT` supplies Cache-Control when the caller
     does not pass `max_age=` and a request is in flight."""
-    from veloce import Request, Veloce
 
     app = Veloce(openapi_url=None)
     app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 1234
@@ -87,7 +86,6 @@ async def test_max_age_default_from_config(tmp_path):
 
 
 async def test_explicit_max_age_beats_config_default(tmp_path):
-    from veloce import Request, Veloce
 
     app = Veloce(openapi_url=None)
     app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 1234

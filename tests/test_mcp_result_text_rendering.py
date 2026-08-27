@@ -38,7 +38,9 @@ import json
 import pytest
 
 from veloce import MCPContext, Veloce
+from veloce.contrib.mcp.server import MCPServer
 from veloce.json_provider import DefaultJSONProvider
+from veloce.secret import Secret
 
 INITIALIZE = {
     "jsonrpc": "2.0",
@@ -170,13 +172,11 @@ def test_a_plain_app_renders_stock_json(tool):
 
 def test_a_plain_app_pays_no_resolution():
     """`resolve_dumps` returns `None` when nothing is configured."""
-    from veloce.contrib.mcp.server import MCPServer
 
     assert MCPServer(_app(None))._result_dumps is None
 
 
 def test_a_configured_app_resolves_once():
-    from veloce.contrib.mcp.server import MCPServer
 
     assert MCPServer(_app(ShoutingProvider))._result_dumps is not None
 
@@ -229,7 +229,6 @@ def test_a_bytes_result_is_still_text(provider):
 
 def test_a_provider_that_refuses_a_value_still_refuses_it():
     """A `Secret` is refused on purpose; a provider must not smuggle it out."""
-    from veloce.secret import Secret
 
     app = Veloce(title="Sec", version="1.0.0", openapi_url=None)
     app.json_provider_class = ShoutingProvider

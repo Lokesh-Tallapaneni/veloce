@@ -23,7 +23,7 @@ import asyncio
 import pytest
 
 from tests.conftest import make_request
-from veloce import Depends, Request, Veloce
+from veloce import Depends, Request, Response, Veloce
 from veloce.testclient import TestClient
 
 
@@ -135,7 +135,6 @@ async def test_the_alias_runs_the_after_request_hooks():
 
 
 async def test_a_before_request_short_circuit_is_honoured_through_the_alias():
-    from veloce import Response
 
     app = _app()
 

@@ -19,6 +19,8 @@ from tests._mcp_shared import (
 from veloce import (
     Veloce,
 )
+from veloce.contrib.mcp.plan_bridge import JSON_SCHEMA_DIALECT
+from veloce.contrib.mcp.server import LATEST_PROTOCOL_VERSION
 
 # -- Protocol version + ping ------------------------------------------
 
@@ -32,7 +34,6 @@ def test_initialize_echoes_supported_protocol_version():
 
 def test_initialize_falls_back_to_latest_for_unknown_version():
     """An unrecognised requested version yields the server's latest supported."""
-    from veloce.contrib.mcp.server import LATEST_PROTOCOL_VERSION
 
     app = Veloce(openapi_url=None)
     resp = _initialize(app, {"protocolVersion": "1999-01-01"})
@@ -41,7 +42,6 @@ def test_initialize_falls_back_to_latest_for_unknown_version():
 
 def test_initialize_without_version_returns_latest():
     """An `initialize` with no `protocolVersion` returns the latest supported."""
-    from veloce.contrib.mcp.server import LATEST_PROTOCOL_VERSION
 
     app = Veloce(openapi_url=None)
     resp = _initialize(app, {})
@@ -207,7 +207,6 @@ def test_pure_tool_without_title_has_no_annotations():
 
 def test_input_schema_declares_2020_12_dialect():
     """Every tool input schema declares the JSON Schema 2020-12 dialect."""
-    from veloce.contrib.mcp.plan_bridge import JSON_SCHEMA_DIALECT
 
     app = Veloce(openapi_url=None)
 
@@ -220,7 +219,6 @@ def test_input_schema_declares_2020_12_dialect():
 
 def test_output_schema_declares_2020_12_dialect():
     """A declared output schema also declares the 2020-12 dialect."""
-    from veloce.contrib.mcp.plan_bridge import JSON_SCHEMA_DIALECT
 
     app = Veloce(openapi_url=None)
 

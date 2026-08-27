@@ -44,6 +44,9 @@ import pathlib
 
 import pytest
 
+import veloce.http
+import veloce.http.formparsers as formparsers
+
 ROOT = pathlib.Path(__file__).resolve().parents[1] / "src" / "veloce"
 
 
@@ -199,7 +202,6 @@ def test_a_self_import_would_be_found():
 
 def test_the_parser_is_exported_from_the_gateway():
     """Removing the shim must not remove the name from the documented surface."""
-    import veloce.http
 
     assert "parse_multipart_form" in veloce.http.__all__
     assert veloce.http.parse_multipart_form is not None
@@ -210,6 +212,5 @@ def test_the_parser_is_exported_from_the_gateway():
     ["DEFAULT_MAX_MULTIPART_PARTS", "DEFAULT_MAX_MULTIPART_PART_SIZE", "parse_multipart_form"],
 )
 def test_the_re_exported_names_live_in_formparsers(name):
-    import veloce.http.formparsers as formparsers
 
     assert hasattr(formparsers, name)

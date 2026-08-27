@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import Namespace, Signal, Veloce
+from veloce import Depends, Namespace, Signal, Veloce
 from veloce.config import Config
 from veloce.security.http import HTTPBearer
 from veloce.testclient import TestClient
@@ -175,7 +175,6 @@ def test_the_published_scheme_is_lower_cased():
 @pytest.mark.parametrize("scheme", ["Bearer", "Token", "DPoP"])
 def test_the_document_and_the_runtime_agree(scheme):
     """The property: what is published is what is accepted."""
-    from veloce import Depends
 
     app = Veloce(openapi_url=None)
     guard = HTTPBearer(scheme_name=scheme)
@@ -194,7 +193,6 @@ def test_the_document_and_the_runtime_agree(scheme):
 
 def test_a_different_scheme_is_still_refused():
     """The negative: accepting anything would pass the test above vacuously."""
-    from veloce import Depends
 
     app = Veloce(openapi_url=None)
 
@@ -207,7 +205,6 @@ def test_a_different_scheme_is_still_refused():
 
 def test_the_scheme_reaches_the_openapi_document():
     """End to end: through the generated document, not just the method."""
-    from veloce import Depends
 
     app = Veloce(title="S", version="1.0.0")
 

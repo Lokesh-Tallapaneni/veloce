@@ -38,8 +38,8 @@ import gc
 
 import pytest
 
-from veloce import CORSMiddleware, Veloce
-from veloce.testclient import TestClient
+from veloce import CORSMiddleware, Response, Veloce
+from veloce.testclient import AsyncTestClient, TestClient
 
 
 def _cors_app(**options) -> Veloce:
@@ -143,7 +143,6 @@ def test_a_bare_wildcard_with_no_origin_does_not_vary():
 
 def test_an_existing_vary_survives():
     """`Vary` is a list header other middleware contribute to."""
-    from veloce import Response
 
     app = Veloce(openapi_url=None)
     app.add_middleware(CORSMiddleware(allow_origins=["https://good.com"]))
@@ -197,7 +196,6 @@ def test_del_on_a_half_built_client_does_not_raise():
 
 
 def test_del_on_a_half_built_async_client_does_not_raise():
-    from veloce.testclient import AsyncTestClient
 
     client = AsyncTestClient.__new__(AsyncTestClient)
     deleter = getattr(AsyncTestClient, "__del__", None)
@@ -232,8 +230,6 @@ def test_a_normal_client_still_closes_its_loop():
 def test_the_async_client_del_is_guarded_too():
     """The sync and async clients must not diverge - the project's parity rule."""
     import inspect
-
-    from veloce.testclient import AsyncTestClient
 
     for cls in (TestClient, AsyncTestClient):
         deleter = getattr(cls, "__del__", None)

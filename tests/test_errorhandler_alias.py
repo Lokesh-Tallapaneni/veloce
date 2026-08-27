@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from tests.conftest import make_request
-from veloce import HTTPException, Request, Veloce
+from veloce import HTTPException, Request, Veloce, abort
 
 
 def _req(path: str = "/x") -> Request:
@@ -66,7 +66,6 @@ async def test_errorhandler_for_httpexception_base():
 
     @app.get("/x")
     async def x():
-        from veloce import abort
 
         abort(403)
 

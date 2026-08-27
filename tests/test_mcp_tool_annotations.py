@@ -16,6 +16,7 @@ import pytest
 
 from veloce import Veloce
 from veloce.contrib.mcp.registry import build_registry
+from veloce.contrib.mcp.safety import TOOL_ANNOTATION_HINTS, validate_tool_annotations
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.session import MCPSession
 
@@ -114,7 +115,6 @@ def test_the_refusal_names_the_hints_that_are_valid():
 
 
 def test_the_validator_accepts_every_hint_the_spec_defines():
-    from veloce.contrib.mcp.safety import TOOL_ANNOTATION_HINTS, validate_tool_annotations
 
     every = dict.fromkeys(TOOL_ANNOTATION_HINTS, True)
     assert validate_tool_annotations(every) == every
@@ -122,7 +122,6 @@ def test_the_validator_accepts_every_hint_the_spec_defines():
 
 def test_the_validator_copies_rather_than_aliasing():
     """A caller mutating its dict afterwards must not change the registered tool."""
-    from veloce.contrib.mcp.safety import validate_tool_annotations
 
     declared = {"readOnlyHint": True}
     stored = validate_tool_annotations(declared)

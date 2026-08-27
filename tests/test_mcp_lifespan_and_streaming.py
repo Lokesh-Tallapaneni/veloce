@@ -18,11 +18,18 @@ from tests._mcp_shared import (
 )
 from veloce import (
     Depends,
+    EventSourceResponse,
     JSONResponse,
     MCPContext,
     Response,
+    ServerSentEvent,
+    StreamingResponse,
     Veloce,
+    current_app,
+    g,
 )
+from veloce.background import BackgroundTask
+from veloce.contrib.mcp import _tasks as mcp_tasks
 from veloce.contrib.mcp.registry import build_registry
 
 # -- Lifespan, request context, streaming, response background --------
@@ -64,7 +71,6 @@ def test_mount_mcp_enters_lifespan_before_serving():
 def test_exposed_route_runs_before_request_and_uses_g_and_current_app():
     """An exposed route reading `g` / `current_app` works over MCP, and an
     `@app.before_request` hook populating `g` runs before the handler."""
-    from veloce import current_app, g
 
     app = Veloce(openapi_url=None)
 
@@ -132,7 +138,6 @@ def test_dependency_typed_mcpcontext_receives_context():
 def test_exposed_route_streaming_response_is_buffered():
     """A route returning a StreamingResponse is drained into a single tool result
     rather than rejected."""
-    from veloce import StreamingResponse
 
     app = Veloce(openapi_url=None)
 
@@ -152,7 +157,6 @@ def test_exposed_route_streaming_response_is_buffered():
 
 def test_exposed_route_streaming_json_is_decoded():
     """A streamed JSON body is buffered and decoded back to a value."""
-    from veloce import StreamingResponse
 
     app = Veloce(openapi_url=None)
 
@@ -171,7 +175,6 @@ def test_exposed_route_streaming_json_is_decoded():
 
 def test_exposed_route_sse_response_is_buffered():
     """An EventSourceResponse is drained into its SSE-framed text."""
-    from veloce import EventSourceResponse, ServerSentEvent
 
     app = Veloce(openapi_url=None)
 
@@ -192,7 +195,6 @@ def test_exposed_route_sse_response_is_buffered():
 
 def test_pure_tool_streaming_response_is_buffered():
     """A pure `@app.mcp_tool` returning a StreamingResponse is buffered too."""
-    from veloce import StreamingResponse
 
     app = Veloce(openapi_url=None)
 
@@ -211,8 +213,6 @@ def test_pure_tool_streaming_response_is_buffered():
 
 def test_streaming_response_over_buffer_limit_is_in_band_error(monkeypatch):
     """A stream past the buffer limit yields an in-band error, not unbounded use."""
-    from veloce import StreamingResponse
-    from veloce.contrib.mcp import _tasks as mcp_tasks
 
     monkeypatch.setattr(mcp_tasks, "_STREAM_BUFFER_LIMIT", 8)
 
@@ -234,7 +234,6 @@ def test_streaming_response_over_buffer_limit_is_in_band_error(monkeypatch):
 def test_handler_response_background_task_runs():
     """A handler returning `Response(background=BackgroundTask(fn))` runs fn,
     mirroring the HTTP path's response-attached background execution."""
-    from veloce.background import BackgroundTask
 
     app = Veloce(openapi_url=None)
     ran: list[str] = []

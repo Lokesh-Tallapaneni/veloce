@@ -11,6 +11,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from veloce import jsonable_encoder
+from veloce.encoders import orjson_default
 
 
 class TestJsonableEncoder:
@@ -67,16 +68,12 @@ class TestJsonableEncoder:
     def test_scalar_re_pattern(self):
         import re
 
-        from veloce.encoders import orjson_default
-
         pat = re.compile("ab")
         assert jsonable_encoder(pat) == "ab"
         assert orjson_default(pat) == "ab"
 
     def test_scalar_ipaddress(self):
         import ipaddress
-
-        from veloce.encoders import orjson_default
 
         assert jsonable_encoder(ipaddress.IPv4Address("1.2.3.4")) == "1.2.3.4"
         assert jsonable_encoder(ipaddress.IPv6Address("::1")) == "::1"
@@ -89,8 +86,6 @@ class TestJsonableEncoder:
     def test_deque_recurses(self):
         from collections import deque
 
-        from veloce.encoders import orjson_default
-
         assert jsonable_encoder(deque([1, 2, 3])) == [1, 2, 3]
         assert jsonable_encoder({"d": deque([1, 2])}) == {"d": [1, 2]}
         u = uuid.UUID("12345678-1234-5678-1234-567812345678")
@@ -98,7 +93,6 @@ class TestJsonableEncoder:
         assert orjson_default(deque([1, 2])) == [1, 2]
 
     def test_generator_drained(self):
-        from veloce.encoders import orjson_default
 
         assert jsonable_encoder(x for x in [1, 2, 3]) == [1, 2, 3]
         assert orjson_default(x for x in [1, 2]) == [1, 2]
@@ -108,7 +102,6 @@ class TestJsonableEncoder:
         assert jsonable_encoder("x") == "x"
 
     def test_vars_fallback_drops_private_attrs(self):
-        from veloce.encoders import orjson_default
 
         class Plain:
             pass

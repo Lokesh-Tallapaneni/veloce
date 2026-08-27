@@ -19,7 +19,7 @@ import logging
 
 import pytest
 
-from veloce import Blueprint, Veloce
+from veloce import Blueprint, Depends, JSONResponse, Veloce
 from veloce.exceptions import DuplicateRouteError
 from veloce.testclient import TestClient
 
@@ -328,7 +328,6 @@ def test_both_options_apply_to_the_same_blueprint():
 
 def test_the_other_router_options_still_forward():
     """The change edits the `super().__init__` call; nothing else may shift."""
-    from veloce import Depends, JSONResponse
 
     async def dep() -> str:
         return "d"

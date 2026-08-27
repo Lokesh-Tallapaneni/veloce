@@ -17,6 +17,9 @@ from __future__ import annotations
 import pytest
 
 from veloce import TestClient, Veloce
+from veloce.contrib.mcp.server import MCPServer
+from veloce.contrib.mcp.session import MCPSession
+from veloce.contrib.mcp.transports.stdio import StdioTransport
 
 _PARSE_ERROR = -32700
 _INVALID_REQUEST = -32600
@@ -119,9 +122,6 @@ def test_a_real_id_is_still_answered(ident):
 
 async def _stdio_reply(raw: str) -> dict:
     """Feed one line to the stdio transport and return what it writes back."""
-    from veloce.contrib.mcp.server import MCPServer
-    from veloce.contrib.mcp.session import MCPSession
-    from veloce.contrib.mcp.transports.stdio import StdioTransport
 
     app = Veloce(title="Stdio", openapi_url=None)
 

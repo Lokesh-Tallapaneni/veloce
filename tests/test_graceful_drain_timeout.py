@@ -18,6 +18,7 @@ import pytest
 
 from veloce import Veloce
 from veloce.config import Config
+from veloce.serving import protocol as protocol_module
 from veloce.serving.protocol import HttpProtocol
 
 
@@ -141,7 +142,6 @@ def test_shutdown_with_no_in_flight_tasks_does_not_wait(monkeypatch):
 
 def test_shutdown_clears_the_drain_latch(monkeypatch):
     """A single interpreter that serves again must not inherit `draining`."""
-    from veloce.serving import protocol as protocol_module
 
     async def fake_wait(tasks, timeout=None):
         return set(), set()

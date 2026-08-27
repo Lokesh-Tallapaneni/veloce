@@ -22,7 +22,8 @@ import asyncio
 import gc
 import weakref
 
-from veloce import BackgroundTask, Response, Veloce
+from veloce import BackgroundTask, BackgroundTasks, Response, Veloce
+from veloce.http.datastructures import FormData, UploadFile
 from veloce.testclient import TestClient
 
 
@@ -68,7 +69,6 @@ def _request_with_form():
     import tempfile
 
     from tests.conftest import make_request
-    from veloce.http.datastructures import FormData, UploadFile
 
     # Deliberately not a context manager: the point of the test is that the
     # release callback closes this handle, so it must outlive this function.
@@ -199,7 +199,6 @@ def test_several_tasks_close_the_files_once_the_last_finishes():
 
     @app.post("/upload")
     async def upload(request):
-        from veloce import BackgroundTasks
 
         form = await request.form()
         handles.append(form["f"].file)

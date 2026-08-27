@@ -9,6 +9,7 @@ import logging
 import pytest
 
 from veloce import Veloce
+from veloce.http.response import StreamingResponse
 from veloce.observability import instrument_access_log, log_requests_as_json
 
 
@@ -179,7 +180,6 @@ def test_access_log_muted_does_no_work(make_logger):
 
 
 def test_access_log_streamed_skipped_when_disabled(make_logger):
-    from veloce.http.response import StreamingResponse
 
     app = Veloce(openapi_url=None)
 

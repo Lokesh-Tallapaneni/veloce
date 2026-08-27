@@ -19,6 +19,7 @@ from tests._mcp_shared import (
 from veloce import (
     Veloce,
 )
+from veloce.contrib.mcp.transports.base import BidirectionalTransport, Transport
 from veloce.contrib.mcp.transports.stdio import StdioTransport
 
 # -- tools/list + tools/call round-trip -------------------------------
@@ -183,7 +184,6 @@ def test_parse_error_on_bad_json():
 
 
 def test_stdio_transport_satisfies_transport_contract():
-    from veloce.contrib.mcp.transports.base import Transport
 
     app = Veloce(openapi_url=None)
     transport = StdioTransport(_server(app), None, None)  # type: ignore[arg-type]
@@ -191,7 +191,6 @@ def test_stdio_transport_satisfies_transport_contract():
 
 
 def test_stdio_transport_satisfies_bidirectional_contract():
-    from veloce.contrib.mcp.transports.base import BidirectionalTransport
 
     app = Veloce(openapi_url=None)
     transport = StdioTransport(_server(app), None, None)  # type: ignore[arg-type]

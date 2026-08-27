@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import Veloce
+from veloce import StreamingResponse, Veloce
 from veloce.contrib.templating import (
     Jinja2Templates,
     render_template,
@@ -99,7 +99,6 @@ def test_stream_template_streams_named_file(tmp_path):
 
 def test_stream_template_wraps_in_streaming_response(tmp_path):
     """The generator is consumable by StreamingResponse."""
-    from veloce import StreamingResponse
 
     (tmp_path / "page.html").write_text("Hello {{ who }}")
     app = Veloce(openapi_url=None)

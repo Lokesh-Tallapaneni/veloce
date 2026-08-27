@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import Response, Veloce
+from veloce import Response, SessionMiddleware, Veloce
 from veloce.http.cookies import iter_cookies
 from veloce.testclient import AsyncTestClient, TestClient, _decode_cookie_value
 
@@ -302,7 +302,6 @@ async def test_the_async_client_agrees_too():
 
 def test_a_session_cookie_still_round_trips():
     """Session values are base64 with `=` padding - the shape most at risk."""
-    from veloce import SessionMiddleware
 
     app = Veloce(openapi_url=None)
     app.add_middleware(SessionMiddleware(secret_key="k" * 32))

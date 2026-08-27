@@ -26,6 +26,7 @@ from __future__ import annotations
 import pytest
 
 from veloce import Response, Veloce
+from veloce import status as status_mod
 from veloce.testclient import TestClient
 
 BODILESS = [204, 205, 304, 100, 102]
@@ -115,8 +116,6 @@ def test_the_buffered_branch_applies_the_same_rule(status_code):
 
     with TestClient(app) as client:
         resp = client.get("/x")
-
-    from veloce import status as status_mod
 
     permits = status_mod.status_permits_body(status_code)
     assert ("content-type" in {k.lower() for k in resp.headers}) is permits

@@ -19,6 +19,9 @@ import pathlib
 
 import pytest
 
+from veloce import CSPMiddleware
+from veloce._internal import _require_methods
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 CONTRIBUTING = ROOT / "CONTRIBUTING.md"
 SRC = ROOT / "src/veloce"
@@ -104,7 +107,6 @@ def test_every_abstract_base_checks_its_subclasses():
 
 
 def test_the_helper_the_guide_names_exists():
-    from veloce._internal import _require_methods
 
     assert callable(_require_methods)
 
@@ -146,7 +148,6 @@ def test_no_security_surface_validates_configuration_with_assert():
 
 def test_the_csp_middleware_refuses_an_empty_policy_without_asserts():
     """The case that produced the rule, kept as a live example of it."""
-    from veloce import CSPMiddleware
 
     with pytest.raises(ValueError):
         CSPMiddleware()

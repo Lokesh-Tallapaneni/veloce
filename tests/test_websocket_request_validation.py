@@ -11,6 +11,7 @@ from veloce import (
     WebSocket,
     WebSocketRequestValidationError,
 )
+from veloce import WebSocketRequestValidationError as Exc
 
 
 def _run_ws(app: Veloce, path: str, query_string: bytes = b"") -> list[dict]:
@@ -98,6 +99,5 @@ def test_validation_failure_is_swallowed():
 
 
 def test_importable_from_package_root():
-    from veloce import WebSocketRequestValidationError as Exc
 
     assert Exc is WebSocketRequestValidationError

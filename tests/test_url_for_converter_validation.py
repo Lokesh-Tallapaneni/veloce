@@ -16,6 +16,7 @@ from veloce import Veloce
 from veloce.exceptions import BuildError
 from veloce.routing import Router, register_converter
 from veloce.routing.converters import Converter
+from veloce.testclient import TestClient
 
 
 def _router() -> Router:
@@ -200,7 +201,6 @@ def test_a_greedy_converter_still_accepts_slashes():
 
 def test_every_built_url_resolves():
     """The property `url_for` exists to guarantee."""
-    from veloce.testclient import TestClient
 
     app = _slash_app()
     client = TestClient(app)

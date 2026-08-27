@@ -10,6 +10,7 @@ from veloce import (
     TestClient,
     Veloce,
 )
+from veloce.http.request import Request
 
 
 def test_synthesized_weak_etag_and_304():
@@ -183,8 +184,6 @@ def test_compose_with_gzip():
 
 
 async def test_unit_method_gate_and_skips():
-
-    from veloce.http.request import Request
 
     mw = ConditionalGetMiddleware()
 

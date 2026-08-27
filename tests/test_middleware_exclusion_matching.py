@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import Middleware, Veloce
+from veloce import Blueprint, Middleware, Response, Router, Veloce
 from veloce.testclient import TestClient
 
 
@@ -148,7 +148,6 @@ def test_an_unrelated_class_entry_excludes_nothing():
 
 
 def test_a_class_exclusion_survives_a_blueprint():
-    from veloce import Blueprint
 
     bp = Blueprint("shop")
 
@@ -163,7 +162,6 @@ def test_a_class_exclusion_survives_a_blueprint():
 
 
 def test_a_class_exclusion_survives_an_included_router():
-    from veloce import Router
 
     router = Router()
 
@@ -233,7 +231,6 @@ def test_a_class_exclusion_stops_a_request_phase_middleware():
 def test_a_short_circuiting_middleware_is_excluded_by_class():
     """The case the finding names: a route opting out of an auth-adjacent
     middleware must actually opt out."""
-    from veloce import Response
 
     class Gate(Middleware):
         async def process_request(self, request):

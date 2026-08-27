@@ -6,7 +6,8 @@ from tests.conftest import make_request
 from veloce import Request, Response, Veloce
 from veloce.contrib.staticfiles import StaticFiles
 from veloce.helpers import send_from_directory_async
-from veloce.http.response import FileResponse
+from veloce.http.response import _INLINE_READ_MAX, FileResponse
+from veloce.middleware.compression import GZipMiddleware
 
 
 class TestFileResponseAsync:
@@ -34,7 +35,6 @@ class TestFileResponseAsync:
     async def test_from_path_small_file_inline(self, tmp_path):
         # A file at/below the inline threshold is read on the loop (no executor
         # hop) and still returns the full body.
-        from veloce.http.response import _INLINE_READ_MAX
 
         test_file = tmp_path / "small.bin"
         body = b"s" * (_INLINE_READ_MAX)  # exactly the threshold -> inline
@@ -49,7 +49,6 @@ class TestFileResponseAsync:
         # chunks rather than held whole, so the bytes arrive from `_stream`
         # instead of `body`. It still advertises its length: the size is known
         # from the stat, so the response stays length-delimited.
-        from veloce.http.response import _INLINE_READ_MAX
 
         test_file = tmp_path / "large.bin"
         body = b"L" * (_INLINE_READ_MAX + 4096)
@@ -130,7 +129,6 @@ class TestGZipAsync:
     """GZip compression runs in executor."""
 
     async def test_gzip_compresses_large_body(self):
-        from veloce.middleware.compression import GZipMiddleware
 
         mw = GZipMiddleware(minimum_size=10)
         req = make_request(headers={"accept-encoding": "gzip"})
@@ -141,7 +139,6 @@ class TestGZipAsync:
         assert len(result.body) < 1000
 
     async def test_gzip_skips_small_body(self):
-        from veloce.middleware.compression import GZipMiddleware
 
         mw = GZipMiddleware(minimum_size=500)
         req = make_request(headers={"accept-encoding": "gzip"})

@@ -45,7 +45,24 @@ import pytest
 from pydantic import BaseModel
 
 import veloce
-from veloce import Body, Cookie, File, Form, Header, Path, Query, Veloce
+import veloce._params as leaf
+import veloce.routing as routing
+from veloce import (
+    Body,
+    Cookie,
+    File,
+    Form,
+    Header,
+    MethodView,
+    Path,
+    Query,
+    Request,
+    UploadFile,
+    Veloce,
+)
+from veloce._params import ParamBase
+from veloce.routing import RouteInfo, RouteMatch, Router
+from veloce.security.oauth2 import OAuth2PasswordRequestForm
 from veloce.testclient import TestClient
 
 SRC = _Path(__file__).resolve().parents[1] / "src"
@@ -151,8 +168,6 @@ def test_the_handler_plan_can_be_imported_alone():
 @pytest.mark.parametrize("name", MARKERS)
 def test_every_import_path_yields_the_same_class(name):
     """A second copy would break every `isinstance` check in the resolver."""
-    import veloce._params as leaf
-    import veloce.routing as routing
 
     objects = [getattr(leaf, name)]
     for module in (veloce, routing):
@@ -163,7 +178,6 @@ def test_every_import_path_yields_the_same_class(name):
 
 @pytest.mark.parametrize("name", ["Body", "Cookie", "File", "Form", "Header", "Path", "Query"])
 def test_a_marker_is_still_a_parambase(name):
-    from veloce._params import ParamBase
 
     assert issubclass(getattr(veloce, name), ParamBase)
 
@@ -191,14 +205,12 @@ def test_nothing_in_the_tree_still_imports_the_removed_path():
 
 
 def test_the_routing_package_still_re_exports_the_markers():
-    import veloce.routing as routing
 
     for name in ["Body", "Cookie", "File", "Form", "Header", "Path", "Query"]:
         assert getattr(routing, name) is getattr(veloce, name), name
 
 
 def test_the_routing_package_still_exposes_the_router():
-    from veloce.routing import RouteInfo, RouteMatch, Router
 
     assert all(isinstance(obj, type) for obj in (Router, RouteInfo, RouteMatch))
 
@@ -283,7 +295,6 @@ def test_a_cookie_marker_binds():
 
 def test_a_file_marker_binds():
     """`File()` goes through the multipart path, so it gets its own app."""
-    from veloce import UploadFile
 
     app = Veloce(openapi_url=None)
 
@@ -349,7 +360,6 @@ def test_a_marker_reaches_an_mcp_tool_schema():
 
 def test_a_method_view_still_refuses_a_marker():
     """`views.py` imports `ParamBase`; the refusal depends on that isinstance."""
-    from veloce import MethodView, Request
 
     with pytest.raises(TypeError, match="cannot resolve"):
 
@@ -360,6 +370,5 @@ def test_a_method_view_still_refuses_a_marker():
 
 def test_oauth2_still_builds_its_form_scheme():
     """`security/oauth2.py` imports `Form` from the same module."""
-    from veloce.security.oauth2 import OAuth2PasswordRequestForm
 
     assert OAuth2PasswordRequestForm is not None

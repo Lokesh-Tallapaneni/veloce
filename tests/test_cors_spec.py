@@ -8,6 +8,7 @@ import pytest
 
 from veloce import CORSMiddleware, Middleware, Veloce
 from veloce.http.header_set import HeaderSet
+from veloce.http.response import Response
 from veloce.testclient import TestClient
 
 # ── Construction validation ────────────────────────────────────────────
@@ -130,7 +131,6 @@ def test_vary_appended_not_replaced():
 
     @app.get("/x")
     async def x():
-        from veloce.http.response import Response
 
         return Response(body=b"ok", content_type="text/plain", headers={"Vary": "Accept"})
 

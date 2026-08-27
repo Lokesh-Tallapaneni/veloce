@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 
+import veloce.app.core as mod
 from tests.conftest import make_request
 from veloce import Request, StreamingResponse, Veloce
 from veloce.serving.protocol import HttpProtocol
@@ -15,8 +16,6 @@ class TestNoDeprecatedEventLoop:
     def test_no_get_event_loop_in_app(self):
         import inspect
 
-        import veloce.app.core as mod
-
         source = inspect.getsource(mod)
         assert "get_event_loop()" not in source, (
             "app.py still uses deprecated asyncio.get_event_loop()"
@@ -25,6 +24,8 @@ class TestNoDeprecatedEventLoop:
     def test_no_get_event_loop_in_protocol(self):
         import inspect
 
+        # By module object, not by name: the test reads the module's *source*,
+        # so binding its names at the top would not give it the file to scan.
         import veloce.serving.protocol as mod
 
         source = inspect.getsource(mod)

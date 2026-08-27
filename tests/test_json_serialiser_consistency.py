@@ -21,8 +21,12 @@ import pytest
 from pydantic import BaseModel
 
 from veloce import JSONProvider, Veloce, jsonify
+from veloce.cache import _KEY_OPTIONS
 from veloce.http.response import JSONResponse
+from veloce.signing import Signer
+from veloce.sse import EventSourceResponse, ServerSentEvent
 from veloce.testclient import TestClient
+from veloce.websocket import WebSocket
 
 _DATA = {"b": 1, "a": 2}
 _INSERTION = b'{"b":1,"a":2}'
@@ -158,13 +162,11 @@ def test_a_custom_provider_still_returns_a_json_response():
 
 def test_a_cache_key_sorts_regardless():
     """Equal mappings must hash alike whatever the app renders responses as."""
-    from veloce.cache import _KEY_OPTIONS
 
     assert _KEY_OPTIONS & orjson.OPT_SORT_KEYS
 
 
 def test_a_signed_payload_round_trips_under_either_setting():
-    from veloce.signing import Signer
 
     for _sort in (False, True):
         signer = Signer("k")
@@ -198,7 +200,6 @@ def _socket_app(**config) -> Veloce:
 
     @app.get("/sse")
     async def stream():
-        from veloce.sse import EventSourceResponse, ServerSentEvent
 
         async def events():
             yield ServerSentEvent.json(dict(_DATA))
@@ -236,7 +237,6 @@ def test_an_sse_event_follows_the_setting():
 
 async def test_a_socket_built_outside_a_request_still_serialises():
     """No app to consult is not an error; it falls back to the default."""
-    from veloce.websocket import WebSocket
 
     class _T:
         def write(self, data): ...

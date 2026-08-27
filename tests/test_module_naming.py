@@ -27,6 +27,8 @@ import re
 
 import pytest
 
+import veloce
+
 TESTS = pathlib.Path(__file__).resolve().parent
 
 # Words that name a work item rather than a subject. Each of these was the name
@@ -77,8 +79,6 @@ def _public_names() -> set[str]:
     hand-written exemption list would.
     """
     import inspect
-
-    import veloce
 
     names = {name.lower() for name in veloce.__all__}
     # A plural of a public name is the same name. `Finding` is the class; a

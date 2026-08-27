@@ -20,6 +20,7 @@ import inspect
 import pytest
 
 from veloce import Veloce
+from veloce.exceptions import SetupError
 from veloce.routing.router import Router
 from veloce.testclient import TestClient
 
@@ -84,7 +85,6 @@ def test_registering_after_serving_is_refused():
     than by driving a request - the point is that the override calls the guard,
     not how the guard latches.
     """
-    from veloce.exceptions import SetupError
 
     app = Veloce(openapi_url=None)
 

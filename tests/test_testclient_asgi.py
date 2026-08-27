@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from veloce import Request, Veloce
+from veloce.http.response import Response
 from veloce.testclient import TestClient
 
 
@@ -48,7 +49,6 @@ def test_client_preserves_cookies_across_requests():
 
     @app.get("/set")
     async def set_cookie():
-        from veloce.http.response import Response
 
         r = Response(body=b"ok", content_type="text/plain")
         r.set_cookie("session", "abc123")
@@ -95,7 +95,6 @@ def test_client_extracts_multiple_set_cookies():
 
     @app.get("/multi")
     async def multi():
-        from veloce.http.response import Response
 
         r = Response(body=b"ok", content_type="text/plain")
         r.set_cookie("a", "1")

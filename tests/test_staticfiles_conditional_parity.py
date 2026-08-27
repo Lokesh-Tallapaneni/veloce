@@ -33,7 +33,8 @@ import time
 
 import pytest
 
-from veloce import Veloce
+from veloce import StaticFiles, Veloce
+from veloce.http.request import _split_etag_list
 from veloce.testclient import TestClient
 
 
@@ -41,7 +42,6 @@ from veloce.testclient import TestClient
 def client(tmp_path):
     (tmp_path / "asset.txt").write_text("body")
     app = Veloce(openapi_url=None)
-    from veloce import StaticFiles
 
     app.mount("/s", StaticFiles(directory=str(tmp_path)))
     return TestClient(app)
@@ -99,7 +99,6 @@ def test_the_two_parsers_disagree_on_a_comma_bearing_tag():
     level where it is true, instead of as an end-to-end claim that would be
     false.
     """
-    from veloce.http.request import _split_etag_list
 
     header = '"abc,def", "xyz"'
     assert [t.strip() for t in header.split(",")] == ['"abc', 'def"', '"xyz"']

@@ -5,7 +5,8 @@ from __future__ import annotations
 import pytest
 
 from tests.conftest import make_request
-from veloce import Request, Veloce
+from veloce import JSONResponse, Request, Veloce
+from veloce.exceptions import NotFound
 
 
 def _req(path: str = "/") -> Request:
@@ -94,7 +95,6 @@ async def test_registered_handler_still_wins_over_propagate():
 
     @app.exception_handler(RuntimeError)
     async def on_runtime(request, exc):
-        from veloce import JSONResponse
 
         return JSONResponse({"caught": True}, status_code=599)
 
@@ -137,7 +137,6 @@ async def test_http_exception_not_propagated():
     """The PROPAGATE flag only affects the generic `except Exception`
     branch. HTTPExceptions are framework-managed and always produce a
     structured JSON response."""
-    from veloce.exceptions import NotFound
 
     app = Veloce(openapi_url=None)
     app.config["PROPAGATE_EXCEPTIONS"] = True

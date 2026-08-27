@@ -17,7 +17,7 @@ import pytest
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
-from veloce import Veloce
+from veloce import Veloce, _model_backend
 from veloce._model_backend import ModelBackend, adapter_for, backend_of
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.session import MCPSession
@@ -317,7 +317,5 @@ def test_the_adapter_cache_holds_its_keys_weakly():
     controls rather than that a type actually becomes collectable.
     """
     import weakref
-
-    from veloce import _model_backend
 
     assert isinstance(_model_backend._adapters, weakref.WeakKeyDictionary)

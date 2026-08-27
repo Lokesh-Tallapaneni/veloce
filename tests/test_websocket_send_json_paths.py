@@ -20,7 +20,9 @@ import pytest
 
 from tests._native_ws import mark_accepted
 from veloce import Veloce
+from veloce.exceptions import WebSocketDisconnect
 from veloce.testclient import TestClient
+from veloce.websocket import WebSocket
 
 PAYLOADS = [
     {"ok": True},
@@ -112,7 +114,6 @@ def test_an_invalid_mode_is_refused():
 
 def _native_ws():
     from tests._native_ws import _KEY, _RecordingTransport
-    from veloce.websocket import WebSocket
 
     return WebSocket(_RecordingTransport(), dict(_KEY))
 
@@ -124,7 +125,6 @@ async def test_send_json_before_accept_is_refused_on_the_native_path():
 
 
 async def test_send_json_after_close_is_refused_on_the_native_path():
-    from veloce.exceptions import WebSocketDisconnect
 
     ws = mark_accepted(_native_ws())
     ws._closed = True

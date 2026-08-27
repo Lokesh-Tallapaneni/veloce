@@ -39,7 +39,10 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import Depends, HTTPBearer, Unauthorized, Veloce
+from veloce import CSRFMiddleware, Depends, HTTPBearer, Unauthorized, Veloce
+from veloce._internal import _b64encode
+from veloce.contrib.mcp.authorization import _verify_pkce
+from veloce.safe import constant_time_compare
 from veloce.security.jwt import JWTError, decode_jwt, encode_jwt
 from veloce.testclient import TestClient
 
@@ -125,7 +128,6 @@ def test_the_jwt_error_names_the_cause():
 
 
 def _csrf_app() -> Veloce:
-    from veloce import CSRFMiddleware
 
     app = Veloce(openapi_url=None)
     app.add_middleware(CSRFMiddleware(token_factory=lambda: "DETERMINISTIC"))
@@ -165,14 +167,12 @@ def test_a_missing_csrf_token_is_still_refused():
 
 def test_the_comparison_helper_handles_non_ascii():
     """The helper the fix uses, exercised directly."""
-    from veloce.safe import constant_time_compare
 
     assert constant_time_compare(f"caf{NON_ASCII}", f"caf{NON_ASCII}") is True
     assert constant_time_compare(f"caf{NON_ASCII}", "cafe") is False
 
 
 def test_the_comparison_helper_still_rejects_a_mismatch():
-    from veloce.safe import constant_time_compare
 
     assert constant_time_compare("token", "other") is False
 
@@ -182,7 +182,6 @@ def test_the_comparison_helper_still_rejects_a_mismatch():
 
 def test_a_non_ascii_pkce_verifier_is_refused_not_a_crash():
     """The defect: `verifier.encode("ascii")` raised at the token endpoint."""
-    from veloce.contrib.mcp.authorization import _verify_pkce
 
     assert _verify_pkce(f"verifier{NON_ASCII}", "any-challenge") is False
 
@@ -191,29 +190,23 @@ def test_a_matching_pkce_verifier_still_verifies():
     """The negative direction: a legitimate S256 pair must still succeed."""
     import hashlib
 
-    from veloce._internal import _b64encode
-    from veloce.contrib.mcp.authorization import _verify_pkce
-
     verifier = "a" * 64
     challenge = _b64encode(hashlib.sha256(verifier.encode("ascii")).digest())
     assert _verify_pkce(verifier, challenge) is True
 
 
 def test_a_mismatched_pkce_verifier_is_refused():
-    from veloce.contrib.mcp.authorization import _verify_pkce
 
     assert _verify_pkce("a" * 64, "not-the-challenge") is False
 
 
 def test_a_non_ascii_pkce_challenge_is_refused():
     """The other operand is equally caller-controlled."""
-    from veloce.contrib.mcp.authorization import _verify_pkce
 
     assert _verify_pkce("a" * 64, f"challenge{NON_ASCII}") is False
 
 
 def test_an_empty_pkce_verifier_is_refused():
-    from veloce.contrib.mcp.authorization import _verify_pkce
 
     assert _verify_pkce("", "challenge") is False
 
@@ -228,8 +221,6 @@ def test_an_empty_pkce_verifier_is_refused():
 )
 def test_no_credential_path_crashes_on_any_non_ascii_input(character: str):
     """One parametrised sweep, so a fix that only handles Latin-1 is caught."""
-    from veloce.contrib.mcp.authorization import _verify_pkce
-    from veloce.safe import constant_time_compare
 
     token = encode_jwt({"sub": "x"}, "secret")
     header, payload, signature = token.split(".")

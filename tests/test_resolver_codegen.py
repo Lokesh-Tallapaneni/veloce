@@ -16,8 +16,9 @@ from veloce import (
 )
 from veloce._handler_plan import build_plan
 from veloce._resolver_codegen import compile_param_resolver
-from veloce.dependency import _coerce_value
+from veloce.dependency import DependencyResolver, _coerce_value
 from veloce.exceptions import RequestValidationError
+from veloce.http.request import Request
 
 
 def _compile(handler):
@@ -307,8 +308,6 @@ async def test_compiled_resolver_is_cached_on_plan():
 
     plan = build_plan(h)
     assert plan.compiled_resolver is None  # not yet attempted
-    from veloce.dependency import DependencyResolver
-    from veloce.http.request import Request
 
     resolver = DependencyResolver()
     req = Request(method="GET", path="/", query_string="x=5", headers=[], body=b"")
@@ -323,9 +322,6 @@ async def test_reused_resolver_clears_state_before_compiled_path():
     # DependencyResolver is public and may be reused across resolves. A prior
     # resolve that registered a yield-style teardown must NOT leak into a later
     # compiled param-only resolve — the compiled fast path must still reset().
-
-    from veloce.dependency import DependencyResolver
-    from veloce.http.request import Request
 
     def yielder():
         yield "x"  # yield dep → registers a teardown on the resolver

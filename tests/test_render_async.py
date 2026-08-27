@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from veloce import HTMLResponse, Veloce
 from veloce.contrib.templating import Jinja2Templates
+from veloce.testclient import TestClient
 
 
 async def test_render_async_basic(tmp_path):
@@ -52,8 +54,6 @@ async def test_render_async_matches_sync_render(tmp_path):
 
 def test_async_context_processor_contributes_to_render_async(tmp_path):
     """An `async def` context processor must contribute values on the async render path."""
-    from veloce import HTMLResponse, Veloce
-    from veloce.testclient import TestClient
 
     (tmp_path / "hello.html").write_text("Hello, {{ name }} ({{ flavor }})!")
     app = Veloce(debug=True, openapi_url=None)

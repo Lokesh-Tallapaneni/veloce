@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from veloce import Request, Response
+from veloce.http.response import StreamingResponse
 
 # ── Response.content_length ──────────────────────────────────────────
 
@@ -20,7 +21,6 @@ def test_is_streamed_false_for_buffered():
 
 
 def test_is_streamed_true_for_streaming_response():
-    from veloce.http.response import StreamingResponse
 
     async def gen():
         yield b"x"

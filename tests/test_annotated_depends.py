@@ -13,7 +13,7 @@ from typing import Annotated
 import pytest
 
 from tests.conftest import make_request
-from veloce import Depends, Header, Query, Request, Security, Veloce
+from veloce import Depends, Header, Query, Request, Security, SecurityScopes, Veloce
 
 
 def _req(path: str = "/x", query: str = "") -> Request:
@@ -63,7 +63,6 @@ async def test_annotated_depends_with_sub_depends():
 
 async def test_annotated_security_passes_scopes():
     """Annotated form preserves Security.scopes for the scope stack."""
-    from veloce import SecurityScopes
 
     app = Veloce(debug=True, openapi_url=None)
     captured: dict = {}

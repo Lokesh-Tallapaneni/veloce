@@ -27,8 +27,11 @@ import base64
 
 import pytest
 
+from veloce import Depends, Veloce
+from veloce.exceptions import HTTPException
 from veloce.http.datastructures import Authorization
 from veloce.security.http import HTTPBasic
+from veloce.testclient import TestClient
 
 
 def _b64(raw: bytes) -> str:
@@ -66,7 +69,6 @@ def _from_header(payload: str):
 
 def _scheme(payload: str):
     from tests.conftest import make_request
-    from veloce.exceptions import HTTPException
 
     request = make_request(path="/", headers={"Authorization": f"Basic {payload}"})
     try:
@@ -130,8 +132,6 @@ def test_the_two_readers_never_disagree(name):
 
 def test_a_valid_credential_still_authenticates():
     """The negative: refusing everything would satisfy the agreement tests."""
-    from veloce import Depends, Veloce
-    from veloce.testclient import TestClient
 
     app = Veloce(openapi_url=None)
     scheme = HTTPBasic()

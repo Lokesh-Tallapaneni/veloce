@@ -42,7 +42,6 @@ async def test_session_set_and_read():
 
 
 def test_session_signing():
-    from veloce.middleware.sessions import SessionMiddleware
 
     mw = SessionMiddleware(secret_key="test")
 

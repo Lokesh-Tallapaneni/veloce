@@ -22,6 +22,7 @@ from veloce import (
     Depends,
     HTTPException,
     MCPContext,
+    Request,
     Response,
     SecurityScopes,
     Veloce,
@@ -335,8 +336,6 @@ def test_request_slot_receives_real_request():
     `request.headers.get(...)` returns nothing and `request.state` is usable."""
     app = Veloce(openapi_url=None)
 
-    from veloce import Request
-
     @app.mcp_tool(description="Read request state and a header")
     async def probe(request: Request) -> dict:
         request.state.touched = True
@@ -355,8 +354,6 @@ def test_dependency_reading_request_state_works():
     """A dependency that reads/writes `request.state` works over MCP (it gets a
     real Request, not a bare MCPContext) - no AttributeError."""
     app = Veloce(openapi_url=None)
-
-    from veloce import Request
 
     def stamp(request: Request) -> int:
         # Would raise AttributeError if a bare MCPContext were substituted here.

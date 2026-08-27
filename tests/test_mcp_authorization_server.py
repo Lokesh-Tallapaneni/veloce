@@ -21,6 +21,7 @@ import pytest
 
 from veloce import AsyncTestClient, Principal, RedirectResponse, Veloce
 from veloce.contrib.mcp import (
+    AuthorizationStore,
     InMemoryAuthorizationStore,
     MCPAuthorizationServer,
     OAuthClient,
@@ -619,7 +620,6 @@ async def test_the_requested_resource_is_recorded_on_the_token():
 
 
 def test_the_bundled_store_satisfies_the_protocol():
-    from veloce.contrib.mcp import AuthorizationStore
 
     assert isinstance(InMemoryAuthorizationStore(), AuthorizationStore)
 

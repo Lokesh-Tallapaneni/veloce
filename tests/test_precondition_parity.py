@@ -25,6 +25,7 @@ from __future__ import annotations
 import pytest
 
 from veloce import JSONResponse, Veloce
+from veloce.contrib.staticfiles import _precondition_failed
 from veloce.testclient import TestClient
 
 _PAST = "Mon, 01 Jan 2001 00:00:00 GMT"
@@ -119,7 +120,6 @@ def test_if_match_behaviour_is_unchanged(header, expected):
 
 
 def _static_verdict(if_match, if_unmodified_since, etag, mtime):
-    from veloce.contrib.staticfiles import _precondition_failed
 
     return _precondition_failed(if_match, if_unmodified_since, etag, mtime)
 

@@ -22,6 +22,10 @@ import pathlib
 
 import pytest
 
+from veloce import Veloce
+from veloce.contrib.mcp.server import MCPServer
+from veloce.contrib.mcp.session import MCPSession
+
 TESTS = pathlib.Path(__file__).resolve().parent
 
 # Names that claim the JSON-RPC error channel.
@@ -139,10 +143,6 @@ def test_an_argument_failure_is_reported_in_band(arguments, expect_in_band):
     """The contract the renamed tests assert, stated once here too."""
     import asyncio
 
-    from veloce import Veloce
-    from veloce.contrib.mcp.server import MCPServer
-    from veloce.contrib.mcp.session import MCPSession
-
     app = Veloce(openapi_url=None)
 
     @app.mcp_tool(description="Add two integers")
@@ -169,10 +169,6 @@ def test_an_argument_failure_is_reported_in_band(arguments, expect_in_band):
 def test_an_unknown_tool_is_reported_on_the_error_channel():
     """The other side of the distinction: this one really is a transport error."""
     import asyncio
-
-    from veloce import Veloce
-    from veloce.contrib.mcp.server import MCPServer
-    from veloce.contrib.mcp.session import MCPSession
 
     app = Veloce(openapi_url=None)
 

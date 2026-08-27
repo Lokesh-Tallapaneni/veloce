@@ -19,6 +19,7 @@ from pydantic import BaseModel
 
 from veloce import SecurityHeadersMiddleware, Veloce
 from veloce.audit import run
+from veloce.cli import main
 
 
 class Alpha(BaseModel):
@@ -74,8 +75,6 @@ def test_the_contradiction_names_both_models():
 def test_the_contradiction_fails_veloce_check(tmp_path, monkeypatch):
     """The property that was missing: it now reaches the exit code."""
     import sys
-
-    from veloce.cli import main
 
     module = tmp_path / "contract_app.py"
     module.write_text(

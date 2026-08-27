@@ -16,6 +16,7 @@ from __future__ import annotations
 import re
 
 from veloce.contrib.mcp.session import MCPSession
+from veloce.contrib.mcp.session import MCPSession as Fresh
 
 
 def test_the_public_id_is_a_string():
@@ -71,6 +72,5 @@ def pool_int_suffixes(ids: list[str]) -> list[int]:
 
 def _first_public_id(_: object) -> str:
     """Return the first session's public id in a fresh interpreter."""
-    from veloce.contrib.mcp.session import MCPSession as Fresh
 
     return Fresh().public_id

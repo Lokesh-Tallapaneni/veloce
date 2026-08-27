@@ -31,6 +31,7 @@ from veloce import (
 )
 from veloce.contrib.mcp import MCPSession
 from veloce.contrib.mcp.server import MCPServer
+from veloce.contrib.mcp.subscriptions import ConnectionRegistry
 
 # -- Resources --------------------------------------------------------
 
@@ -413,7 +414,6 @@ def test_concurrent_streams_on_one_session_each_receive_updates():
     # Two SSE streams may run concurrently under one session id; each registers
     # its own sink, so a resource update must reach both, and one stream closing
     # must not silence the other.
-    from veloce.contrib.mcp.subscriptions import ConnectionRegistry
 
     registry = ConnectionRegistry()
     session = MCPSession()
@@ -449,7 +449,6 @@ def test_concurrent_streams_on_one_session_each_receive_updates():
 
 
 def test_remove_session_drops_all_of_a_sessions_streams():
-    from veloce.contrib.mcp.subscriptions import ConnectionRegistry
 
     registry = ConnectionRegistry()
     session = MCPSession()

@@ -6,7 +6,7 @@ import uuid
 
 import pytest
 
-from veloce import Veloce
+from veloce import BuildError, Veloce
 
 
 def _make_app() -> Veloce:
@@ -60,7 +60,6 @@ def test_url_path_for_int_path_param():
 
 
 def test_url_path_for_missing_param_raises():
-    from veloce import BuildError
 
     app = _make_app()
     with pytest.raises(BuildError):
@@ -68,7 +67,6 @@ def test_url_path_for_missing_param_raises():
 
 
 def test_url_path_for_unknown_name_raises():
-    from veloce import BuildError
 
     app = _make_app()
     with pytest.raises(BuildError):

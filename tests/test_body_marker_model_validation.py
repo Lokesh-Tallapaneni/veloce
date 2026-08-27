@@ -36,6 +36,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from veloce import Body, Veloce
+from veloce._handler_plan import MK_BODY, build_plan
 from veloce.testclient import TestClient
 
 
@@ -281,7 +282,6 @@ def test_the_mcp_door_still_validates():
 
 def test_the_plan_records_the_model():
     """A per-request `is_pydantic_model` call would be introspection on the hot path."""
-    from veloce._handler_plan import MK_BODY, build_plan
 
     async def handler(payload: Payload = Body()) -> dict:
         return {}
@@ -292,7 +292,6 @@ def test_the_plan_records_the_model():
 
 
 def test_a_scalar_marker_records_no_model():
-    from veloce._handler_plan import build_plan
 
     async def handler(note: str = Body()) -> dict:
         return {}

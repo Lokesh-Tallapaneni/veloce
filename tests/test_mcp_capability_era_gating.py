@@ -16,7 +16,8 @@ from __future__ import annotations
 import pytest
 
 from veloce import Veloce
-from veloce.contrib.mcp.server import MCPServer
+from veloce.contrib.mcp.capabilities import Capability
+from veloce.contrib.mcp.server import RESULT_TYPE_COMPLETE, RESULT_TYPE_TASK, MCPServer
 from veloce.contrib.mcp.session import MCPSession
 from veloce.contrib.mcp.tasks import TASKS_EXTENSION
 
@@ -140,7 +141,6 @@ def test_a_capability_written_without_the_revision_parameter_still_works():
     The server decides once, at construction, which capabilities accept the
     revision; one that does not is called the old way rather than crashing.
     """
-    from veloce.contrib.mcp.capabilities import Capability
 
     class Legacy(Capability):
         __slots__ = ()
@@ -204,7 +204,6 @@ def test_the_unproduced_interim_result_is_not_advertised():
 
 
 def test_the_result_discriminators_that_are_advertised_can_all_be_produced():
-    from veloce.contrib.mcp.server import RESULT_TYPE_COMPLETE, RESULT_TYPE_TASK
 
     produced = {RESULT_TYPE_COMPLETE, RESULT_TYPE_TASK}
     assert "input_required" not in produced

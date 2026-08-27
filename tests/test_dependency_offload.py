@@ -12,6 +12,7 @@ from __future__ import annotations
 import threading
 
 from veloce import Depends, Veloce, request
+from veloce._handler_plan import build_plan
 from veloce.testclient import TestClient
 
 
@@ -82,7 +83,6 @@ def test_offloaded_dep_sees_request_context():
 
 def test_offload_flag_recorded_only_for_plain_sync_callables():
     """The plan records `dep_offload` only when it can take effect."""
-    from veloce._handler_plan import build_plan
 
     async def coro_dep() -> str:
         return "a"

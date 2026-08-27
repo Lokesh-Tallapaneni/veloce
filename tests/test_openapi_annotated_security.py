@@ -40,6 +40,7 @@ from veloce import (
     Security,
     Veloce,
 )
+from veloce._handler_plan import extract_annotated_marker
 from veloce.testclient import TestClient
 
 bearer = HTTPBearer()
@@ -258,21 +259,18 @@ def test_an_explicitly_optional_annotated_parameter_is_published():
     ids=["security", "query", "bare", "unrelated-metadata"],
 )
 def test_the_helper_extracts_only_veloce_markers(annotation, expected_marker):
-    from veloce._handler_plan import extract_annotated_marker
 
     marker, _base = extract_annotated_marker(annotation)
     assert (marker is not None) is expected_marker
 
 
 def test_the_helper_returns_the_inner_type():
-    from veloce._handler_plan import extract_annotated_marker
 
     _marker, base = extract_annotated_marker(Annotated[int, Query(ge=1)])
     assert base is int
 
 
 def test_the_helper_leaves_a_bare_annotation_alone():
-    from veloce._handler_plan import extract_annotated_marker
 
     marker, base = extract_annotated_marker(int)
     assert marker is None

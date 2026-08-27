@@ -35,7 +35,7 @@ import linecache
 from pydantic import BaseModel
 
 from tests.conftest import make_request
-from veloce import Depends, Request, Veloce
+from veloce import Depends, Query, Request, Veloce
 from veloce._handler_plan import build_plan
 from veloce._resolver_codegen import compile_param_resolver
 from veloce.dependency import _coerce_value
@@ -113,7 +113,6 @@ def test_a_scalar_param_handler_compiles():
 
 
 def test_a_marker_handler_compiles():
-    from veloce import Query
 
     async def handler(q: int = Query(gt=0)):
         return q
