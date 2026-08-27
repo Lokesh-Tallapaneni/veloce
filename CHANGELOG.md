@@ -6,14 +6,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- `app.register_auditable(component)` reports a non-middleware component to `veloce check` and `security_audit()`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-- `unregister_converter(name)` removes a converter added with `register_converter`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-- `MCPServer(capabilities=[...])` serves an out-of-tree `Capability`; `MethodHandler` is exported to annotate its handler map. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-- `TestResponse` is exported from `veloce` and documented; it is what every test-client call returns. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-- `veloce.contrib.mcp` publishes all seven capability classes, not three. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 ### Security
 
 - `ProxyFix` counts `Forwarded:` hops correctly when an element carries a backslash; one outside a quoted string hid the following comma, merging the trusted proxy's element into the client's and putting attacker text into `request.remote_addr`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
