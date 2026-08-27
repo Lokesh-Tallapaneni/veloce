@@ -39,6 +39,7 @@ from veloce._pipeline import (
 from veloce._protocol_constants import (
     HTTP_METHOD_GET,
     ROUTE_METHOD_WEBSOCKET,
+    URL_SCHEME_HTTP,
 )
 from veloce.app.asgi import AsgiMixin
 from veloce.app.background import BackgroundTasksMixin
@@ -1641,6 +1642,13 @@ class Veloce(
         self._url_value_preprocessors.append(func)
         self._gen += 1
         return func
+
+    def _absolute_url_defaults(self) -> tuple[str | None, str]:
+        """Answer `Router`'s absolute-URL hook from this app's configuration."""
+        return (
+            self.config.get("SERVER_NAME"),
+            self.config.get("PREFERRED_URL_SCHEME", URL_SCHEME_HTTP),
+        )
 
     def url_for(self, name: str, /, **path_params: Any) -> str:
         """`Veloce.url_for` runs `@app.url_defaults` callbacks before

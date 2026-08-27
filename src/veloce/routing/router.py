@@ -676,6 +676,29 @@ class RegexRoute:
 # ── Router ─────────────────────────────────────────────────
 
 
+def _slash_mismatch(node: Any, request_has_slash: bool) -> bool:
+    """Whether trailing-slash strictness rules this node out for this request.
+
+    A route registered with a trailing slash matches only slashed requests, and
+    one registered without matches only unslashed ones. `tolerant_slash`
+    (per-route `strict_slashes=False`) skips the gate entirely, and a node that
+    had *both* forms registered serves both shapes so neither arm fires.
+
+    One predicate because two consumers must agree: `_match_tree` decides
+    whether a request routes, and `get_allowed_methods` decides what the `Allow`
+    header advertises. Written twice - which they were, in two different shapes
+    130 lines apart - they can disagree, and then a 405 names a method that
+    would not have matched, or omits one that would.
+    """
+    if node.tolerant_slash:
+        return False
+    if node.trailing_slash and not node.unslashed_variant and not request_has_slash:
+        return True
+    return bool(
+        node.unslashed_variant and not node.trailing_slash and request_has_slash and node.handlers
+    )
+
+
 class Router:
     """High-performance radix-tree router with a decorator-based route API.
 
@@ -1709,16 +1732,8 @@ class Router:
         # `strict_slashes=False`) skips this gate. When both the slashed and
         # unslashed forms were registered, the node serves both shapes, so
         # neither gate fires.
-        if not result.tolerant_slash:
-            if result.trailing_slash and not result.unslashed_variant and not request_has_slash:
-                return None
-            if (
-                result.unslashed_variant
-                and not result.trailing_slash
-                and request_has_slash
-                and result.handlers
-            ):
-                return None
+        if _slash_mismatch(result, request_has_slash):
+            return None
 
         # Handlers are stored uppercase - RFC-conforming clients send the
         # method already uppercased, so try the raw form first and only
@@ -1833,23 +1848,10 @@ class Router:
         # Ordered set: tree methods first, then regex, deduped.
         methods: dict[str, None] = {}
         node = self._match_node(self._root, segments, 0, params)
-        if node is not None:
-            # Respect trailing slash matching (skipped when tolerant_slash is
-            # set, and when both slash forms were registered on this node).
-            slash_miss = (
-                not node.tolerant_slash
-                and node.trailing_slash
-                and not node.unslashed_variant
-                and not request_has_slash
-            ) or (
-                not node.tolerant_slash
-                and node.unslashed_variant
-                and not node.trailing_slash
-                and request_has_slash
-                and node.handlers
-            )
-            if not slash_miss and node.handlers:
-                methods.update(dict.fromkeys(node.handlers))
+        # Respect trailing-slash strictness through the same predicate the match
+        # path uses, so `Allow` cannot advertise a method that would not match.
+        if node is not None and node.handlers and not _slash_mismatch(node, request_has_slash):
+            methods.update(dict.fromkeys(node.handlers))
         if self._regex_routes:
             for route in self._regex_routes:
                 m = self._regex_route_match(route, path)
@@ -2095,32 +2097,39 @@ class Router:
 
         return decorator
 
-    def get(self, path: str, **kwargs) -> Callable:
+    def get(self, path: str, **kwargs: Any) -> Callable:
+        """`GET` route decorator. Safe and idempotent - RFC 9110 Sec. 9.3.1."""
         return self.route(path, methods=[HTTP_METHOD_GET], **kwargs)
 
-    def post(self, path: str, **kwargs) -> Callable:
+    def post(self, path: str, **kwargs: Any) -> Callable:
+        """`POST` route decorator - RFC 9110 Sec. 9.3.3."""
         return self.route(path, methods=[HTTP_METHOD_POST], **kwargs)
 
-    def put(self, path: str, **kwargs) -> Callable:
+    def put(self, path: str, **kwargs: Any) -> Callable:
+        """`PUT` route decorator. Idempotent - RFC 9110 Sec. 9.3.4."""
         return self.route(path, methods=[HTTP_METHOD_PUT], **kwargs)
 
-    def patch(self, path: str, **kwargs) -> Callable:
+    def patch(self, path: str, **kwargs: Any) -> Callable:
+        """`PATCH` route decorator - RFC 5789."""
         return self.route(path, methods=[HTTP_METHOD_PATCH], **kwargs)
 
-    def delete(self, path: str, **kwargs) -> Callable:
+    def delete(self, path: str, **kwargs: Any) -> Callable:
+        """`DELETE` route decorator. Idempotent - RFC 9110 Sec. 9.3.5."""
         return self.route(path, methods=[HTTP_METHOD_DELETE], **kwargs)
 
-    def head(self, path: str, **kwargs) -> Callable:
+    def head(self, path: str, **kwargs: Any) -> Callable:
+        """`HEAD` route decorator. Like `GET` with no body - RFC 9110 Sec. 9.3.2."""
         return self.route(path, methods=[HTTP_METHOD_HEAD], **kwargs)
 
-    def options(self, path: str, **kwargs) -> Callable:
+    def options(self, path: str, **kwargs: Any) -> Callable:
+        """`OPTIONS` route decorator - RFC 9110 Sec. 9.3.7."""
         return self.route(path, methods=[HTTP_METHOD_OPTIONS], **kwargs)
 
-    def trace(self, path: str, **kwargs) -> Callable:
+    def trace(self, path: str, **kwargs: Any) -> Callable:
         """`TRACE` route decorator - RFC 9110 Sec. 9.3.8."""
         return self.route(path, methods=[HTTP_METHOD_TRACE], **kwargs)
 
-    def query(self, path: str, **kwargs) -> Callable:
+    def query(self, path: str, **kwargs: Any) -> Callable:
         """`QUERY` route decorator - RFC 10008.
 
         QUERY is safe and idempotent like GET but carries a request body like
@@ -2337,16 +2346,27 @@ class Router:
             # SERVER_NAME is "host[:port]"; without it, default to
             # localhost - the absolute-URL request was made outside a request
             # context where we'd otherwise know the host.
-            cfg_host = None
-            cfg_scheme = URL_SCHEME_HTTP
-            if hasattr(self, "config"):
-                cfg_host = self.config.get("SERVER_NAME")
-                cfg_scheme = self.config.get("PREFERRED_URL_SCHEME", URL_SCHEME_HTTP)
+            cfg_host, cfg_scheme = self._absolute_url_defaults()
             netloc = host or cfg_host or "localhost"
             url_scheme = scheme or cfg_scheme
             return f"{url_scheme}://{netloc}{path}"
 
         return path
+
+    def _absolute_url_defaults(self) -> tuple[str | None, str]:
+        """Return `(host, scheme)` for an absolute URL built with no request.
+
+        A bare `Router` has no configuration, so it has no opinion: the caller's
+        explicit `host=` / `scheme=` win, and `url_for` falls back to
+        `localhost` over HTTP. `Veloce` overrides this to answer from
+        `SERVER_NAME` and `PREFERRED_URL_SCHEME`.
+
+        A hook rather than `hasattr(self, "config")`, which is what this was: a
+        base class testing for an attribute only its subclass defines, so the
+        dependency ran the wrong way and neither type checking nor a reader
+        could see the relationship.
+        """
+        return None, URL_SCHEME_HTTP
 
     # Veloce exposes this exact reverse-URL builder as `url_path_for`.
     # `url_for` is the canonical method; this is a thin
