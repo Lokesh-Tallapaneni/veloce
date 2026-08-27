@@ -1076,12 +1076,3 @@ class QueryParams(_GetListMixin, MultiDict):
             # surface as 414 so the framework returns a clean response.
             raise RequestURITooLong(f"Query string exceeds {_MAX_QUERY_FIELDS} fields") from exc
         return cls(items)
-
-
-# ── Backward-compatible re-exports ────────────────────────
-# Re-export from formparsers for backward compatibility.
-from veloce.http.formparsers import (  # noqa: E402, F401
-    DEFAULT_MAX_MULTIPART_PART_SIZE,
-    DEFAULT_MAX_MULTIPART_PARTS,
-    parse_multipart_form,
-)

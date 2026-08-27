@@ -53,8 +53,6 @@ from veloce._protocol_constants import SECURE_URL_SCHEMES, URL_SCHEME_HTTPS
 from veloce.exceptions import BadRequest, RequestEntityTooLarge
 from veloce.http.cache_control import CacheControl
 from veloce.http.datastructures import (
-    DEFAULT_MAX_MULTIPART_PART_SIZE,
-    DEFAULT_MAX_MULTIPART_PARTS,
     URL,
     AcceptHeader,
     Address,
@@ -67,9 +65,13 @@ from veloce.http.datastructures import (
     State,
     UploadFile,
     _parse_qs_pairs,
-    parse_multipart_form,
 )
 from veloce.http.dates import parse_date
+from veloce.http.formparsers import (
+    DEFAULT_MAX_MULTIPART_PART_SIZE,
+    DEFAULT_MAX_MULTIPART_PARTS,
+    parse_multipart_form,
+)
 
 if TYPE_CHECKING:  # pragma: no cover
     from datetime import datetime

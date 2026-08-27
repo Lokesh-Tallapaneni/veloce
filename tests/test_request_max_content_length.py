@@ -57,7 +57,7 @@ def _multipart_body(boundary: str, parts: list[tuple[str, str]]) -> bytes:
 def test_multipart_part_count_cap_rejects():
     """A form with more parts than `max_parts` raises RequestEntityTooLarge."""
     from veloce.exceptions import RequestEntityTooLarge
-    from veloce.http.datastructures import parse_multipart_form
+    from veloce.http.formparsers import parse_multipart_form
 
     boundary = "veloceboundary123"
     body = _multipart_body(boundary, [(f"f{i}", "v") for i in range(10)])
@@ -69,7 +69,7 @@ def test_multipart_part_count_cap_rejects():
 def test_multipart_part_size_cap_rejects():
     """A part whose body exceeds `max_part_size` raises RequestEntityTooLarge."""
     from veloce.exceptions import RequestEntityTooLarge
-    from veloce.http.datastructures import parse_multipart_form
+    from veloce.http.formparsers import parse_multipart_form
 
     boundary = "veloceboundary123"
     body = _multipart_body(boundary, [("big", "x" * 5000)])
@@ -79,7 +79,7 @@ def test_multipart_part_size_cap_rejects():
 
 
 def test_multipart_within_caps_parses_normally():
-    from veloce.http.datastructures import parse_multipart_form
+    from veloce.http.formparsers import parse_multipart_form
 
     boundary = "veloceboundary123"
     body = _multipart_body(boundary, [("a", "1"), ("b", "2")])

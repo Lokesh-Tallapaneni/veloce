@@ -13,7 +13,8 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from veloce.exceptions import BadRequest, RequestEntityTooLarge
-from veloce.http.datastructures import FormData, parse_multipart_form
+from veloce.http.datastructures import FormData
+from veloce.http.formparsers import parse_multipart_form
 
 pytestmark = pytest.mark.fuzz
 

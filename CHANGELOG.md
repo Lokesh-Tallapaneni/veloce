@@ -101,6 +101,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `parse_multipart_form` is no longer re-exported from `veloce.http.datastructures`; import it from `veloce.http`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
 - `exclude_middleware` accepts a middleware class, matched by type so it covers subclasses; a string still matches the resolved name exactly. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `exclude_middleware` raises `TypeError` for an entry that is neither a middleware class nor a name; such an entry previously matched nothing in silence. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `RedisRateLimitBackend` runs a built-in strategy as a Lua script - one round trip instead of three, executed atomically, with no contended-key fallback that could admit requests over the limit. A custom strategy keeps the `WATCH` path unless it declares `lua_script`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

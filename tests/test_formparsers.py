@@ -67,8 +67,6 @@ def _file_part_body(boundary: str, extra_headers: dict[str, str]) -> bytes:
 
 
 def test_uploadfile_captures_part_headers():
-    from veloce.http.datastructures import parse_multipart_form
-
     boundary = "veloceboundary123"
     body = _file_part_body(boundary, {"Content-Transfer-Encoding": "binary", "X-Part-Id": "42"})
     form = parse_multipart_form(body, f"multipart/form-data; boundary={boundary}")
@@ -80,8 +78,6 @@ def test_uploadfile_captures_part_headers():
 
 
 def test_uploadfile_headers_default_present_but_minimal():
-    from veloce.http.datastructures import parse_multipart_form
-
     boundary = "veloceboundary123"
     body = _file_part_body(boundary, {})
     form = parse_multipart_form(body, f"multipart/form-data; boundary={boundary}")
@@ -91,8 +87,6 @@ def test_uploadfile_headers_default_present_but_minimal():
 
 
 def test_uploadfile_headers_isolated_across_parts():
-    from veloce.http.datastructures import parse_multipart_form
-
     boundary = "veloceboundary123"
     lines = [
         f"--{boundary}",
