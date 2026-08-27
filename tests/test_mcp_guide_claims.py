@@ -219,25 +219,47 @@ def _blocks() -> list[tuple[int, str, str]]:
     return out
 
 
+def test_the_fence_scanner_finds_the_guide_blocks():
+    """Every check below is a loop over `_blocks()`, so an empty scan is silence."""
+    found = _blocks()
+    assert len(found) > 10, f"the guide's fence scanner returned {len(found)} blocks"
+    assert any(lang == "python" for _line, lang, _code in found)
+    assert any(lang == "json" for _line, lang, _code in found)
+
+
 def test_every_python_block_parses():
     """One block had `await` at module scope - a hard SyntaxError when copied."""
+    checked = 0
     for line_no, lang, code in _blocks():
         if lang == "python":
             compile(code, f"mcp.md:{line_no}", "exec")
+            checked += 1
+    assert checked, "no python block was compiled"
 
 
 def test_every_json_block_is_json():
     """One was comment-annotated pseudo-JSON tagged `json`."""
+    checked = 0
     for line_no, lang, code in _blocks():
         if lang == "json":
             json.loads(code)
+            checked += 1
+    assert checked, "no json block was parsed"
 
 
 def test_no_python_block_leaves_a_name_undefined():
-    """The docs rule: a guide block must be runnable as-is."""
+    """The docs rule: a guide block must be runnable as-is.
+
+    Every runnable block is executed. The version this replaces called
+    `pytest.skip` from inside the loop, which ends the *test* - so one block
+    needing an uninstalled optional dependency silently abandoned every block
+    after it. A missing dependency is now recorded and the loop continues.
+    """
     import veloce
 
     blocking = ("app.run(", "serve_stdio", "uvicorn.run", "while True", "asyncio.run(")
+    checked = 0
+    skipped: list[str] = []
     for line_no, lang, code in _blocks():
         if lang != "python" or any(b in code for b in blocking):
             continue
@@ -247,9 +269,13 @@ def test_no_python_block_leaves_a_name_undefined():
         try:
             exec(compile(code, f"mcp.md:{line_no}", "exec"), namespace)
         except ModuleNotFoundError as exc:  # an optional dependency is not installed
-            pytest.skip(f"mcp.md:{line_no} needs {exc.name}")
+            skipped.append(f"mcp.md:{line_no} needs {exc.name}")
+            continue
         except NameError as exc:
             pytest.fail(f"mcp.md:{line_no} leaves a name undefined: {exc}")
+        checked += 1
+    if not checked:
+        pytest.skip(f"every runnable block needs a missing dependency: {skipped}")
 
 
 def test_every_named_config_key_exists():

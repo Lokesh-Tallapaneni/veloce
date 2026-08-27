@@ -18,7 +18,7 @@ MODERN = {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}
 LOG_LEVEL_KEY = "io.modelcontextprotocol/logLevel"
 
 
-def _app(sent: list[dict]) -> Veloce:
+def _app() -> Veloce:
     app = Veloce(title="RemovalProbe", version="1.0.0", openapi_url=None)
 
     @app.mcp_tool(description="Emit one log line at each level")
@@ -35,7 +35,9 @@ def _app(sent: list[dict]) -> Veloce:
 class Harness:
     def __init__(self) -> None:
         self.sent: list[dict] = []
-        self.server = MCPServer(_app(self.sent))
+        self.server = MCPServer(_app())
+        # What collects is the notifier, not the app: the factory used to take
+        # `self.sent` and ignore it, which read as a wiring that is not there.
         self.server.set_notifier(self.send)
         self.session = MCPSession()
 

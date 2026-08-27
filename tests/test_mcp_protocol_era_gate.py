@@ -25,6 +25,7 @@ from __future__ import annotations
 import pytest
 
 from veloce import MCPContext, Veloce
+from veloce.contrib.mcp.errors import HeaderMismatchError, ProtocolVersionError
 from veloce.contrib.mcp.server import (
     LATEST_PROTOCOL_VERSION,
     MODERN_PROTOCOL_VERSION,
@@ -172,7 +173,20 @@ def test_a_modern_body_without_the_method_header_is_refused():
         _meta_call(MODERN_PROTOCOL_VERSION, "tools/call", {"name": "add", "arguments": {}}),
         {"MCP-Protocol-Version": MODERN_PROTOCOL_VERSION},
     )
-    assert response.status_code >= 400 or "error" in response.json()
+    _assert_header_mismatch(response)
+
+
+def _assert_header_mismatch(response) -> None:
+    """The anti-smuggling refusal, by its own code.
+
+    `status >= 400 or "error" in body` - what these assertions used to say -
+    is satisfied by an unrelated 500 or a generic `-32603`, so a test named for
+    the cross-check could pass while the cross-check did nothing. The refusal
+    is `HeaderMismatchError`, which carries `-32020` and a 400.
+    """
+    assert response.status_code == 400, response.body
+    error = response.json()["error"]
+    assert error["code"] == HeaderMismatchError.code, error
 
 
 def test_a_method_header_disagreeing_with_the_body_is_refused():
@@ -182,7 +196,7 @@ def test_a_method_header_disagreeing_with_the_body_is_refused():
         _meta_call(MODERN_PROTOCOL_VERSION, "tools/call", {"name": "add", "arguments": {}}),
         {"MCP-Protocol-Version": MODERN_PROTOCOL_VERSION, "Mcp-Method": "tools/list"},
     )
-    assert response.status_code >= 400 or "error" in response.json()
+    _assert_header_mismatch(response)
 
 
 def test_a_name_header_disagreeing_with_the_body_is_refused():
@@ -198,7 +212,7 @@ def test_a_name_header_disagreeing_with_the_body_is_refused():
             "Mcp-Name": "where",
         },
     )
-    assert response.status_code >= 400 or "error" in response.json()
+    _assert_header_mismatch(response)
 
 
 def test_a_modern_call_with_agreeing_headers_is_served():
@@ -225,7 +239,13 @@ def test_a_version_header_disagreeing_with_the_body_is_refused():
         _meta_call(MODERN_PROTOCOL_VERSION, "tools/list"),
         {"MCP-Protocol-Version": "2027-01-01", "Mcp-Method": "tools/list"},
     )
-    assert response.status_code >= 400 or "error" in response.json()
+    # A different refusal from the method/name cross-check, and the blanket
+    # `status >= 400 or "error"` could not tell them apart: an unserved version
+    # is `ProtocolVersionError`, not `HeaderMismatchError`.
+    assert response.status_code == 400, response.body
+    error = response.json()["error"]
+    assert error["code"] == ProtocolVersionError.code, error
+    assert "2027-01-01" in error["message"], error
 
 
 def test_a_modern_version_header_with_a_legacy_body_still_checks_headers():
@@ -236,7 +256,7 @@ def test_a_modern_version_header_with_a_legacy_body_still_checks_headers():
         _meta_call(None, "tools/list"),
         {"MCP-Protocol-Version": MODERN_PROTOCOL_VERSION},
     )
-    assert response.status_code >= 400 or "error" in response.json()
+    _assert_header_mismatch(response)
 
 
 # ── the handshake era is otherwise untouched ─────────────────────────
