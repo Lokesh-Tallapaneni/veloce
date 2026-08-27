@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 import pytest
@@ -108,6 +107,8 @@ async def test_template_response_integration(tmpl_dir: Path):
     assert resp.status_code == 200
     assert resp.mimetype == "text/plain"
     assert resp.body == b"body-1"
-    # Give the fire-and-forget background task a chance to land.
-    await asyncio.sleep(0.05)
+    # The public seam, rather than a 50ms sleep: exact, and it fails saying the
+    # task never ran instead of passing because the sleep happened to be long
+    # enough.
+    assert await app.wait_for_background_tasks(), "the background task never ran"
     assert fired == ["bg"]

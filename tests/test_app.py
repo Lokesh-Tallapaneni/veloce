@@ -12,6 +12,8 @@ and `config["DEBUG"]` binding, none of which is about the seams. Those moved
 to the modules named for them.
 """
 
+import json
+
 import pytest
 from pydantic import BaseModel
 
@@ -83,7 +85,9 @@ class TestPathParams:
 
         response = await app.handle_request(make_request(path="/items/42"))
         assert response.status_code == 200
-        assert b"42" in response.body
+        # The handler returns `type` for exactly this: `b"42" in body` is
+        # satisfied by the string `"42"`, which is the coercion failing.
+        assert json.loads(response.body) == {"id": 42, "type": "int"}
 
 
 class TestQueryParams:

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import veloce
 from veloce import Veloce
 from veloce.config import Config
 
@@ -78,15 +79,22 @@ def test_from_object_with_instance():
 
 
 def test_from_object_with_module_object():
-    """from_object accepts a module object."""
-    import veloce  # module attribute access
+    """`from_object` accepts a module and takes its UPPERCASE attributes.
 
+    The comment this replaces said the `veloce` module exports none, making the
+    call a no-op - it exports two (`TYPE_CHECKING` and `URL`), and the test
+    asserted only the return value, so the comment and the code disagreed and
+    nothing checked either.
+    """
     cfg = Config()
-    cfg.from_object(veloce)
-    # veloce exports no UPPERCASE attrs, so this should be a no-op (but
-    # not raise). Verify by asserting the loader returned True.
-    # The check is that no error was raised + return value is True.
     assert cfg.from_object(veloce) is True
+
+    loaded = {key: value for key, value in cfg.items() if hasattr(veloce, key)}
+    assert loaded, "nothing was loaded from the module"
+    for key, value in loaded.items():
+        assert key.isupper(), f"{key} is not UPPERCASE and was loaded anyway"
+        assert value is getattr(veloce, key)
+    assert "Veloce" not in cfg, "a non-UPPERCASE attribute was loaded"
 
 
 def test_from_object_with_dotted_path():

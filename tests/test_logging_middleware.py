@@ -249,16 +249,27 @@ async def test_logging_middleware_durations_are_per_request():
     await mw.process_request(r1)
     await asyncio.sleep(0.01)
     await mw.process_request(r2)
+    # The property: each request carries its *own* entry. A `>=` between the two
+    # timestamps - what this used to close on - is clock monotonicity, which
+    # holds under every implementation including the shared-dict collision the
+    # test is named for: both would read the same value, and `>=` allows that.
+    assert r1._state is not r2._state
+    assert "__veloce_logging_start" in r1._state
+    assert "__veloce_logging_start" in r2._state
     s1 = r1._state["__veloce_logging_start"]
     s2 = r2._state["__veloce_logging_start"]
-    # `>=`, not `>`: each request stamps its own start time (the point of this
-    # test - no shared-dict id() collision), but a coarse-resolution clock
-    # (Windows' wall clock is ~15 ms) can return the same value for two reads
-    # only 10 ms apart, so strict `>` flakes there.
+    # Ordering still holds, with `>=` rather than `>` because a coarse clock
+    # (Windows' wall clock is ~15 ms) can return the same value twice 10 ms
+    # apart.
     assert s2 >= s1
-    # process_response reads each request's own start, not the other's.
+
+    # `process_response` clears its own request's entry and must not reach the
+    # other's - which a shared dict keyed by `id(request)` could not promise.
     await mw.process_response(r1, Response(status_code=200))
+    assert "__veloce_logging_start" not in r1._state
+    assert r2._state["__veloce_logging_start"] == s2
     await mw.process_response(r2, Response(status_code=200))
+    assert "__veloce_logging_start" not in r2._state
 
 
 def test_logging_middleware_sets_level_when_handler_preconfigured() -> None:

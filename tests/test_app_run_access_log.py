@@ -136,3 +136,52 @@ def test_the_built_in_hook_carries_the_marker():
     app = Veloce(openapi_url=None)
     app._install_dev_access_log()
     assert getattr(app._instrumentation[0], "is_access_log", False) is True
+
+
+class TestTheFlagIsActuallyWired:
+    """`run(access_log=...)` reaches the installer, which nothing was checking.
+
+    Every test above calls `_install_dev_access_log()` directly, so the branch
+    in `run()` that connects the public flag to it - and the banner that shares
+    the branch - was never exercised. `run()` binds a socket and blocks, so it
+    is driven with `_serve` stubbed out: the flag's effect is decided before
+    serving starts.
+    """
+
+    @staticmethod
+    def _run_without_serving(app: Veloce, monkeypatch, **kwargs) -> None:
+        async def _no_serve(*args, **kwargs):
+            return None
+
+        monkeypatch.setattr(app, "_serve", _no_serve)
+        monkeypatch.setattr(app, "_graceful_shutdown", _no_serve)
+        app.run(**kwargs)
+
+    def test_the_flag_on_installs_the_access_log(self, monkeypatch, capsys):
+        app = _app()
+        assert app._instrumentation == []
+        self._run_without_serving(app, monkeypatch, access_log=True)
+        assert len(app._instrumentation) == 1
+        assert getattr(app._instrumentation[0], "is_access_log", False)
+
+    def test_the_flag_off_installs_nothing(self, monkeypatch, capsys):
+        app = _app()
+        self._run_without_serving(app, monkeypatch, access_log=False)
+        assert app._instrumentation == []
+
+    def test_the_flag_on_also_prints_the_banner(self, monkeypatch, capsys):
+        app = _app()
+        self._run_without_serving(app, monkeypatch, access_log=True)
+        assert "Listening on" in capsys.readouterr().out
+
+    def test_the_flag_off_prints_no_banner(self, monkeypatch, capsys):
+        app = _app()
+        self._run_without_serving(app, monkeypatch, access_log=False)
+        assert "Listening on" not in capsys.readouterr().out
+
+    def test_running_twice_does_not_install_two(self, monkeypatch, capsys):
+        """The de-duplication, reached through the public flag rather than direct."""
+        app = _app()
+        self._run_without_serving(app, monkeypatch, access_log=True)
+        self._run_without_serving(app, monkeypatch, access_log=True)
+        assert len(app._instrumentation) == 1

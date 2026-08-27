@@ -68,11 +68,14 @@ def test_dumps_then_loads_round_trips(value: object) -> None:
 
 @given(
     value=_json_values,
-    positions=st.lists(st.integers(min_value=0), max_size=5),
-    replacements=st.lists(st.sampled_from("abXY09-_."), max_size=5),
+    edits=st.lists(
+        st.tuples(st.integers(min_value=0), st.sampled_from("abXY09-_.")),
+        min_size=1,
+        max_size=5,
+    ),
 )
 def test_corrupting_a_valid_token_yields_only_bad_signature_or_original(
-    value: object, positions: list[int], replacements: list[str]
+    value: object, edits: list[tuple[int, str]]
 ) -> None:
     """Corrupting a valid token only raises `BadSignature` or returns the original.
 
@@ -85,7 +88,10 @@ def test_corrupting_a_valid_token_yields_only_bad_signature_or_original(
     """
     signer = Signer(_SECRET)
     token = list(signer.dumps(value))
-    for pos, rep in zip(positions, replacements):
+    # One draw of `(position, replacement)` pairs, not two zipped lists: zipping
+    # applies `min(len(a), len(b))` edits, so a share of examples corrupted
+    # nothing at all and Hypothesis counted them as passing.
+    for pos, rep in edits:
         token[pos % len(token)] = rep
     candidate = "".join(token)
     try:

@@ -124,24 +124,57 @@ def test_split_binary_frame_reassembles(payload: bytes, mask: bytes, steps: list
 
 @settings(max_examples=300, deadline=None)
 @given(
-    positions=st.lists(st.integers(min_value=0), max_size=5),
-    replacements=st.lists(st.integers(min_value=0, max_value=255), max_size=5),
+    edits=st.lists(
+        st.tuples(st.integers(min_value=0), st.integers(min_value=0, max_value=255)),
+        min_size=1,
+        max_size=5,
+    ),
 )
-def test_corrupted_valid_frame_never_over_allocates(
-    positions: list[int], replacements: list[int]
-) -> None:
-    """Flipping random bytes in a valid frame yields only controlled outcomes.
+def test_corrupted_valid_frame_never_over_allocates(edits: list[tuple[int, int]]) -> None:
+    """Flipping random bytes in a valid frame never parks more than it was fed.
 
-    A declared 64-bit length past `MAX_FRAME_SIZE` must trip the controlled
-    close, never park unbounded bytes in the buffer.
+    The buffer bound is what this reaches. The docstring used to promise that a
+    declared 64-bit length past `MAX_FRAME_SIZE` trips the controlled close,
+    which these edits essentially cannot produce - the base frame declares a
+    19-byte payload, so an edit would have to land on the length byte *and*
+    leave a huge value behind it. `test_inflated_length_closes_not_allocates`
+    below builds that frame directly and asserts the close.
+
+    The conditional assertion is kept for the case the strategy does reach it.
     """
     base = _client_data_frame(b"the quick brown fox", b"\x01\x02\x03\x04", 0x1)
     corrupted = bytearray(base)
-    for pos, rep in zip(positions, replacements):
+    # One draw of pairs; see the note in `test_fuzz_signing.py`.
+    for pos, rep in edits:
         corrupted[pos % len(corrupted)] = rep
     ws = _raw_websocket()
     _feed(ws, bytes(corrupted))
     assert len(ws._recv_buffer) <= len(corrupted)
+    # The docstring's actual promise. A buffer bound alone is satisfied by a
+    # frame that parked the bytes and stayed open, which is the outcome this
+    # exists to rule out: an over-long declared length must have *closed*.
+    declared = _declared_payload_length(bytes(corrupted))
+    if declared is not None and declared > WebSocket.MAX_FRAME_SIZE:
+        assert ws._closed, (
+            f"a declared length of {declared} exceeds MAX_FRAME_SIZE and the "
+            "connection is still open"
+        )
+
+
+def _declared_payload_length(frame: bytes) -> int | None:
+    """The payload length a frame header declares, or `None` if it is truncated.
+
+    Read from the frame rather than assumed, because the fuzzer's edits may
+    land on the length bytes - which is the case worth checking.
+    """
+    if len(frame) < 2:
+        return None
+    short = frame[1] & 0x7F
+    if short < 126:
+        return short
+    if short == 126:
+        return struct.unpack("!H", frame[2:4])[0] if len(frame) >= 4 else None
+    return struct.unpack("!Q", frame[2:10])[0] if len(frame) >= 10 else None
 
 
 def test_inflated_length_closes_not_allocates() -> None:
