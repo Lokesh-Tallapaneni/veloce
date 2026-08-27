@@ -103,3 +103,23 @@ def make_request(
         body=body,
         **extra,
     )
+
+
+@pytest.fixture(autouse=True)
+def _reset_principal():
+    """Keep the principal contextvar from leaking between tests.
+
+    This lived in `test_mcp.py` as a module-scoped autouse fixture, so it only
+    ever protected that one module - `test_mcp_sse_principal.py` sets a
+    principal too and had no such guard. Splitting `test_mcp.py` exposed that:
+    with the fixture gone from the module that owned it, tests in another file
+    started seeing a principal they never set.
+
+    A contextvar leaking between tests is a suite-wide hazard, so the guard
+    belongs here rather than in whichever module happens to remember it.
+    """
+    from veloce import set_principal
+
+    set_principal(None)
+    yield
+    set_principal(None)
