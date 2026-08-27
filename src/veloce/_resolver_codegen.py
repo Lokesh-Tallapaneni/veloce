@@ -22,8 +22,12 @@ Security scopes, no `yield`-teardown dependencies, and no body / async markers.
 Such a graph has no concurrency to preserve, so a straight-line `async`
 resolver that awaits each dependency in order is behaviour-identical to the
 interpreter while removing the per-slot dispatch. Plans with parallelisable
-waves, scopes, teardown, overrides, or MCP context fall back to the
-interpreter, which keeps their `gather` batching and stateful semantics.
+waves, teardown, overrides, or MCP context fall back to the interpreter, which
+keeps their `gather` batching and stateful semantics.
+
+`Security(..., scopes=[...])` chains compile. The scope union a `SecurityScopes`
+parameter sees is fixed by the graph edges, so it is computed once here and
+baked in as a constant rather than accumulated on a per-request stack.
 
 Synchronous `K_PARAM_MARKER` slots - `Query()`, `Path()`, `Header()`,
 `Cookie()` - are inlined too: their request source is read directly with no
@@ -47,6 +51,7 @@ from veloce._handler_plan import (
     K_QUERY,
     K_REQUEST,
     K_RESPONSE,
+    K_SECURITY_SCOPES,
     K_WEBSOCKET,
     MARKER_LOC,
     MK_COOKIE,
@@ -191,13 +196,16 @@ def compile_graph_resolver(
     offload: Callable[..., Any],
     background_tasks_cls: type,
     response_cls: type,
+    security_scopes_cls: type,
 ) -> Callable[[Any, dict[str, str]], Any] | None:
     """Generate an `async (request, path_params) -> kwargs` resolver for `plan`.
 
     Returns `None` unless the whole dependency graph is compilable: no
     parallelisable waves (so awaiting in order preserves the interpreter's
-    concurrency), no Security scopes, no `yield`-teardown dependencies, only
-    cacheable `Depends`, and only synchronous binding / parameter slots. The
+    concurrency), no `yield`-teardown dependencies, only cacheable `Depends`,
+    and only synchronous binding / parameter slots. A `Security()` scope chain
+    does compile - the union each `SecurityScopes` parameter sees is static in
+    the graph, so it is resolved here rather than on a per-request stack. The
     caller additionally restricts use of the result to requests with no active
     dependency overrides and no MCP context, the two pieces of resolver state
     the compiled body deliberately does not consult. The injected runtime hooks
@@ -215,6 +223,8 @@ def compile_graph_resolver(
         "_BG": background_tasks_cls,
         "_Resp": response_cls,
     }
+    # Injected like the others so this module never imports `dependency`.
+    ns["_SS"] = security_scopes_cls
     lines = ["async def _resolver(request, path_params):", "    k = {}"]
     # `n` is a monotonically increasing index shared across the whole tree so
     # per-slot namespace keys (`_t{n}`, `_f{n}`, ...) and temp dict / result
@@ -222,7 +232,16 @@ def compile_graph_resolver(
     # maps a dependency callable's identity to the local holding its computed
     # result, so a callable referenced more than once is emitted (and run)
     # once - mirroring the interpreter's identity-keyed result cache.
-    ctx: dict[str, Any] = {"n": 0, "dep_vars": {}, "in_progress": set()}
+    # `scope_stack` mirrors `DependencyResolver._scope_stack`, but is walked at
+    # compile time: each `Security()` edge pushes its scopes for the duration of
+    # its sub-plan's emission, so every `SecurityScopes` slot below sees the
+    # same ordered union the interpreter would have built.
+    ctx: dict[str, Any] = {
+        "n": 0,
+        "dep_vars": {},
+        "in_progress": set(),
+        "scope_stack": [],
+    }
     try:
         for slot in plan.slots:
             _emit_graph_slot(lines, ns, slot, "k", ctx)
@@ -238,9 +257,9 @@ def _graph_compilable(plan: HandlerPlan, seen: set[int]) -> bool:
     """Whether `plan` and its whole sub-graph compile to a straight-line resolver.
 
     Rejects any plan with parallelisable waves (the interpreter runs those
-    concurrently and a sequential compile would regress them), Security scopes,
-    `yield`-teardown or non-cacheable dependencies, body / async markers, or
-    any slot kind outside the binding / sync-param / `Depends` set.
+    concurrently and a sequential compile would regress them), `yield`-teardown
+    or non-cacheable dependencies, body / async markers, or any slot kind
+    outside the binding / sync-param / `Depends` / `SecurityScopes` set.
     """
     if plan.wave_members:
         return False
@@ -252,22 +271,21 @@ def _graph_compilable(plan: HandlerPlan, seen: set[int]) -> bool:
         kind = slot.kind
         if kind in _GRAPH_BIND or kind == K_QUERY:
             continue
+        if kind == K_SECURITY_SCOPES:
+            # The union is a compile-time constant; see `_emit_graph_slot`.
+            continue
         if kind == K_PARAM_MARKER:
             if slot.marker_kind not in _SYNC_MARKERS:
                 return False
             continue
         if kind == K_DEPENDS:
-            # A list `target_type` carries Security() scopes; gen / async-gen
-            # are yield-teardown deps; both touch ordered resolver state the
-            # compiled body does not reproduce. Non-cacheable deps would need a
-            # runtime re-execution the identity dedup below cannot express.
-            if (
-                slot.scope_sensitive
-                or (isinstance(slot.target_type, list) and slot.target_type)
-                or slot.dep_is_gen
-                or slot.dep_is_async_gen
-                or not slot.use_cache
-            ):
+            # gen / async-gen are yield-teardown deps, whose ordered teardown
+            # stack the compiled body does not reproduce. Non-cacheable deps
+            # would need a runtime re-execution the dedup below cannot express.
+            # A `Security()` scope list is no longer a bail: it is walked at
+            # compile time and keyed into `dep_vars` the way the interpreter
+            # keys its cache.
+            if slot.dep_is_gen or slot.dep_is_async_gen or not slot.use_cache:
                 return False
             sub = slot.sub_plan
             if sub is None or not _graph_compilable(sub, seen):
@@ -318,6 +336,21 @@ def _emit_graph_slot(
         lines.append(f"    {target}[{name!r}] = _inj")
         return
 
+    if kind == K_SECURITY_SCOPES:
+        # The scope union is fixed by the `Security()` edges above this slot, so
+        # the list is a compile-time constant. The `SecurityScopes` wrapper is
+        # still built per request: `scopes` is a plain list a dependency may
+        # mutate, and the interpreter hands out a fresh instance every time, so
+        # sharing one here would let one request's mutation reach the next.
+        # `SecurityScopes.__init__` copies the list, so the constant below is
+        # never the object a dependency can reach.
+        n = ctx["n"]
+        ctx["n"] += 1
+        sref = f"_sc{n}"
+        ns[sref] = tuple(ctx["scope_stack"])
+        lines.append(f"    {target}[{name!r}] = _SS({sref})")
+        return
+
     if kind == K_DEPENDS:
         var = _emit_dep(lines, ns, slot, ctx)
         lines.append(f"    {target}[{name!r}] = {var}")
@@ -338,23 +371,37 @@ def _emit_graph_slot(
 def _emit_dep(lines: list[str], ns: dict[str, Any], slot: Any, ctx: dict[str, Any]) -> str:
     """Emit a dependency's resolution and return the local holding its result.
 
-    A callable already emitted returns its cached local unchanged (identity
-    dedup). Sub-plan slots are emitted into a fresh temp dict first, then the
-    callable is invoked - awaited for coroutines, offloaded when the slot opts
-    in, called inline otherwise.
+    A callable already emitted returns its cached local unchanged. The dedup key
+    mirrors `DependencyResolver._exec_depends`: callable identity alone for an
+    ordinary dependency, and `(callable, frozenset(scopes))` for a
+    scope-sensitive one, so the same callable reached through two different
+    `Security()` paths is emitted - and run - twice rather than collapsing to
+    one result, exactly as the interpreter resolves it.
+
+    Sub-plan slots are emitted into a fresh temp dict first, then the callable
+    is invoked - awaited for coroutines, offloaded when the slot opts in, called
+    inline otherwise.
     """
     dep_callable = slot.dep_callable
     cid = id(dep_callable)
+    scope_stack: list[str] = ctx["scope_stack"]
+    # The scopes this edge contributes. A plain `Depends` carries none, so the
+    # whole scope path below is a no-op for it.
+    new_scopes: list[str] = slot.target_type if isinstance(slot.target_type, list) else []
+    if slot.scope_sensitive:
+        key: Any = (cid, frozenset(scope_stack) | frozenset(new_scopes))
+    else:
+        key = cid
     dep_vars = ctx["dep_vars"]
-    cached = dep_vars.get(cid)
+    cached = dep_vars.get(key)
     if cached is not None:
         return cached
     in_progress = ctx["in_progress"]
-    if cid in in_progress:
+    if key in in_progress:
         # A dependency reachable from itself cannot be linearised; bail to the
         # interpreter rather than emit a self-referential local.
         raise _NotCompilable
-    in_progress.add(cid)
+    in_progress.add(key)
 
     n = ctx["n"]
     ctx["n"] += 1
@@ -365,8 +412,14 @@ def _emit_dep(lines: list[str], ns: dict[str, Any], slot: Any, ctx: dict[str, An
 
     lines.append(f"    {subkw} = {{}}")
     sub = slot.sub_plan
-    for sub_slot in sub.slots:
-        _emit_graph_slot(lines, ns, sub_slot, subkw, ctx)
+    if new_scopes:
+        scope_stack.extend(new_scopes)
+    try:
+        for sub_slot in sub.slots:
+            _emit_graph_slot(lines, ns, sub_slot, subkw, ctx)
+    finally:
+        if new_scopes:
+            del scope_stack[-len(new_scopes) :]
 
     if slot.dep_is_coro:
         lines.append(f"    {var} = await {fref}(**{subkw})")
@@ -375,8 +428,8 @@ def _emit_dep(lines: list[str], ns: dict[str, Any], slot: Any, ctx: dict[str, An
     else:
         lines.append(f"    {var} = {fref}(**{subkw})")
 
-    in_progress.discard(cid)
-    dep_vars[cid] = var
+    in_progress.discard(key)
+    dep_vars[key] = var
     return var
 
 

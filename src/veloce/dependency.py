@@ -540,12 +540,14 @@ class DependencyResolver:
 
             # The param-only compiler rejected this plan (it has dependencies or
             # other interpreter-only slots). A no-wave dependency graph - a
-            # linear chain with no parallel-safe batching to preserve, no
-            # Security scopes, and no yield-teardown deps - compiles to a
-            # straight-line `async` resolver too. It reads neither the override
-            # map nor the MCP context, so it is used only when both are absent;
-            # an active override falls through to the interpreter, which applies
-            # them.
+            # linear chain with no parallel-safe batching to preserve and no
+            # yield-teardown deps - compiles to a straight-line `async` resolver
+            # too, including a `Security()` scope chain: the union each
+            # `SecurityScopes` parameter sees is fixed by the graph edges, so it
+            # is resolved at compile time rather than on a per-request stack. It
+            # reads neither the override map nor the MCP context, so it is used
+            # only when both are absent; an active override falls through to the
+            # interpreter, which applies them.
             #
             # The `_mcp_context` half of that test is a guard, not a live branch:
             # the MCP door does not call `resolve()` at all - it walks the
@@ -568,6 +570,7 @@ class DependencyResolver:
                         offload,
                         BackgroundTasks,
                         Response,
+                        SecurityScopes,
                     )
                     plan.compiled_graph_resolver = gcr = (
                         graph if graph is not None else _NOT_COMPILABLE

@@ -15,7 +15,12 @@ from veloce._constants import STATE_INJECTED_RESPONSE
 from veloce._handler_plan import build_plan
 from veloce._internal import offload
 from veloce._resolver_codegen import compile_graph_resolver
-from veloce.dependency import _NOT_COMPILABLE, DependencyResolver, _coerce_value
+from veloce.dependency import (
+    _NOT_COMPILABLE,
+    DependencyResolver,
+    SecurityScopes,
+    _coerce_value,
+)
 from veloce.exceptions import RequestValidationError
 from veloce.http.request import Request
 from veloce.security import APIKeyHeader
@@ -36,6 +41,7 @@ def _compiles(handler) -> bool:
             offload,
             BackgroundTasks,
             Response,
+            SecurityScopes,
         )
         is not None
     )
@@ -87,15 +93,29 @@ def test_yield_dependency_does_not_compile():
     assert not _compiles(handler)
 
 
-def test_scoped_security_dependency_does_not_compile():
-    # A Security() carrying scopes records them on the slot's list target_type;
-    # the compiler rejects it so the interpreter keeps the scope-stack semantics.
+def test_scoped_security_dependency_compiles():
+    # A Security() carrying scopes records them on the slot's list target_type.
+    # The compiler used to reject that and hand the whole graph to the
+    # interpreter for its scope-stack semantics; the union is static in the
+    # graph, so it is resolved at compile time instead. Parity with the
+    # interpreter is asserted in `test_security_scope_resolver_parity.py`.
     scheme = APIKeyHeader(name="x-key")
 
     async def handler(key=Security(scheme, scopes=["read"])):
         return key
 
-    assert not _compiles(handler)
+    assert _compiles(handler)
+
+
+def test_a_security_scopes_parameter_compiles():
+    # The slot that reads the union is what made a graph scope-sensitive.
+    async def guard(security_scopes: SecurityScopes):
+        return list(security_scopes.scopes)
+
+    async def handler(who=Security(guard, scopes=["read"])):
+        return who
+
+    assert _compiles(handler)
 
 
 def test_scopeless_security_dependency_compiles():
@@ -199,7 +219,13 @@ async def test_compiled_chain_end_to_end():
     plan = build_plan(calc)
     assert (
         compile_graph_resolver(
-            plan, _coerce_value, RequestValidationError, offload, BackgroundTasks, Response
+            plan,
+            _coerce_value,
+            RequestValidationError,
+            offload,
+            BackgroundTasks,
+            Response,
+            SecurityScopes,
         )
         is not None
     )
