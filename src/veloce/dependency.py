@@ -557,9 +557,11 @@ class DependencyResolver:
             # each sub-graph. So an MCP tool call never reaches this compiled
             # path whether or not a context is set, and setting one costs it
             # nothing here. The guard stays because a direct caller can set both.
-            # The compiled body is self-contained (its own
-            # locals dedup shared deps), so it runs after the `reset()` above
-            # without touching `_cache` / `_teardowns` / `_scope_stack`.
+            # The compiled body is self-contained (its own locals dedup shared
+            # deps), so it runs after the `reset()` above without touching
+            # `_cache` or `_scope_stack`. It is handed `_teardowns` because a
+            # `yield` dependency has to register its live generator there for
+            # `run_teardowns` to drain.
             if not self._overrides and self._mcp_context is None:
                 gcr = plan.compiled_graph_resolver
                 if gcr is None:
@@ -576,7 +578,7 @@ class DependencyResolver:
                         graph if graph is not None else _NOT_COMPILABLE
                     )
                 if gcr is not _NOT_COMPILABLE:
-                    return await gcr(request, path_params)
+                    return await gcr(request, path_params, self._teardowns)
         else:
             for slot in route_dep_plans:
                 await self._exec_depends(slot, request, path_params)

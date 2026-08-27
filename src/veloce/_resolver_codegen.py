@@ -22,8 +22,12 @@ Security scopes, no `yield`-teardown dependencies, and no body / async markers.
 Such a graph has no concurrency to preserve, so a straight-line `async`
 resolver that awaits each dependency in order is behaviour-identical to the
 interpreter while removing the per-slot dispatch. Plans with parallelisable
-waves, teardown, overrides, or MCP context fall back to the interpreter, which
-keeps their `gather` batching and stateful semantics.
+waves, overrides, or MCP context fall back to the interpreter, which keeps their
+`gather` batching and stateful semantics.
+
+A `yield`-teardown dependency compiles too: the generator is started here and
+pushed onto the teardown list the caller passes in, which `run_teardowns` drains
+in reverse exactly as it does for the interpreted path.
 
 `Security(..., scopes=[...])` chains compile. The scope union a `SecurityScopes`
 parameter sees is fixed by the graph edges, so it is computed once here and
@@ -74,6 +78,11 @@ _GRAPH_BIND = frozenset({K_REQUEST, K_WEBSOCKET, K_BG_TASKS, K_RESPONSE})
 # file markers read `await request.json()` / `await request.form()` in the
 # interpreter and so cannot be reproduced in the sync compiled function.
 _SYNC_MARKERS = frozenset({MK_QUERY, MK_PATH, MK_HEADER, MK_COOKIE})
+
+# Same wording `DependencyResolver._exec_depends` raises, so both paths report a
+# non-yielding dependency identically. The callable is known at compile time, so
+# the message is built once per dependency rather than on the raise path.
+_MSG_NO_YIELD = "yield dependency {!r} returned without yielding a value"
 
 # Marker kinds that support repeated values via a list/set/tuple annotation.
 # MK_PATH binds a single path segment, so it has no list form.
@@ -197,15 +206,17 @@ def compile_graph_resolver(
     background_tasks_cls: type,
     response_cls: type,
     security_scopes_cls: type,
-) -> Callable[[Any, dict[str, str]], Any] | None:
+) -> Callable[[Any, dict[str, str], list[tuple[str, Any]]], Any] | None:
     """Generate an `async (request, path_params) -> kwargs` resolver for `plan`.
 
     Returns `None` unless the whole dependency graph is compilable: no
     parallelisable waves (so awaiting in order preserves the interpreter's
-    concurrency), no `yield`-teardown dependencies, only cacheable `Depends`,
-    and only synchronous binding / parameter slots. A `Security()` scope chain
-    does compile - the union each `SecurityScopes` parameter sees is static in
-    the graph, so it is resolved here rather than on a per-request stack. The
+    concurrency), only cacheable `Depends`, and only synchronous binding /
+    parameter slots. A `Security()` scope chain does compile - the union each
+    `SecurityScopes` parameter sees is static in the graph, so it is resolved
+    here rather than on a per-request stack - and so does a `yield`-teardown
+    dependency, whose generator is pushed onto the `teardowns` list the caller
+    passes so `run_teardowns` drains it unchanged. The
     caller additionally restricts use of the result to requests with no active
     dependency overrides and no MCP context, the two pieces of resolver state
     the compiled body deliberately does not consult. The injected runtime hooks
@@ -225,7 +236,7 @@ def compile_graph_resolver(
     }
     # Injected like the others so this module never imports `dependency`.
     ns["_SS"] = security_scopes_cls
-    lines = ["async def _resolver(request, path_params):", "    k = {}"]
+    lines = ["async def _resolver(request, path_params, teardowns):", "    k = {}"]
     # `n` is a monotonically increasing index shared across the whole tree so
     # per-slot namespace keys (`_t{n}`, `_f{n}`, ...) and temp dict / result
     # locals (`_kw{n}`, `_r{n}`) never collide between sub-plans. `dep_vars`
@@ -279,13 +290,13 @@ def _graph_compilable(plan: HandlerPlan, seen: set[int]) -> bool:
                 return False
             continue
         if kind == K_DEPENDS:
-            # gen / async-gen are yield-teardown deps, whose ordered teardown
-            # stack the compiled body does not reproduce. Non-cacheable deps
-            # would need a runtime re-execution the dedup below cannot express.
-            # A `Security()` scope list is no longer a bail: it is walked at
-            # compile time and keyed into `dep_vars` the way the interpreter
-            # keys its cache.
-            if slot.dep_is_gen or slot.dep_is_async_gen or not slot.use_cache:
+            # Non-cacheable deps would need a runtime re-execution the dedup
+            # below cannot express. A `Security()` scope list is not a bail: it
+            # is walked at compile time and keyed into `dep_vars` the way the
+            # interpreter keys its cache. Nor is a `yield` dependency: its
+            # generator is pushed onto the caller's teardown list in emission
+            # order, which is the order the interpreter pushes in.
+            if not slot.use_cache:
                 return False
             sub = slot.sub_plan
             if sub is None or not _graph_compilable(sub, seen):
@@ -421,7 +432,32 @@ def _emit_dep(lines: list[str], ns: dict[str, Any], slot: Any, ctx: dict[str, An
         if new_scopes:
             del scope_stack[-len(new_scopes) :]
 
-    if slot.dep_is_coro:
+    if slot.dep_is_gen:
+        # Start it, take the first yield as the result, and register the live
+        # generator so `run_teardowns` advances past the yield. Registration
+        # happens immediately after the first `next`, so a failure later in the
+        # graph still tears this one down - the same ordering the interpreter
+        # gets from appending at this point.
+        gref = f"_g{n}"
+        mref = f"_m{n}"
+        ns[mref] = _MSG_NO_YIELD.format(dep_callable)
+        lines.append(f"    {gref} = {fref}(**{subkw})")
+        lines.append("    try:")
+        lines.append(f"        {var} = next({gref})")
+        lines.append("    except StopIteration as err:")
+        lines.append(f"        raise RuntimeError({mref}) from err")
+        lines.append(f"    teardowns.append(('sync', {gref}))")
+    elif slot.dep_is_async_gen:
+        gref = f"_g{n}"
+        mref = f"_m{n}"
+        ns[mref] = _MSG_NO_YIELD.format(dep_callable)
+        lines.append(f"    {gref} = {fref}(**{subkw})")
+        lines.append("    try:")
+        lines.append(f"        {var} = await {gref}.__anext__()")
+        lines.append("    except StopAsyncIteration as err:")
+        lines.append(f"        raise RuntimeError({mref}) from err")
+        lines.append(f"    teardowns.append(('async', {gref}))")
+    elif slot.dep_is_coro:
         lines.append(f"    {var} = await {fref}(**{subkw})")
     elif slot.dep_offload:
         lines.append(f"    {var} = await _offload({fref}, **{subkw})")

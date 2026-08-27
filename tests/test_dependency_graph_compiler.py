@@ -83,14 +83,29 @@ def test_parallel_wave_does_not_compile():
     assert not _compiles(handler)
 
 
-def test_yield_dependency_does_not_compile():
+def test_sync_yield_dependency_compiles():
+    # A yield dependency used to hand the whole graph to the interpreter for its
+    # teardown stack. The compiled body is given that stack, so the generator is
+    # started here and registered for `run_teardowns` to drain unchanged.
+    # Teardown ordering and exception delivery are compared against the
+    # interpreter in `test_yield_dependency_resolver_parity.py`.
     def ydep():
         yield 1
 
     async def handler(x=Depends(ydep)):
         return x
 
-    assert not _compiles(handler)
+    assert _compiles(handler)
+
+
+def test_async_yield_dependency_compiles():
+    async def aydep():
+        yield 1
+
+    async def handler(x=Depends(aydep)):
+        return x
+
+    assert _compiles(handler)
 
 
 def test_scoped_security_dependency_compiles():
