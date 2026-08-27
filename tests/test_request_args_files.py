@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from veloce import FilesKeyError, Request
+from veloce.http.datastructures import FormData, UploadFile
 
 
 class _AppStub:
@@ -198,3 +199,31 @@ async def test_files_present_key_returns_upload_in_debug_mode():
     files = await req.files()
     # Success path is unchanged: a present key returns the upload, no error.
     assert files["doc"].filename == "a.txt"
+
+
+# ── FormData MultiDict construction ────────────────────────────
+#
+# Moved here from `test_formdata_multidict.py`, which covered three unrelated
+# subsystems behind opaque tracker tags.
+
+
+def test_formdata_repeated_keys_preserved():
+    fd = FormData([("tag", "a"), ("tag", "b"), ("tag", "c")])
+    assert fd["tag"] == "a"  # first value wins for single-value access
+    assert fd.getlist("tag") == ["a", "b", "c"]
+
+
+def test_formdata_getlist_missing_returns_empty():
+    fd = FormData([("a", "1")])
+    assert fd.getlist("missing") == []
+
+
+def test_formdata_get_upload_returns_first_uploadfile_only():
+    """`get_upload` should return None for non-file fields, and the first
+    UploadFile when multiple files share a key."""
+    file_a = UploadFile(filename="a.txt")
+    file_b = UploadFile(filename="b.txt")
+    fd = FormData([("text", "x"), ("file", file_a), ("file", file_b)])
+    assert fd.get_upload("text") is None
+    upload = fd.get_upload("file")
+    assert upload is file_a

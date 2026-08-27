@@ -855,3 +855,98 @@ def test_the_untagged_common_path_is_unchanged():
     with TestClient(app) as tc:
         codes = [tc.get("/plain", headers=_UA).status_code for _ in range(3)]
     assert codes == [200, 200, 429]
+
+
+# ── end to end through a client ───────────────────────────────
+#
+# Moved here from `test_security_middleware_e2e.py`, which covered three
+# unrelated middleware subsystems end to end. These are that subsystem's.
+
+
+def _rl_app(max_requests: int = 5, window_seconds: int = 60) -> Veloce:
+    app = Veloce(openapi_url=None)
+    app.add_middleware(
+        RateLimitMiddleware(max_requests=max_requests, window_seconds=window_seconds)
+    )
+
+    @app.get("/ping")
+    async def ping(request):
+        return {"ok": True}
+
+    return app
+
+
+def test_ratelimit_success_headers_present():
+    """A single allowed request carries X-RateLimit-Limit/Remaining/Reset."""
+    app = _rl_app(max_requests=5, window_seconds=60)
+    with TestClient(app) as client:
+        # Stable User-Agent so the bucket key is deterministic.
+        resp = client.get("/ping", headers={"User-Agent": "rl-test/1"})
+
+    assert resp.status_code == 200
+    assert resp.headers["X-RateLimit-Limit"] == "5"
+    assert resp.headers["X-RateLimit-Remaining"] == "4"
+    reset = int(resp.headers["X-RateLimit-Reset"])
+    assert 0 <= reset <= 60
+
+
+def test_ratelimit_429_carries_retry_after_and_headers():
+    """The 6th request inside max_requests=5 must be rejected with 429
+    and carry both Retry-After and the X-RateLimit-* family."""
+    app = _rl_app(max_requests=5, window_seconds=60)
+    ua = {"User-Agent": "rl-test/limit"}
+    with TestClient(app) as client:
+        for _ in range(5):
+            ok = client.get("/ping", headers=ua)
+            assert ok.status_code == 200
+        rejected = client.get("/ping", headers=ua)
+
+    assert rejected.status_code == 429
+    assert rejected.headers["X-RateLimit-Limit"] == "5"
+    assert rejected.headers["X-RateLimit-Remaining"] == "0"
+    assert "Retry-After" in rejected.headers
+    assert "X-RateLimit-Reset" in rejected.headers
+
+
+def test_ratelimit_buckets_two_calls_from_one_peer_together():
+    """The test client reports a peer, so both calls are the same caller and
+    share one budget - a second call past `max_requests=1` is refused.
+
+    The complementary property (callers with *no* resolvable address must not
+    share a bucket) is pinned at the key level in
+    `tests/test_request_client_peer.py`, where a peerless request can actually
+    be constructed."""
+    app = _rl_app(max_requests=1, window_seconds=60)
+    with TestClient(app) as client:
+        first = client.get("/ping")
+        second = client.get("/ping")
+
+    assert first.status_code == 200
+    assert second.status_code == 429
+
+
+def test_reset_after_ceils_subsecond_remainder():
+    # A sub-second remainder must round up to 1, not floor to 0, so the client
+    # is never told "retry now" while a fraction of a second still remains.
+    from collections import deque
+
+    mw = RateLimitMiddleware(max_requests=1, window_seconds=60)
+    assert mw._reset_after(deque([0.4]), 60.0) == 1
+
+
+def test_ratelimit_xff_keys_on_rightmost_hop():
+    """X-Forwarded-For is parsed RIGHT-to-LEFT — the right-most hop is
+    the closest (and only trustworthy) proxy. Spoofing the LEFT-most
+    value must not let a client evade the per-source limit."""
+    app = _rl_app(max_requests=3, window_seconds=60)
+    with TestClient(app) as client:
+        spoofed_left = "9.9.9.9, real-proxy-ip"
+        for _ in range(3):
+            ok = client.get("/ping", headers={"X-Forwarded-For": spoofed_left})
+            assert ok.status_code == 200
+        # Rotate the spoofed left hop — the right hop stays "real-proxy-ip",
+        # so the bucket must be the same and the next call must trip 429.
+        rejected = client.get("/ping", headers={"X-Forwarded-For": "1.2.3.4, real-proxy-ip"})
+
+    assert rejected.status_code == 429
+    assert rejected.headers["X-RateLimit-Remaining"] == "0"

@@ -586,3 +586,51 @@ def test_csrf_header_path_accepts_matching_token() -> None:
         resp = client.post("/submit", headers={"X-CSRF-Token": token})
         assert resp.status_code == 200, resp.body
         assert resp.json() == {"ok": True}
+
+
+# ── end to end through a client ───────────────────────────────
+#
+# Moved here from `test_security_middleware_e2e.py`, which covered three
+# unrelated middleware subsystems end to end. These are that subsystem's.
+
+
+def _csrf_app() -> Veloce:
+    app = Veloce(openapi_url=None)
+    app.add_middleware(CSRFMiddleware(cookie_secure=False))
+
+    @app.post("/echo")
+    async def echo(request):
+        return {"ok": True}
+
+    return app
+
+
+def test_csrf_upload_file_in_token_field_returns_403_not_500():
+    """A multipart submission whose csrf_token field is a file part must
+    be refused with 403 — the middleware must treat the non-string value
+    as a missing token rather than crash."""
+    app = _csrf_app()
+    with TestClient(app) as client:
+        seed = client.get("/echo")
+        token = seed.cookies["csrf_token"]
+
+        resp = client.post(
+            "/echo",
+            files={"csrf_token": ("token.bin", token.encode(), "application/octet-stream")},
+            headers={"X-CSRF-Token": "wrong-header-value"},
+        )
+
+    assert resp.status_code == 403
+    assert resp.json() == {"detail": "CSRF token mismatch"}
+
+
+def test_csrf_matching_cookie_and_header_passes():
+    """The double-submit happy path: cookie + matching header → 200."""
+    app = _csrf_app()
+    with TestClient(app) as client:
+        seed = client.get("/echo")
+        token = seed.cookies["csrf_token"]
+        resp = client.post("/echo", json={}, headers={"X-CSRF-Token": token})
+
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True}

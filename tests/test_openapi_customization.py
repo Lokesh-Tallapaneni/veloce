@@ -1,12 +1,24 @@
-"""app.openapi() / app.openapi_schema / app.openapi_version ."""
+"""app.openapi() / app.openapi_schema / app.openapi_version.
+
+The module held two test eras. The first is bare functions on `TestClient` and
+`app.openapi()`; the second was four classes that called the **private**
+`app._setup_openapi()`, dispatched through `handle_request(make_request(...))`
+and hand-decoded the body with `orjson.loads(resp.body)` - each marked
+`@pytest.mark.asyncio`, although `asyncio_mode = "auto"` has made that redundant
+for the whole suite.
+
+None of that was about OpenAPI. `TestClient` runs the startup `_setup_openapi`
+was standing in for, `resp.json()` is the decode, and a test that awaits nothing
+does not need to be `async`. The second era is converted to the first, so both
+halves read the same way and neither reaches into the app.
+"""
 
 from __future__ import annotations
 
-import pytest
 from pydantic import BaseModel
 
-from tests.conftest import make_request
 from veloce import Request, Veloce
+from veloce.testclient import TestClient
 
 
 class _OpenAPIItem(BaseModel):
@@ -85,9 +97,6 @@ def test_openapi_method_overridable_in_subclass():
 
 def test_openapi_json_endpoint_serves_overridden_schema():
     """Setting `app.openapi_schema` makes /openapi.json return that exact dict."""
-    import orjson
-
-    from veloce.testclient import TestClient
 
     app = Veloce()
 
@@ -99,7 +108,7 @@ def test_openapi_json_endpoint_serves_overridden_schema():
     with TestClient(app) as client:
         resp = client.get("/openapi.json")
         assert resp.status_code == 200
-        assert orjson.loads(resp.body)["info"]["title"] == "override"
+        assert resp.json()["info"]["title"] == "override"
 
 
 def test_openapi_schema_mutation_persists():
@@ -132,8 +141,7 @@ def test_redoc_url_none_disables_redoc_only():
 
 
 class TestOpenAPIMetadata:
-    @pytest.mark.asyncio
-    async def test_openapi_with_metadata(self):
+    def test_openapi_with_metadata(self):
         app = Veloce(
             title="My API",
             version="2.0.0",
@@ -144,12 +152,7 @@ class TestOpenAPIMetadata:
             servers=[{"url": "https://api.example.com", "description": "Production"}],
             openapi_tags=[{"name": "users", "description": "User operations"}],
         )
-        app._setup_openapi()
-
-        resp = await app.handle_request(make_request(path="/openapi.json"))
-        import orjson
-
-        schema = orjson.loads(resp.body)
+        schema = TestClient(app).get("/openapi.json").json()
 
         assert schema["info"]["title"] == "My API"
         assert schema["info"]["description"] == "A test API"
@@ -161,8 +164,7 @@ class TestOpenAPIMetadata:
 
 
 class TestOpenAPI:
-    @pytest.mark.asyncio
-    async def test_openapi_schema_generation(self):
+    def test_openapi_schema_generation(self):
         app = Veloce(title="Test API", version="1.0.0", openapi_url=None)
 
         @app.get("/items/{item_id}", tags=["items"], summary="Get an item")
@@ -196,37 +198,27 @@ class TestOpenAPI:
         post_op = schema["paths"]["/items"]["post"]
         assert "requestBody" in post_op
 
-    @pytest.mark.asyncio
-    async def test_openapi_route(self):
+    def test_openapi_route(self):
         app = Veloce(title="Test API")
-        app._setup_openapi()
 
         @app.get("/hello")
         async def hello(request: Request):
             return {"hello": "world"}
 
-        resp = await app.handle_request(make_request(path="/openapi.json"))
+        resp = TestClient(app).get("/openapi.json")
         assert resp.status_code == 200
-        import orjson
-
-        schema = orjson.loads(resp.body)
+        schema = resp.json()
         assert "paths" in schema
 
-    @pytest.mark.asyncio
-    async def test_swagger_ui(self):
+    def test_swagger_ui(self):
         app = Veloce()
-        app._setup_openapi()
-
-        resp = await app.handle_request(make_request(path="/docs"))
+        resp = TestClient(app).get("/docs")
         assert resp.status_code == 200
         assert b"swagger-ui" in resp.body
 
-    @pytest.mark.asyncio
-    async def test_redoc_ui(self):
+    def test_redoc_ui(self):
         app = Veloce()
-        app._setup_openapi()
-
-        resp = await app.handle_request(make_request(path="/redoc"))
+        resp = TestClient(app).get("/redoc")
         assert resp.status_code == 200
         assert b"redoc" in resp.body
 
@@ -261,18 +253,14 @@ class TestOpenAPI:
         assert 'nonce="' not in page
         assert "SwaggerUIBundle" in page
 
-    @pytest.mark.asyncio
-    async def test_openapi_disabled(self):
+    def test_openapi_disabled(self):
         app = Veloce(openapi_url=None)
-        app._setup_openapi()
-
-        resp = await app.handle_request(make_request(path="/openapi.json"))
+        resp = TestClient(app).get("/openapi.json")
         assert resp.status_code == 404
 
 
 class TestRouteMetadata:
-    @pytest.mark.asyncio
-    async def test_deprecated_route(self):
+    def test_deprecated_route(self):
         app = Veloce(openapi_url=None)
 
         @app.get("/old", deprecated=True, summary="Old endpoint")

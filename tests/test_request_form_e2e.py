@@ -5,7 +5,10 @@ Exercises each fix from the framework boundary via TestClient.
 
 from __future__ import annotations
 
+import pytest
+
 from veloce import Request, Veloce
+from veloce.http.datastructures import FormData
 from veloce.testclient import TestClient
 
 
@@ -270,3 +273,49 @@ def test_an_explicit_cap_is_still_enforced_for_both():
         body, headers = build(20)
         response = _form_client(MAX_FORM_PARTS=5).post("/f", content=body, headers=headers)
         assert response.status_code == 413
+
+
+# ── urlencoded form parsing preserves duplicates ───────────────
+#
+# Moved here from `test_formdata_multidict.py`, which covered three unrelated
+# subsystems behind opaque tracker tags.
+
+
+@pytest.mark.asyncio
+async def test_urlencoded_form_repeated_fields():
+    req = Request(
+        method="POST",
+        path="/x",
+        query_string="",
+        headers={"content-type": "application/x-www-form-urlencoded"},
+        body=b"tag=a&tag=b&tag=c&name=alice",
+    )
+    form = await req.form()
+    assert isinstance(form, FormData)
+    assert form.getlist("tag") == ["a", "b", "c"]
+    assert form["name"] == "alice"
+    assert form["tag"] == "a"  # first-value access
+
+
+# ── duplicate form keys end to end ─────────────────────────────
+#
+# Moved here from `test_formdata_multidict.py`, which covered three unrelated
+# subsystems behind opaque tracker tags.
+
+
+def test_app_handler_sees_multiple_form_values():
+    app = Veloce(debug=True, openapi_url=None)
+
+    @app.post("/submit")
+    async def submit(request: Request):
+        form = await request.form()
+        return {"tags": form.getlist("tag")}
+
+    client = TestClient(app)
+    # urlencoded
+    resp = client.post(
+        "/submit",
+        content=b"tag=a&tag=b&tag=c",
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+    assert resp.json() == {"tags": ["a", "b", "c"]}

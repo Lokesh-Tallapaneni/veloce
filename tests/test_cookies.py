@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import pytest
 
+from veloce import Request
 from veloce.http.cookies import dump_cookie, parse_cookie
+from veloce.http.datastructures import Cookies
 
 
 def test_dump_cookie_basic():
@@ -253,3 +255,67 @@ def test_a_session_delete_cookie_agrees_with_its_write():
     assert "SameSite=Strict" in client.get("/in").headers["set-cookie"]
     cleared = client.get("/out").headers.get("set-cookie", "")
     assert "SameSite=STRICT" not in cleared
+
+
+# ── Cookies MultiDict ──────────────────────────────────────────
+#
+# Moved here from `test_cookies_and_validation.py`, which bundled cookie parsing
+# with validation-error hierarchy behaviour.
+
+
+def test_cookies_parses_single_cookie():
+    c = Cookies.from_cookie_header("session=abc123")
+    assert c["session"] == "abc123"
+    assert c.getlist("session") == ["abc123"]
+
+
+def test_cookies_parses_multiple_distinct_cookies():
+    c = Cookies.from_cookie_header("a=1; b=2; c=3")
+    assert c["a"] == "1"
+    assert c["b"] == "2"
+    assert c["c"] == "3"
+
+
+def test_cookies_first_wins_on_duplicate_names():
+    """RFC 6265 section 5.4: duplicate names collapse to first occurrence."""
+    c = Cookies.from_cookie_header("tag=x; tag=y; other=z")
+    assert c.getlist("tag") == ["x"]
+    assert c["tag"] == "x"
+    assert c["other"] == "z"
+
+
+def test_cookies_strips_whitespace():
+    c = Cookies.from_cookie_header(" a=1 ;  b=2 ")
+    assert c["a"] == "1"
+    assert c["b"] == "2"
+
+
+def test_cookies_skips_attributes_without_value():
+    """Attributes like `Secure` or `HttpOnly` belong on Set-Cookie, not
+    Cookie — but if they appear, skip them silently."""
+    c = Cookies.from_cookie_header("a=1; Secure; b=2")
+    assert c["a"] == "1"
+    assert c["b"] == "2"
+    assert c.getlist("Secure") == []
+
+
+def test_cookies_getlist_missing_returns_empty():
+    c = Cookies.from_cookie_header("a=1")
+    assert c.getlist("missing") == []
+
+
+def test_cookies_empty_header():
+    c = Cookies.from_cookie_header("")
+    assert len(c) == 0
+
+
+def test_request_cookies_is_cookies_instance():
+    req = Request(
+        method="GET",
+        path="/",
+        query_string="",
+        headers={"cookie": "x=1; y=2"},
+        body=b"",
+    )
+    assert isinstance(req.cookies, Cookies)
+    assert req.cookies["x"] == "1"

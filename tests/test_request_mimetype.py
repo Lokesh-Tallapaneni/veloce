@@ -76,3 +76,79 @@ def test_mimetype_params_malformed_segment_skipped():
     """A param without `=` is skipped, not raised."""
     p = _req("text/html; charset=utf-8; nokey").mimetype_params
     assert p == {"charset": "utf-8"}
+
+
+# ── is_json includes the +json structured suffix ────────────────
+#
+# Moved here from `test_formdata_multidict.py`, which covered three unrelated
+# subsystems behind opaque tracker tags.
+
+
+def test_is_json_for_plain_application_json():
+    req = Request(
+        method="POST",
+        path="/",
+        query_string="",
+        headers={"content-type": "application/json"},
+        body=b"{}",
+    )
+    assert req.is_json is True
+
+
+def test_is_json_for_structured_suffix():
+    """RFC 6839 §3.1: `application/vnd.api+json` is JSON-encoded."""
+    req = Request(
+        method="POST",
+        path="/",
+        query_string="",
+        headers={"content-type": "application/vnd.api+json"},
+        body=b"{}",
+    )
+    assert req.is_json is True
+
+    req2 = Request(
+        method="POST",
+        path="/",
+        query_string="",
+        headers={"content-type": "application/problem+json"},
+        body=b"{}",
+    )
+    assert req2.is_json is True
+
+
+def test_is_json_strips_charset_param():
+    req = Request(
+        method="POST",
+        path="/",
+        query_string="",
+        headers={"content-type": "application/json; charset=utf-8"},
+        body=b"{}",
+    )
+    assert req.is_json is True
+
+
+def test_is_json_false_for_form_payloads():
+    req = Request(
+        method="POST",
+        path="/",
+        query_string="",
+        headers={"content-type": "application/x-www-form-urlencoded"},
+        body=b"a=1",
+    )
+    assert req.is_json is False
+
+
+def test_is_json_false_for_text_plain():
+    req = Request(
+        method="POST",
+        path="/",
+        query_string="",
+        headers={"content-type": "text/plain"},
+        body=b"hi",
+    )
+    assert req.is_json is False
+
+
+def test_is_json_false_for_missing_content_type():
+    req = Request(method="GET", path="/", query_string="", headers={}, body=b"")
+    assert req.is_json is False
