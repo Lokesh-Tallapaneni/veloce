@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import time
-
 import pytest
 
 from veloce import check_reset_token, make_reset_token
@@ -24,10 +22,21 @@ def test_state_change_invalidates():
     assert check_reset_token(token, STATE_B, secret=SECRET, max_age=3600) is False
 
 
-def test_expired_returns_false():
+def test_expired_returns_false(monkeypatch):
+    """Mint the token in the past rather than sleeping into the future.
+
+    `Signer` stamps and checks whole seconds, so proving `max_age=0` expiry by
+    real elapsed time meant `time.sleep(1.1)` - a second and a bit of wall clock
+    for one assertion, and the module's whole runtime. Moving the clock back for
+    the minting call is exact and instant.
+    """
+    import veloce.signing
+
+    real = veloce.signing.time.time
+    monkeypatch.setattr(veloce.signing.time, "time", lambda: real() - 600)
     token = make_reset_token(STATE_A, secret=SECRET)
-    # max_age=0 with even a tiny elapsed time is expired; sleep a hair.
-    time.sleep(1.1)
+    monkeypatch.undo()
+
     assert check_reset_token(token, STATE_A, secret=SECRET, max_age=0) is False
 
 

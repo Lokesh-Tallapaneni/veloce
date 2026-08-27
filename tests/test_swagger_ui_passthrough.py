@@ -142,7 +142,11 @@ def test_swagger_ui_init_oauth_escapes_breakout():
 
 
 def test_swagger_ui_parameters_escape_line_separators():
-    sep = "a" + " " + "b" + " " + "c"
+    # Built from `chr()` rather than pasted: U+2028 and U+2029 are invisible
+    # in a source file, so a reader could not see what this string contains
+    # and an editor could silently normalise them away.
+    line_sep, para_sep = chr(0x2028), chr(0x2029)
+    sep = "a" + line_sep + "b" + para_sep + "c"
     app = Veloce(debug=True, swagger_ui_parameters={"docExpansion": sep})
 
     @app.get("/x")
@@ -150,7 +154,7 @@ def test_swagger_ui_parameters_escape_line_separators():
         return {}
 
     html = TestClient(app).get("/docs").text
-    assert " " not in html
-    assert " " not in html
+    assert line_sep not in html
+    assert para_sep not in html
     assert "\\u2028" in html
     assert "\\u2029" in html

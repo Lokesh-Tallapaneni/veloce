@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from veloce import Request, Veloce
 from veloce.http.datastructures import Headers, QueryParams
 from veloce.testclient import TestClient
@@ -192,8 +190,3 @@ def test_app_duplicate_request_headers_preserved():
 
 
 # ── pytest plugin sanity ───────────────────────────────────────────────
-
-
-def test_module_imports():
-    """Smoke test: this file imports cleanly."""
-    assert pytest is not None

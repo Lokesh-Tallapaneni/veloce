@@ -130,13 +130,13 @@ def test_proxy_fix_rewrites_client_ip():
         "/info",
         headers={"X-Forwarded-For": "203.0.113.1, 10.0.0.1"},
     )
-    # With x_for=1 we trust ONE hop; the rightmost (10.0.0.1) is our proxy.
-    # The original client is one hop in: 203.0.113.1.
-    # Wait — we trust _one_ proxy, so we trust _one_ hop-back, returning the
-    # rightmost value (the proxy itself). That value would be the peer's
-    # known IP. The intent is usually x_for=1 ⇒ get the LAST proxy's
-    # asserted client. Trace through _pick_hop("a,b", 1) → "b".
-    # So with x_for=1 here, client="10.0.0.1". For original client, use x_for=2.
+    # `x_for=1` trusts one hop, counted from the right: `_pick_hop` returns the
+    # rightmost value, `10.0.0.1`. Reaching the original client `203.0.113.1`
+    # through two proxies needs `x_for=2`.
+    #
+    # Selecting from the right is the security property, not a detail: the left
+    # of `X-Forwarded-For` is attacker-controlled, so trust is only ever counted
+    # back from the peer Veloce actually spoke to (RFC 7239 Sec. 5.2).
     assert resp.json()["client"] == "10.0.0.1"
 
 
