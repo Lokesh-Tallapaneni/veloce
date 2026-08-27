@@ -231,6 +231,8 @@ def test_independent_deps_are_grouped():
     plan = build_plan(h)
     # Two independent plain deps form one parallel group [0, 2).
     assert compute_parallel_groups(plan.slots) == {0: 2}
+    # Twice, because the grouping is derived from the plan rather than cached
+    # on it: a second call must give the same answer, not a consumed one.
     assert compute_parallel_groups(plan.slots) == {0: 2}
 
 

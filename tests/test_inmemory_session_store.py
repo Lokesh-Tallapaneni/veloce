@@ -210,39 +210,6 @@ def test_sweep_expired_tolerates_concurrent_write() -> None:
     assert all(f"expired-{i}" not in store._entries for i in range(5))
 
 
-def test_inmemory_session_store_sweep_expired_returns_count():
-    store = InMemorySessionStore()
-    now = time.time()
-    store._entries["a"] = ({"x": 1}, now - 100)
-    store._entries["b"] = ({"x": 2}, now - 50)
-    store._entries["fresh"] = ({"x": 3}, now + 3600)
-    removed = store.sweep_expired()
-    assert removed == 2
-    assert "fresh" in store._entries
-    assert "a" not in store._entries
-    assert "b" not in store._entries
-
-
-def test_inmemory_session_store_sweep_tolerates_concurrent_removal():
-    class RacingDict(dict):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            self._racing = True
-
-        def pop(self, key, default=None):
-            if self._racing and key == "b":
-                self._racing = False
-                super().pop("b", None)
-            return super().pop(key, default)
-
-    store = InMemorySessionStore()
-    now = time.time()
-    store._entries = RacingDict({"a": ({}, now - 1), "b": ({}, now - 1), "c": ({}, now - 1)})
-    removed = store.sweep_expired()
-    assert removed == 2
-    assert len(store._entries) == 0
-
-
 async def test_in_memory_session_store_per_instance_sweep_fires() -> None:
     store = InMemorySessionStore(sweep_threshold=2, sweep_probability=1.0)
     # Pre-populate with three already-expired entries by reaching into the

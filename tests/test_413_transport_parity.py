@@ -88,8 +88,13 @@ class _FakeTransport(asyncio.Transport):
         return default
 
 
-def _drive_native(body: bytes) -> tuple[int, dict, bytes, bool]:
-    """Drive one raw POST through `HttpProtocol` and parse the reply off the wire."""
+def _drive_native_raw(body: bytes) -> tuple[bytes, bool]:
+    """Drive one raw POST through `HttpProtocol`; return the wire bytes and close flag.
+
+    Split from `_drive_native` because the parsed form gives back a status
+    *code*, and a test asserting on the reason phrase needs the status line.
+    Without this the phrase test re-inlined the whole drive.
+    """
     loop = asyncio.new_event_loop()
     try:
         proto = HttpProtocol(_app(), loop)
@@ -100,10 +105,14 @@ def _drive_native(body: bytes) -> tuple[int, dict, bytes, bool]:
         proto.data_received(head + body)
         for _ in range(4):
             loop.run_until_complete(asyncio.sleep(0))
-        emitted = b"".join(transport.writes)
-        closed = transport.closed
+        return b"".join(transport.writes), transport.closed
     finally:
         loop.close()
+
+
+def _drive_native(body: bytes) -> tuple[int, dict, bytes, bool]:
+    """Drive one raw POST through `HttpProtocol` and parse the reply off the wire."""
+    emitted, closed = _drive_native_raw(body)
 
     head_bytes, _, payload = emitted.partition(CRLF + CRLF)
     lines = head_bytes.split(CRLF)
@@ -197,20 +206,9 @@ def test_native_still_closes_the_connection():
 
 
 def test_native_keeps_the_reason_phrase():
-    _status, _headers, _body, _closed = _drive_native(b"x" * 100)
-    loop = asyncio.new_event_loop()
-    try:
-        proto = HttpProtocol(_app(), loop)
-        transport = _FakeTransport()
-        proto.connection_made(transport)
-        head = b"POST /up HTTP/1.1" + CRLF + b"Host: t" + CRLF
-        head += b"Content-Length: 100" + CRLF + CRLF
-        proto.data_received(head + b"x" * 100)
-        for _ in range(4):
-            loop.run_until_complete(asyncio.sleep(0))
-        assert b"413 Content Too Large" in b"".join(transport.writes)
-    finally:
-        loop.close()
+    """The status *line*, which the parsed form reduces to a code."""
+    emitted, _closed = _drive_native_raw(b"x" * 100)
+    assert b"413 Content Too Large" in emitted
 
 
 def test_native_accepts_a_body_at_the_limit():

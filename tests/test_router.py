@@ -40,26 +40,28 @@ def router():
     return r
 
 
-class TestStaticRoutes:
-    def test_match_root(self, router):
-        match = router.match("GET", "/")
-        assert match is not None
+def test_match_root(router):
+    match = router.match("GET", "/")
+    assert match is not None
 
-    def test_match_static_path(self, router):
-        match = router.match("GET", "/users")
-        assert match is not None
-        assert match.path_params == {}
 
-    def test_no_match(self, router):
-        match = router.match("GET", "/nonexistent")
-        assert match is None
+def test_match_static_path(router):
+    match = router.match("GET", "/users")
+    assert match is not None
+    assert match.path_params == {}
 
-    def test_method_not_allowed(self, router):
-        match = router.match("DELETE", "/users")
-        assert match is None
-        allowed = router.get_allowed_methods("/users")
-        assert "GET" in allowed
-        assert "POST" in allowed
+
+def test_no_match(router):
+    match = router.match("GET", "/nonexistent")
+    assert match is None
+
+
+def test_method_not_allowed(router):
+    match = router.match("DELETE", "/users")
+    assert match is None
+    allowed = router.get_allowed_methods("/users")
+    assert "GET" in allowed
+    assert "POST" in allowed
 
 
 class TestStaticRouteFastMap:
@@ -106,120 +108,119 @@ class TestStaticRouteFastMap:
         assert r.match("GET", "/ts") is None
 
 
-class TestPathParams:
-    def test_single_param(self, router):
-        match = router.match("GET", "/users/42")
-        assert match is not None
-        assert match.path_params == {"user_id": "42"}
-
-    def test_multiple_params(self, router):
-        match = router.match("GET", "/users/1/posts/99")
-        assert match is not None
-        assert match.path_params == {"user_id": "1", "post_id": "99"}
+def test_single_param(router):
+    match = router.match("GET", "/users/42")
+    assert match is not None
+    assert match.path_params == {"user_id": "42"}
 
 
-class TestWildcard:
-    def test_wildcard_match(self, router):
-        match = router.match("GET", "/files/path/to/file.txt")
-        assert match is not None
-        assert match.path_params["_wildcard"] == "path/to/file.txt"
+def test_multiple_params(router):
+    match = router.match("GET", "/users/1/posts/99")
+    assert match is not None
+    assert match.path_params == {"user_id": "1", "post_id": "99"}
 
 
-class TestRouterInclusion:
-    def test_include_router(self):
-        main = Router()
-        sub = Router(prefix="/api/v1")
+def test_wildcard_match(router):
+    match = router.match("GET", "/files/path/to/file.txt")
+    assert match is not None
+    assert match.path_params["_wildcard"] == "path/to/file.txt"
 
-        @sub.get("/items")
-        async def items(request):
-            return "items"
 
+def test_include_router():
+    main = Router()
+    sub = Router(prefix="/api/v1")
+
+    @sub.get("/items")
+    async def items(request):
+        return "items"
+
+    main.include_router(sub)
+    match = main.match("GET", "/api/v1/items")
+    assert match is not None
+
+
+def test_include_with_extra_prefix():
+    main = Router()
+    sub = Router(prefix="/v1")
+
+    @sub.get("/data")
+    async def data(request):
+        return "data"
+
+    main.include_router(sub, prefix="/api")
+    match = main.match("GET", "/api/v1/data")
+    assert match is not None
+
+
+def test_all_methods():
+    r = Router()
+
+    @r.get("/test")
+    async def get_handler(request): ...
+
+    @r.post("/test")
+    async def post_handler(request): ...
+
+    @r.put("/test")
+    async def put_handler(request): ...
+
+    @r.patch("/test")
+    async def patch_handler(request): ...
+
+    @r.delete("/test")
+    async def delete_handler(request): ...
+
+    for method in ["GET", "POST", "PUT", "PATCH", "DELETE"]:
+        assert r.match(method, "/test") is not None
+
+
+def test_greedy_with_trailing_segment_uses_regex_fallback():
+    # A greedy `:path` converter followed by a static suffix is not
+    # tree-expressible, so it now routes through the regex fallback
+    # instead of raising at registration.
+    r = Router()
+
+    @r.get("/{files:path}/info")
+    async def handler(files):
+        return files
+
+    match = r.match("GET", "/a/b/c/info")
+    assert match is not None
+    assert match.path_params == {"files": "a/b/c"}
+
+
+def test_greedy_as_final_segment_allowed():
+    r = Router()
+
+    @r.get("/{files:path}")
+    async def serve(files: str):
+        return files
+
+    match = r.match("GET", "/a/b/c.txt")
+    assert match is not None
+
+
+def test_include_router_rejects_greedy_with_trailing_segments():
+    sub = Router()
+
+    # Smuggle the invalid shape past add_route by building it manually,
+    # then verify _merge_node refuses to copy it in.
+    async def handler(request): ...
+
+    sub.add_route("/{files:path}", handler, ["GET"])
+    # Tack on a static child after the greedy param to fabricate the
+    # invalid shape that _merge_node must reject when re-walking.
+    from veloce.routing.router import RadixNode
+
+    greedy_node = sub._root.param_children[0]
+    tail = RadixNode("info")
+    greedy_node.static_children["info"] = tail
+    tail.handlers = greedy_node.handlers
+    greedy_node.handlers = {}
+
+    main = Router()
+    with pytest.raises(ValueError, match="greedy converter"):
         main.include_router(sub)
-        match = main.match("GET", "/api/v1/items")
-        assert match is not None
-
-    def test_include_with_extra_prefix(self):
-        main = Router()
-        sub = Router(prefix="/v1")
-
-        @sub.get("/data")
-        async def data(request):
-            return "data"
-
-        main.include_router(sub, prefix="/api")
-        match = main.match("GET", "/api/v1/data")
-        assert match is not None
-
-
-class TestDecorators:
-    def test_all_methods(self):
-        r = Router()
-
-        @r.get("/test")
-        async def get_handler(request): ...
-
-        @r.post("/test")
-        async def post_handler(request): ...
-
-        @r.put("/test")
-        async def put_handler(request): ...
-
-        @r.patch("/test")
-        async def patch_handler(request): ...
-
-        @r.delete("/test")
-        async def delete_handler(request): ...
-
-        for method in ["GET", "POST", "PUT", "PATCH", "DELETE"]:
-            assert r.match(method, "/test") is not None
-
-
-class TestGreedyPathConverter:
-    def test_greedy_with_trailing_segment_uses_regex_fallback(self):
-        # A greedy `:path` converter followed by a static suffix is not
-        # tree-expressible, so it now routes through the regex fallback
-        # instead of raising at registration.
-        r = Router()
-
-        @r.get("/{files:path}/info")
-        async def handler(files):
-            return files
-
-        match = r.match("GET", "/a/b/c/info")
-        assert match is not None
-        assert match.path_params == {"files": "a/b/c"}
-
-    def test_greedy_as_final_segment_allowed(self):
-        r = Router()
-
-        @r.get("/{files:path}")
-        async def serve(files: str):
-            return files
-
-        match = r.match("GET", "/a/b/c.txt")
-        assert match is not None
-
-    def test_include_router_rejects_greedy_with_trailing_segments(self):
-        sub = Router()
-
-        # Smuggle the invalid shape past add_route by building it manually,
-        # then verify _merge_node refuses to copy it in.
-        async def handler(request): ...
-
-        sub.add_route("/{files:path}", handler, ["GET"])
-        # Tack on a static child after the greedy param to fabricate the
-        # invalid shape that _merge_node must reject when re-walking.
-        from veloce.routing.router import RadixNode
-
-        greedy_node = sub._root.param_children[0]
-        tail = RadixNode("info")
-        greedy_node.static_children["info"] = tail
-        tail.handlers = greedy_node.handlers
-        greedy_node.handlers = {}
-
-        main = Router()
-        with pytest.raises(ValueError, match="greedy converter"):
-            main.include_router(sub)
 
 
 # ── Duplicate path-parameter detection ───────────────────────────────
