@@ -1,19 +1,27 @@
 """Regression test guarding the split of `get_openapi_schema` into helpers.
 
-The schema produced by the orchestrator must match a known-good byte
-sequence captured from a representative fixture app (path/query/header
-inputs.parameters with constraints, JSON body, form fields with files, OAuth-less
-HTTP bearer security, custom status code, extra response models,
-deprecated route, and a webhook). Any byte-level drift means the
-refactor leaked a behavior change.
+The schema produced by the orchestrator must match a known-good document
+captured from a representative fixture app (path/query/header parameters with
+constraints, JSON body, form fields with files, OAuth-less HTTP bearer
+security, custom status code, extra response models, deprecated route, and a
+webhook). Any drift means the refactor leaked a behaviour change.
+
+The baseline is the pretty-printed document in
+`tests/data/openapi_helper_split_baseline.json`, compared structurally. It used
+to be a byte length and a sha256, which caught drift but reported it as two
+opaque numbers: an author who changed the schema on purpose was told the length
+went from 3414 to 3452 and left to find out what moved. Now the failure names
+the differing paths, and rebaselining is a readable diff rather than two
+numbers nobody can review.
 """
 
 from __future__ import annotations
 
-import hashlib
+import pathlib
 from typing import Annotated
 
 import orjson
+import pytest
 from pydantic import BaseModel
 
 from veloce import File, Form, Header, Query, Veloce
@@ -87,28 +95,101 @@ def _fixture_app() -> Veloce:
     return app
 
 
-# Captured from the monolithic implementation prior to the helper split.
-# orjson serialization with sorted keys yields exactly this byte sequence
-# for the fixture above. Drift in either length or sha256 means the
-# refactor altered observable output.
-#
-# Rebaselined once since: `HTTPValidationError` gained a `status_code`
+# Captured from the monolithic implementation prior to the helper split, and
+# rebaselined once since: `HTTPValidationError` gained a `status_code`
 # property, because the 422 the dispatcher emits carries one and the schema
 # that omitted it described a body no client receives.
-_EXPECTED_BYTES_LEN = 3414
-_EXPECTED_SHA256 = "53eeafad323b47d157fac8cbefce51d8f82616445355f5bcc6df1fa2dc6da776"
+_BASELINE = pathlib.Path(__file__).parent / "data" / "openapi_helper_split_baseline.json"
 
 
-def test_get_openapi_schema_orchestrator_byte_identical() -> None:
+def _differences(expected: object, actual: object, path: str = "$") -> list[str]:
+    """Every leaf on which the two documents disagree, named by JSON path.
+
+    A sha256 answers whether they differ. This answers where, which is what
+    the author of an intentional schema change needs and what a reviewer needs
+    to judge the rebaselined file.
+    """
+    if type(expected) is not type(actual):
+        return [f"{path}: {type(expected).__name__} -> {type(actual).__name__}"]
+    if isinstance(expected, dict):
+        assert isinstance(actual, dict)
+        out = []
+        for key in sorted(set(expected) | set(actual)):
+            if key not in actual:
+                out.append(f"{path}.{key}: removed")
+            elif key not in expected:
+                out.append(f"{path}.{key}: added ({actual[key]!r})")
+            else:
+                out += _differences(expected[key], actual[key], f"{path}.{key}")
+        return out
+    if isinstance(expected, list):
+        assert isinstance(actual, list)
+        if len(expected) != len(actual):
+            return [f"{path}: {len(expected)} entries -> {len(actual)}"]
+        out = []
+        for index, (want, got) in enumerate(zip(expected, actual)):
+            out += _differences(want, got, f"{path}[{index}]")
+        return out
+    return [] if expected == actual else [f"{path}: {expected!r} -> {actual!r}"]
+
+
+def test_get_openapi_schema_orchestrator_matches_the_baseline() -> None:
+    expected = orjson.loads(_BASELINE.read_bytes())
+    actual = get_openapi_schema(_fixture_app())
+    drift = _differences(expected, actual)
+    if drift:
+        listing = "\n  ".join(drift)
+        raise AssertionError(
+            f"the generated document no longer matches {_BASELINE.name}:"
+            f"\n  {listing}\n\nIf the change is intentional, regenerate the "
+            "baseline and review the diff."
+        )
+
+
+def test_the_document_is_deterministic() -> None:
+    """Caches must not perturb output between two calls on one app."""
     app = _fixture_app()
-    schema = get_openapi_schema(app)
-    payload = orjson.dumps(schema, option=orjson.OPT_SORT_KEYS)
-    assert len(payload) == _EXPECTED_BYTES_LEN
-    assert hashlib.sha256(payload).hexdigest() == _EXPECTED_SHA256
-
-    # Re-running must be deterministic — caches must not perturb output.
+    first = orjson.dumps(get_openapi_schema(app), option=orjson.OPT_SORT_KEYS)
     second = orjson.dumps(get_openapi_schema(app), option=orjson.OPT_SORT_KEYS)
-    assert payload == second
+    assert first == second
+
+
+def test_the_baseline_is_the_document_it_claims_to_be() -> None:
+    """The stored bytes are what `orjson` writes for the parsed document.
+
+    A baseline edited by hand into something the generator cannot produce would
+    fail every run afterwards with a diff nobody could act on.
+    """
+    # Line endings are normalised first: `orjson` emits LF, and a checkout with
+    # `core.autocrlf` on hands this CRLF. That is not schema drift.
+    raw = _BASELINE.read_bytes().replace(b"\r\n", b"\n")
+    reserialised = orjson.dumps(
+        orjson.loads(raw), option=orjson.OPT_SORT_KEYS | orjson.OPT_INDENT_2
+    )
+    assert raw.rstrip(b"\n") == reserialised
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected_path"),
+    [
+        (lambda d: d["paths"].pop("/items"), "$.paths./items: removed"),
+        (lambda d: d["info"].__setitem__("title", "other"), "$.info.title:"),
+        (lambda d: d.__setitem__("openapi", ["3.1.0"]), "$.openapi: str -> list"),
+        (lambda d: d["paths"].__setitem__("/new", {}), "$.paths./new: added"),
+    ],
+)
+def test_a_changed_document_is_reported_by_path(mutate, expected_path) -> None:
+    """The differ is the guard; a differ that returns nothing guards nothing."""
+    expected = orjson.loads(_BASELINE.read_bytes())
+    actual = orjson.loads(_BASELINE.read_bytes())
+    mutate(actual)
+    drift = _differences(expected, actual)
+    assert any(entry.startswith(expected_path) for entry in drift), drift
+
+
+def test_an_identical_document_reports_no_difference() -> None:
+    expected = orjson.loads(_BASELINE.read_bytes())
+    assert _differences(expected, orjson.loads(_BASELINE.read_bytes())) == []
 
 
 def test_get_openapi_schema_helpers_assemble_same_operation() -> None:

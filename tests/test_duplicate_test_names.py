@@ -160,7 +160,7 @@ KNOWN_SHARED = {
     },
     "test_the_refusal_shows_the_value": {
         "test_app_metadata_and_prefix_scope.py",
-        "test_schema_scope_and_instance_path.py",
+        "test_instance_path.py",
     },
     "test_there_is_one_payload_builder": {
         "test_docstring_claims_hold.py",

@@ -303,8 +303,11 @@ def test_nothing_was_logged_or_warned_before_and_now_it_raises(caplog):
         async def x() -> dict:
             return {}
 
-    # A raise, not a warning that a caller could miss.
+    # A raise, not a warning that a caller could miss - and not a log line
+    # either. The DEBUG capture is the "nothing was logged" half of the name:
+    # opening it and never reading it back proved nothing.
     assert [w for w in caught if issubclass(w.category, UserWarning)] == []
+    assert [r.getMessage() for r in caplog.records if r.name.startswith("veloce")] == []
 
 
 def test_the_route_is_not_registered_when_the_entry_is_refused():
