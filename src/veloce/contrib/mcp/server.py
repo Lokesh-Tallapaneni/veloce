@@ -710,6 +710,7 @@ class MCPServer(TasksMixin, InvocationMixin):
         requests answered are `initialize` and `ping`. The stateless HTTP
         transport passes none, leaving its fast path unaffected.
         """
+        # ── 1. Envelope: is this a well-formed JSON-RPC 2.0 request at all ──
         msg_id = message.get("id")
         method = message.get("method")
 
@@ -741,6 +742,7 @@ class MCPServer(TasksMixin, InvocationMixin):
         # reset with the other per-message context in the `finally`.
         log_level_token = None
 
+        # ── 2. Era: which protocol revision is this client speaking ──
         # Era selection. A modern client states its version in `_meta` on every
         # request; a legacy one opens with `initialize` and negotiates once. The
         # two are served side by side, so the same endpoint answers both.
@@ -774,6 +776,7 @@ class MCPServer(TasksMixin, InvocationMixin):
                 requested_version, SERVED_PROTOCOL_VERSIONS
             ).to_error(msg_id)
 
+        # ── 3. Lifecycle: is this request allowed yet on this connection ──
         # On a stateful connection the initialization exchange MUST be first: a
         # request other than `initialize` / `ping` arriving before it completes is
         # rejected, and the client's advertised capabilities are recorded here.
@@ -782,6 +785,7 @@ class MCPServer(TasksMixin, InvocationMixin):
             if rejection is not None:
                 return rejection
 
+        # ── 4. Admission: task augmentation, and the method's own guards ──
         # Task augmentation is a property of `tools/call` alone. Enforced here
         # rather than in each handler: guarding them one at a time left most of
         # the surface answering a task-augmented request synchronously while the
@@ -870,6 +874,7 @@ class MCPServer(TasksMixin, InvocationMixin):
 
         if is_notification:
             return None
+        # ── 5. Result shaping: resultType, cache hints, and `_meta` ──
         if result is _DEFERRED_RESPONSE:
             # A long-lived request answered by its own closure, not here.
             return None

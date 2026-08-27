@@ -1,4 +1,15 @@
-"""WebSocket support — basic implementation over raw asyncio."""
+"""WebSocket support - one `WebSocket` over two transports.
+
+The same object serves an ASGI `websocket` scope, where the server owns the
+framing and this sends `websocket.send` messages, and the built-in server's raw
+transport, where this does the RFC 6455 work itself: the handshake accept key,
+frame parsing and masking, fragmentation reassembly, incremental UTF-8
+validation of text payloads (RFC 6455 Sec. 5.6), the close handshake, and an
+opt-in heartbeat. `_is_asgi` is the branch between them.
+
+The docstring here used to read "basic implementation over raw asyncio", which
+described neither half.
+"""
 
 from __future__ import annotations
 
@@ -520,6 +531,8 @@ class WebSocket:
         # send path pays a single `is not None` check.
         self._send_drain: Any = None
 
+    # ── Construction: one object, two transports ──────────────
+
     @classmethod
     def from_asgi(
         cls,
@@ -622,6 +635,8 @@ class WebSocket:
         if self._is_asgi:
             return not self._closed
         return not self._close_frame_sent
+
+    # ── Introspecting the handshake ───────────────────────────
 
     @property
     def query_params(self) -> Any:
@@ -803,6 +818,8 @@ class WebSocket:
                 return proto
         return None
 
+    # ── The handshake ─────────────────────────────────────────
+
     async def accept(
         self,
         subprotocol: str | None = None,
@@ -892,6 +909,8 @@ class WebSocket:
         # Arm the liveness probe now the connection is live (no-op unless a
         # heartbeat was configured for this raw-transport connection).
         self.start_heartbeat()
+
+    # ── Sending ───────────────────────────────────────────────
 
     async def send_text(self, data: str) -> None:
         """Send a text frame."""
@@ -1052,6 +1071,8 @@ class WebSocket:
                 "for raw asyncio-transport connections"
             )
         await self._asgi_send_safe(message)
+
+    # ── Receiving, drain and the idle timeout ─────────────────
 
     def _check_can_receive(self, method: str) -> None:
         """Enforce the handshake state machine for receive operations.
@@ -1262,6 +1283,8 @@ class WebSocket:
         except WebSocketDisconnect:
             return
 
+    # ── Closing ───────────────────────────────────────────────
+
     async def close(self, code: int = WS_1000_NORMAL_CLOSURE, reason: str = "") -> None:
         """Send a close frame and complete the RFC 6455 close handshake.
 
@@ -1322,6 +1345,8 @@ class WebSocket:
                 )
         if self.transport is not None:
             self.transport.close()
+
+    # ── Raw-transport framing (RFC 6455 Sec. 5) ───────────────
 
     def feed_data(self, data: bytes) -> None:
         """Feed raw bytes from the transport (called by the protocol).
@@ -1674,7 +1699,7 @@ class WebSocket:
             # needs the transport.
             self._close_too_big()
 
-    # ── Heartbeat (raw-transport liveness) ──
+    # ── Heartbeat (raw-transport liveness) ────────────────────
     #
     # An opt-in proactive liveness probe for the raw-transport path. A
     # black-holed TCP connection (peer vanished without FIN/RST - common
@@ -1859,6 +1884,8 @@ class WebSocket:
         else:
             self.transport.write(bytes(header) + bytes(data))
 
+    # ── Context-manager protocol ──────────────────────────────
+
     async def __aenter__(self) -> WebSocket:
         return self
 
@@ -1872,7 +1899,7 @@ class WebSocket:
             await self.close()
 
 
-# ── Declarative listener ──
+# ── Declarative listener ──────────────────────────────────
 #
 # `Router.websocket_listener` wraps a per-message callback into a full
 # WebSocket handler: accept, receive-loop, dispatch, clean disconnect. The
