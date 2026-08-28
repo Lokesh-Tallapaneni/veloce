@@ -1525,9 +1525,18 @@ if __name__ == "__main__":
 Call `mount_mcp(transport="http")` **after** registering your tools, resources, and
 prompts. The client `POST`s one JSON-RPC message to the route and gets one reply:
 
-- A request with `Accept: text/event-stream` is answered with an SSE stream that
-  carries the call's progress / log notifications followed by the JSON-RPC
-  response. A request without it gets a single JSON response.
+- A request is answered with an SSE stream when the call could send more than the
+  reply itself, and with a single JSON response when it could not. The spec lets
+  the server choose either, and framing a stream around one message is not free,
+  so the choice follows the call rather than the header: a stream carries the
+  call's progress / log notifications ahead of the JSON-RPC response.
+
+    A call gets the stream when its tool can reach an `MCPContext` (directly, or
+    through a dependency, or because the tool dispatches other tools), when the
+    client sent a `progressToken`, when the call is task-augmented, when
+    `resumable=True`, or when the client did not offer `application/json` at all.
+    A tool that can do none of those answers with one message, and gets a single
+    JSON response even from a client that offered both types.
 - A notification (a message with no `id`) is answered with `202 Accepted` and no body.
 - A `GET` on the endpoint is answered `405 Method Not Allowed` (the transport keeps
   no standalone server-to-client stream).
@@ -1639,8 +1648,8 @@ copy does not, since another may still be serving it.
 
 ### Resumable streams
 
-When a tool call replies over SSE (the client sent `Accept: text/event-stream`), a
-dropped connection normally loses any events the client had not yet received. Pass
+When a tool call replies over SSE, a dropped connection normally loses any events
+the client had not yet received. Pass
 `resumable=True` to let a client reconnect and replay only what it missed:
 
 ```python

@@ -35,7 +35,11 @@ from veloce.contrib.mcp._registry_base import Registry
 from veloce.contrib.mcp.composition import mcp_mounts, renamed
 from veloce.contrib.mcp.descriptors import MCPDescriptor
 from veloce.contrib.mcp.icons import Icon, coerce_icons
-from veloce.contrib.mcp.plan_bridge import build_input_schema, build_output_schema
+from veloce.contrib.mcp.plan_bridge import (
+    _plan_reaches_context,
+    build_input_schema,
+    build_output_schema,
+)
 from veloce.contrib.mcp.safety import require_mcp_description, validate_tool_annotations
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -56,6 +60,17 @@ class MCPTool(MCPDescriptor):
     handler: Callable
     plan: HandlerPlan
     input_schema: dict[str, Any]
+    # Set by a tool whose handler can produce a second message by a route the
+    # plan cannot show - above all one that dispatches OTHER tools, whose own
+    # handlers may take a context this tool's signature never mentions. The walk
+    # reads a signature; it cannot read where a handler sends the call next.
+    dispatches_tools: bool = False
+    # Whether a call to this tool can produce more than its own single response;
+    # see `_needs_stream`, which is where it is read. Derived in `__post_init__`
+    # from the plan, the route dependency plans and the flag above, never passed
+    # in - `init=False` so a caller cannot assert a tool is streamless that is
+    # not, and out of `repr`/`compare` like the sibling derived field below.
+    may_stream: bool = field(default=True, init=False, repr=False, compare=False)
     # Route-level dependencies (`dependencies=[...]` on the route / router /
     # blueprint). These run before the handler's own `Depends` graph, exactly
     # as the HTTP and WebSocket dispatch paths run them, so a route-level guard
@@ -142,6 +157,17 @@ class MCPTool(MCPDescriptor):
     # mount or by anything else starts with an empty history rather than
     # advertising versions the copy's registry cannot serve.
     version_history: tuple[str, ...] = field(default=(), init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        # Decided once, here, rather than per call: whether a tool can reach the
+        # context is a property of its plan, and the plan is fixed from
+        # registration onward. A copy made by `dataclasses.replace` re-derives
+        # rather than carrying a value its new plan may not support.
+        self.may_stream = (
+            self.dispatches_tools
+            or _plan_reaches_context(self.plan)
+            or any(_plan_reaches_context(dep) for dep in self.route_dep_plans)
+        )
 
 
 # Where a tool's version is published in its `_meta`, and where a call names the

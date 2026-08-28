@@ -32,6 +32,7 @@ import pytest
 from tests._mcp import auth
 from veloce import Depends, HTTPBearer, Veloce
 from veloce.contrib.mcp import MCPAuth
+from veloce.contrib.mcp.context import MCPContext
 from veloce.principal import Principal
 from veloce.testclient import TestClient
 
@@ -87,10 +88,50 @@ def test_a_lookalike_media_type_does_not_select_the_stream():
     assert "data:" not in _reply("text/event-streaming")
 
 
-@pytest.mark.parametrize("accept", ["text/event-stream", "application/json, text/event-stream"])
-def test_an_explicit_stream_request_still_gets_the_stream(accept):
-    """The negative: refusing everything would pass the tests above vacuously."""
-    assert "data:" in _reply(accept)
+def test_a_client_that_accepts_only_the_stream_gets_the_stream():
+    """The negative: refusing everything would pass the tests above vacuously.
+
+    This client named no other type it would take, so the stream is the only
+    reply it accepts - the streamless shortcut below must not answer it in a
+    type it refused.
+    """
+    assert "data:" in _reply("text/event-stream")
+
+
+def test_a_tool_that_can_report_progress_gets_the_stream():
+    """The other half of the negative, for a client that accepts both types.
+
+    Offering both leaves the server the choice, and it now makes that choice on
+    whether the call can produce a second message rather than on the header
+    alone: this tool takes an `MCPContext`, so it can report progress and the
+    stream has to be there to carry it.
+    """
+    app = Veloce(title="Headers", version="1.0.0", openapi_url=None)
+
+    @app.mcp_tool(description="Add nothing, but could report progress")
+    async def add(ctx: MCPContext) -> str:
+        return "ok"
+
+    app.mount_mcp(transport="http", path="/mcp")
+    client = TestClient(app)
+    client.post("/mcp", json=INITIALIZE, headers={"Accept": "application/json"})
+    body = client.post(
+        "/mcp", json=CALL, headers={"Accept": "application/json, text/event-stream"}
+    ).text
+    assert "data:" in body
+
+
+def test_a_streamless_tool_answers_a_both_types_client_as_json():
+    """The saving: nothing to stream, and the client said JSON was welcome.
+
+    `add` cannot reach the context, so the call yields exactly its own reply and
+    framing a stream around it is pure cost - measured at a third of a plain
+    tool call. The client offered `application/json`, so answering in it is the
+    negotiated outcome, not a downgrade.
+    """
+    body = _reply("application/json, text/event-stream")
+    assert "data:" not in body
+    assert json.loads(body)["result"]["content"][0]["text"] == "ok"
 
 
 @pytest.mark.parametrize("accept", ["application/json", "*/*", "application/*"])

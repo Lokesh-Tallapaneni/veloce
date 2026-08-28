@@ -81,6 +81,38 @@ def _is_context_slot(slot: _Slot) -> bool:
     return slot.kind == K_QUERY and slot.target_type is MCPContext
 
 
+def _plan_reaches_context(plan: Any, _seen: set[int] | None = None) -> bool:
+    """Whether this plan, or anything it depends on, binds the `MCPContext`.
+
+    A `tools/call` answers with more than one message only if the handler can
+    emit one - progress, logging, a sampling or elicitation request - and every
+    one of those is reached through `MCPContext`. A tool whose handler and whole
+    dependency graph never bind it therefore produces exactly one response, and
+    the transport can say so before the call runs (see `_needs_stream`).
+
+    This reads a signature, so it cannot see a handler that dispatches to
+    another handler - `MCPTool.dispatches_tools` carries that case instead.
+    Answers `True` for a plan it cannot walk, so an unrecognised shape keeps the
+    streaming response. Cycle-guarded the way `_slot_parallel_safe` guards its
+    own walk.
+    """
+    if plan is None:
+        return True
+    slots = getattr(plan, "slots", None)
+    if slots is None:
+        return True
+    _seen = set() if _seen is None else _seen
+    if id(plan) in _seen:
+        return False
+    _seen.add(id(plan))
+    for slot in slots:
+        if _is_context_slot(slot):
+            return True
+        if slot.kind == K_DEPENDS and _plan_reaches_context(slot.sub_plan, _seen):
+            return True
+    return False
+
+
 # OpenAPI component ref prefix `_pydantic_to_schema` emits; an MCP input
 # schema must be standalone, so refs are rewritten under this local prefix and
 # the referenced defs inlined into the per-tool schema.

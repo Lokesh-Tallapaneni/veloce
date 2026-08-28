@@ -289,7 +289,13 @@ def _document(tool: MCPTool) -> str:
 
 
 def _meta_tool(handler: Any, name: str, description: str) -> MCPTool:
-    """Build one of the three tools, deriving its schema from the handler."""
+    """Build one of the three tools, deriving its schema from the handler.
+
+    Marked `dispatches_tools`: `run_tools` calls other tools through the server,
+    and one of those may take an `MCPContext` and log or report progress through
+    it. None of that shows in these handlers' own signatures, so the plan walk
+    would call them streamless and those messages would be dropped.
+    """
     plan = build_plan(handler)
     schemas: dict[str, dict[str, Any]] = {}
     return MCPTool(
@@ -298,6 +304,7 @@ def _meta_tool(handler: Any, name: str, description: str) -> MCPTool:
         handler=handler,
         plan=plan,
         input_schema=build_input_schema(plan, schemas),
+        dispatches_tools=True,
         annotations={"readOnlyHint": name != "run_tools"},
     )
 

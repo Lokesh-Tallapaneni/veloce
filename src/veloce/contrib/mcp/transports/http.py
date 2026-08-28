@@ -83,6 +83,7 @@ from veloce.contrib.mcp.server import (
     META_PROTOCOL_VERSION,
     MCPServer,
     _notifier_var,
+    _requested_version,
     is_modern_version,
 )
 from veloce.contrib.mcp.session import MCPSession
@@ -112,6 +113,8 @@ _SSE_RETRY_MS = 3000
 # Header a resuming client sends to name the last event it received, so the
 # server replays only what came after it (WHATWG SSE / MCP transport resumability).
 _LAST_EVENT_ID_HEADER = "Last-Event-ID"
+# The same name as the lower-case wire key, encoded once at import.
+_RAW_LAST_EVENT_ID = _LAST_EVENT_ID_HEADER.lower().encode("latin-1")
 
 # Monotonic source of SSE event ids for the non-resumable priming event. The id
 # makes the stream's first frame addressable; when resumability is off the id is
@@ -323,7 +326,18 @@ async def _handle_http(
     # excludes a `*/*` wildcard, keeping the existing choice of JSON unless the
     # stream was actually asked for.
     accepts_sse = request.accept_mimetypes.quality_explicit("text/event-stream") > 0
-    if is_request and accepts_sse:
+    # The JSON test sits inside the branch so a JSON-only client - the majority -
+    # never pays for it. A client that offered the stream but NOT JSON accepts
+    # only the stream, and the streamless shortcut must not answer such a client
+    # in a type it refused.
+    if (
+        is_request
+        and accepts_sse
+        and (
+            request.accept_mimetypes.quality("application/json") <= 0
+            or _needs_stream(server, message, event_store)
+        )
+    ):
         return _stream_response(
             server, message, current_principal(), session, session_id, event_store
         )
@@ -360,7 +374,7 @@ async def _bind_session(
     """
     if is_initialize:
         return await store.create()
-    session_id = request.headers.get("mcp-session-id")
+    session_id = request._peek_header_key(b"mcp-session-id")
     if not session_id:
         raise SessionRequiredError("missing Mcp-Session-Id header")
     session = await store.resolve(session_id)
@@ -389,7 +403,7 @@ async def _handle_delete(store: HttpSessionStore | None, request: Request) -> Re
     """
     if store is None:
         return Response(status_code=status.HTTP_405_METHOD_NOT_ALLOWED, headers={"Allow": "POST"})
-    session_id = request.headers.get("mcp-session-id")
+    session_id = request._peek_header_key(b"mcp-session-id")
     if not session_id or not await store.terminate(session_id):
         return _protocol_response(
             SessionNotFoundError("unknown or terminated session").to_error(None),
@@ -412,7 +426,7 @@ def _handle_get(event_store: SSEEventStore | None, request: Request) -> Response
     """
     if event_store is None:
         return _method_not_allowed()
-    last_event_id = request.headers.get(_LAST_EVENT_ID_HEADER)
+    last_event_id = request._peek_header_key(_RAW_LAST_EVENT_ID)
     if not last_event_id:
         return _method_not_allowed()
     missed = event_store.replay_after(last_event_id)
@@ -436,7 +450,7 @@ def _validate_origin(request: Request, allowed_origins: frozenset[str] | None) -
     """
     if allowed_origins is None:
         return
-    origin = request.headers.get("origin")
+    origin = request._peek_header_key(b"origin")
     if origin is not None and origin not in allowed_origins:
         raise OriginNotAllowedError("origin not allowed")
 
@@ -449,7 +463,7 @@ def _validate_protocol_version(request: Request) -> None:
     `initialize` stands); a present value this server does not speak raises
     `ProtocolVersionError`.
     """
-    version = request.headers.get("mcp-protocol-version")
+    version = request._peek_header_key(b"mcp-protocol-version")
     if version is not None and version not in _SERVED_VERSION_SET:
         raise ProtocolVersionError(f"unsupported MCP-Protocol-Version: {version}")
 
@@ -484,10 +498,54 @@ def _decode_standard_name(raw: str) -> str:
 
 def _require_header(request: Request, name: str) -> str:
     """Return a required standard header, rejecting the request when it is absent."""
-    value: str | None = request.headers.get(name)
+    value: str | None = request._peek_header_key(name.encode("latin-1"))
     if value is None:
         raise HeaderMismatchError(f"{name} is required on this protocol revision")
     return value
+
+
+def _needs_stream(server: Any, message: dict[str, Any], event_store: Any) -> bool:
+    """Whether this request can produce anything beyond its own single reply.
+
+    The spec lets a POST carrying a request be answered either as JSON or as an
+    SSE stream, and tells clients to accept both - so keying the choice on the
+    `Accept` header alone means a conformant client always pays for stream
+    framing, including for a call that emits exactly one message. Measured, that
+    framing is a third of the cost of a plain tool call.
+
+    A `tools/call` produces extra messages only when the handler can reach the
+    `MCPContext` (progress, logging, sampling, elicitation), which the registry
+    settles per tool at registration. Everything else keeps the stream: another
+    method, a tool that can reach the context, a client that asked for progress,
+    or a server configured for resumability, whose replay needs the event ids
+    only the stream carries.
+    """
+    if event_store is not None:
+        return True
+    if message.get("method") != "tools/call":
+        return True
+    params = message.get("params")
+    if not isinstance(params, dict):
+        return True
+    if "task" in params:
+        # A task-augmented call is answered with a `CreateTaskResult` and then
+        # runs detached, emitting `notifications/tasks/status` as it settles.
+        # Those follow the reply rather than accompanying it, so the channel has
+        # to be there: answering this one as a lone JSON document is how a
+        # client stops hearing that its task finished.
+        return True
+    meta = params.get("_meta")
+    if isinstance(meta, dict) and meta.get("progressToken") is not None:
+        # The client asked to be kept informed; give it the channel to be
+        # informed on, whatever this tool turns out to do.
+        return True
+    name = params.get("name")
+    if not isinstance(name, str):
+        return True
+    # An unknown name falls through to the normal error path, which is a single
+    # message either way.
+    tool = server.registry.resolve(name, _requested_version(params))
+    return tool is None or tool.may_stream
 
 
 def _validate_standard_headers(request: Request, message: dict[str, Any]) -> None:
@@ -508,7 +566,7 @@ def _validate_standard_headers(request: Request, message: dict[str, Any]) -> Non
     if not isinstance(method, str):
         # Not a request object at all - the shape check downstream owns it.
         return
-    header_version = request.headers.get("mcp-protocol-version")
+    header_version = request._peek_header_key(b"mcp-protocol-version")
     params = message.get("params")
     meta = params.get("_meta") if isinstance(params, dict) else None
     raw_body_version = meta.get(META_PROTOCOL_VERSION) if isinstance(meta, dict) else None
