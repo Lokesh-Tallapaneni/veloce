@@ -27,6 +27,46 @@ from veloce._version import resolve_version
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.app.core import Veloce
 
+# Bounds for the built-in server's accept queue. The floor is what the queue
+# is never allowed to fall below; the ceiling stops a machine advertising an
+# enormous limit from being taken at its word.
+_MIN_LISTEN_BACKLOG = 512
+_MAX_LISTEN_BACKLOG = 4096
+
+# Resolved once, on the first `run()`, and reused. Reading it at import would
+# make every application pay a syscall for a server most never start.
+_listen_backlog: int | None = None
+
+
+def _resolve_listen_backlog() -> int:
+    """Depth to request for the built-in server's accept queue.
+
+    The queue is kernel-side, and the kernel silently clamps the request to
+    its own maximum, so a fixed constant is wrong in both directions: below
+    the machine's limit it refuses bursts the machine would have taken, and
+    above it the extra is discarded without a word. asyncio's own default of
+    100 is far below any of these - a burst of 5000 concurrent connects was
+    measured establishing 1000 connections against it, which reads as the
+    server falling over when it is really a queue depth.
+
+    Ask the machine what it allows and stay inside it, bounded so a host with
+    a tiny or unreadable limit still gets a usable queue.
+    """
+    global _listen_backlog
+    if _listen_backlog is not None:
+        return _listen_backlog
+    try:
+        with open("/proc/sys/net/core/somaxconn", "rb") as fh:
+            limit = int(fh.read())
+    except (OSError, ValueError):
+        # No procfs (Windows, macOS, a container without it), or a value that
+        # will not parse. Ask for the ceiling and let the kernel clamp what it
+        # cannot honour - which is what it does to any request, including one
+        # this file could have read.
+        limit = _MAX_LISTEN_BACKLOG
+    _listen_backlog = max(_MIN_LISTEN_BACKLOG, min(limit, _MAX_LISTEN_BACKLOG))
+    return _listen_backlog
+
 
 class ServingMixin:
     """Run and gracefully stop the built-in development server."""
@@ -287,11 +327,14 @@ class ServingMixin:
         reuse_port = True if hasattr(socket, "SO_REUSEPORT") else None
         # `ssl=None` (the default) makes `create_server` behave exactly as
         # the plain-HTTP path; TLS cost is paid only when a context is set.
+        # See `_resolve_listen_backlog`: asyncio's default of 100 refuses a
+        # connection burst before the loop ever sees it.
         server = await loop.create_server(
             # `self` is always a `Veloce` (this mixin is only composed into it).
             lambda: HttpProtocol(self, loop),  # type: ignore[arg-type]
             host,
             port,
+            backlog=_resolve_listen_backlog(),
             reuse_port=reuse_port,
             ssl=ssl_context,
         )
