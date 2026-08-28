@@ -630,7 +630,11 @@ def _emit_marker(
     if mk == MK_PATH:
         lines.append(f"    _raw = path_params.get({lookup!r})")
     elif mk == MK_HEADER:
-        lines.append(f"    _raw = request.headers.get({lookup.lower()!r})")
+        # One header, read without building the whole mapping - see
+        # `Request._peek_header_key`. A `Header()` parameter is the case that
+        # paid ~2.7 us to decode every header and look at one of them.
+        key = lookup.lower().encode("latin-1")
+        lines.append(f"    _raw = request._peek_header_key({key!r})")
     elif mk == MK_COOKIE:
         lines.append(f"    _raw = request.cookies.get({lookup!r})")
     else:  # MK_QUERY

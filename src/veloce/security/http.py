@@ -9,13 +9,13 @@ from typing import Annotated, Any
 
 from typing_extensions import Doc
 
-from veloce._constants import HEADER_AUTHORIZATION, HEADER_WWW_AUTHENTICATE, MSG_NOT_AUTHENTICATED
+from veloce._constants import HEADER_WWW_AUTHENTICATE, MSG_NOT_AUTHENTICATED
 from veloce._header_parsing import parse_header_params
 from veloce._internal import _decode_basic_credentials
 from veloce._protocol_constants import AUTH_SCHEME_BASIC, AUTH_SCHEME_BEARER, AUTH_SCHEME_DIGEST
 from veloce.exceptions import HTTPException
 from veloce.http.request import Request
-from veloce.security._utils import _quote_header_value, _validate_realm
+from veloce.security._utils import _AUTHORIZATION_KEY, _quote_header_value, _validate_realm
 from veloce.security.base import SecurityScheme, _BearerScheme
 from veloce.status import HTTP_401_UNAUTHORIZED
 
@@ -76,7 +76,7 @@ class HTTPBasic(SecurityScheme):
         return dict(self._challenge_template)
 
     def __call__(self, request: Request) -> HTTPBasicCredentials | None:
-        auth = request.headers.get(HEADER_AUTHORIZATION, "")
+        auth = request._peek_header_key(_AUTHORIZATION_KEY) or ""
         if auth[:_BASIC_PREFIX_LEN].lower() != _BASIC_PREFIX:
             if self.auto_error:
                 raise HTTPException(
@@ -193,7 +193,7 @@ class HTTPDigest(SecurityScheme):
         return {HEADER_WWW_AUTHENTICATE: self._challenge_prefix + nonce + self._challenge_suffix}
 
     def __call__(self, request: Request) -> HTTPDigestCredentials | None:
-        auth = request.headers.get(HEADER_AUTHORIZATION, "")
+        auth = request._peek_header_key(_AUTHORIZATION_KEY) or ""
         if auth[:_DIGEST_PREFIX_LEN].lower() != _DIGEST_PREFIX:
             if self.auto_error:
                 raise HTTPException(

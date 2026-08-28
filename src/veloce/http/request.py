@@ -89,6 +89,16 @@ _UNSET: Any = object()
 # `None` instead of looking unparsed and being re-decoded on every access.
 _UNPARSED: Any = object()
 
+# Lower-case wire keys for the headers read through `_peek_header_key`, encoded
+# once here rather than on every request. The `Accept-*` family is read by
+# content negotiation on paths that otherwise never touch the header mapping,
+# so building the whole `CIMultiDict` to look at one value was the cost these
+# avoid.
+_RAW_ACCEPT = HEADER_ACCEPT.lower().encode("latin-1")
+_RAW_ACCEPT_LANGUAGE = HEADER_ACCEPT_LANGUAGE.lower().encode("latin-1")
+_RAW_ACCEPT_ENCODING = HEADER_ACCEPT_ENCODING.lower().encode("latin-1")
+_RAW_ACCEPT_CHARSET = HEADER_ACCEPT_CHARSET.lower().encode("latin-1")
+
 
 def _split_etag_list(value: str) -> tuple[str, ...]:
     """Split an `If-Match`/`If-None-Match` list on commas outside quoted strings.
@@ -369,6 +379,45 @@ class Request:
         self._headers = value if isinstance(value, Headers) else Headers(value)
         self._headers_raw = None
 
+    def _peek_header(self, name: str) -> str | None:
+        """Read one header without building the whole mapping.
+
+        Materialising `headers` decodes every name and value and builds a
+        `CIMultiDict` - measured at ~2.7 us for an eight-header request, of
+        which ~1.8 us is the latin-1 decoding. A route reading a single header
+        paid all of it to look at one value.
+
+        Prefer `_peek_header_key` where the name is fixed at registration:
+        lowercasing and encoding it here costs ~200 ns that a caller holding
+        the bytes key already avoids.
+        """
+        return self._peek_header_key(name.lower().encode("latin-1"))
+
+    def _peek_header_key(self, key: bytes) -> str | None:
+        """`_peek_header` for a caller that already holds the lowercase key.
+
+        Matches the case-insensitive semantics of the `Headers` mapping, so the
+        two never disagree about which value a repeated name resolves to, and
+        answers without decoding the rest of the block. An absent header costs
+        one scan and no mapping build, which is the shape every optional
+        `Header()` and every unauthenticated request takes.
+        """
+        h = self._headers
+        if h is not None:
+            return h.get(key.decode("latin-1"))
+        for name, value in self._headers_raw or ():
+            # `.lower()` costs nothing until the exact comparison fails, and
+            # both transports deliver lowercase - ASGI mandates it, the native
+            # protocol lowercases in `on_header` - so it usually never runs.
+            # It has to be here rather than in a fallback, though: a block
+            # carrying BOTH `Authorization` and `authorization` would otherwise
+            # match the lowercase one while the mapping matches the first,
+            # authenticating one credential while every reader of `.headers`
+            # sees the other. Same shape `content_length` uses for its own name.
+            if name == key or name.lower() == key:
+                return value.decode("latin-1")
+        return None
+
     @property
     def user_agent(self) -> str:
         """Return the User-Agent header value."""
@@ -566,14 +615,14 @@ class Request:
     @property
     def accept(self) -> str:
         """Return the raw Accept header value."""
-        return self.headers.get(HEADER_ACCEPT, "")
+        return self._peek_header_key(_RAW_ACCEPT) or ""
 
     @property
     def accept_mimetypes(self) -> AcceptHeader:
         """Parsed `Accept` header with MIME wildcard matching."""
         if self._accept_mimetypes is None:
             self._accept_mimetypes = AcceptHeader.parse(
-                self.headers.get(HEADER_ACCEPT, ""), mime=True
+                self._peek_header_key(_RAW_ACCEPT) or "", mime=True
             )
         return self._accept_mimetypes
 
@@ -582,7 +631,7 @@ class Request:
         """Parsed `Accept-Language` header. q-value ordered."""
         if self._accept_languages is None:
             self._accept_languages = AcceptHeader.parse(
-                self.headers.get(HEADER_ACCEPT_LANGUAGE, "")
+                self._peek_header_key(_RAW_ACCEPT_LANGUAGE) or ""
             )
         return self._accept_languages
 
@@ -591,7 +640,7 @@ class Request:
         """Parsed `Accept-Encoding` header (e.g. gzip, br)."""
         if self._accept_encodings is None:
             self._accept_encodings = AcceptHeader.parse(
-                self.headers.get(HEADER_ACCEPT_ENCODING, "")
+                self._peek_header_key(_RAW_ACCEPT_ENCODING) or ""
             )
         return self._accept_encodings
 
@@ -599,7 +648,9 @@ class Request:
     def accept_charsets(self) -> AcceptHeader:
         """Parsed `Accept-Charset` header."""
         if self._accept_charsets is None:
-            self._accept_charsets = AcceptHeader.parse(self.headers.get(HEADER_ACCEPT_CHARSET, ""))
+            self._accept_charsets = AcceptHeader.parse(
+                self._peek_header_key(_RAW_ACCEPT_CHARSET) or ""
+            )
         return self._accept_charsets
 
     # ── Authorization ─────────────────────────────────────

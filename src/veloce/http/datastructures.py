@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import io
 import ipaddress
 import math
@@ -670,8 +671,18 @@ class RangeSpec:
 _MimeKey = tuple[str, str, frozenset[tuple[str, str]], int]
 
 
+@functools.lru_cache(maxsize=512)
 def _parse_mime_key(value: str) -> _MimeKey:
-    """Decompose a media range into a cached, comparison-ready `_MimeKey`."""
+    """Decompose a media range into a cached, comparison-ready `_MimeKey`.
+
+    Memoized because the hot callers ask the same question every request:
+    `quality("application/json")` and friends pass a literal the server owns,
+    and re-parsing it per call was measured as three parses on a single MCP
+    request. The result is a tuple of immutables, so one parse is safe to
+    share. Bounded rather than unbounded: the media ranges a client sends are
+    parsed through here too, and an unbounded map keyed on remote input grows
+    without limit.
+    """
     head, _, rest = value.partition(";")
     head = head.strip().lower()
     type_, slash, subtype = head.partition("/")

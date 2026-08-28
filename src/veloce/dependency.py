@@ -1153,7 +1153,8 @@ class DependencyResolver:
         if mk == 1:  # MK_PATH
             raw = path_params.get(lookup)
         elif mk == 2:  # MK_HEADER
-            raw = request.headers.get(lookup.lower())
+            # Single-header read; see `Request._peek_header`.
+            raw = request._peek_header(lookup.lower())
         elif mk == 3:  # MK_COOKIE
             raw = request.cookies.get(lookup)
         elif mk == 4:  # MK_BODY
