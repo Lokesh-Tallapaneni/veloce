@@ -6,6 +6,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- A `tools/call` over the HTTP transport is answered as JSON when the tool cannot send a second message, instead of always framing an SSE stream. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- The built-in server's accept queue follows the machine's `somaxconn` rather than asyncio's default of 100. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
 ### Security
 
 - An unresolvable annotation no longer erases the whole signature's PEP 593 metadata; a route whose unrelated parameter had a bad annotation stopped enforcing its `Depends()` security scheme and served unauthenticated. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
