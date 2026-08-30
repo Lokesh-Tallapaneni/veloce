@@ -14,7 +14,9 @@ built-in middleware live in the separate `veloce.middleware` package.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Annotated, Any
+
+from typing_extensions import Doc
 
 from veloce.app._host import AppHost
 from veloce.middleware import BaseHTTPMiddleware, Middleware
@@ -44,7 +46,13 @@ class MiddlewareMixin(AppHost):
         """
         return tuple(self._middlewares)
 
-    def add_middleware(self, middleware: Any, **options: Any) -> None:
+    def add_middleware(
+        self,
+        middleware: Annotated[
+            Any, Doc("A `Middleware` instance, a middleware class, or an ASGI wrapper class.")
+        ],
+        **options: Annotated[Any, Doc("Keyword arguments the middleware class is built with.")],
+    ) -> None:
         """Add middleware to the pipeline.
 
         Call forms:
@@ -157,36 +165,6 @@ class MiddlewareMixin(AppHost):
         self._register_feature_state(self._http_middleware_funcs, middleware)
         return middleware
 
-    def _register_middleware(self, instance: Middleware, priority: int) -> None:
-        """Record a built `Middleware` instance and refresh the ordered chain.
-
-        Appends `(priority, sequence, instance)` to the registration ledger and
-        bumps the middleware generation counter (so per-route exclusion chains
-        recompute). While every registered priority is `0` the ordered chain is
-        just the append-order list, so `_middlewares` is updated by a plain
-        append and no sort runs - keeping the common no-priority case identical
-        to the previous behaviour. The first non-zero priority flips the app
-        into ordered mode and rebuilds `_middlewares` as a stable descending
-        sort by priority. All of this happens at registration time, never per
-        request.
-        """
-        seq = self._middleware_seq
-        self._middleware_seq = seq + 1
-        self._middleware_records.append((priority, seq, instance))
-        self._mw_version += 1
-        # The middleware set drives the WS-handshake phase, so the middleware
-        # ledger funnel doubles as a pipeline-invalidation sink.
-        self._gen += 1
-        if priority and not self._any_priority:
-            self._any_priority = True
-        if self._any_priority:
-            # Stable sort by descending priority: Python's sort is stable, so
-            # within an equal priority the registration `seq` order is kept.
-            ordered = sorted(self._middleware_records, key=lambda r: -r[0])
-            self._middlewares = [rec[2] for rec in ordered]
-        else:
-            self._middlewares.append(instance)
-
     def middleware(
         self, middleware_class_or_type: type | str, **kwargs: Any
     ) -> Callable[[Callable], Callable] | None:
@@ -234,3 +212,33 @@ class MiddlewareMixin(AppHost):
             # Explicit: the class form is a statement, and the annotation says
             # so, so the `None` is written rather than left implicit.
             return None
+
+    def _register_middleware(self, instance: Middleware, priority: int) -> None:
+        """Record a built `Middleware` instance and refresh the ordered chain.
+
+        Appends `(priority, sequence, instance)` to the registration ledger and
+        bumps the middleware generation counter (so per-route exclusion chains
+        recompute). While every registered priority is `0` the ordered chain is
+        just the append-order list, so `_middlewares` is updated by a plain
+        append and no sort runs - keeping the common no-priority case identical
+        to the previous behaviour. The first non-zero priority flips the app
+        into ordered mode and rebuilds `_middlewares` as a stable descending
+        sort by priority. All of this happens at registration time, never per
+        request.
+        """
+        seq = self._middleware_seq
+        self._middleware_seq = seq + 1
+        self._middleware_records.append((priority, seq, instance))
+        self._mw_version += 1
+        # The middleware set drives the WS-handshake phase, so the middleware
+        # ledger funnel doubles as a pipeline-invalidation sink.
+        self._gen += 1
+        if priority and not self._any_priority:
+            self._any_priority = True
+        if self._any_priority:
+            # Stable sort by descending priority: Python's sort is stable, so
+            # within an equal priority the registration `seq` order is kept.
+            ordered = sorted(self._middleware_records, key=lambda r: -r[0])
+            self._middlewares = [rec[2] for rec in ordered]
+        else:
+            self._middlewares.append(instance)

@@ -30,7 +30,9 @@ if TYPE_CHECKING:  # pragma: no cover
 
 # The logger name is the one users filter reload output on, so it stays a
 # literal rather than `__name__` (which would resolve to
-# "veloce.serving.reloader").
+# "veloce.serving.reloader"). Supervisor events go through `_announce`, which
+# writes both the console line a developer reads and the record that name
+# filters on, from one string.
 _logger = logging.getLogger("veloce.reloader")
 
 # Set by the supervisor in the child's environment so the child serves directly
@@ -182,6 +184,17 @@ def _wait_for_change(dirs: list[str], interval: float) -> str:
     return _wait_for_change_watchfiles(dirs)
 
 
+def _announce(message: str) -> None:
+    """Emit one supervisor event to the console and the `veloce.reloader` logger.
+
+    The console line is what a developer running with `--reload` sees and the
+    logger is what a process manager filters, so the event goes to both - from
+    the same string, so the two accounts of it cannot drift apart.
+    """
+    _logger.info(message)
+    print(f"  {message}\n")
+
+
 def _terminate(child: subprocess.Popen[bytes]) -> None:
     """Stop the worker, escalating to a hard kill if it will not exit."""
     if child.poll() is not None:
@@ -210,7 +223,7 @@ def run_with_reloader(
     command = _restart_command()
     child_env = {**os.environ, _CHILD_ENV: "true"}
 
-    print(f"  Reloader active - watching {dirs[0]} for changes\n")
+    _announce(f"Reloader active - watching {dirs[0]} for changes")
 
     # Route a graceful kill (SIGTERM, e.g. from a process manager) through the
     # same cleanup path as Ctrl+C so the serving child is never orphaned.
@@ -233,8 +246,7 @@ def run_with_reloader(
         while True:
             child = subprocess.Popen(command, env=child_env)
             changed = _wait_for_change(dirs, interval)
-            _logger.info("change detected in %s - reloading", os.path.basename(changed))
-            print(f"  Change in {os.path.basename(changed)} - reloading\n")
+            _announce(f"Change detected in {os.path.basename(changed)} - reloading")
             _terminate(child)
     except KeyboardInterrupt:
         return 0

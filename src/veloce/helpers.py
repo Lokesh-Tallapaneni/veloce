@@ -308,6 +308,11 @@ def has_request_context() -> bool:
 # ── abort() ───────────────────────────────────────────────
 
 
+#: The aborter `abort()` uses when no application is bound. It registers no
+#: custom mapping, so it resolves exactly what `exception_for_status` does.
+_default_aborter = Aborter()
+
+
 def abort(status_code: int, detail: str = "", headers: dict[str, str] | None = None) -> NoReturn:
     """Raise an HTTPException - a concise shorthand.
 
@@ -315,15 +320,19 @@ def abort(status_code: int, detail: str = "", headers: dict[str, str] | None = N
     `Forbidden` for 403) so error handlers registered against a specific
     subclass match. Unknown codes fall back to the bare `HTTPException`.
 
+    Inside an application context the call goes through `app.aborter`, so an
+    app that registered a custom code-to-exception mapping raises its own class
+    here too - `abort(404)` and `app.aborter(404)` are the same call. Outside
+    one, the default lookup applies.
+
     Usage::
 
         abort(404)              # -> raises NotFound
         abort(403, "Forbidden") # -> raises Forbidden
     """
-    if not detail:
-        detail = _default_detail(status_code)
-    cls = exception_for_status(status_code)
-    raise cls(status_code=status_code, detail=detail, headers=headers)
+    app = _current_app_var.get()
+    aborter: Aborter = _default_aborter if app is None else app.aborter
+    aborter(status_code, detail, headers)
 
 
 # ── after_this_request() ──────────────────────────────────

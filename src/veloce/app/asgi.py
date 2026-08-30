@@ -15,6 +15,7 @@ import traceback
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+import veloce._constants as _constants
 import veloce.status as status
 from veloce._constants import (
     MIME_TEXT_PLAIN_UTF8,
@@ -99,20 +100,6 @@ _CT_BYTES_CACHE: dict[str, bytes] = {
 }
 
 
-def _content_type_bytes(content_type: str) -> bytes:
-    """Return the content-type as guarded ASCII bytes, cached when it is known.
-
-    The ASGI emit path bypasses `Response.encode()`, so the response-splitting
-    guard it would have applied belongs here instead. One function for all three
-    emit sites: the cold one encoded bare, and shipped a CR/LF-bearing value as a
-    raw ASGI header.
-    """
-    cached = _CT_BYTES_CACHE.get(content_type)
-    if cached is not None:
-        return cached
-    return _reject_header_crlf(content_type, "content-type").encode()
-
-
 # Pre-encoded ASCII bytes for small content-length values. Body sizes
 # below 2048 cover the entire json-hello / path-param hot path and the
 # vast majority of typical JSON API responses; larger payloads fall
@@ -135,6 +122,40 @@ _CL_BYTES_SMALL: tuple[bytes, ...] = tuple(str(i).encode("ascii") for i in range
 # inline either way.
 _ENCODED_HEADER_PAIRS: dict[tuple[str, str], tuple[bytes, bytes]] = {}
 _MAX_ENCODED_PAIRS = 512
+
+
+# Methods that do not carry a request body, so the declared-`Content-Length`
+# walk has nothing to find. RFC 9110 permits a body on these, which is why the
+# received-length checks still run - this only skips the early reject.
+_BODILESS_METHODS = frozenset((HTTP_METHOD_GET, HTTP_METHOD_HEAD, HTTP_METHOD_OPTIONS))
+
+
+# Every response header name reaching the ASGI transport must be lowercase
+# bytes. The set of names a response actually carries is overwhelmingly the
+# framework's own constants, and `.encode()` on each of them ran per header per
+# response. Built from every `HEADER_*` name constant in `_constants`, so a
+# constant added there is picked up without editing this table, and never
+# written at runtime, so an application setting dynamic header names cannot
+# grow it without bound - those simply fall through to `.encode()`.
+_ENCODED_HEADER_NAMES: dict[str, bytes] = {
+    value.lower(): value.lower().encode("latin-1")
+    for name, value in vars(_constants).items()
+    if name.startswith("HEADER_") and not name.startswith("HEADER_VALUE_")
+}
+
+
+def _content_type_bytes(content_type: str) -> bytes:
+    """Return the content-type as guarded ASCII bytes, cached when it is known.
+
+    The ASGI emit path bypasses `Response.encode()`, so the response-splitting
+    guard it would have applied belongs here instead. One function for all three
+    emit sites: the cold one encoded bare, and shipped a CR/LF-bearing value as a
+    raw ASGI header.
+    """
+    cached = _CT_BYTES_CACHE.get(content_type)
+    if cached is not None:
+        return cached
+    return _reject_header_crlf(content_type, "content-type").encode()
 
 
 def _build_asgi_headers(headers: Any) -> tuple[list[tuple[bytes, bytes]], bool, bool]:
@@ -207,107 +228,6 @@ def _build_asgi_headers(headers: Any) -> tuple[list[tuple[bytes, bytes]], bool, 
         else:
             asgi_headers[slot] = entry
     return asgi_headers, has_ct, has_cl
-
-
-# Methods that do not carry a request body, so the declared-`Content-Length`
-# walk has nothing to find. RFC 9110 permits a body on these, which is why the
-# received-length checks still run - this only skips the early reject.
-_BODILESS_METHODS = frozenset((HTTP_METHOD_GET, HTTP_METHOD_HEAD, HTTP_METHOD_OPTIONS))
-
-
-# Every response header name reaching the ASGI transport must be lowercase
-# bytes. The set of names a response actually carries is overwhelmingly the
-# framework's own constants, and `.encode()` on each of them ran per header per
-# response. Seeded once from `_constants.HEADER_*` so it cannot drift from them,
-# and never written at runtime, so an application setting dynamic header names
-# cannot grow it without bound - those simply fall through to `.encode()`.
-_ENCODED_HEADER_NAMES: dict[str, bytes] = {
-    name.lower(): name.lower().encode("latin-1")
-    for name in (
-        "Accept",
-        "Accept-Charset",
-        "Accept-Encoding",
-        "Accept-Language",
-        "Accept-Ranges",
-        "Access-Control-Allow-Credentials",
-        "Access-Control-Allow-Headers",
-        "Access-Control-Allow-Methods",
-        "Access-Control-Allow-Origin",
-        "Access-Control-Allow-Private-Network",
-        "Access-Control-Expose-Headers",
-        "Access-Control-Max-Age",
-        "Access-Control-Request-Headers",
-        "Access-Control-Request-Method",
-        "Access-Control-Request-Private-Network",
-        "Age",
-        "Allow",
-        "Authorization",
-        "Cache-Control",
-        "Connection",
-        "Content-Disposition",
-        "Content-Encoding",
-        "Content-Language",
-        "Content-Length",
-        "Content-Location",
-        "Content-Range",
-        "Content-Security-Policy",
-        "Content-Security-Policy-Report-Only",
-        "Content-Type",
-        "Cookie",
-        "DENY",
-        "Date",
-        "ETag",
-        "Expires",
-        "Host",
-        "If-Match",
-        "If-Modified-Since",
-        "If-None-Match",
-        "If-Range",
-        "If-Unmodified-Since",
-        "Last-Modified",
-        "Location",
-        "Max-Forwards",
-        "Origin",
-        "Permissions-Policy",
-        "Pragma",
-        "Range",
-        "Referer",
-        "Referrer-Policy",
-        "Retry-After",
-        "Sec-WebSocket-Key",
-        "Sec-WebSocket-Protocol",
-        "Set-Cookie",
-        "Strict-Transport-Security",
-        "Transfer-Encoding",
-        "User-Agent",
-        "Vary",
-        "WWW-Authenticate",
-        "X-Accel-Buffering",
-        "X-CSRF-Token",
-        "X-Content-Type-Options",
-        "X-Forwarded-For",
-        "X-Forwarded-Host",
-        "X-Forwarded-Port",
-        "X-Forwarded-Prefix",
-        "X-Forwarded-Proto",
-        "X-Frame-Options",
-        "X-RateLimit-Limit",
-        "X-RateLimit-Remaining",
-        "X-RateLimit-Reset",
-        "X-Request-ID",
-        "X-Requested-With",
-        "attachment",
-        "bytes",
-        "chunked",
-        "close",
-        "gzip",
-        "keep-alive",
-        "no-cache",
-        "nosniff",
-        "public",
-        "strict-origin-when-cross-origin",
-    )
-}
 
 
 async def _refuse_websocket(
@@ -819,7 +739,7 @@ class AsgiMixin(AppHost):
                     }
                 )
                 if _body_allowed and scope["method"] != HTTP_METHOD_HEAD:
-                    async for chunk in getattr(response, "_stream"):  # noqa: B009
+                    async for chunk in response._stream:
                         await send(
                             {
                                 "type": ASGI_EVENT_HTTP_RESPONSE_BODY,

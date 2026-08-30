@@ -12,7 +12,9 @@ import asyncio
 import inspect
 import time
 from collections.abc import Callable, Coroutine
-from typing import Any
+from typing import Annotated, Any
+
+from typing_extensions import Doc
 
 from veloce.app._host import AppHost
 
@@ -20,28 +22,13 @@ from veloce.app._host import AppHost
 class BackgroundTasksMixin(AppHost):
     """Spawn, name, supervise, and drain application background tasks."""
 
-    def _log_background_task_error(self, task: asyncio.Task) -> None:
-        """Report a finished task's failure, called from `_spawned_task_done`.
-
-        Pulls the exception off the future (silencing
-        `Task exception was never retrieved` warnings) and logs it via
-        `self.logger` so failures are observable instead of silently dropped.
-        Never re-raises: nothing awaits a spawned task, so there is no caller to
-        raise into.
-        """
-        if task.cancelled():
-            return
-        exc = task.exception()
-        if exc is not None:
-            self.logger.error("Background task failed", exc_info=exc)
-
-    # ── App-scoped background tasks ───────────────────────
-
     def spawn(
         self,
-        coro: Coroutine[Any, Any, Any],
+        coro: Annotated[Coroutine[Any, Any, Any], Doc("Coroutine to run as a background task.")],
         *,
-        name: str | None = None,
+        name: Annotated[
+            str | None, Doc("Name the task is registered under; anonymous when omitted.")
+        ] = None,
     ) -> asyncio.Task[Any]:
         """Schedule a long-lived, app-scoped background task.
 
@@ -95,13 +82,18 @@ class BackgroundTasksMixin(AppHost):
 
     def supervise(
         self,
-        coro_factory: Callable[[], Coroutine[Any, Any, Any]],
+        coro_factory: Annotated[
+            Callable[[], Coroutine[Any, Any, Any]],
+            Doc("Zero-argument callable returning a fresh coroutine on every restart."),
+        ],
         *,
-        name: str,
-        max_restarts: int = 5,
-        restart_window: float = 60.0,
-        backoff: float = 1.0,
-        max_backoff: float = 30.0,
+        name: Annotated[str, Doc("Name the supervised task is registered under.")],
+        max_restarts: Annotated[
+            int, Doc("Restarts allowed inside `restart_window` before giving up.")
+        ] = 5,
+        restart_window: Annotated[float, Doc("Seconds the restart budget is counted over.")] = 60.0,
+        backoff: Annotated[float, Doc("Seconds to wait before the first restart.")] = 1.0,
+        max_backoff: Annotated[float, Doc("Ceiling the doubling backoff is clamped to.")] = 30.0,
     ) -> asyncio.Task[Any]:
         """Run a long-lived coroutine, restarting it on failure.
 
@@ -159,6 +151,61 @@ class BackgroundTasksMixin(AppHost):
             ),
             name=name,
         )
+
+    async def wait_for_background_tasks(self, timeout: float | None = 5.0) -> bool:
+        """Wait for every currently-spawned background task to finish.
+
+        Returns `True` when they all completed, `False` when `timeout` elapsed
+        first. Tasks are left running either way - this waits, it does not
+        cancel; `_drain_spawned_tasks` is the shutdown path that does.
+
+        A response's background task runs *after* the response is sent, which is
+        the point of it, so a caller that needs its effect - a test asserting the
+        email was queued, a script that must not exit early - otherwise has to
+        guess at a sleep or drive the loop by hand. Newly spawned tasks are
+        picked up too: a task that spawns another is waited for in full.
+
+        Usage::
+
+            await app.wait_for_background_tasks()
+        """
+        loop = asyncio.get_running_loop()
+        deadline = None if timeout is None else loop.time() + timeout
+        while True:
+            tasks = [
+                task
+                for task in (*self._spawned_named.values(), *self._spawned_anon)
+                if not task.done()
+            ]
+            if not tasks:
+                return True
+            remaining = None if deadline is None else deadline - loop.time()
+            if remaining is not None and remaining <= 0:
+                return False
+            await asyncio.wait(tasks, timeout=remaining)
+
+    def _log_background_task_error(self, task: asyncio.Task) -> None:
+        """Report a finished task's failure, called from `_spawned_task_done`.
+
+        Pulls the exception off the future (silencing
+        `Task exception was never retrieved` warnings) and logs it via
+        `self.logger` so failures are observable instead of silently dropped.
+        Never re-raises: nothing awaits a spawned task, so there is no caller to
+        raise into.
+        """
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            self.logger.error("Background task failed", exc_info=exc)
+
+    def _spawned_task_done(self, task: asyncio.Task[Any]) -> None:
+        """Done-callback: drop the strong ref and log any non-cancel failure."""
+        name = task.get_name()
+        if self._spawned_named.get(name) is task:
+            del self._spawned_named[name]
+        self._spawned_anon.discard(task)
+        self._log_background_task_error(task)
 
     async def _supervise_loop(
         self,
@@ -245,46 +292,6 @@ class BackgroundTasksMixin(AppHost):
                     return
             await asyncio.sleep(delay)
             delay = min(delay * 2, max_backoff)
-
-    def _spawned_task_done(self, task: asyncio.Task[Any]) -> None:
-        """Done-callback: drop the strong ref and log any non-cancel failure."""
-        name = task.get_name()
-        if self._spawned_named.get(name) is task:
-            del self._spawned_named[name]
-        self._spawned_anon.discard(task)
-        self._log_background_task_error(task)
-
-    async def wait_for_background_tasks(self, timeout: float | None = 5.0) -> bool:
-        """Wait for every currently-spawned background task to finish.
-
-        Returns `True` when they all completed, `False` when `timeout` elapsed
-        first. Tasks are left running either way - this waits, it does not
-        cancel; `_drain_spawned_tasks` is the shutdown path that does.
-
-        A response's background task runs *after* the response is sent, which is
-        the point of it, so a caller that needs its effect - a test asserting the
-        email was queued, a script that must not exit early - otherwise has to
-        guess at a sleep or drive the loop by hand. Newly spawned tasks are
-        picked up too: a task that spawns another is waited for in full.
-
-        Usage::
-
-            await app.wait_for_background_tasks()
-        """
-        loop = asyncio.get_running_loop()
-        deadline = None if timeout is None else loop.time() + timeout
-        while True:
-            tasks = [
-                task
-                for task in (*self._spawned_named.values(), *self._spawned_anon)
-                if not task.done()
-            ]
-            if not tasks:
-                return True
-            remaining = None if deadline is None else deadline - loop.time()
-            if remaining is not None and remaining <= 0:
-                return False
-            await asyncio.wait(tasks, timeout=remaining)
 
     async def _drain_spawned_tasks(self) -> None:
         """Cancel and await every spawned task within the per-task budget.

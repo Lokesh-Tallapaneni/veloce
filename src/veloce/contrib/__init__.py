@@ -9,6 +9,9 @@ Three of the five modules `_EXPORTS` names are deferred in practice: OpenAPI,
 Redis and the docs UI. Static files and templating are still pulled in by
 `import veloce` itself, because the top-level package imports
 `contrib.templating` for its own re-exports.
+
+The `mcp` sub-package is the sixth integration here. It exports nothing through
+`_EXPORTS`; reach it by importing `veloce.contrib.mcp` directly.
 """
 
 from __future__ import annotations

@@ -59,6 +59,7 @@ from veloce._internal import (
     _header_value_has_crlf,
     _quote_header_value,
     _reject_header_crlf,
+    _write_chunked,
     dumps_current,
     guess_content_type,
     is_json_mimetype,
@@ -872,10 +873,7 @@ class Response:
     @vary.setter
     def vary(self, value: Any) -> None:
         """Set the `Vary` header."""
-        hs = value if isinstance(value, HeaderSet) else HeaderSet(value)
-        header_pop(self.headers, HEADER_VARY)
-        self.headers[HEADER_VARY] = hs.to_header()
-        self._encoded = None
+        self._set_header_set(HEADER_VARY, value)
 
     @property
     def allow(self) -> HeaderSet:
@@ -889,10 +887,7 @@ class Response:
     @allow.setter
     def allow(self, value: Any) -> None:
         """Set the `Allow` header."""
-        hs = value if isinstance(value, HeaderSet) else HeaderSet(value)
-        header_pop(self.headers, HEADER_ALLOW)
-        self.headers[HEADER_ALLOW] = hs.to_header()
-        self._encoded = None
+        self._set_header_set(HEADER_ALLOW, value)
 
     # ── Authentication challenge ──────────────────────────────
 
@@ -930,6 +925,18 @@ class Response:
         self.headers[HEADER_WWW_AUTHENTICATE] = value
         self._encoded = None
         return value
+
+    def _set_header_set(self, name: str, value: Any) -> None:
+        """Replace header `name` with the `HeaderSet` form of `value`.
+
+        Backs the list-valued headers whose setter accepts a `HeaderSet`,
+        an iterable of strings, or a comma-separated string; invalidates
+        the cached encode after every mutation.
+        """
+        hs = value if isinstance(value, HeaderSet) else HeaderSet(value)
+        header_pop(self.headers, name)
+        self.headers[name] = hs.to_header()
+        self._encoded = None
 
     def _set_or_pop(self, name: str, value: str | None) -> None:
         """Set header `name` to `value`, or remove it when `value is None`.
@@ -1011,7 +1018,7 @@ class Response:
         return header_get(self.headers, HEADER_CONTENT_RANGE)
 
     @property
-    def date(self) -> Any:
+    def date(self) -> datetime | None:
         """The `Date` header as a tz-aware UTC `datetime` - RFC 9110 Sec. 6.6.1.
 
         Returns `None` when unset or unparseable. Assign a `datetime`
@@ -1049,7 +1056,7 @@ class Response:
         self._set_or_pop(HEADER_CONTENT_LOCATION, value)
 
     @property
-    def retry_after(self) -> Any:
+    def retry_after(self) -> int | datetime | None:
         """The `Retry-After` header - RFC 9110 Sec. 10.2.3.
 
         Returns an `int` (delay in seconds) when the header is numeric,
@@ -1140,7 +1147,7 @@ class Response:
             self.encode()
 
     @property
-    def cache_control(self) -> Any:
+    def cache_control(self) -> CacheControl:
         """Parsed `Cache-Control` header (read-only view).
 
         For setting directives, prefer `set_cache_control(...)` which
@@ -1229,6 +1236,25 @@ class Response:
             drain: Callable[[], Awaitable[None]] | None = None,
             keep_alive: bool = True,
         ) -> None: ...
+
+    def _encode_streaming_head(self, default_headers: dict[str, str], keep_alive: bool) -> bytes:
+        """Encode a streaming response's head, honouring the bodiless-status rule.
+
+        A bodiless status carries neither a payload nor framing for one: RFC
+        9112 Sec. 6.1 forbids `Transfer-Encoding` on a 204, and a 204 that ships
+        chunks desynchronises a keep-alive connection because the client reads
+        them as the next response. `default_headers` (the content type plus the
+        chunked framing) is therefore dropped for `Content-Length: 0` on such a
+        status. Every streaming subclass encodes its head through here so the
+        rule cannot hold on one of them and not another.
+        """
+        if not status_permits_body(self.status_code):
+            default_headers = {HEADER_CONTENT_LENGTH: "0"}
+        parts = _encode_response_head(
+            self.status_code, default_headers, self.headers, keep_alive=keep_alive
+        )
+        parts.append("\r\n")
+        return "".join(parts).encode("latin-1")
 
     def add_etag(self, weak: bool = False) -> str:
         """Compute and attach an ETag derived from the body.
@@ -1709,30 +1735,14 @@ class StreamingResponse(Response):
             yield chunk.encode("utf-8") if isinstance(chunk, str) else chunk
 
     def encode(self, keep_alive: bool = True) -> bytes:
-        """For streaming, encode headers with chunked transfer.
-
-        A bodiless status carries neither a payload nor framing for one: RFC
-        9112 Sec. 6.1 forbids `Transfer-Encoding` on a 204, and a 204 that ships
-        chunks desynchronises a keep-alive connection because the client reads
-        them as the next response. The buffered `Response.encode` has always
-        applied the rule; this twin did not.
-        """
-        if not status_permits_body(self.status_code):
-            default_headers = {HEADER_CONTENT_LENGTH: "0"}
-            parts = _encode_response_head(
-                self.status_code, default_headers, self.headers, keep_alive=keep_alive
-            )
-            parts.append("\r\n")
-            return "".join(parts).encode("latin-1")
-        default_headers = {
-            HEADER_CONTENT_TYPE: self.content_type,
-            HEADER_TRANSFER_ENCODING: HEADER_VALUE_CHUNKED,
-        }
-        parts = _encode_response_head(
-            self.status_code, default_headers, self.headers, keep_alive=keep_alive
+        """For streaming, encode headers with chunked transfer."""
+        return self._encode_streaming_head(
+            {
+                HEADER_CONTENT_TYPE: self.content_type,
+                HEADER_TRANSFER_ENCODING: HEADER_VALUE_CHUNKED,
+            },
+            keep_alive,
         )
-        parts.append("\r\n")
-        return "".join(parts).encode("latin-1")
 
     async def stream_to(
         self,
@@ -1749,26 +1759,7 @@ class StreamingResponse(Response):
         the high-water mark, so the fast path pays one already-set check.
         """
         transport.write(self.encode(keep_alive=keep_alive))
-        # `transport.writelines` (where supported) keeps the size-line,
-        # payload, and trailer as separate buffers instead of concatenating
-        # them into a fresh bytes object per chunk; fall back to a single
-        # concatenated `write` for transports / test fakes that only
-        # implement the basic `WriteTransport` API.
-        writelines = getattr(transport, "writelines", None)
-        async for chunk in self._stream:
-            # A zero-length chunk would encode as `0\r\n\r\n`, which RFC 9112
-            # Sec. 7.1 reserves for the last-chunk terminator; emitting it
-            # mid-stream truncates the body and desyncs keep-alive framing.
-            if not chunk:
-                continue
-            size = format(len(chunk), "x").encode("ascii")
-            if writelines is not None:
-                writelines((size, b"\r\n", chunk, b"\r\n"))
-            else:
-                transport.write(size + b"\r\n" + chunk + b"\r\n")
-            if drain is not None:
-                await drain()
-        transport.write(b"0\r\n\r\n")
+        await _write_chunked(transport, self._stream, drain)
 
 
 # Files at or below this size are read inline on the event loop by

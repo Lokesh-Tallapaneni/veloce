@@ -10,7 +10,12 @@ layered inside.
 
 from __future__ import annotations
 
-from veloce.middleware.base import BaseHTTPMiddleware, Middleware
+from veloce.middleware.base import (
+    BaseHTTPMiddleware,
+    CallNext,
+    DispatchFunction,
+    Middleware,
+)
 from veloce.middleware.compression import CompressionMiddleware, GZipMiddleware
 from veloce.middleware.conditional import ConditionalGetMiddleware
 from veloce.middleware.cors import CORSMiddleware
@@ -35,6 +40,8 @@ from veloce.middleware.sessions import (
 __all__ = [
     "Middleware",
     "BaseHTTPMiddleware",
+    "CallNext",
+    "DispatchFunction",
     "CORSMiddleware",
     "CSRFMiddleware",
     "rotate_csrf_token",

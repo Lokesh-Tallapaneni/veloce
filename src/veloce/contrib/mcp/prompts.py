@@ -86,7 +86,7 @@ def _prompt_arguments(input_schema: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _register_prompt(
     registry: PromptRegistry,
-    handler: Callable,
+    handler: Callable[..., Any],
     *,
     name: str | None,
     description: str | None,

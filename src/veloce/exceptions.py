@@ -552,7 +552,7 @@ async def request_validation_exception_handler(
 # Backward-compat re-export - Aborter moved to veloce.helpers.
 def __getattr__(name: str) -> Any:
     if name == "Aborter":
-        from veloce.helpers import Aborter
+        from veloce.helpers import Aborter  # breaks exceptions->helpers cycle
 
         return Aborter
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

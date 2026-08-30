@@ -30,12 +30,17 @@ called multiple times on different apps.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Annotated, Any
+from typing import Annotated, Any, TypeVar
 
 from typing_extensions import Doc
 
 from veloce.exceptions import _error_handler_key_error
 from veloce.routing.router import RouteInfo, Router, _readd_route
+
+#: The key a scoped handler table is indexed by - an exception class for
+#: `_exception_handlers`, a status code for `_status_handlers`. Both flow
+#: through `_merge_scoped`, so the key type is carried rather than erased.
+_HandlerKey = TypeVar("_HandlerKey")
 
 
 def _endpoint_blueprint(endpoint: str | None) -> str | None:
@@ -63,9 +68,9 @@ def _endpoint_blueprint(endpoint: str | None) -> str | None:
 
 
 def _merge_scoped(
-    dst: dict[str, dict],
-    child_own: dict,
-    child_scoped: dict,
+    dst: dict[str, dict[_HandlerKey, Callable]],
+    child_own: dict[_HandlerKey, Callable],
+    child_scoped: dict[str, dict[_HandlerKey, Callable]],
     child_name: str,
 ) -> None:
     """Merge a child's own + already-scoped handler tables into `dst`.
@@ -95,9 +100,9 @@ _SCOPED_LIST_CATEGORIES: tuple[tuple[str, str], ...] = (
 
 
 def _merge_scoped_lists(
-    dst: dict[str, list],
-    child_own: list,
-    child_scoped: dict[str, list],
+    dst: dict[str, list[Callable]],
+    child_own: list[Callable],
+    child_scoped: dict[str, list[Callable]],
     child_name: str,
 ) -> None:
     """Merge a child's own + already-scoped callable lists into `dst`.
@@ -118,7 +123,9 @@ def _merge_scoped_lists(
         dst[f"{child_name}.{suffix}"] = entries
 
 
-def _resolve_scoped_chain(own: list, scoped: dict[str, list], suffix: str) -> list:
+def _resolve_scoped_chain(
+    own: list[Callable], scoped: dict[str, list[Callable]], suffix: str
+) -> list[Callable]:
     """Flatten the callables that apply to a descendant, outermost first.
 
     A route under `<bp>.<child>.<grandchild>` runs the hooks declared on the

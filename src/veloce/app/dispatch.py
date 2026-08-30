@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import inspect
 import time
 import traceback
@@ -79,7 +80,7 @@ from veloce.exceptions import (
     HTTPException,
     http_exception_payload,
 )
-from veloce.helpers import g
+from veloce.helpers import g, jsonify
 from veloce.http._body import too_large_payload
 from veloce.http.request import Request
 from veloce.http.response import (
@@ -1083,7 +1084,7 @@ class DispatchMixin(AppHost):
         """Run every registered `url_value_preprocessor` against `path_params`.
 
         Each processor receives `(endpoint, path_params)` and may mutate
-        `path_params` in place (e.g. pop a locale segment into `g`). App-level
+        `path_params` in place (e.g. pop a locale segment into `g`).
         App-level processors run first, then the ones the endpoint's blueprint
         contributes - the same order the request hooks use. Shared by HTTP
         dispatch and the MCP route-backed tool path so a processor sees the
@@ -1776,4 +1777,131 @@ class DispatchMixin(AppHost):
             except Exception:
                 self.logger.exception("instrumentation hook raised an exception")
 
-    # ── Server ────────────────────────────────────────────
+    # ── Dispatch aliases and response coercion ─────────────
+
+    # Veloce exposes the internal dispatcher under two names downstream
+    # extension code reaches for. Both alias `_dispatch_request`.
+    # `full_dispatch_request` runs the full before/after_request chain
+    # - which `_dispatch_request` already does inline - so both names
+    # point at the same method.
+    async def dispatch_request(self, request: Request) -> Any:
+        """Alias for `_dispatch_request`."""
+        return await self._dispatch_request(request, self._ensure_pipeline())
+
+    async def full_dispatch_request(self, request: Request) -> Any:
+        """Dispatch `request` through the full before/after-request hook chain.
+
+        An alias for `_dispatch_request`, which already runs the chain inline.
+        """
+        return await self._dispatch_request(request, self._ensure_pipeline())
+
+    async def preprocess_request(self, request: Request) -> Any:
+        """Run all `before_request` hooks for `request`.
+
+        Walks the registered hooks in order; if any hook returns a
+        non-None value it short-circuits the chain and that value is
+        returned (the contract - a non-None return becomes the
+        response). Both sync and async hooks are supported. App-level
+        hooks fire first, then the matched-blueprint bucket - the
+        same shape `_dispatch_request` uses.
+        """
+        for hook in self._before_request_hooks:
+            result = await self._call_handler(hook, {"request": request})
+            if result is not None:
+                return result
+        # Read directly: `endpoint` is a `Request.__slots__` field assigned in
+        # `__init__`, so the `getattr` default could never apply - and reading it
+        # the same way `_run_before_hooks` does keeps the two walks comparable.
+        bp = _endpoint_blueprint(request.endpoint)
+        if bp is not None and self._bp_before_hooks:
+            for hook in self._bp_before_hooks.get(bp, ()):
+                result = await self._call_handler(hook, {"request": request})
+                if result is not None:
+                    return result
+        return None
+
+    async def process_response(self, request: Request, response: Response) -> Response:
+        """Run all `after_request` hooks for `(request, response)`.
+
+        Hooks fire in **reverse** registration order; each hook may return a
+        replacement `Response` (the contract: any other return keeps the
+        existing one). App-level hooks reverse-iterate first, then the matched
+        blueprint's, then the request's one-shot `after_this_request` callbacks.
+
+        This is the dispatch path itself, not a re-implementation of it, so a
+        hook behaves here exactly as it will in production - including the
+        signature adaptation that lets a hook declare only the arguments it
+        wants.
+        """
+        return await self._run_after_hooks(request, response, _endpoint_blueprint(request.endpoint))
+
+    @staticmethod
+    def ensure_sync(func: Callable) -> Callable:
+        """Wrap `func` so it is callable from synchronous code.
+
+        - If `func` is a regular function, returns it unchanged.
+        - If `func` is a coroutine function, returns a sync wrapper
+          that runs the coroutine to completion on a dedicated event
+          loop and returns the result.
+
+        Use to bridge async handlers / hooks into sync code (CLI
+        commands, background workers, test scaffolding).
+        """
+        if not _is_async_callable(func):
+            return func
+
+        @functools.wraps(func)
+        def _sync_wrapper(*args: Any, **kwargs: Any) -> Any:
+            return asyncio.run(func(*args, **kwargs))
+
+        return _sync_wrapper
+
+    def make_response(self, value: Any) -> Response:
+        """Coerce a handler-return value into a `Response`.
+
+        Accepts (with this coercion table):
+        - `Response` -> returned as-is
+        - `str` / `bytes` -> wrapped as a text/HTML response
+        - `dict` / `list` -> wrapped as a JSON response via `jsonify`
+        - `tuple` of `(body, status)`, `(body, status, headers)` or
+          `(body, headers)` -> unpacked and re-coerced
+        - anything else -> JSON, matching what dispatch does with the same
+          value returned from a handler
+
+        A tuple of any other length is not a response tuple and is answered as
+        a plain value. `veloce.make_response` and dispatch read the same table
+        (`_unpack_response_tuple`); dispatch keeps its own fast lanes for the
+        shapes a handler returns most, but answers alike.
+        """
+        if isinstance(value, Response):
+            return value
+        if isinstance(value, tuple):
+            unpacked = _unpack_response_tuple(value)
+            if unpacked is not None:
+                body, code, headers = unpacked
+                resp = self.make_response(body)
+                if code is not None:
+                    resp.status_code = code
+                if headers:
+                    items = headers.items() if isinstance(headers, dict) else headers
+                    for k, v in items:
+                        resp.headers[k] = v
+                # `body` may already have been a `Response` carrying a cached
+                # encoding; the status line and headers just changed.
+                resp._encoded = None
+                return resp
+        if isinstance(value, (dict, list)):
+            return jsonify(value)
+        if isinstance(value, bytes):
+            return Response(body=value, content_type=MIME_HTML)
+        if isinstance(value, str):
+            return Response(
+                body=value.encode("utf-8"),
+                content_type=MIME_HTML,
+            )
+        # Anything else is JSON-encoded, which is what a handler returning the
+        # same value already gets from dispatch. Raising here made the public
+        # coercer refuse `123` and `None` while a handler returning them was
+        # answered `200` with a JSON body - one framework, two answers for one
+        # value.
+        return jsonify(value)

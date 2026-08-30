@@ -97,6 +97,9 @@ META_RELATED_TASK = "io.modelcontextprotocol/related-task"
 _META_MODEL_IMMEDIATE_RESPONSE = "io.modelcontextprotocol/model-immediate-response"
 
 
+# ── Task records ──────────────────────────────────────────
+
+
 def _now_iso() -> str:
     """Return the current UTC time as an RFC 3339 timestamp."""
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -241,6 +244,9 @@ class TaskRegistry(Registry[MCPTask]):
         self.tasks.pop(task.name, None)
 
 
+# ── Wire shapes ───────────────────────────────────────────
+
+
 def task_ttl_ms(params: dict[str, Any]) -> int:
     """Return the requested task time-to-live in milliseconds, or the default.
 
@@ -296,6 +302,9 @@ def status_notification(task: MCPTask) -> dict[str, Any]:
             "_meta": {META_RELATED_TASK: {"taskId": task.name}},
         },
     }
+
+
+# ── The capability ────────────────────────────────────────
 
 
 class TasksCapability(_ServerCapability):

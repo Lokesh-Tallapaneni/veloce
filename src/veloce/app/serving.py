@@ -15,7 +15,9 @@ import signal
 import socket
 import ssl
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Annotated, Any, cast
+
+from typing_extensions import Doc
 
 from veloce._protocol_constants import (
     LIFECYCLE_SHUTDOWN,
@@ -71,30 +73,26 @@ def _resolve_listen_backlog() -> int:
 class ServingMixin(AppHost):
     """Run and gracefully stop the built-in development server."""
 
-    def _print_banner(self, host: str, port: int, tls: bool = False) -> None:
-        """Print the development server's start-up banner.
-
-        The version is the installed *framework* version, resolved from the same
-        distribution metadata `veloce.__version__` and `veloce --version` read.
-        Not `self.version`, which is the constructor's `version=` - the API
-        version emitted into the OpenAPI document. Printing that makes a
-        default app announce `Veloce v0.1.0` whatever framework version is
-        running, on the one line an operator reads to find out.
-        """
-        scheme = URL_SCHEME_HTTPS if tls else URL_SCHEME_HTTP
-        print(f"\n  Veloce v{resolve_version()}")
-        print(f"  Listening on {scheme}://{host}:{port}")
-        print("  Press Ctrl+C to stop\n")
-
     def run(
         self,
-        host: str | None = None,
-        port: int = 8000,
-        workers: int = 1,
-        access_log: bool = True,
-        ssl_context: ssl.SSLContext | None = None,
-        bind_all: bool = False,
-        reload: bool = False,
+        host: Annotated[
+            str | None,
+            Doc("Interface to bind; defaults to `127.0.0.1`. Conflicts with `bind_all`."),
+        ] = None,
+        port: Annotated[int, Doc("TCP port to listen on.")] = 8000,
+        workers: Annotated[int, Doc("Must be `1`; the built-in server runs a single process.")] = 1,
+        access_log: Annotated[
+            bool, Doc("Print the start-up banner and install the development access log.")
+        ] = True,
+        ssl_context: Annotated[
+            ssl.SSLContext | None, Doc("Serve HTTPS for local testing when given.")
+        ] = None,
+        bind_all: Annotated[
+            bool, Doc("Bind every interface (`0.0.0.0`) instead of localhost.")
+        ] = False,
+        reload: Annotated[
+            bool, Doc("Restart the server whenever a project `.py` file changes.")
+        ] = False,
     ) -> None:
         """Start the built-in **development** server.
 
@@ -209,15 +207,28 @@ class ServingMixin(AppHost):
             loop.run_until_complete(self._graceful_shutdown(loop))
             loop.close()
 
+    def _print_banner(self, host: str, port: int, tls: bool = False) -> None:
+        """Print the development server's start-up banner.
+
+        The version is the installed *framework* version, resolved from the same
+        distribution metadata `veloce.__version__` and `veloce --version` read.
+        Not `self.version`, which is the constructor's `version=` - the API
+        version emitted into the OpenAPI document. Printing that makes a
+        default app announce `Veloce v0.1.0` whatever framework version is
+        running, on the one line an operator reads to find out.
+        """
+        scheme = URL_SCHEME_HTTPS if tls else URL_SCHEME_HTTP
+        print(f"\n  Veloce v{resolve_version()}")
+        print(f"  Listening on {scheme}://{host}:{port}")
+        print("  Press Ctrl+C to stop\n")
+
     def _install_dev_access_log(self) -> None:
         """Register the per-request access log for the built-in server.
 
         A no-op when the application already registered one, so `run()` never
         doubles up on an app that called `instrument_access_log` itself.
         """
-        # Deferred for import cost, not for a cycle: `observability` imports the
-        # app package only under `TYPE_CHECKING`, so hoisting imports cleanly - it
-        # would just pull the instrumentation stack into every `import veloce`.
+        # Deferred to keep the layering: `app/` is core, `observability` is not.
         from veloce.observability import instrument_access_log
 
         # Ask the hook whether it is an access log, rather than testing which

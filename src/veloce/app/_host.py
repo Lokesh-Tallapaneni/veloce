@@ -50,6 +50,7 @@ if TYPE_CHECKING:  # pragma: no cover
     )
     from veloce.config import Config
     from veloce.contrib.staticfiles import StaticFiles
+    from veloce.contrib.templating import Jinja2Templates
     from veloce.http.request import Request
     from veloce.http.response import Response
     from veloce.middleware import Middleware
@@ -144,6 +145,7 @@ class AppHost:
         _redoc_url: str | None
 
         # ── Templating ──
+        _templates: Jinja2Templates | None
         _template_filters: list[tuple[str, Callable[..., Any]]]
         _template_globals: list[tuple[str, Callable[..., Any]]]
         _template_tests: list[tuple[str, Callable[..., Any]]]

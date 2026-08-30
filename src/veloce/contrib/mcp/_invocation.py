@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from veloce._internal import _current_app_var, _current_request_var, _is_async_callable, offload
 from veloce.contrib.mcp._helpers import (
@@ -38,6 +38,7 @@ from veloce.routing.router import RouteMatch
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.registry import MCPTool
+    from veloce.contrib.mcp.server import MCPServer
 
 _logger = logging.getLogger(__name__)
 
@@ -227,7 +228,9 @@ class InvocationMixin:
             log_level=_resolve_log_level(session),
             requester=_requester_var.get(),
             session=session,
-            server=self,
+            # `self` is the `MCPServer` this mixin is mixed into; only the
+            # subclass declares that, so the cast restores it for the checker.
+            server=cast("MCPServer", self),
             request_meta=request_meta,
             request_id=_request_id_var.get(),
         )

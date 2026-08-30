@@ -30,9 +30,21 @@ import decimal
 import math
 import re
 import uuid
+import warnings
 from typing import Any
 
 from veloce._internal import _require_methods
+
+# The module's one optional dependency: a C ISO-8601 parser that
+# `_parse_datetime` selects over the stdlib when it is installed. Declared here
+# rather than beside the two parsers it chooses between, so the header states
+# every import the module has.
+try:  # pragma: no cover - one branch per environment
+    from ciso8601 import parse_datetime as _parse_datetime_ciso
+
+    _HAS_CISO8601 = True
+except ImportError:  # pragma: no cover
+    _HAS_CISO8601 = False
 
 # UUID format per RFC 4122 (8-4-4-4-12 hex digits, case-insensitive). This is
 # the body (un-anchored) form, reused when translating a `{id:uuid}` placeholder
@@ -87,7 +99,7 @@ _MAX_INT_DIGITS = 20
 # ── Converters ────────────────────────────────────────────
 
 
-class _Converter:
+class Converter:
     """Base class - subclasses override `match` and may set `greedy`."""
 
     __slots__ = ()
@@ -114,14 +126,24 @@ class _Converter:
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
-        _require_methods(cls, _Converter, _Converter._required)
+        _require_methods(cls, Converter, Converter._required)
+        # Every converter here is slotted, so a subclass that omits `__slots__`
+        # silently regains a per-instance `__dict__` and stops matching the
+        # shape the base declares. Warned rather than raised: a third-party
+        # converter written before this check would otherwise fail at import.
+        if "__slots__" not in cls.__dict__:
+            warnings.warn(
+                f"{cls.__name__} does not declare __slots__; add `__slots__ = ()` "
+                "so its instances stay slotted like every other Converter",
+                stacklevel=2,
+            )
 
     def match(self, value: str) -> tuple[bool, Any]:
         """Validate (and coerce) `value`. Return (ok, coerced)."""
         raise NotImplementedError
 
 
-class StringConverter(_Converter):
+class StringConverter(Converter):
     """Default. Accepts a single non-empty segment (slashes excluded).
 
     Optional constraints bound the segment length so a violation is a route
@@ -171,7 +193,7 @@ class StringConverter(_Converter):
         return True, value
 
 
-class IntConverter(_Converter):
+class IntConverter(Converter):
     """Matches a decimal integer; coerces to Python int.
 
     Optional constraints participate in matching rather than the handler
@@ -216,7 +238,7 @@ class IntConverter(_Converter):
         return True, coerced
 
 
-class FloatConverter(_Converter):
+class FloatConverter(Converter):
     """Matches a decimal float (no scientific notation); coerces to float.
 
     Optional `min`/`max` bound the value during matching and `signed=False`
@@ -264,7 +286,7 @@ class FloatConverter(_Converter):
         return True, f
 
 
-class UUIDConverter(_Converter):
+class UUIDConverter(Converter):
     """Matches a canonical UUID per RFC 4122; coerces to uuid.UUID."""
 
     __slots__ = ()
@@ -281,7 +303,7 @@ class UUIDConverter(_Converter):
             return False, None
 
 
-class PathConverter(_Converter):
+class PathConverter(Converter):
     """Greedy converter - consumes the rest of the URL, including slashes."""
 
     __slots__ = ()
@@ -331,16 +353,12 @@ def _normalize_z(value: str) -> str:
 
 
 def _parse_datetime_stdlib(value: str, offset: str | None) -> datetime.datetime:
-    """Parse an admitted datetime segment with the stdlib."""
+    """Parse an admitted datetime segment with the stdlib.
+
+    `offset` is unused here; the signature matches `_parse_datetime_accelerated`
+    so `_parse_datetime` can select either.
+    """
     return datetime.datetime.fromisoformat(_normalize_z(value))
-
-
-try:  # pragma: no cover - one branch per environment
-    from ciso8601 import parse_datetime as _parse_datetime_ciso
-
-    _HAS_CISO8601 = True
-except ImportError:  # pragma: no cover
-    _HAS_CISO8601 = False
 
 
 def _parse_datetime_accelerated(value: str, offset: str | None) -> datetime.datetime:
@@ -368,7 +386,7 @@ def _parse_datetime_accelerated(value: str, offset: str | None) -> datetime.date
 _parse_datetime = _parse_datetime_accelerated if _HAS_CISO8601 else _parse_datetime_stdlib
 
 
-class DateConverter(_Converter):
+class DateConverter(Converter):
     """Matches an ISO 8601 date; coerces to datetime.date."""
 
     __slots__ = ()
@@ -385,7 +403,7 @@ class DateConverter(_Converter):
             return False, None
 
 
-class DateTimeConverter(_Converter):
+class DateTimeConverter(Converter):
     """Matches an ISO 8601 datetime; coerces to datetime.datetime."""
 
     __slots__ = ()
@@ -405,7 +423,7 @@ class DateTimeConverter(_Converter):
             return False, None
 
 
-class TimeConverter(_Converter):
+class TimeConverter(Converter):
     """Matches an ISO 8601 time; coerces to datetime.time."""
 
     __slots__ = ()
@@ -422,7 +440,7 @@ class TimeConverter(_Converter):
             return False, None
 
 
-class TimeDeltaConverter(_Converter):
+class TimeDeltaConverter(Converter):
     """Matches an ISO 8601 duration or `str(timedelta)`; coerces to timedelta.
 
     Stricter than Litestar: a bare number such as `60` is rejected. An ISO
@@ -462,7 +480,7 @@ class TimeDeltaConverter(_Converter):
         )
 
 
-class DecimalConverter(_Converter):
+class DecimalConverter(Converter):
     """Matches a decimal literal; coerces to decimal.Decimal."""
 
     __slots__ = ()
@@ -479,7 +497,7 @@ class DecimalConverter(_Converter):
             return False, None
 
 
-class AnyConverter(_Converter):
+class AnyConverter(Converter):
     """Matches one of a fixed set of literal values: `{x:any(red,blue)}`."""
 
     __slots__ = ("_choices",)
@@ -497,10 +515,12 @@ class AnyConverter(_Converter):
 # ── Registry and parsing ──────────────────────────────────
 
 
-# Public base-class alias - subclass `Converter` to build a custom one.
-Converter = _Converter
+# The pre-rename spelling of `Converter`, kept so an importer of the private
+# name still resolves. `Converter` is the class itself, so a user subclass's
+# MRO, its `repr()` and any traceback name the documented public symbol.
+_Converter = Converter
 
-_BUILTIN: dict[str, type[_Converter]] = {
+_BUILTIN: dict[str, type[Converter]] = {
     "str": StringConverter,
     "string": StringConverter,
     "int": IntConverter,
@@ -516,7 +536,7 @@ _BUILTIN: dict[str, type[_Converter]] = {
 
 # User-registered converters - `register_converter(name, cls)` populates
 # this; `parse_converter` consults it after the built-ins.
-_CUSTOM: dict[str, type[_Converter]] = {}
+_CUSTOM: dict[str, type[Converter]] = {}
 
 # Converter names that accept the `name(args)` constraint grammar. `any(...)`
 # is handled separately because its arguments are a literal value list, not
@@ -593,18 +613,18 @@ def _parse_converter_args(body: str) -> tuple[list[Any], dict[str, Any]]:
     return args, kwargs
 
 
-def register_converter(name: str, converter_cls: type[_Converter]) -> None:
+def register_converter(name: str, converter_cls: type[Converter]) -> None:
     """Register a custom path converter.
 
     After `register_converter("slug", SlugConverter)`, routes may use
     `{post:slug}` and the radix tree validates/coerces the segment via
     `SlugConverter().match(...)`. `converter_cls` must subclass
-    `Converter` (= `_Converter`). A built-in name cannot be shadowed -
+    `Converter`. A built-in name cannot be shadowed -
     that raises `ValueError`.
     """
     if name in _BUILTIN:
         raise ValueError(f"cannot override built-in converter {name!r}")
-    if not (isinstance(converter_cls, type) and issubclass(converter_cls, _Converter)):
+    if not (isinstance(converter_cls, type) and issubclass(converter_cls, Converter)):
         raise TypeError("converter_cls must be a subclass of Converter")
     _CUSTOM[name] = converter_cls
 
@@ -626,7 +646,7 @@ def unregister_converter(name: str) -> None:
     _CUSTOM.pop(name, None)
 
 
-def parse_converter(spec: str | None) -> _Converter:
+def parse_converter(spec: str | None) -> Converter:
     """Build a converter from the `:spec` portion of `{name:spec}`.
 
     `None` or empty `spec` -> StringConverter (the default).
@@ -836,7 +856,7 @@ def is_regex_path(path: str) -> bool:
     return False
 
 
-def extract_regex_converters(path: str) -> dict[str, _Converter]:
+def extract_regex_converters(path: str) -> dict[str, Converter]:
     """Return the built-in converter for each placeholder in a regex route.
 
     Bare `{name}` and raw-regex placeholders (`{id:[0-9]+}`) have no built-in
@@ -847,7 +867,7 @@ def extract_regex_converters(path: str) -> dict[str, _Converter]:
     `is_regex_path` rejects them in regex-forced segments because they have no
     regex representation.
     """
-    converters: dict[str, _Converter] = {}
+    converters: dict[str, Converter] = {}
     for ph in _iter_placeholders(path):
         spec = ph.spec
         if not spec:

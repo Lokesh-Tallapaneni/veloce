@@ -21,8 +21,17 @@ import contextlib
 import mimetypes
 import secrets
 import sys
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, KeysView, Sequence
-from typing import Any
+from collections.abc import (
+    AsyncIterable,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Iterable,
+    Iterator,
+    KeysView,
+    Sequence,
+)
+from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote, urlencode, urlparse
 
 import orjson
@@ -73,6 +82,13 @@ from veloce.status import (
     HTTP_500_INTERNAL_SERVER_ERROR,
     WS_1000_NORMAL_CLOSURE,
 )
+
+if TYPE_CHECKING:  # pragma: no cover
+    from veloce.sessions import Session
+
+# What a `stream=` body may be. `_aiter_body_chunks` normalises either shape
+# into an async iterator of bytes, encoding `str` chunks as UTF-8.
+StreamBody = Iterable[bytes | str] | AsyncIterable[bytes | str]
 
 # ── Shared module helpers ─────────────────────────────────
 
@@ -175,7 +191,7 @@ async def _follow_redirects(
     query_string: str,
     body: bytes,
     headers: dict[str, str] | None,
-    stream: Any | None,
+    stream: StreamBody | None,
 ) -> TestResponse:
     """Drive the request/redirect loop shared by both test clients.
 
@@ -263,7 +279,7 @@ def _coerce_chunk(chunk: Any) -> bytes:
     raise TypeError(f"stream chunk must be bytes or str, got {type(chunk).__name__}")
 
 
-def _build_receive(body: bytes, stream: Any | None) -> Any:
+def _build_receive(body: bytes, stream: StreamBody | None) -> Any:
     """Build the ASGI `receive` callable shared by both test clients.
 
     With no `stream`, a single `http.request` frame carries the whole `body`
@@ -306,85 +322,6 @@ def _build_receive(body: bytes, stream: Any | None) -> Any:
         return {"type": ASGI_EVENT_HTTP_REQUEST, "body": chunk, "more_body": True}
 
     return stream_receive
-
-
-class TestResponse:
-    """What every `TestClient` / `AsyncTestClient` call returns.
-
-    A read-only view of one ASGI response cycle: `status_code`, the decoded
-    `text` and parsed `json()`, a case-insensitive `headers` mapping, the parsed
-    `cookies`, and `raw_headers` for the cases the mapping flattens (several
-    `Set-Cookie` lines arrive as one joined value in `headers`, and separately in
-    `raw_headers`).
-
-    Not constructed directly - the clients build it.
-
-    Usage::
-
-        with TestClient(app) as client:
-            response = client.get("/items/1")
-
-        assert response.status_code == 200
-        assert response.json() == {"id": 1}
-        assert response.headers["content-type"].startswith("application/json")
-    """
-
-    __slots__ = (
-        "status_code",
-        "body",
-        "headers",
-        "content_type",
-        "cookies",
-        "raw_headers",
-    )
-
-    def __init__(
-        self,
-        status_code: int,
-        body: bytes,
-        raw_headers: list[tuple[bytes, bytes]],
-    ) -> None:
-        self.status_code = status_code
-        self.body = body
-        self.raw_headers = raw_headers
-        # Convert raw header list into a case-insensitive mapping so callers
-        # that check `headers["Content-Type"]` work regardless of whether
-        # the ASGI app lower-cased its keys (it should, per the spec).
-        # Set-Cookie is multi-valued in the ASGI list, but we collapse to
-        # the joined-by-`\r\nSet-Cookie: ` form for the headers mapping
-        # for back-compat; the full per-cookie list lives in `raw_headers`.
-        flat: CIMultiDict[str] = CIMultiDict()
-        set_cookies: list[str] = []
-        for k, v in raw_headers:
-            name = k.decode("latin-1")
-            value = v.decode("latin-1")
-            if name.lower() == _SET_COOKIE_LOWER:
-                set_cookies.append(value)
-            else:
-                flat[name] = value
-        if set_cookies:
-            flat[HEADER_SET_COOKIE] = SET_COOKIE_JOINER.join(set_cookies)
-        self.headers = flat
-        self.content_type = flat.get(HEADER_CONTENT_TYPE) or ""
-        # Parse cookies from all Set-Cookie headers; each cookie's first
-        # `name=value` segment wins.
-        self.cookies: dict[str, str] = {}
-        for line in set_cookies:
-            pair = _parse_set_cookie_first_pair(line)
-            if pair is not None:
-                self.cookies[pair[0]] = pair[1]
-
-    def json(self) -> Any:
-        """Parse the response body as JSON and return the result."""
-        return orjson.loads(self.body)
-
-    @property
-    def text(self) -> str:
-        """Decode the response body as UTF-8 text."""
-        return self.body.decode("utf-8", errors="replace")
-
-    def __repr__(self) -> str:
-        return f"<TestResponse [{self.status_code}]>"
 
 
 def _build_request_headers(
@@ -545,7 +482,7 @@ async def _send_one_request(
     query_string: str,
     headers: dict[str, str],
     body: bytes,
-    stream: Any | None = None,
+    stream: StreamBody | None = None,
 ) -> TestResponse:
     """Drive one ASGI request through `app` and collect its response.
 
@@ -563,7 +500,7 @@ def _prepare_body_request(
     content: bytes | None,
     files: dict[str, Any] | None,
     headers: dict[str, str] | None,
-    stream: Any | None,
+    stream: StreamBody | None,
 ) -> tuple[dict[str, str], bytes | None]:
     """Return `(headers, body)` for a body-carrying request.
 
@@ -698,6 +635,85 @@ def _new_loop() -> asyncio.AbstractEventLoop:
     return asyncio.new_event_loop()
 
 
+class TestResponse:
+    """What every `TestClient` / `AsyncTestClient` call returns.
+
+    A read-only view of one ASGI response cycle: `status_code`, the decoded
+    `text` and parsed `json()`, a case-insensitive `headers` mapping, the parsed
+    `cookies`, and `raw_headers` for the cases the mapping flattens (several
+    `Set-Cookie` lines arrive as one joined value in `headers`, and separately in
+    `raw_headers`).
+
+    Not constructed directly - the clients build it.
+
+    Usage::
+
+        with TestClient(app) as client:
+            response = client.get("/items/1")
+
+        assert response.status_code == 200
+        assert response.json() == {"id": 1}
+        assert response.headers["content-type"].startswith("application/json")
+    """
+
+    __slots__ = (
+        "status_code",
+        "body",
+        "headers",
+        "content_type",
+        "cookies",
+        "raw_headers",
+    )
+
+    def __init__(
+        self,
+        status_code: int,
+        body: bytes,
+        raw_headers: list[tuple[bytes, bytes]],
+    ) -> None:
+        self.status_code = status_code
+        self.body = body
+        self.raw_headers = raw_headers
+        # Convert raw header list into a case-insensitive mapping so callers
+        # that check `headers["Content-Type"]` work regardless of whether
+        # the ASGI app lower-cased its keys (it should, per the spec).
+        # Set-Cookie is multi-valued in the ASGI list, but we collapse to
+        # the joined-by-`\r\nSet-Cookie: ` form for the headers mapping
+        # for back-compat; the full per-cookie list lives in `raw_headers`.
+        flat: CIMultiDict[str] = CIMultiDict()
+        set_cookies: list[str] = []
+        for k, v in raw_headers:
+            name = k.decode("latin-1")
+            value = v.decode("latin-1")
+            if name.lower() == _SET_COOKIE_LOWER:
+                set_cookies.append(value)
+            else:
+                flat[name] = value
+        if set_cookies:
+            flat[HEADER_SET_COOKIE] = SET_COOKIE_JOINER.join(set_cookies)
+        self.headers = flat
+        self.content_type = flat.get(HEADER_CONTENT_TYPE) or ""
+        # Parse cookies from all Set-Cookie headers; each cookie's first
+        # `name=value` segment wins.
+        self.cookies: dict[str, str] = {}
+        for line in set_cookies:
+            pair = _parse_set_cookie_first_pair(line)
+            if pair is not None:
+                self.cookies[pair[0]] = pair[1]
+
+    def json(self) -> Any:
+        """Parse the response body as JSON and return the result."""
+        return orjson.loads(self.body)
+
+    @property
+    def text(self) -> str:
+        """Decode the response body as UTF-8 text."""
+        return self.body.decode("utf-8", errors="replace")
+
+    def __repr__(self) -> str:
+        return f"<TestResponse [{self.status_code}]>"
+
+
 # ── Sync client ───────────────────────────────────────────
 
 
@@ -801,7 +817,7 @@ class TestClient:
         return self._loop.run_until_complete(self.app.wait_for_background_tasks(timeout))
 
     @contextlib.contextmanager
-    def session_transaction(self) -> Any:
+    def session_transaction(self) -> Iterator[Session]:
         """Mutate the session outside a request.
 
         Yields a `Session` dict pre-loaded from the current session
@@ -875,7 +891,7 @@ class TestClient:
         query_string: str,
         headers: dict[str, str],
         body: bytes,
-        stream: Any | None = None,
+        stream: StreamBody | None = None,
     ) -> TestResponse:
         return await _send_one_request(self.app, method, path, query_string, headers, body, stream)
 
@@ -887,7 +903,7 @@ class TestClient:
         body: bytes = b"",
         query_string: str = "",
         follow_redirects: bool | None = None,
-        stream: Any | None = None,
+        stream: StreamBody | None = None,
     ) -> TestResponse:
         if "?" in path:
             path, path_qs = path.split("?", 1)
@@ -944,7 +960,7 @@ class TestClient:
         files: dict[str, Any] | None,
         headers: dict[str, str] | None,
         follow_redirects: bool | None,
-        stream: Any | None,
+        stream: StreamBody | None,
     ) -> TestResponse:
         """Send a body-carrying request, routing `stream` to the chunked path."""
         hdrs, body = _prepare_body_request(json, data, content, files, headers, stream)
@@ -965,7 +981,7 @@ class TestClient:
         content: bytes | None = None,
         files: dict[str, Any] | None = None,
         follow_redirects: bool | None = None,
-        stream: Any | None = None,
+        stream: StreamBody | None = None,
     ) -> TestResponse:
         """Send a POST.
 
@@ -994,7 +1010,7 @@ class TestClient:
         content: bytes | None = None,
         files: dict[str, Any] | None = None,
         follow_redirects: bool | None = None,
-        stream: Any | None = None,
+        stream: StreamBody | None = None,
     ) -> TestResponse:
         """Send a PUT. See `post` for the `stream` chunked-body parameter."""
         return self._dispatch_body(
@@ -1018,7 +1034,7 @@ class TestClient:
         content: bytes | None = None,
         files: dict[str, Any] | None = None,
         follow_redirects: bool | None = None,
-        stream: Any | None = None,
+        stream: StreamBody | None = None,
     ) -> TestResponse:
         """Send a PATCH. See `post` for the `stream` chunked-body parameter."""
         return self._dispatch_body(
@@ -1077,7 +1093,7 @@ class TestClient:
         files: dict[str, Any] | None = None,
         params: dict[str, str] | Sequence[tuple[str, str]] | None = None,
         follow_redirects: bool | None = None,
-        stream: Any | None = None,
+        stream: StreamBody | None = None,
     ) -> TestResponse:
         """Dispatch a request of any verb - httpx/test-client shape.
 
@@ -1201,9 +1217,9 @@ class _WebSocketSession:
         self._path = path
         self._subprotocols = subprotocols or []
         self._headers = headers or {}
-        self._to_handler: asyncio.Queue[dict] = asyncio.Queue()
-        self._from_handler: asyncio.Queue[dict] = asyncio.Queue()
-        self._handler_task: asyncio.Task | None = None
+        self._to_handler: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self._from_handler: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self._handler_task: asyncio.Task[None] | None = None
         self.accepted_subprotocol: str | None = None
 
     def __enter__(self) -> _WebSocketSession:
@@ -1398,7 +1414,8 @@ class AsyncTestClient:
 
     Cookie persistence, redirect following, and the JSON / form / files
     body shapes match `TestClient` exactly. WebSocket testing stays on
-    the sync `TestClient.websocket_connect`.
+    the sync `TestClient.websocket_connect`, and seeding a session outside
+    a request stays on the sync `TestClient.session_transaction`.
     """
 
     __test__ = False  # don't let pytest collect this as a test class
@@ -1417,6 +1434,12 @@ class AsyncTestClient:
         self._cookies: dict[str, str] = {}
         self._base_headers: dict[str, str] = {}
         self._lifespan_run = False
+        # Set in `__aenter__`, restored in `__aexit__`. Declared here so the
+        # object's attribute set is readable from its constructor. There is no
+        # `__del__` counterpart to the sync client's: a finaliser cannot await
+        # the shutdown lifecycle, and restoring the lock without it would hand
+        # back an app that had been started and never stopped.
+        self._prior_setup_lock: bool | None = None
         # True between `__aenter__` and `__aexit__`. Async startup work
         # cannot run in `__init__`, so requests are refused until the
         # client has been entered as a context manager.
@@ -1448,7 +1471,7 @@ class AsyncTestClient:
             self._lifespan_run = False
         self._entered = False
         # Hand the app back as it was found.
-        if getattr(self, "_prior_setup_lock", None) is not None:
+        if self._prior_setup_lock is not None:
             self.app._setup_lock_enabled = self._prior_setup_lock
             self._prior_setup_lock = None
 
@@ -1484,7 +1507,7 @@ class AsyncTestClient:
         query_string: str,
         headers: dict[str, str],
         body: bytes,
-        stream: Any | None = None,
+        stream: StreamBody | None = None,
     ) -> TestResponse:
         return await _send_one_request(self.app, method, path, query_string, headers, body, stream)
 
@@ -1496,7 +1519,7 @@ class AsyncTestClient:
         body: bytes = b"",
         query_string: str = "",
         follow_redirects: bool | None = None,
-        stream: Any | None = None,
+        stream: StreamBody | None = None,
     ) -> TestResponse:
         if not self._entered:
             raise RuntimeError(
@@ -1558,7 +1581,7 @@ class AsyncTestClient:
         files: dict[str, Any] | None,
         headers: dict[str, str] | None,
         follow_redirects: bool | None,
-        stream: Any | None,
+        stream: StreamBody | None,
     ) -> TestResponse:
         """Send a body-carrying request, routing `stream` to the chunked path."""
         hdrs, body = _prepare_body_request(json, data, content, files, headers, stream)
@@ -1579,7 +1602,7 @@ class AsyncTestClient:
         content: bytes | None = None,
         files: dict[str, Any] | None = None,
         follow_redirects: bool | None = None,
-        stream: Any | None = None,
+        stream: StreamBody | None = None,
     ) -> TestResponse:
         """Send a POST.
 
@@ -1608,7 +1631,7 @@ class AsyncTestClient:
         content: bytes | None = None,
         files: dict[str, Any] | None = None,
         follow_redirects: bool | None = None,
-        stream: Any | None = None,
+        stream: StreamBody | None = None,
     ) -> TestResponse:
         """Send a PUT. See `post` for the `stream` chunked-body parameter."""
         return await self._dispatch_body(
@@ -1632,7 +1655,7 @@ class AsyncTestClient:
         content: bytes | None = None,
         files: dict[str, Any] | None = None,
         follow_redirects: bool | None = None,
-        stream: Any | None = None,
+        stream: StreamBody | None = None,
     ) -> TestResponse:
         """Send a PATCH. See `post` for the `stream` chunked-body parameter."""
         return await self._dispatch_body(
@@ -1691,7 +1714,7 @@ class AsyncTestClient:
         files: dict[str, Any] | None = None,
         params: dict[str, str] | Sequence[tuple[str, str]] | None = None,
         follow_redirects: bool | None = None,
-        stream: Any | None = None,
+        stream: StreamBody | None = None,
     ) -> TestResponse:
         """Dispatch a request of any verb (see `TestClient.request`)."""
         verb = method.upper()

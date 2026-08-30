@@ -41,7 +41,7 @@ import mimetypes
 import os
 import sys
 import weakref
-from collections.abc import Callable, Iterable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from email.header import Header
 from http import HTTPStatus
 from typing import Any
@@ -394,6 +394,43 @@ def _encode_response_head(
             else:
                 parts[slot] = line
     return parts
+
+
+async def _write_chunked(
+    transport: Any,
+    stream: AsyncIterator[bytes],
+    drain: Callable[[], Awaitable[None]] | None,
+) -> None:
+    """Write `stream` to `transport` in HTTP/1.1 chunked framing.
+
+    The write-side twin of `_encode_response_head`: every streaming response
+    that frames its own body on the raw transport - `StreamingResponse` in
+    `http/`, `EventSourceResponse` in `veloce/` - goes through here, so a rule
+    discovered on one does not have to be rediscovered on the next.
+
+    `transport.writelines` (where supported) keeps the size-line, payload, and
+    trailer as separate buffers instead of concatenating them into a fresh
+    bytes object per chunk; transports and test fakes implementing only the
+    basic `WriteTransport` API fall back to one concatenated write.
+
+    A zero-length chunk is skipped: its framing is the last-chunk terminator
+    (RFC 9112 Sec. 7.1), so emitting it mid-stream truncates the body and
+    desynchronises keep-alive framing. `drain`, when supplied, is awaited after
+    each chunk, so a producer outrunning a slow client is throttled instead of
+    growing the transport write buffer without bound.
+    """
+    writelines = getattr(transport, "writelines", None)
+    async for chunk in stream:
+        if not chunk:
+            continue
+        size = format(len(chunk), "x").encode("ascii")
+        if writelines is not None:
+            writelines((size, b"\r\n", chunk, b"\r\n"))
+        else:
+            transport.write(size + b"\r\n" + chunk + b"\r\n")
+        if drain is not None:
+            await drain()
+    transport.write(b"0\r\n\r\n")
 
 
 # ── ETags ─────────────────────────────────────────────────

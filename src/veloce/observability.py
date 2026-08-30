@@ -80,6 +80,22 @@ def _default_access_logger() -> logging.Logger:
     return logger
 
 
+def _register_access_log(
+    app: Veloce, emit: Callable[[RequestMetrics], None]
+) -> Callable[[RequestMetrics], None]:
+    """Mark `emit` as the access log, register it on `app`, and hand it back.
+
+    The marker `run(access_log=True)` reads to decide whether an access log
+    is already installed. Marked rather than identified by `__module__`, so
+    that a user's own access-log instrumentation can set it too and suppress
+    the built-in one - testing where the function was *defined* left both
+    installed, and every request logged twice.
+    """
+    emit.is_access_log = True  # type: ignore[attr-defined]
+    app.add_instrumentation(emit)
+    return emit
+
+
 def log_requests_as_json(
     app: Veloce,
     *,
@@ -97,14 +113,7 @@ def log_requests_as_json(
         payload = _json_payload(metrics, include_streamed=True, include_path=include_path)
         resolved.log(level, "%s", dumps(payload).decode())
 
-    # The marker `run(access_log=True)` reads to decide whether an access log
-    # is already installed. Marked rather than identified by `__module__`, so
-    # that a user's own access-log instrumentation can set it too and suppress
-    # the built-in one - testing where the function was *defined* left both
-    # installed, and every request logged twice.
-    _emit.is_access_log = True  # type: ignore[attr-defined]
-    app.add_instrumentation(_emit)
-    return _emit
+    return _register_access_log(app, _emit)
 
 
 def instrument_access_log(
@@ -140,11 +149,4 @@ def instrument_access_log(
                 metrics.duration_ms,
             )
 
-    # The marker `run(access_log=True)` reads to decide whether an access log
-    # is already installed. Marked rather than identified by `__module__`, so
-    # that a user's own access-log instrumentation can set it too and suppress
-    # the built-in one - testing where the function was *defined* left both
-    # installed, and every request logged twice.
-    _emit.is_access_log = True  # type: ignore[attr-defined]
-    app.add_instrumentation(_emit)
-    return _emit
+    return _register_access_log(app, _emit)

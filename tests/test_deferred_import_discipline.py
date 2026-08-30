@@ -28,7 +28,9 @@ def test_the_late_import_scan_reads_a_real_corpus():
     test tree into subdirectories would leave this module green while reading
     no files at all.
     """
-    assert len(_modules()) > 100, "the module glob matched almost nothing, so the late-import scan reads nothing"
+    assert len(_modules()) > 100, (
+        "the module glob matched almost nothing, so the late-import scan reads nothing"
+    )
 
 
 def test_every_late_import_sits_under_a_skip_guard() -> None:

@@ -250,7 +250,7 @@ class HttpProtocol(asyncio.Protocol):
         self._request_timer: asyncio.TimerHandle | None = None
         self._header_bytes_total: int = 0
         # True between headers-complete and message-complete. Chunked trailer
-        # fields (RFC 9112 section 7.1.2) arrive through the same `on_header`
+        # fields (RFC 9112 Sec. 7.1.2) arrive through the same `on_header`
         # callback as ordinary headers; this flag marks them as belonging to
         # the in-flight message so they are never appended to the cleared
         # header buffer that the *next* pipelined request will fill.
@@ -365,7 +365,7 @@ class HttpProtocol(asyncio.Protocol):
         # Capture the two headers the dispatch path needs so headers-complete
         # reads a slot instead of rescanning the list. `Content-Length` is kept
         # raw and parsed lazily; `Expect: 100-continue` is a case-insensitive
-        # token (RFC 9110 section 10.1.1). On a (malformed) duplicate
+        # token (RFC 9110 Sec. 10.1.1). On a (malformed) duplicate
         # `Content-Length`, the first value wins for the early-413 size guard.
         if name == RAW_HEADER_CONTENT_LENGTH:
             if self._raw_content_length is None:
@@ -379,8 +379,10 @@ class HttpProtocol(asyncio.Protocol):
 
         The parser keeps advancing through pipelined bytes, so a follow-up
         request's `on_url` / `on_header` would append into the live lists.
-        Every site that finishes with a message clears the same five fields;
-        held as parallel copies, a sixth field is reset in some of them.
+        Clears `url`, `headers`, `_header_bytes_total`, `_raw_content_length`
+        and `_has_expect_continue`. `_headers_done` is not one of them, and
+        `on_message_complete` re-zeroes `_header_bytes_total` itself because
+        chunked trailers keep charging that budget after this helper has run.
         """
         self.url = b""
         self.headers = []
@@ -436,7 +438,7 @@ class HttpProtocol(asyncio.Protocol):
 
         # Clear an `Expect: 100-continue` client to send its body. The early
         # 413 above already rejected an over-limit declared Content-Length, so
-        # we never invite a body we are about to refuse. RFC 9110 section
+        # we never invite a body we are about to refuse. RFC 9110 Sec.
         # 10.1.1 forbids the interim to an HTTP/1.0 client, so it is gated on
         # the request being HTTP/1.1.
         # `transport` is already non-None here (guarded at method entry, and
@@ -512,38 +514,9 @@ class HttpProtocol(asyncio.Protocol):
         # protocol switch with a 400 like any other non-WebSocket upgrade.
         if self.parser.get_method() != b"GET":
             return False
-        # Detect the upgrade triplet (RFC 6455 Sec. 4.2.1). `connection` may be a
-        # comma list ("keep-alive, Upgrade"); the others are single tokens. All
-        # header names are already lowercased by `on_header`.
-        has_upgrade_token = False
-        upgrade_is_ws = False
-        ws_key: bytes | None = None
-        ws_version: bytes | None = None
-        host = b""
-        origin: bytes | None = None
-        for name, value in self.headers:
-            if name == _WS_HEADER_CONNECTION:
-                # Case-insensitive, comma-list aware: any "upgrade" token counts.
-                for token in value.split(b","):
-                    if token.strip().lower() == _WS_HEADER_UPGRADE:
-                        has_upgrade_token = True
-                        break
-            elif name == _WS_HEADER_UPGRADE:
-                if value.strip().lower() == b"websocket":
-                    upgrade_is_ws = True
-            elif name == _WS_HEADER_KEY:
-                if value:
-                    ws_key = value
-            elif name == _WS_HEADER_VERSION:
-                ws_version = value.strip()
-            elif name == _WS_HEADER_HOST and not host:
-                host = value
-            elif name == _WS_HEADER_ORIGIN and origin is None:
-                origin = value
-
-        # Not a WebSocket handshake at all - fall through to HTTP. Short-circuit
-        # on the first missing element so an ordinary GET pays almost nothing.
-        if not (has_upgrade_token and upgrade_is_ws):
+        is_ws_upgrade, ws_key, ws_version, host, origin = self._scan_ws_headers()
+        # Not a WebSocket handshake at all - fall through to HTTP.
+        if not is_ws_upgrade:
             return False
 
         transport = self.transport
@@ -646,6 +619,42 @@ class HttpProtocol(asyncio.Protocol):
         HttpProtocol._active_tasks.add(self._ws_task)
         self._ws_task.add_done_callback(functools.partial(self._ws_task_done, ws))
         return True
+
+    def _scan_ws_headers(self) -> tuple[bool, bytes | None, bytes | None, bytes, bytes | None]:
+        """Read the handshake fields off the parsed headers (RFC 6455 Sec. 4.2.1).
+
+        Returns `(is_ws_upgrade, key, version, host, origin)`, where
+        `is_ws_upgrade` is True only when both halves of the upgrade triplet
+        are present. `connection` may be a comma list ("keep-alive, Upgrade")
+        while the rest are single tokens; all header names arrive lowercased
+        from `on_header`.
+        """
+        has_upgrade_token = False
+        upgrade_is_ws = False
+        ws_key: bytes | None = None
+        ws_version: bytes | None = None
+        host = b""
+        origin: bytes | None = None
+        for name, value in self.headers:
+            if name == _WS_HEADER_CONNECTION:
+                # Case-insensitive, comma-list aware: any "upgrade" token counts.
+                for token in value.split(b","):
+                    if token.strip().lower() == _WS_HEADER_UPGRADE:
+                        has_upgrade_token = True
+                        break
+            elif name == _WS_HEADER_UPGRADE:
+                if value.strip().lower() == b"websocket":
+                    upgrade_is_ws = True
+            elif name == _WS_HEADER_KEY:
+                if value:
+                    ws_key = value
+            elif name == _WS_HEADER_VERSION:
+                ws_version = value.strip()
+            elif name == _WS_HEADER_HOST and not host:
+                host = value
+            elif name == _WS_HEADER_ORIGIN and origin is None:
+                origin = value
+        return has_upgrade_token and upgrade_is_ws, ws_key, ws_version, host, origin
 
     def _write_ws_http_error(self, status_code: int, reason: bytes, extra: bytes = b"") -> None:
         """Refuse a handshake with a plain HTTP response, then close.

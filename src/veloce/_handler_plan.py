@@ -229,17 +229,22 @@ def _raise_kwarg_ambiguity(
     )
 
 
-def _warn_shared_mutable_default(name: str, default: Any) -> None:
-    """Warn (once at registration) about a marker's shared mutable default."""
+def _warn_shared_mutable_default(name: str, default: Any, *, stacklevel: int = 3) -> None:
+    """Warn (once at registration) about a marker's shared mutable default.
+
+    `stacklevel` counts the frames between here and the registration call the
+    author wrote, so a caller reached through an extra helper raises it by one
+    and the warning keeps pointing at the same place.
+    """
     warnings.warn(
         f"parameter {name!r} has a mutable {type(default).__name__} default that is "
         f"shared across requests; pass default_factory={type(default).__name__} so each "
         f"request gets its own value",
-        stacklevel=3,
+        stacklevel=stacklevel,
     )
 
 
-def _guard_plain_mutable_default(slot: _Slot, name: str) -> None:
+def _guard_plain_mutable_default(slot: _Slot, name: str, *, stacklevel: int = 3) -> None:
     """Stop a plain `param: list = []` default from being shared across requests.
 
     A bare mutable default (`tags: list[str] = []`) is one object on the
@@ -252,7 +257,7 @@ def _guard_plain_mutable_default(slot: _Slot, name: str) -> None:
     if slot.has_default and isinstance(slot._static_default, (list, dict, set)):
         original = slot._static_default
         slot.default_factory = lambda: copy.deepcopy(original)
-        _warn_shared_mutable_default(name, original)
+        _warn_shared_mutable_default(name, original, stacklevel=stacklevel)
 
 
 # ── Slot record ───────────────────────────────────────────
@@ -649,6 +654,11 @@ def _inspect_handler(
         return sig, _salvage_hints(hint_target, exc)
 
 
+#: Parameters the plan binds from the name alone (see `build_plan`), plus the
+#: return annotation. An unresolved annotation on one of these changes nothing.
+_BOUND_BY_NAME = frozenset({"request", "ws", "websocket", "return"})
+
+
 def _salvage_hints(hint_target: Any, exc: Exception) -> dict[str, Any]:
     """Resolve each annotation on its own, keeping the ones that succeed.
 
@@ -676,11 +686,6 @@ def _salvage_hints(hint_target: Any, exc: Exception) -> dict[str, Any]:
     if consequential:
         _warn_unresolved_annotations(hint_target, consequential, exc)
     return resolved
-
-
-#: Parameters the plan binds from the name alone (see `_build_slots`), plus the
-#: return annotation. An unresolved annotation on one of these changes nothing.
-_BOUND_BY_NAME = frozenset({"request", "ws", "websocket", "return"})
 
 
 class _AnnotationProbe:
@@ -711,6 +716,178 @@ def _warn_unresolved_annotations(hint_target: Any, unresolved: list[str], exc: E
     )
 
 
+def _extend_plan_chain(handler: Callable[..., Any], seen: list[Any] | None) -> list[Any]:
+    """Append `handler` to the chain being planned, refusing a `Depends` cycle.
+
+    Entries are the callables themselves so the chain in the error reads
+    naturally. Built lazily so external callers that call `build_plan(handler)`
+    keep the original two-arg shape.
+    """
+    if seen is None:
+        return [handler]
+    for previous in seen:
+        if previous is handler:
+            # Prefer __qualname__ so lambdas and nested/method deps carry
+            # scope context (e.g. `test_x.<locals>.<lambda>`) instead of
+            # collapsing to bare `<lambda>` everywhere.
+            chain = [
+                getattr(c, "__qualname__", None) or getattr(c, "__name__", None) or repr(c)
+                for c in [*seen, handler]
+            ]
+            raise ValueError(f"Circular dependency detected: {' -> '.join(chain)}")
+    return [*seen, handler]
+
+
+def _build_marker_slot(
+    param_name: str,
+    marker: ParamBase,
+    annotation: Any,
+    *,
+    has_default: bool,
+    websocket: bool,
+) -> _Slot | None:
+    """Build the slot for an explicit Query/Path/Header/Cookie/Body/Form/File marker.
+
+    Returns `None` when the marker reads a request body a WebSocket handshake
+    does not have, leaving the parameter to its handler default.
+    """
+    marker_kind = _marker_kind(marker)
+    # Body / Form / File markers read the HTTP request body, which
+    # a WebSocket handshake does not have - skip them so the
+    # handler default applies instead of crashing at resolve time.
+    if websocket and marker_kind in (MK_BODY, MK_FORM, MK_FILE):
+        return None
+    # A model annotation under a query/header/cookie/form marker groups
+    # that source's fields instead of naming a single key. `Body`/`File`
+    # keep the existing whole-body binding.
+    grp_opt, grp_inner = _unwrap_optional(annotation) if annotation else (False, annotation)
+    grp_backend = backend_of(grp_inner) if grp_inner else ModelBackend.NONE
+    if (
+        getattr(marker, "group", False)
+        and grp_backend is not ModelBackend.NONE
+        and marker_kind
+        in (
+            MK_QUERY,
+            MK_HEADER,
+            MK_COOKIE,
+            MK_FORM,
+        )
+    ):
+        slot = _Slot(K_MODEL_GROUP, param_name)
+        slot.marker = marker
+        slot.marker_kind = marker_kind
+        slot.model = grp_inner
+        slot.backend = grp_backend
+        slot.is_optional = grp_opt
+        slot.has_default = has_default or marker.has_default
+        slot.group_fields = _group_field_specs(grp_inner, grp_backend, marker_kind)
+        return slot
+
+    slot = _Slot(K_PARAM_MARKER, param_name)
+    slot.marker = marker
+    slot.marker_kind = marker_kind
+    slot.lookup_name = marker.alias or param_name
+    # An un-aliased Header param converts `_` -> `-`
+    # in its name (`x_token` -> `x-token`) unless disabled.
+    if (
+        slot.marker_kind == MK_HEADER
+        and not marker.alias
+        and getattr(marker, "convert_underscores", True)
+    ):
+        slot.lookup_name = slot.lookup_name.replace("_", "-")
+    slot.default_factory = marker.default_factory
+    slot.has_default = marker.has_default
+    is_opt, inner = _unwrap_optional(annotation) if annotation else (False, annotation)
+    slot.is_optional = is_opt
+    slot.target_type = inner if is_opt else annotation
+    # DX lint (Veloce-original): a mutable
+    # static default on a marker is shared across every request, so an
+    # in-place mutation by one handler leaks into the next. Point the
+    # author at `default_factory`, which builds a fresh value per call.
+    # `default` and `default_factory` are mutually exclusive, so a
+    # mutable `default` is exactly "the author wrote a static mutable
+    # default". The marker copies it per request now; still point them
+    # at the spelling that says so.
+    if isinstance(marker.default, (list, dict, set)):
+        _warn_shared_mutable_default(param_name, marker.default, stacklevel=4)
+    # `payload: Payload = Body()` declares the same thing as a bare
+    # `payload: Payload`, so it must validate the same way. Recorded here
+    # rather than tested per request: the resolver reads one attribute
+    # instead of calling `is_pydantic_model` on every body.
+    if slot.marker_kind == MK_BODY and slot.target_type is not None:
+        backend = backend_of(slot.target_type)
+        if backend is not ModelBackend.NONE:
+            slot.model = slot.target_type
+            slot.backend = backend
+    return slot
+
+
+def _build_annotated_slot(
+    param_name: str,
+    annotation: Any,
+    default: Any,
+    *,
+    has_default: bool,
+    websocket: bool,
+) -> _Slot | None:
+    """Build the slot for a parameter carrying neither `Depends` nor a marker.
+
+    The binding follows from the annotation alone: an upload, a model body, a
+    list read from the query, or the path-or-query fallback. Returns `None` when
+    the binding needs a request body a WebSocket handshake does not have.
+    """
+    is_optional, inner_type = _unwrap_optional(annotation) if annotation else (False, annotation)
+    is_list, list_inner = _unwrap_list(inner_type) if inner_type else (False, inner_type)
+
+    # UploadFile binding (with or without Optional). A WebSocket has no
+    # multipart form body, so the parameter is left to its default.
+    if annotation is UploadFile or (is_optional and inner_type is UploadFile):
+        if websocket:
+            return None
+        slot = _Slot(K_UPLOAD_FILE, param_name)
+        slot.is_optional = is_optional
+        slot.has_default = has_default
+        slot._static_default = default if has_default else None
+        return slot
+
+    # Scalar model body - a Pydantic BaseModel or a msgspec.Struct. A
+    # WebSocket handshake has no request body to validate, so the parameter
+    # is left to its default. A `list[Model]` body is a GenericAlias (not a
+    # `type`), so it falls through to the query-list branch below unchanged.
+    body_backend = backend_of(inner_type) if inner_type else ModelBackend.NONE
+    if body_backend is not ModelBackend.NONE:
+        if websocket:
+            return None
+        slot = _Slot(K_BODY_MODEL, param_name)
+        slot.model = inner_type
+        slot.backend = body_backend
+        slot.is_optional = is_optional
+        return slot
+
+    # List-typed parameter: read from query as a list.
+    if is_list:
+        slot = _Slot(K_QUERY_LIST, param_name)
+        slot.list_inner = list_inner
+        slot.has_default = has_default
+        slot._static_default = default if has_default else None
+        slot.is_optional = is_optional
+        _guard_plain_mutable_default(slot, param_name, stacklevel=4)
+        return slot
+
+    # Default fallback: path-or-query, decided at resolve time because
+    # path_params are scope-local (per match). The slot is path-or-query
+    # ambiguous; we pick K_QUERY and the resolver will prefer path_params
+    # when the name is present there. This keeps the plan handler-local
+    # (one plan per handler, reusable across overrides).
+    slot = _Slot(K_QUERY, param_name)
+    slot.target_type = inner_type if inner_type is not None else str
+    slot.is_optional = is_optional
+    slot.has_default = has_default
+    slot._static_default = default if has_default else None
+    _guard_plain_mutable_default(slot, param_name, stacklevel=4)
+    return slot
+
+
 def build_plan(
     handler: Callable[..., Any], *, websocket: bool = False, _seen: list[Any] | None = None
 ) -> HandlerPlan:
@@ -732,23 +909,7 @@ def build_plan(
     """
     from veloce.dependency import Depends, SecurityScopes  # local import breaks the import cycle
 
-    # Cycle guard - entries are the callables themselves so the chain in
-    # the error reads naturally. Created lazily so external callers that
-    # call `build_plan(handler)` keep the original two-arg shape.
-    if _seen is None:
-        _seen = [handler]
-    else:
-        for seen in _seen:
-            if seen is handler:
-                # Prefer __qualname__ so lambdas and nested/method deps carry
-                # scope context (e.g. `test_x.<locals>.<lambda>`) instead of
-                # collapsing to bare `<lambda>` everywhere.
-                chain = [
-                    getattr(c, "__qualname__", None) or getattr(c, "__name__", None) or repr(c)
-                    for c in [*_seen, handler]
-                ]
-                raise ValueError(f"Circular dependency detected: {' -> '.join(chain)}")
-        _seen = [*_seen, handler]
+    _seen = _extend_plan_chain(handler, _seen)
 
     ws_type: Any = None
     if websocket:
@@ -853,133 +1014,19 @@ def build_plan(
 
         # Explicit parameter markers (Query/Path/Header/Cookie/Body/Form/File).
         if isinstance(default, ParamBase):
-            marker_kind = _marker_kind(default)
-            # Body / Form / File markers read the HTTP request body, which
-            # a WebSocket handshake does not have - skip them so the
-            # handler default applies instead of crashing at resolve time.
-            if websocket and marker_kind in (MK_BODY, MK_FORM, MK_FILE):
-                continue
-            # A model annotation under a query/header/cookie/form marker groups
-            # that source's fields instead of naming a single key. `Body`/`File`
-            # keep the existing whole-body binding.
-            _grp_opt, _grp_inner = (
-                _unwrap_optional(annotation) if annotation else (False, annotation)
+            marker_slot = _build_marker_slot(
+                param_name, default, annotation, has_default=has_default, websocket=websocket
             )
-            _grp_backend = backend_of(_grp_inner) if _grp_inner else ModelBackend.NONE
-            if (
-                getattr(default, "group", False)
-                and _grp_backend is not ModelBackend.NONE
-                and marker_kind
-                in (
-                    MK_QUERY,
-                    MK_HEADER,
-                    MK_COOKIE,
-                    MK_FORM,
-                )
-            ):
-                slot = _Slot(K_MODEL_GROUP, param_name)
-                slot.marker = default
-                slot.marker_kind = marker_kind
-                slot.model = _grp_inner
-                slot.backend = _grp_backend
-                slot.is_optional = _grp_opt
-                slot.has_default = has_default or default.has_default
-                slot.group_fields = _group_field_specs(_grp_inner, _grp_backend, marker_kind)
-                slots.append(slot)
-                continue
-
-            slot = _Slot(K_PARAM_MARKER, param_name)
-            slot.marker = default
-            slot.marker_kind = marker_kind
-            slot.lookup_name = default.alias or param_name
-            # An un-aliased Header param converts `_` -> `-`
-            # in its name (`x_token` -> `x-token`) unless disabled.
-            if (
-                slot.marker_kind == MK_HEADER
-                and not default.alias
-                and getattr(default, "convert_underscores", True)
-            ):
-                slot.lookup_name = slot.lookup_name.replace("_", "-")
-            slot.default_factory = default.default_factory
-            slot.has_default = default.has_default
-            is_opt, inner = _unwrap_optional(annotation) if annotation else (False, annotation)
-            slot.is_optional = is_opt
-            slot.target_type = inner if is_opt else annotation
-            # DX lint (Veloce-original): a mutable
-            # static default on a marker is shared across every request, so an
-            # in-place mutation by one handler leaks into the next. Point the
-            # author at `default_factory`, which builds a fresh value per call.
-            # `default` and `default_factory` are mutually exclusive, so a
-            # mutable `default` is exactly "the author wrote a static mutable
-            # default". The marker copies it per request now; still point them
-            # at the spelling that says so.
-            if isinstance(default.default, (list, dict, set)):
-                _warn_shared_mutable_default(param_name, default.default)
-            # `payload: Payload = Body()` declares the same thing as a bare
-            # `payload: Payload`, so it must validate the same way. Recorded here
-            # rather than tested per request: the resolver reads one attribute
-            # instead of calling `is_pydantic_model` on every body.
-            if slot.marker_kind == MK_BODY and slot.target_type is not None:
-                backend = backend_of(slot.target_type)
-                if backend is not ModelBackend.NONE:
-                    slot.model = slot.target_type
-                    slot.backend = backend
-            slots.append(slot)
+            if marker_slot is not None:
+                slots.append(marker_slot)
             continue
 
-        is_optional, inner_type = (
-            _unwrap_optional(annotation) if annotation else (False, annotation)
+        # Everything else binds from the annotation alone.
+        annotated_slot = _build_annotated_slot(
+            param_name, annotation, default, has_default=has_default, websocket=websocket
         )
-        is_list, list_inner = _unwrap_list(inner_type) if inner_type else (False, inner_type)
-
-        # UploadFile binding (with or without Optional). A WebSocket has no
-        # multipart form body, so the parameter is left to its default.
-        if annotation is UploadFile or (is_optional and inner_type is UploadFile):
-            if not websocket:
-                slot = _Slot(K_UPLOAD_FILE, param_name)
-                slot.is_optional = is_optional
-                slot.has_default = has_default
-                slot._static_default = default if has_default else None
-                slots.append(slot)
-            continue
-
-        # Scalar model body - a Pydantic BaseModel or a msgspec.Struct. A
-        # WebSocket handshake has no request body to validate, so the parameter
-        # is left to its default. A `list[Model]` body is a GenericAlias (not a
-        # `type`), so it falls through to the query-list branch below unchanged.
-        _body_backend = backend_of(inner_type) if inner_type else ModelBackend.NONE
-        if _body_backend is not ModelBackend.NONE:
-            if not websocket:
-                slot = _Slot(K_BODY_MODEL, param_name)
-                slot.model = inner_type
-                slot.backend = _body_backend
-                slot.is_optional = is_optional
-                slots.append(slot)
-            continue
-
-        # List-typed parameter: read from query as a list.
-        if is_list:
-            slot = _Slot(K_QUERY_LIST, param_name)
-            slot.list_inner = list_inner
-            slot.has_default = has_default
-            slot._static_default = default if has_default else None
-            slot.is_optional = is_optional
-            _guard_plain_mutable_default(slot, param_name)
-            slots.append(slot)
-            continue
-
-        # Default fallback: path-or-query, decided at resolve time because
-        # path_params are scope-local (per match). The slot is path-or-query
-        # ambiguous; we pick K_QUERY and the resolver will prefer path_params
-        # when the name is present there. This keeps the plan handler-local
-        # (one plan per handler, reusable across overrides).
-        slot = _Slot(K_QUERY, param_name)
-        slot.target_type = inner_type if inner_type is not None else str
-        slot.is_optional = is_optional
-        slot.has_default = has_default
-        slot._static_default = default if has_default else None
-        _guard_plain_mutable_default(slot, param_name)
-        slots.append(slot)
+        if annotated_slot is not None:
+            slots.append(annotated_slot)
 
     return HandlerPlan(handler, slots, [])
 

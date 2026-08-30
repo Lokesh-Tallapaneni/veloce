@@ -1,10 +1,16 @@
-"""Pure MCP server helpers — module-level shaping functions and marker classes.
+"""Pure MCP server helpers — shaping functions, wire constants and per-call state.
 
 These touch no `MCPServer` instance state: they shape tool / resource / prompt
 values into their MCP wire forms, map HTTP semantics onto MCP annotation hints,
 and carry the small marker objects the invocation path threads back to the
 dispatcher. `server.py` and the `TasksMixin` / `InvocationMixin` mixins import
 what they need from here, keeping the stateful dispatch core focused.
+
+The module also owns the `META_*` keys the modern revision reserves on the wire,
+the dispatch core's per-call ContextVars (the notifier, log level, request id,
+protocol era, in-flight registration and server->client requester), and the
+mutable `_InFlight` holder those vars carry. Being a leaf keeps them reachable
+from `session` and the transports without importing the dispatch core.
 """
 
 from __future__ import annotations
@@ -38,7 +44,6 @@ from veloce.contrib.mcp.content import (
     ResourceLink,
     TextContent,
 )
-from veloce.contrib.mcp.context import MCPContext
 from veloce.contrib.mcp.errors import _InBandError
 from veloce.contrib.mcp.icons import render_icons
 from veloce.encoders import orjson_default
@@ -46,6 +51,7 @@ from veloce.http.response import Response
 from veloce.principal import current_principal
 
 if TYPE_CHECKING:  # pragma: no cover
+    from veloce.contrib.mcp.context import MCPContext
     from veloce.contrib.mcp.prompts import MCPPrompt
     from veloce.contrib.mcp.registry import MCPTool
     from veloce.contrib.mcp.resources import MCPResource
@@ -65,6 +71,14 @@ META_LOG_LEVEL = "io.modelcontextprotocol/logLevel"
 META_SERVER_INFO = "io.modelcontextprotocol/serverInfo"
 
 
+# ── Per-call state ──────────────────────────────────────────
+
+# The per-call state the dispatch core owns. It is held in ContextVars rather
+# than on the server because many concurrent calls share one `MCPServer` on the
+# Streamable HTTP transport. The state a handler reaches through `MCPContext`
+# lives beside that class in `context`, so the two sets are split by who reads
+# them rather than by which module imports which.
+
 # The current call's outbound notification sink, scoped per request so a handler's
 # progress / log notifications reach the right client. A ContextVar (not an
 # instance attribute) keeps concurrent calls isolated on the Streamable HTTP
@@ -73,17 +87,6 @@ META_SERVER_INFO = "io.modelcontextprotocol/serverInfo"
 _notifier_var: ContextVar[Callable[[dict[str, Any]], Awaitable[None]] | None] = ContextVar(
     "_mcp_notifier", default=None
 )
-
-
-def _attach_result_meta(result: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
-    """Attach what the handler asked to send back on this call's result.
-
-    An existing `_meta` the result already carries wins: the protocol machinery
-    that put it there (a task marker, a subscription id) is answering the client's
-    own request, and a handler must not be able to displace it.
-    """
-    result["_meta"] = {**meta, **result.get("_meta", {})}
-    return result
 
 
 # The current call's `logging/setLevel` minimum, scoped per request like the
@@ -125,6 +128,20 @@ _era_modern_var: ContextVar[bool] = ContextVar("_mcp_era_modern", default=False)
 _requester_var: ContextVar[Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]] | None] = (
     ContextVar("_mcp_requester", default=None)
 )
+
+
+# ── Result shaping ──────────────────────────────────────────
+
+
+def _attach_result_meta(result: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
+    """Attach what the handler asked to send back on this call's result.
+
+    An existing `_meta` the result already carries wins: the protocol machinery
+    that put it there (a task marker, a subscription id) is answering the client's
+    own request, and a handler must not be able to displace it.
+    """
+    result["_meta"] = {**meta, **result.get("_meta", {})}
+    return result
 
 
 class _InFlight:

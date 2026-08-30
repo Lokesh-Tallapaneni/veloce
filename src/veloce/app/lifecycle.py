@@ -150,6 +150,13 @@ def _build_watchdog_attributor(app: Veloce) -> Callable[[FrameType], str | None]
     return attributor
 
 
+def _unknown_event_error(event: str) -> ValueError:
+    """Build the refusal both lifecycle-event entry points raise for an unknown name."""
+    return ValueError(
+        f"event must be {LIFECYCLE_STARTUP!r} or {LIFECYCLE_SHUTDOWN!r}, got {event!r}"
+    )
+
+
 class LifecycleMixin(AppHost):
     """Request hooks and application lifespan, mixed into `Veloce`."""
 
@@ -260,9 +267,7 @@ class LifecycleMixin(AppHost):
         Scheduled for removal in v1.0.0.
         """
         if event not in (LIFECYCLE_STARTUP, LIFECYCLE_SHUTDOWN):
-            raise ValueError(
-                f"event must be {LIFECYCLE_STARTUP!r} or {LIFECYCLE_SHUTDOWN!r}, got {event!r}"
-            )
+            raise _unknown_event_error(event)
         warnings.warn(
             "Veloce.on_event() is deprecated and will be removed in v1.0.0; "
             "use @app.on_startup / @app.on_shutdown instead.",
@@ -359,9 +364,7 @@ class LifecycleMixin(AppHost):
         elif event == LIFECYCLE_SHUTDOWN:
             self._on_shutdown.append(func)
         else:
-            raise ValueError(
-                f"event must be {LIFECYCLE_STARTUP!r} or {LIFECYCLE_SHUTDOWN!r}, got {event!r}"
-            )
+            raise _unknown_event_error(event)
 
     # ── Lifespan engine ───────────────────────────────────
 

@@ -17,7 +17,7 @@ import logging
 import secrets
 import warnings
 from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal
 
 from veloce._constants import HEADER_COOKIE
 from veloce.audit import Finding
@@ -38,10 +38,23 @@ if TYPE_CHECKING:  # pragma: no cover
 # `__name__` (which would resolve to "veloce.middleware.sessions").
 _logger = logging.getLogger("veloce.sessions")
 
+
+class _UnsetType:
+    """Marks a constructor argument the caller left out."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "<unset>"
+
+
 # Marks a constructor argument the caller left out, so the library default
 # applies. `None` cannot serve as the marker - it is a meaningful value for
-# several settings (e.g. `samesite`).
-_UNSET: Any = object()
+# several settings (e.g. `samesite`). It carries its own type rather than `Any`
+# so a parameter defaulting to it declares `str | _UnsetType` and the checker
+# still sees the settings path; narrow with `isinstance(x, _UnsetType)`, since
+# mypy does not narrow an identity test against a plain singleton.
+_UNSET: Final = _UnsetType()
 
 # RFC 6265 Sec. 6.1 only mandates 4096 bytes per cookie (name + value + attrs);
 # browsers and proxies enforce this inconsistently, so 4093 is the de-facto
@@ -197,7 +210,7 @@ def _shared_cookie_settings(**supplied: Any) -> dict[str, Any]:
     built and two middlewares can carry different cookies.
     """
     return {
-        name: _SHARED_COOKIE_DEFAULTS[name] if value is _UNSET else value
+        name: _SHARED_COOKIE_DEFAULTS[name] if isinstance(value, _UnsetType) else value
         for name, value in supplied.items()
     }
 
@@ -265,13 +278,13 @@ class SessionMiddlewareBase(Middleware):
     def _configure_cookie(
         self,
         *,
-        cookie_name: str,
+        cookie_name: str | _UnsetType,
         max_age: int,
-        permanent_lifetime: int,
-        path: str,
-        httponly: bool,
-        secure: bool,
-        samesite: str | None,
+        permanent_lifetime: int | _UnsetType,
+        path: str | _UnsetType,
+        httponly: bool | _UnsetType,
+        secure: bool | _UnsetType,
+        samesite: str | None | _UnsetType,
         domain: str | None,
         cookie_prefix: Literal["host", "secure"] | None,
         partitioned: bool,
@@ -299,29 +312,35 @@ class SessionMiddlewareBase(Middleware):
             secure=secure,
             samesite=samesite,
         )
-        cookie_name = shared["cookie_name"]
-        path = shared["path"]
-        httponly = shared["httponly"]
-        secure = shared["secure"]
-        samesite = shared["samesite"]
+        # Rebound under their settled types: `_shared_cookie_settings` has
+        # replaced every `_UNSET` with the library default, so from here down
+        # these are the plain values the attributes below - and every reader of
+        # them - are typed as.
+        settled_cookie_name: str = shared["cookie_name"]
+        settled_path: str = shared["path"]
+        settled_httponly: bool = shared["httponly"]
+        settled_secure: bool = shared["secure"]
+        settled_samesite: str | None = shared["samesite"]
         _validate_cookie_security(
             cookie_prefix=cookie_prefix,
             partitioned=partitioned,
             domain=domain,
-            path=path,
-            secure=secure,
-            samesite=samesite,
+            path=settled_path,
+            secure=settled_secure,
+            samesite=settled_samesite,
         )
-        self.cookie_name = cookie_name
+        self.cookie_name = settled_cookie_name
         self.max_age = max_age
         # `PERMANENT_SESSION_LIFETIME` analog - the cookie `Max-Age` when
         # `session.permanent` is set. Both backends default to 31 days, so the
         # two answer `session.permanent = True` identically.
-        self.permanent_lifetime = 86400 * 31 if permanent_lifetime is _UNSET else permanent_lifetime
-        self.path = path
-        self.httponly = httponly
-        self.secure = secure
-        self.samesite = samesite
+        self.permanent_lifetime = (
+            86400 * 31 if isinstance(permanent_lifetime, _UnsetType) else permanent_lifetime
+        )
+        self.path = settled_path
+        self.httponly = settled_httponly
+        self.secure = settled_secure
+        self.samesite = settled_samesite
         self.domain = domain
         self.cookie_prefix = cookie_prefix
         self.partitioned = partitioned
@@ -338,7 +357,7 @@ class SessionMiddlewareBase(Middleware):
         # logged out mid-session. Default False keeps the prior behaviour.
         self.renew_on_access = renew_on_access
         # Read and write must share the prefixed wire name.
-        self._wire_cookie_name = _wire_name(cookie_prefix, cookie_name)
+        self._wire_cookie_name = _wire_name(cookie_prefix, settled_cookie_name)
 
     @property
     def wire_cookie_name(self) -> str:
@@ -361,6 +380,29 @@ class SessionMiddlewareBase(Middleware):
         quiet about it.
         """
         return bool(getattr(self, "secure", False))
+
+    def _delete_cookie(self, response: Response, name: str, *, prefix: bool) -> None:
+        """Tell the client to drop `name` using this middleware's attribute set.
+
+        The single place mapping the shared cookie attribute set to
+        `delete_cookie`, for the same reason `_configure_cookie` is the single
+        place that settles it: a per-backend copy has already diverged once (see
+        the SameSite note above), and a delete whose attributes disagree with
+        the set leaves the cookie in place.
+
+        `prefix` is True for the base cookie passed by its bare name; a chunk
+        cookie passes its already-prefixed wire name with `prefix=False`.
+        """
+        response.delete_cookie(
+            name,
+            path=self.path,
+            domain=self.domain,
+            secure=self.secure,
+            httponly=self.httponly,
+            samesite=self.samesite,
+            partitioned=self.partitioned,
+            prefix=self.cookie_prefix if prefix else None,
+        )
 
     def audit(self, ctx: AuditContext) -> Iterable[Finding]:
         """Report an insecure cookie, and config that no longer configures one."""
@@ -417,15 +459,15 @@ class SessionMiddleware(SessionMiddlewareBase):
     def __init__(
         self,
         secret_key: str | list[str] | None = None,
-        cookie_name: str = _UNSET,
+        cookie_name: str | _UnsetType = _UNSET,
         max_age: int = 86400 * 14,
-        path: str = _UNSET,
-        httponly: bool = _UNSET,
-        secure: bool = _UNSET,
-        samesite: str | None = _UNSET,
+        path: str | _UnsetType = _UNSET,
+        httponly: bool | _UnsetType = _UNSET,
+        secure: bool | _UnsetType = _UNSET,
+        samesite: str | None | _UnsetType = _UNSET,
         domain: str | None = None,
-        permanent_lifetime: int = _UNSET,
-        max_cookie_size: int = _UNSET,
+        permanent_lifetime: int | _UnsetType = _UNSET,
+        max_cookie_size: int | _UnsetType = _UNSET,
         vary_on_cookie: bool = True,
         persist_on_status: Callable[[int], bool] | None = None,
         cookie_prefix: Literal["host", "secure"] | None = None,
@@ -457,7 +499,7 @@ class SessionMiddleware(SessionMiddlewareBase):
         self._pending_config = secret_key is None
         if secret_key is not None:
             self._signer = _build_signer(secret_key)
-        if max_cookie_size is _UNSET:
+        if isinstance(max_cookie_size, _UnsetType):
             max_cookie_size = _DEFAULT_MAX_COOKIE_SIZE
         self.max_cookie_size = max_cookie_size
         # Opt-in transparent chunking: when True, a signed value too large for a
@@ -800,23 +842,6 @@ class SessionMiddleware(SessionMiddlewareBase):
         for index in range(self.max_chunks):
             self._delete_cookie(response, self._chunk_name(index), prefix=False)
 
-    def _delete_cookie(self, response: Response, name: str, *, prefix: bool) -> None:
-        """Tell the client to drop `name` using this middleware's attribute set.
-
-        `prefix` is True only for the base cookie passed by its bare name; chunk
-        cookies pass their already-prefixed wire name with `prefix=False`.
-        """
-        response.delete_cookie(
-            name,
-            path=self.path,
-            domain=self.domain,
-            secure=self.secure,
-            httponly=self.httponly,
-            samesite=self.samesite,
-            partitioned=self.partitioned,
-            prefix=self.cookie_prefix if prefix else None,
-        )
-
 
 class ServerSessionMiddleware(SessionMiddlewareBase):
     """Server-side session - the cookie carries only an opaque session id.
@@ -840,13 +865,13 @@ class ServerSessionMiddleware(SessionMiddlewareBase):
     def __init__(
         self,
         store: SessionStore | None = None,
-        cookie_name: str = _UNSET,
+        cookie_name: str | _UnsetType = _UNSET,
         max_age: int = 86400 * 14,
-        permanent_lifetime: int = _UNSET,
-        path: str = _UNSET,
-        httponly: bool = _UNSET,
-        secure: bool = _UNSET,
-        samesite: str | None = _UNSET,
+        permanent_lifetime: int | _UnsetType = _UNSET,
+        path: str | _UnsetType = _UNSET,
+        httponly: bool | _UnsetType = _UNSET,
+        secure: bool | _UnsetType = _UNSET,
+        samesite: str | None | _UnsetType = _UNSET,
         domain: str | None = None,
         vary_on_cookie: bool = True,
         persist_on_status: Callable[[int], bool] | None = None,
@@ -924,7 +949,7 @@ class ServerSessionMiddleware(SessionMiddlewareBase):
             # tell the client to drop the cookie.
             if session_id is not None:
                 await self.store.delete(session_id)
-                self._clear_session_cookie(response)
+                self._delete_cookie(response, self.cookie_name, prefix=True)
             return response
 
         if session_id is None or session.regenerate:
@@ -943,7 +968,7 @@ class ServerSessionMiddleware(SessionMiddlewareBase):
             # `write` would resurrect it, so use the conditional `replace`.
             if not await self.store.replace(session_id, dict(session), lifetime):
                 # Revoked under us - honour the revocation and drop the cookie.
-                self._clear_session_cookie(response)
+                self._delete_cookie(response, self.cookie_name, prefix=True)
                 return response
         self._set_session_cookie(response, session_id, lifetime)
         return response
@@ -964,7 +989,7 @@ class ServerSessionMiddleware(SessionMiddlewareBase):
         # is not quietly demoted to the default window on a read-only request.
         lifetime = self.cookie_lifetime(request._state.get("session"))
         if not await self.store.touch(session_id, lifetime):
-            self._clear_session_cookie(response)
+            self._delete_cookie(response, self.cookie_name, prefix=True)
             return
         self._set_session_cookie(response, session_id, lifetime)
 
@@ -972,7 +997,8 @@ class ServerSessionMiddleware(SessionMiddlewareBase):
         """Write the opaque session-id cookie with this middleware's attributes.
 
         Single place mapping the cookie attribute set to `set_cookie`, mirroring
-        the delete-side `_clear_session_cookie`; both write and renew share it.
+        the base class's delete-side `_delete_cookie`; both write and renew
+        share it.
         """
         response.set_cookie(
             self.cookie_name,
@@ -982,23 +1008,6 @@ class ServerSessionMiddleware(SessionMiddlewareBase):
             domain=self.domain,
             httponly=self.httponly,
             secure=self.secure,
-            samesite=self.samesite,
-            partitioned=self.partitioned,
-            prefix=self.cookie_prefix,
-        )
-
-    def _clear_session_cookie(self, response: Response) -> None:
-        """Tell the client to drop the session cookie.
-
-        The single place that knows how this middleware's cookie attribute set
-        maps to `delete_cookie` - three callers all share the same kwargs.
-        """
-        response.delete_cookie(
-            self.cookie_name,
-            path=self.path,
-            domain=self.domain,
-            secure=self.secure,
-            httponly=self.httponly,
             samesite=self.samesite,
             partitioned=self.partitioned,
             prefix=self.cookie_prefix,

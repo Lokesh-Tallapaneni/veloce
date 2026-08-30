@@ -39,8 +39,6 @@ from veloce._protocol_constants import (
 from veloce.exceptions import RequestEntityTooLarge
 from veloce.status import HTTP_413_CONTENT_TOO_LARGE
 
-# ASGI message types consumed by the pull-based body source below.
-
 # Bound on unconsumed body chunks. Reaching the high-water mark pauses socket
 # reading; draining back to the low-water mark resumes it. The gap (hysteresis)
 # avoids thrashing pause/resume on every single chunk around the boundary.

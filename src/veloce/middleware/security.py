@@ -260,6 +260,117 @@ class TrustedHostMiddleware(Middleware):
 
 
 # ── Rate limiting ─────────────────────────────────────────
+class _SlidingLog:
+    """The process-local sliding-log limiter behind the `max_requests=` constructor.
+
+    Owns every piece of state that algorithm needs, so `RateLimitMiddleware`
+    holds one limiter object rather than a second limiter's attributes spread
+    across its own instance - where they existed only when the constructor took
+    the `max_requests=` arm, and reading one from the `strategy=` arm was an
+    `AttributeError` no checker reports.
+
+    Deliberately not one `evaluate()` call: the periodic sweep must be awaited,
+    and folding the whole per-request path behind it would put a coroutine on
+    every request through this middleware to save a few lines. The caller
+    instead awaits `sweep` only when one is due - once per window - and reaches
+    the rest through sync calls, so the common path allocates nothing new.
+    """
+
+    __slots__ = (
+        "_buckets",
+        "_max_keys",
+        "_sweep_lock",
+        "last_sweep",
+        "max_requests",
+        "window_seconds",
+    )
+
+    def __init__(self, max_requests: int, window_seconds: int, max_keys: int) -> None:
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        # Sweeping alone bounds nothing: it runs once per window and only drops
+        # buckets whose newest stamp has aged out, so distinct keys arriving
+        # *within* a window accumulate without limit. A single machine's IPv6
+        # /64 is enough to make that unbounded, which is why the strategy path's
+        # backend has carried a `max_keys` cap all along. This is the same cap.
+        self._max_keys = max_keys
+        self._buckets: dict[str, deque[float]] = {}
+        self.last_sweep = time.monotonic()
+        # Lazy-allocated on first sweep so the lock binds to the running event
+        # loop, not to whatever loop is current at construction time (matches
+        # the same pattern used for `Veloce`'s first-request lock). Guards the
+        # timestamp-check + dict-rebuild + timestamp-update sequence -
+        # single-threaded asyncio already serialises that block today because it
+        # contains no `await`, but any future async cache backend that
+        # introduces an `await` inside it would otherwise open a check-then-act
+        # race.
+        self._sweep_lock: asyncio.Lock | None = None
+
+    async def sweep(self, now: float, cutoff: float) -> None:
+        """Drop every bucket whose newest stamp has aged out. Once per window."""
+        if self._sweep_lock is None:
+            self._sweep_lock = asyncio.Lock()
+        async with self._sweep_lock:
+            # Double-check under the lock so a request that lost the race to
+            # acquire it does not redo the sweep.
+            if now - self.last_sweep >= self.window_seconds:
+                stale = [
+                    ip for ip, stamps in self._buckets.items() if not stamps or stamps[-1] <= cutoff
+                ]
+                for ip in stale:
+                    del self._buckets[ip]
+                self.last_sweep = now
+
+    def bucket(self, key: str, cutoff: float) -> deque[float]:
+        """Return `key`'s bucket with expired stamps dropped, creating it if needed."""
+        bucket = self._buckets.get(key)
+        if bucket is None:
+            if len(self._buckets) >= self._max_keys:
+                self._evict(cutoff)
+            bucket = deque()
+            self._buckets[key] = bucket
+        # Amortized O(1) eviction - popleft until the oldest stamp is fresh.
+        while bucket and bucket[0] <= cutoff:
+            bucket.popleft()
+        return bucket
+
+    def _evict(self, cutoff: float) -> None:
+        """Make room in `_buckets`, dropping stale entries before live ones.
+
+        Expired buckets go first; if the dict is still full, the oldest by
+        insertion order goes. Never the key being inserted - evicting the newest
+        would let a caller cycling source addresses flush an honest client's
+        counter, turning a memory bound into a rate-limit bypass.
+
+        `InMemoryRateLimitBackend._evict` applies the same two-phase policy to
+        the strategy path, so the two age out alike; the only difference is that
+        this copy loops until the dict is under the cap where the backend drops
+        one, which is the same thing for the one state both are called in (at
+        the cap, about to insert). Both must change together.
+        """
+        stale = [k for k, stamps in self._buckets.items() if not stamps or stamps[-1] <= cutoff]
+        for k in stale:
+            del self._buckets[k]
+        while len(self._buckets) >= self._max_keys:
+            del self._buckets[next(iter(self._buckets))]
+
+    def reset_after(self, bucket: deque[float], now: float) -> int:
+        """Seconds until the oldest stamp in `bucket` falls out of the window."""
+        if not bucket:
+            return 0
+        # Ceil so a sub-second remainder reports >=1, never 0 while a client
+        # still has to wait (a floored 0.6s would advertise "retry now").
+        remaining = math.ceil(bucket[0] + self.window_seconds - now)
+        # A stamp can never expire more than a full window from now, so clamp:
+        # a coarse clock (Windows monotonic ticks at ~15ms) makes the oldest
+        # stamp and `now` compare equal or invert across a tick boundary, which
+        # rounds the remainder past the window and advertises a wait longer than
+        # the limit it describes.
+        if remaining > self.window_seconds:
+            return self.window_seconds
+        return remaining if remaining > 0 else 0
+
+
 class RateLimitMiddleware(Middleware):
     """Per-client rate limiter with a selectable algorithm and backend.
 
@@ -350,31 +461,20 @@ class RateLimitMiddleware(Middleware):
         # a single client-keyed evaluation.
         self._route_strategies: dict[str, RateLimitStrategy] | None = None
         self._route_strategies_gen: int = -1
+        # The process-local sliding log, or `None` when a strategy runs the
+        # limiting. One attribute assigned in both arms rather than five
+        # assigned in one: an instance built with `strategy=` used to be missing
+        # `max_requests`, `window_seconds` and the bucket state outright, so
+        # reaching them from that arm was an `AttributeError` no type checker
+        # reports - a conditionally-assigned attribute still type-checks.
+        self._log: _SlidingLog | None = None
         if strategy is None:
+            # Legacy process-local sliding-log path.
             if backend is not None:
                 raise ValueError("backend requires a strategy; pass strategy= as well")
             if overrides is not None:
                 raise ValueError("overrides requires a strategy; pass strategy= as well")
-            # Legacy process-local sliding-log path.
-            self.max_requests = max_requests
-            self.window_seconds = window_seconds
-            self._buckets: dict[str, deque[float]] = {}
-            self._last_sweep = time.monotonic()
-            # Sweeping alone bounds nothing: it runs once per window and only
-            # drops buckets whose newest stamp has aged out, so distinct keys
-            # arriving *within* a window accumulate without limit. A single
-            # machine's IPv6 /64 is enough to make that unbounded, which is why
-            # the strategy path's backend has carried a `max_keys` cap all
-            # along. This is the same cap for this path.
-            # Lazy-allocated on first sweep so the lock binds to the running
-            # event loop, not to whatever loop is current at construction
-            # time (matches the same pattern used for `Veloce`'s first-request
-            # lock). Guards the timestamp-check + dict-rebuild + timestamp-
-            # update sequence - single-threaded asyncio already serialises
-            # this block today because it contains no `await`, but any
-            # future async cache backend that introduces an `await` inside
-            # the sweep block would otherwise open a check-then-act race.
-            self._sweep_lock: asyncio.Lock | None = None
+            self._log = _SlidingLog(max_requests, window_seconds, max_keys)
         else:
             # Pluggable algorithm + backend path. The backend runs the pure
             # strategy under its own atomic read-modify-write.
@@ -401,7 +501,13 @@ class RateLimitMiddleware(Middleware):
         strategy = self._strategy
         if strategy is not None:
             return await self._process_strategy(request, strategy)
-        return await self._process_legacy(request)
+        # The constructor assigns exactly one limiter, so no strategy means a
+        # log. Narrowed here and passed down rather than re-narrowed in the
+        # consumer.
+        log = self._log
+        if log is None:
+            return None
+        return await self._process_legacy(request, log)
 
     def _route_override(self, request: Request) -> RateLimitStrategy | None:
         """Return the strategy this route declares for itself, or `None`.
@@ -557,7 +663,7 @@ class RateLimitMiddleware(Middleware):
         self._route_strategies_gen = gen if gen is not None else -1
         return combined
 
-    async def _process_legacy(self, request: Request) -> Response | None:
+    async def _process_legacy(self, request: Request, log: _SlidingLog) -> Response | None:
         # A `@rate_limit` tag names the strategy for its own route, so that
         # route is evaluated by the strategy machinery and never reaches the
         # sliding log below. Its counter is keyed by route as well as client,
@@ -576,44 +682,22 @@ class RateLimitMiddleware(Middleware):
 
         client = self._bucket_key(request)
         now = time.monotonic()
-        cutoff = now - self.window_seconds
+        cutoff = now - log.window_seconds
 
         # Periodic eviction sweep - bounded memory across unique client IPs.
-        if now - self._last_sweep >= self.window_seconds:
-            if self._sweep_lock is None:
-                self._sweep_lock = asyncio.Lock()
-            async with self._sweep_lock:
-                # Double-check under the lock so a request that lost the
-                # race to acquire the lock does not redo the sweep.
-                if now - self._last_sweep >= self.window_seconds:
-                    stale = [
-                        ip
-                        for ip, stamps in self._buckets.items()
-                        if not stamps or stamps[-1] <= cutoff
-                    ]
-                    for ip in stale:
-                        del self._buckets[ip]
-                    self._last_sweep = now
+        # The only await on this path, and it is reached once per window.
+        if now - log.last_sweep >= log.window_seconds:
+            await log.sweep(now, cutoff)
 
-        bucket = self._buckets.get(client)
-        if bucket is None:
-            if len(self._buckets) >= self._max_keys:
-                self._evict_buckets(cutoff)
-            bucket = deque()
-            self._buckets[client] = bucket
-
-        # Amortized O(1) eviction - popleft until the oldest stamp is fresh.
-        while bucket and bucket[0] <= cutoff:
-            bucket.popleft()
-
-        if len(bucket) >= self.max_requests:
-            reset = self._reset_after(bucket, now)
+        bucket = log.bucket(client, cutoff)
+        if len(bucket) >= log.max_requests:
+            reset = log.reset_after(bucket, now)
             rejected = Response(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 body=b"Too Many Requests",
-                headers={HEADER_RETRY_AFTER: str(reset or self.window_seconds)},
+                headers={HEADER_RETRY_AFTER: str(reset or log.window_seconds)},
             )
-            self._apply_headers(rejected, self.max_requests, 0, reset)
+            self._apply_headers(rejected, log.max_requests, 0, reset)
             return rejected
 
         bucket.append(now)
@@ -630,27 +714,18 @@ class RateLimitMiddleware(Middleware):
         if isinstance(state, RateLimitResult):
             self._apply_headers(response, state.limit, state.remaining, state.reset)
             return response
-        remaining = self.max_requests - len(state)
+        # A raw deque is stashed only by the sliding-log path, so this is
+        # reached only on an instance holding a log; the strategy mode left
+        # through the `RateLimitResult` branch above.
+        log = self._log
+        if log is None:
+            return response
+        remaining = log.max_requests - len(state)
         if remaining < 0:
             remaining = 0
-        reset = self._reset_after(state, time.monotonic())
-        self._apply_headers(response, self.max_requests, remaining, reset)
+        reset = log.reset_after(state, time.monotonic())
+        self._apply_headers(response, log.max_requests, remaining, reset)
         return response
-
-    def _evict_buckets(self, cutoff: float) -> None:
-        """Make room in `_buckets`, dropping stale entries before live ones.
-
-        Expired buckets go first; if the dict is still full, the oldest by
-        insertion order goes. Never the key being inserted - evicting the newest
-        would let a caller cycling source addresses flush an honest client's
-        counter, turning a memory bound into a rate-limit bypass. Mirrors
-        `InMemoryRateLimitBackend._evict` so both paths age out alike.
-        """
-        stale = [k for k, stamps in self._buckets.items() if not stamps or stamps[-1] <= cutoff]
-        for k in stale:
-            del self._buckets[k]
-        while len(self._buckets) >= self._max_keys:
-            del self._buckets[next(iter(self._buckets))]
 
     def _bucket_key(self, request: Request) -> str:
         """Pick a bucket key for `request`.
@@ -691,22 +766,6 @@ class RateLimitMiddleware(Middleware):
             anon_id = uuid.uuid4().hex
             request._state["_rl_anon_id"] = anon_id
         return f"scope:{anon_id}"
-
-    def _reset_after(self, bucket: deque[float], now: float) -> int:
-        """Seconds until the oldest stamp in `bucket` falls out of the window."""
-        if not bucket:
-            return 0
-        # Ceil so a sub-second remainder reports >=1, never 0 while a client
-        # still has to wait (a floored 0.6s would advertise "retry now").
-        remaining = math.ceil(bucket[0] + self.window_seconds - now)
-        # A stamp can never expire more than a full window from now, so clamp:
-        # a coarse clock (Windows monotonic ticks at ~15ms) makes the oldest
-        # stamp and `now` compare equal or invert across a tick boundary, which
-        # rounds the remainder past the window and advertises a wait longer than
-        # the limit it describes.
-        if remaining > self.window_seconds:
-            return self.window_seconds
-        return remaining if remaining > 0 else 0
 
     def _apply_headers(self, response: Response, limit: int, remaining: int, reset: int) -> None:
         """Attach X-RateLimit-* headers to `response` (draft-ietf-httpapi-ratelimit-headers)."""
@@ -775,7 +834,7 @@ class HTTPSRedirectMiddleware(Middleware):
         # scheme it trusted into the scope above, so reading the raw header here
         # would accept a hop `ProxyFix` deliberately refused - a TLS-stripping
         # attacker could then suppress this very redirect by adding one header.
-        if not (request._state and "proxy_fix_applied" in request._state):
+        if "proxy_fix_applied" not in request._state:
             fwd_proto = request.headers.get(HEADER_X_FORWARDED_PROTO, "").lower()
             if fwd_proto == URL_SCHEME_HTTPS:
                 return None

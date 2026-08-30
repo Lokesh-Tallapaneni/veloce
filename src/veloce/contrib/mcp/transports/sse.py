@@ -82,6 +82,9 @@ _ENDPOINT_EVENT = "endpoint"
 _MESSAGE_EVENT = "message"
 
 
+# ── Open connections ──────────────────────────────────────
+
+
 class _SSEConnection:
     """One open stream: its session, its outbound queue, and its caller."""
 
@@ -98,6 +101,9 @@ class _SSEConnection:
     async def send(self, message: dict[str, Any]) -> None:
         """Queue a message for this connection's stream - the `Transport.send`."""
         await self.queue.put(message)
+
+
+# ── Route registration ────────────────────────────────────
 
 
 def register_sse_transport(
@@ -200,6 +206,9 @@ def register_sse_transport(
     )
     register_metadata_route(app, auth, exclude_middleware)
     record_endpoint(app, "sse", path, auth, allowed_origins)
+
+
+# ── Message dispatch ──────────────────────────────────────
 
 
 class _Dispatch:

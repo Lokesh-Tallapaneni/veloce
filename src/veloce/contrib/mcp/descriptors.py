@@ -24,33 +24,28 @@ from veloce.contrib.mcp.icons import Icon
 
 @dataclass(slots=True)
 class MCPDescriptor:
-    """Base for a served MCP primitive: its client-facing name and description.
-
-    `title` is the optional human-facing display name the spec defines on every
-    primitive (a tool, a resource, a prompt). It lives here so the field is
-    declared once and each subclass inherits it instead of carrying a private
-    copy; a subclass without a route summary leaves it `None`. It is keyword-only
-    so a subclass can still declare its own positional fields without a default
-    (a default-valued base field would otherwise force every later field to have
-    one).
-
-    `icons` is the optional MCP icon array every primitive may carry. It lives
-    here for the same reason as `title` - declared once, inherited by every
-    subclass - and defaults to the empty tuple so a primitive without icons holds
-    no extra state and emits no ``icons`` key.
-
-    `completers` maps one of the primitive's argument names to the opt-in callable
-    that suggests completions for it (``completion/complete``). It is declared
-    here so a prompt and a resource template share one argument-completer model
-    rather than each carrying its own; it defaults to an empty mapping so a
-    primitive without completers holds no extra state. Tools carry none - the MCP
-    spec defines completion references only for prompts and resources.
-    """
+    """Base for a served MCP primitive: its client-facing name and description."""
 
     name: str
     description: str
+    # The optional human-facing display name the spec defines on every primitive
+    # (a tool, a resource, a prompt). It lives here so the field is declared once
+    # and each subclass inherits it instead of carrying a private copy; a subclass
+    # without a route summary leaves it `None`. Keyword-only so a subclass can
+    # still declare its own positional fields without a default (a default-valued
+    # base field would otherwise force every later field to have one).
     title: str | None = field(default=None, kw_only=True)
+    # The optional MCP icon array every primitive may carry. It lives here for the
+    # same reason as `title` - declared once, inherited by every subclass - and
+    # defaults to the empty tuple so a primitive without icons holds no extra
+    # state and emits no ``icons`` key.
     icons: tuple[Icon, ...] = field(default=(), kw_only=True)
+    # Maps one of the primitive's argument names to the opt-in callable that
+    # suggests completions for it (``completion/complete``). It is declared here
+    # so a prompt and a resource template share one argument-completer model
+    # rather than each carrying its own; it defaults to an empty mapping so a
+    # primitive without completers holds no extra state. Tools carry none - the
+    # MCP spec defines completion references only for prompts and resources.
     completers: dict[str, Callable] = field(default_factory=dict, kw_only=True)
     # `_meta` the author attached to this primitive's definition. The protocol
     # reserves the field for metadata it does not itself define, which is how an

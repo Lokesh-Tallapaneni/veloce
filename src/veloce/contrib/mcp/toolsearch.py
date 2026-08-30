@@ -82,6 +82,9 @@ _RUN_DESCRIPTION = (
 )
 
 
+# ── Relevance ranking ─────────────────────────────────────
+
+
 def _tokenize(text: str) -> list[str]:
     """Split text into lowercase terms, breaking camelCase into words."""
     return [chunk.lower() for chunk in _WORD.findall(_CAMEL.sub(" ", text))]
@@ -139,6 +142,9 @@ class _Bm25Index:
         names = self._names
         ranked = sorted(scores.items(), key=lambda item: (-item[1], names[item[0]]))
         return [(names[index], score) for index, score in ranked]
+
+
+# ── Step plans and result references ──────────────────────
 
 
 class ToolStep(BaseModel):
@@ -277,6 +283,9 @@ def _referenceable(result: dict[str, Any]) -> Any:
     return content
 
 
+# ── Meta-tool construction ────────────────────────────────
+
+
 def _document(tool: MCPTool) -> str:
     """Return the text a tool is ranked on."""
     parts: Iterable[str] = (
@@ -307,6 +316,9 @@ def _meta_tool(handler: Any, name: str, description: str) -> MCPTool:
         dispatches_tools=True,
         annotations={"readOnlyHint": name != "run_tools"},
     )
+
+
+# ── The meta-tools ────────────────────────────────────────
 
 
 class ToolSearch:

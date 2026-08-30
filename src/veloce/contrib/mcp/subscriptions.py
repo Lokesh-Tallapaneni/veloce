@@ -35,25 +35,6 @@ if TYPE_CHECKING:  # pragma: no cover
 
 _logger = logging.getLogger(__name__)
 
-# An outbound one-way sink: the connection's `Transport.send`, which delivers a
-# server-initiated JSON-RPC notification to that one client.
-Sink = Callable[[dict[str, Any]], Awaitable[None]]
-
-
-def resource_updated_notification(uri: str) -> dict[str, Any]:
-    """Build the `notifications/resources/updated` message for a changed resource."""
-    return {
-        "jsonrpc": "2.0",
-        "method": "notifications/resources/updated",
-        "params": {"uri": uri},
-    }
-
-
-def resources_list_changed_notification() -> dict[str, Any]:
-    """Build the `notifications/resources/list_changed` message."""
-    return {"jsonrpc": "2.0", "method": "notifications/resources/list_changed"}
-
-
 # The `_meta` key every message on a listen stream carries, identifying which
 # `subscriptions/listen` request it belongs to. On stdio all streams share one
 # channel, so this is how a client demultiplexes them.
@@ -68,6 +49,27 @@ LISTEN_TOPICS = {
     "resourcesListChanged": "notifications/resources/list_changed",
 }
 RESOURCE_SUBSCRIPTIONS = "resourceSubscriptions"
+
+# An outbound one-way sink: the connection's `Transport.send`, which delivers a
+# server-initiated JSON-RPC notification to that one client.
+Sink = Callable[[dict[str, Any]], Awaitable[None]]
+
+
+# ── Notification shapes ───────────────────────────────────
+
+
+def resource_updated_notification(uri: str) -> dict[str, Any]:
+    """Build the `notifications/resources/updated` message for a changed resource."""
+    return {
+        "jsonrpc": "2.0",
+        "method": "notifications/resources/updated",
+        "params": {"uri": uri},
+    }
+
+
+def resources_list_changed_notification() -> dict[str, Any]:
+    """Build the `notifications/resources/list_changed` message."""
+    return {"jsonrpc": "2.0", "method": "notifications/resources/list_changed"}
 
 
 def _stamp(message: dict[str, Any], subscription_id: Any) -> dict[str, Any]:
@@ -113,6 +115,9 @@ def subscription_closed_response(subscription_id: Any) -> dict[str, Any]:
             "_meta": {META_SUBSCRIPTION_ID: subscription_id},
         },
     }
+
+
+# ── The connection registry ───────────────────────────────
 
 
 class ConnectionRegistry:
@@ -233,6 +238,9 @@ class ConnectionRegistry:
             _logger.exception("MCP resource notification delivery failed")
 
 
+# ── The capability ────────────────────────────────────────
+
+
 class SubscriptionsCapability(_ServerCapability):
     """The `resources/subscribe` / `resources/unsubscribe` methods, opt-in.
 
@@ -327,6 +335,9 @@ class SubscriptionsCapability(_ServerCapability):
                 "supported on a stateless request."
             )
         return session
+
+
+# ── Parameter parsing ─────────────────────────────────────
 
 
 def _agreed_filter(requested: Any) -> dict[str, Any]:

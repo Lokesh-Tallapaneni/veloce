@@ -6,7 +6,7 @@ import gzip
 import zlib
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from veloce._constants import (
     HEADER_ACCEPT_ENCODING,
@@ -139,22 +139,29 @@ def _zstd_codec() -> _Codec | None:
 
 
 # Resolved once at import: the optional packages are imported here or not at all,
-# so a per-response path never pays an import attempt. A `None` entry means the
-# coding is known but its package is absent.
-_CODECS: dict[str, _Codec | None] = {
-    "zstd": _zstd_codec(),
-    "br": _brotli_codec(),
-    "gzip": _gzip_codec(),
+# so a per-response path never pays an import attempt. A coding whose package is
+# absent is absent from this mapping too, so every value here is usable and no
+# consumer has to narrow one; `_CODECS_PACKAGE` below is the registry of every
+# coding the middleware knows, installed or not.
+_CODECS: dict[str, _Codec] = {
+    name: codec
+    for name, codec in (
+        ("zstd", _zstd_codec()),
+        ("br", _brotli_codec()),
+        ("gzip", _gzip_codec()),
+    )
+    if codec is not None
 }
 
 # Server preference when the caller names none: best ratio first. Every entry is
 # filtered against what is installed, and gzip is always there.
 _DEFAULT_ALGORITHMS = ("zstd", "br", "gzip")
 
-# The package to install for each optional coding, for the error a caller sees
-# when the only coding they asked for has none. The single copy: a `package`
-# field on `_Codec` as well would be set by every factory, read by nothing, and
-# maintained in parallel with the one an operator is actually shown.
+# Every content coding this middleware knows, mapped to the package to install
+# for it - the error a caller sees when the only coding they asked for has none,
+# and the set an unrecognised coding name is checked against. The single copy: a
+# `package` field on `_Codec` as well would be set by every factory, read by
+# nothing, and maintained in parallel with the one an operator is actually shown.
 _CODECS_PACKAGE = {"zstd": "zstandard", "br": "brotli", "gzip": "gzip (stdlib)"}
 
 
@@ -245,6 +252,9 @@ class CompressionMiddleware(Middleware):
         app.add_middleware(CompressionMiddleware(algorithms=("br", "gzip")))
     """
 
+    #: Codings this class may offer. `GZipMiddleware` narrows it to gzip.
+    _supported: ClassVar[tuple[str, ...]] = _DEFAULT_ALGORITHMS
+
     def __init__(
         self,
         minimum_size: int = 500,
@@ -290,9 +300,6 @@ class CompressionMiddleware(Middleware):
         # routing it through `compressobj` would merge/delay events.
         self.latency_sensitive_types = latency_sensitive_types
 
-    #: Codings this class may offer. `GZipMiddleware` narrows it to gzip.
-    _supported: tuple[str, ...] = _DEFAULT_ALGORITHMS
-
     @classmethod
     def _resolve_codings(
         cls,
@@ -311,10 +318,12 @@ class CompressionMiddleware(Middleware):
         requested = tuple(algorithms) if algorithms is not None else cls._supported
         if not requested:
             raise ValueError("algorithms must name at least one content coding")
-        unknown = [name for name in requested if name not in _CODECS]
+        unknown = [name for name in requested if name not in _CODECS_PACKAGE]
         if unknown:
-            raise ValueError(f"unknown content coding(s) {unknown}; supported: {sorted(_CODECS)}")
-        available = tuple(name for name in requested if _CODECS[name] is not None)
+            raise ValueError(
+                f"unknown content coding(s) {unknown}; supported: {sorted(_CODECS_PACKAGE)}"
+            )
+        available = tuple(name for name in requested if name in _CODECS)
         if not available:
             missing = sorted({_CODECS_PACKAGE[name] for name in requested})
             raise ValueError(
@@ -324,15 +333,13 @@ class CompressionMiddleware(Middleware):
 
         resolved: dict[str, int] = {}
         for name in available:
-            codec = _CODECS[name]
-            assert codec is not None
-            resolved[name] = codec.default_level
+            resolved[name] = _CODECS[name].default_level
         if compresslevel is not None:
             # The pre-existing single-level argument. It names gzip's scale, so
             # it applies to gzip; a multi-coding deployment uses `levels`.
             resolved["gzip"] = compresslevel
         if levels:
-            unknown_levels = [name for name in levels if name not in _CODECS]
+            unknown_levels = [name for name in levels if name not in _CODECS_PACKAGE]
             if unknown_levels:
                 raise ValueError(f"levels names unknown content coding(s) {unknown_levels}")
             resolved.update({k: v for k, v in levels.items() if k in resolved})
@@ -373,17 +380,7 @@ class CompressionMiddleware(Middleware):
         if len(response.body) < self.minimum_size:
             return response
 
-        # Never compress a partial-content (206) response, or any response
-        # carrying a Content-Range: gzipping changes the body bytes while
-        # Content-Range / Accept-Ranges / ETag keep describing the
-        # uncompressed representation, producing a protocol-invalid response
-        # (RFC 9110 Sec. 14). Range responses are served whole, uncompressed.
-        if response.status_code == HTTP_206_PARTIAL_CONTENT or header_present(
-            response.headers, HEADER_CONTENT_RANGE
-        ):
-            return response
-
-        if self._skip_for_type_or_encoding(response):
+        if self._skip_compression(response):
             return response
 
         # Offloading is not free: it costs a handoff per response, and under
@@ -402,7 +399,6 @@ class CompressionMiddleware(Middleware):
         # choice. It is the threshold the streaming path already applies per
         # chunk.
         codec = _CODECS[coding]
-        assert codec is not None
         level = self.levels[coding]
         body = response.body
         if len(body) < self.min_stream_chunk_offload:
@@ -420,9 +416,9 @@ class CompressionMiddleware(Middleware):
     def _process_stream(self, request: Request, response: Response, coding: str) -> Response:
         """Wrap a streaming response's body in a lazy compressor.
 
-        Mirrors the buffered guards (compressible type, no pre-existing
-        encoding, no 206 / Content-Range) but skips real-time latency-sensitive
-        streams (SSE) so events are not buffered through `compressobj`.
+        Shares `_skip_compression` with the buffered path and additionally
+        skips real-time latency-sensitive streams (SSE) so events are not
+        buffered through `compressobj`.
         """
         # SSE and other latency-sensitive streams trade wire size for
         # per-event delivery; routing them through a buffering compressor would
@@ -430,14 +426,7 @@ class CompressionMiddleware(Middleware):
         if response.is_event_source or response.mimetype in self.latency_sensitive_types:
             return response
 
-        if self._skip_for_type_or_encoding(response):
-            return response
-
-        # Range responses are served whole and uncompressed (see the buffered
-        # path for the RFC 9110 Sec. 14 rationale).
-        if response.status_code == HTTP_206_PARTIAL_CONTENT or header_present(
-            response.headers, HEADER_CONTENT_RANGE
-        ):
+        if self._skip_compression(response):
             return response
 
         response._stream = self._compress_stream(response._stream, coding)
@@ -447,17 +436,29 @@ class CompressionMiddleware(Middleware):
         self._finalize_encoding_headers(response, coding, content_length=None)
         return response
 
-    def _skip_for_type_or_encoding(self, response: Response) -> bool:
-        """True when the response must not be compressed, on type or encoding grounds.
+    def _skip_compression(self, response: Response) -> bool:
+        """True when the response must not be compressed, on range, type or encoding grounds.
 
-        Shared by the buffered and streaming paths: a non-compressible content
-        type, or a response that already declares a non-identity
-        Content-Encoding, is passed through untouched. Stacking encodings
-        produces a payload no client will decode and violates RFC 9110 Sec. 8.4
-        (each Content-Encoding identifies one transformation; doubling them is a
-        bug). Field names are case-insensitive (RFC 9110 Sec. 5.1), so any
-        casing is honored.
+        The one home of the skip rules, shared by the buffered and streaming
+        paths so neither can drift from the other.
+
+        A partial-content (206) response, or any response carrying a
+        Content-Range, is served whole and uncompressed: compressing changes the
+        body bytes while Content-Range / Accept-Ranges / ETag keep describing
+        the uncompressed representation, producing a protocol-invalid response
+        (RFC 9110 Sec. 14).
+
+        A non-compressible content type, or a response that already declares a
+        non-identity Content-Encoding, is passed through untouched. Stacking
+        encodings produces a payload no client will decode and violates RFC 9110
+        Sec. 8.4 (each Content-Encoding identifies one transformation; doubling
+        them is a bug). Field names are case-insensitive (RFC 9110 Sec. 5.1), so
+        any casing is honored.
         """
+        if response.status_code == HTTP_206_PARTIAL_CONTENT or header_present(
+            response.headers, HEADER_CONTENT_RANGE
+        ):
+            return True
         if not self._should_compress_type(response.content_type):
             return True
         existing_encoding = header_get(response.headers, HEADER_CONTENT_ENCODING)
@@ -511,7 +512,6 @@ class CompressionMiddleware(Middleware):
         end-of-stream markers.
         """
         codec = _CODECS[coding]
-        assert codec is not None
         compressor = codec.stream(self.levels[coding])
         async for chunk in stream:
             # Downstream chunked / ASGI emit paths expect bytes; streams may

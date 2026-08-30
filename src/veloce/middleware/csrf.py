@@ -244,12 +244,12 @@ class CSRFMiddleware(Middleware):
 
     async def process_response(self, request: Request, response: Response) -> Response:
         """Set or rotate the CSRF cookie."""
-        existing = request._state.get("_csrf_cookie") if request._state else None
+        existing = request._state.get("_csrf_cookie")
         # `rotate_csrf_token()` sets this sentinel on the request state to
         # force a fresh token regardless of an existing cookie. Without
         # this, an anonymous session's CSRF cookie would persist across
         # login - a session-fixation pathway.
-        force_rotate = bool(request._state.get("_csrf_rotate") if request._state else False)
+        force_rotate = bool(request._state.get("_csrf_rotate"))
         if existing and not force_rotate:
             return response
         token = self.token_factory()

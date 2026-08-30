@@ -150,7 +150,10 @@ class ProxyFix(Middleware):
         # Reject CR / LF / NUL in any trusted proxy value before it lands on
         # the request. These values flow into response headers (Location,
         # Set-Cookie, OpenAPI server URLs) via request.host / scheme /
-        # script_root and would otherwise enable header injection.
+        # script_root and would otherwise enable header injection. Written out
+        # per header rather than looped over a `(value, header)` sequence: this
+        # middleware runs on every request through it, and building that
+        # sequence would allocate a tuple per request to save five lines.
         if client:
             _reject_header_crlf(client, HEADER_X_FORWARDED_FOR)
         if proto:

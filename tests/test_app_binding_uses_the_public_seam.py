@@ -46,7 +46,9 @@ def test_the_contextvar_scan_reads_a_real_corpus():
     no files at all.
     """
     scanned = [p for p in sorted(TESTS.glob("test_*.py")) if p.name != pathlib.Path(__file__).name]
-    assert len(scanned) > 100, "the module glob matched almost nothing, so the contextvar scan reads nothing"
+    assert len(scanned) > 100, (
+        "the module glob matched almost nothing, so the contextvar scan reads nothing"
+    )
 
 
 @pytest.mark.parametrize(

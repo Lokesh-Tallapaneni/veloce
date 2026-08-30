@@ -74,6 +74,13 @@ RAW_HEADER_CONTENT_LENGTH = b"content-length"
 RAW_HEADER_CONTENT_TYPE = b"content-type"
 RAW_HEADER_SET_COOKIE = b"set-cookie"
 
+# Framework lifecycle events
+LIFECYCLE_STARTUP = "startup"
+LIFECYCLE_SHUTDOWN = "shutdown"
+
+# Internal multi-cookie join separator
+SET_COOKIE_JOINER = "\r\nSet-Cookie: "
+
 # W3C trace-context header names
 TRACE_HEADER_TRACEPARENT = "traceparent"
 TRACE_HEADER_TRACESTATE = "tracestate"
@@ -94,11 +101,3 @@ def build_trace_carrier(traceparent: str | None, tracestate: str | None) -> dict
     if tracestate is not None:
         carrier[TRACE_HEADER_TRACESTATE] = tracestate
     return carrier
-
-
-# Framework lifecycle events
-LIFECYCLE_STARTUP = "startup"
-LIFECYCLE_SHUTDOWN = "shutdown"
-
-# Internal multi-cookie join separator
-SET_COOKIE_JOINER = "\r\nSet-Cookie: "

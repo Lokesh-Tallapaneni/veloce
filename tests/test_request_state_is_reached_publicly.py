@@ -47,7 +47,9 @@ def test_the_request_state_scan_reads_a_real_corpus():
     test tree into subdirectories would leave this module green while reading
     no files at all.
     """
-    assert len(_modules()) > 100, "the module glob matched almost nothing, so the request-state scan reads nothing"
+    assert len(_modules()) > 100, (
+        "the module glob matched almost nothing, so the request-state scan reads nothing"
+    )
 
 
 def test_the_property_returns_the_private_attribute_unchanged():

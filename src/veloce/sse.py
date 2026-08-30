@@ -16,7 +16,7 @@ from veloce._constants import (
     HEADER_X_ACCEL_BUFFERING,
     MIME_TEXT_EVENT_STREAM,
 )
-from veloce._internal import _encode_response_head, dumps_current
+from veloce._internal import _write_chunked, dumps_current
 from veloce.http.response import Response
 from veloce.status import HTTP_200_OK
 
@@ -215,18 +215,17 @@ class EventSourceResponse(Response):
         header section a GET would have produced.
 
         `stream_to` writes this same head, so the two cannot come to describe
-        the response differently.
+        the response differently. The shared encoder also applies the
+        bodiless-status rule every other streaming response is held to.
         """
-        default_headers = {
-            HEADER_CONTENT_TYPE: self.content_type,
-            HEADER_CACHE_CONTROL: HEADER_VALUE_NO_CACHE,
-            HEADER_TRANSFER_ENCODING: HEADER_VALUE_CHUNKED,
-        }
-        parts = _encode_response_head(
-            self.status_code, default_headers, self.headers, keep_alive=keep_alive
+        return self._encode_streaming_head(
+            {
+                HEADER_CONTENT_TYPE: self.content_type,
+                HEADER_CACHE_CONTROL: HEADER_VALUE_NO_CACHE,
+                HEADER_TRANSFER_ENCODING: HEADER_VALUE_CHUNKED,
+            },
+            keep_alive,
         )
-        parts.append("\r\n")
-        return "".join(parts).encode("latin-1")
 
     async def stream_to(
         self,
@@ -243,18 +242,10 @@ class EventSourceResponse(Response):
         crosses the high-water mark.
         """
         transport.write(self.encode(keep_alive=keep_alive))
-
-        async for chunk in self._stream:
-            # `_stream` is normalised to bytes by `_encode_stream`.
-            # `writelines` keeps the size-line, payload, and trailer as
-            # separate buffers instead of concatenating them into a fresh
-            # bytes object per chunk.
-            size = format(len(chunk), "x").encode("ascii")
-            transport.writelines((size, b"\r\n", chunk, b"\r\n"))
-            if drain is not None:
-                await drain()
-
-        transport.write(b"0\r\n\r\n")
+        # `_stream` is normalised to bytes by `_encode_stream`, so the shared
+        # chunk writer sees the same `bytes` stream every other streaming
+        # response hands it.
+        await _write_chunked(transport, self._stream, drain)
 
     def _encode_stream(
         self,

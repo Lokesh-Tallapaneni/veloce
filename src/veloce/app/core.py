@@ -18,10 +18,7 @@ from typing_extensions import Doc
 
 from veloce._internal import (
     _UNRESOLVED_JSON_DUMPS,
-    MIME_HTML,
     _coerce_bool,
-    _is_async_callable,
-    _unpack_response_tuple,
 )
 from veloce._pipeline import (
     PH_ASGI_WRAP,
@@ -56,16 +53,13 @@ from veloce.app.templating import TemplatingMixin
 from veloce.app.testing import TestingMixin
 from veloce.app.urls import _URLMap
 from veloce.audit import run as audit_run
-from veloce.blueprints import Blueprint, _endpoint_blueprint, _resolve_scoped_chain
+from veloce.blueprints import Blueprint, _resolve_scoped_chain
 from veloce.exceptions import (
     SetupError,
 )
-from veloce.helpers import Aborter, jsonify, send_from_directory, send_from_directory_async
+from veloce.helpers import Aborter, send_from_directory, send_from_directory_async
 from veloce.http.datastructures import State
 from veloce.http.request import Request
-from veloce.http.response import (
-    Response,
-)
 from veloce.routing.router import Router, _readd_route
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -484,11 +478,9 @@ class Veloce(
         # works without manual wiring. Relative paths resolve under
         # `package_root` (same convention as static_folder).
         self.template_folder: str | None = template_folder
-        self._templates: Any = None
+        self._templates = None
         if template_folder is not None:
-            # `app/` is core and `contrib/` is optional, so this is deferred to keep the
-            # layering: importing the optional integration eagerly would make every
-            # `import veloce` pay for machinery most apps never mount.
+            # Deferred to keep the layering: `app/` is core, `contrib/` is not.
             from veloce.contrib.templating import Jinja2Templates
 
             tdir = template_folder
@@ -648,7 +640,17 @@ class Veloce(
     # Introspection recovers the documented signature the `*args` forward hides.
     add_route.__signature__ = inspect.signature(Router.add_route)  # type: ignore[attr-defined]
 
-    def include_router(self, router: Any, prefix: str = "", url_prefix: str | None = None) -> None:
+    def include_router(
+        self,
+        router: Annotated[
+            Router,
+            Doc("Sub-router to mount; a `Blueprint` brings its hooks and handlers with it."),
+        ],
+        prefix: Annotated[str, Doc("Path prefix every mounted route is registered under.")] = "",
+        url_prefix: Annotated[
+            str | None, Doc("Blueprint-style spelling of `prefix`; wins when both are given.")
+        ] = None,
+    ) -> None:
         """Mount a sub-router under an optional path prefix.
 
         Accepts either a `Blueprint` (delegates to `register_blueprint`,
@@ -887,36 +889,6 @@ class Veloce(
         return os.getcwd()
 
     @property
-    def jinja_env(self) -> Any:
-        """The app's shared Jinja2 `Environment`.
-
-        Available once a `template_folder` has been configured (either
-        via the constructor or by binding `Jinja2Templates`). Mutate it
-        directly to register filters/globals or tweak settings:
-        `app.jinja_env.filters["money"] = fmt`. Raises `RuntimeError`
-        when no templating is configured.
-        """
-        if self._templates is None:
-            raise RuntimeError(
-                "no Jinja environment - pass `template_folder=` to Veloce(...) "
-                "or bind a Jinja2Templates instance first"
-            )
-        return self._templates.env
-
-    @property
-    def jinja_loader(self) -> Any:
-        """The app's Jinja template loader.
-
-        The `FileSystemLoader` (or whatever loader the bound
-        `Jinja2Templates` env uses). `None` when no templating is
-        configured - Veloce returns `None` for an app with no template
-        folder rather than raising.
-        """
-        if self._templates is None:
-            return None
-        return self._templates.env.loader
-
-    @property
     def instance_path(self) -> str:
         """Writable instance folder beside the package.
 
@@ -1021,141 +993,14 @@ class Veloce(
             ) from err
         return CliRunner(**kwargs)
 
-    # ── Dispatch aliases and response coercion ─────────────
-
-    # Veloce exposes the internal dispatcher under two names downstream
-    # extension code reaches for. Both alias `_dispatch_request`.
-    # `full_dispatch_request` runs the full before/after_request chain
-    # - which `_dispatch_request` already does inline - so both names
-    # point at the same method.
-    async def dispatch_request(self, request: Request) -> Any:
-        """Alias for `_dispatch_request`."""
-        return await self._dispatch_request(request, self._ensure_pipeline())
-
-    async def full_dispatch_request(self, request: Request) -> Any:
-        """Dispatch `request` through the full before/after-request hook chain.
-
-        An alias for `_dispatch_request`, which already runs the chain inline.
-        """
-        return await self._dispatch_request(request, self._ensure_pipeline())
-
-    async def preprocess_request(self, request: Request) -> Any:
-        """Run all `before_request` hooks for `request`.
-
-        Walks the registered hooks in order; if any hook returns a
-        non-None value it short-circuits the chain and that value is
-        returned (the contract - a non-None return becomes the
-        response). Both sync and async hooks are supported. App-level
-        hooks fire first, then the matched-blueprint bucket - the
-        same shape `_dispatch_request` uses.
-        """
-        for hook in self._before_request_hooks:
-            result = await self._call_handler(hook, {"request": request})
-            if result is not None:
-                return result
-        # Read directly: `endpoint` is a `Request.__slots__` field assigned in
-        # `__init__`, so the `getattr` default could never apply - and reading it
-        # the same way `_run_before_hooks` does keeps the two walks comparable.
-        bp = _endpoint_blueprint(request.endpoint)
-        if bp is not None and self._bp_before_hooks:
-            for hook in self._bp_before_hooks.get(bp, ()):
-                result = await self._call_handler(hook, {"request": request})
-                if result is not None:
-                    return result
-        return None
-
-    async def process_response(self, request: Request, response: Response) -> Response:
-        """Run all `after_request` hooks for `(request, response)`.
-
-        Hooks fire in **reverse** registration order; each hook may return a
-        replacement `Response` (the contract: any other return keeps the
-        existing one). App-level hooks reverse-iterate first, then the matched
-        blueprint's, then the request's one-shot `after_this_request` callbacks.
-
-        This is the dispatch path itself, not a re-implementation of it, so a
-        hook behaves here exactly as it will in production - including the
-        signature adaptation that lets a hook declare only the arguments it
-        wants.
-        """
-        return await self._run_after_hooks(request, response, _endpoint_blueprint(request.endpoint))
-
-    @staticmethod
-    def ensure_sync(func: Callable) -> Callable:
-        """Wrap `func` so it is callable from synchronous code.
-
-        - If `func` is a regular function, returns it unchanged.
-        - If `func` is a coroutine function, returns a sync wrapper
-          that runs the coroutine to completion on a dedicated event
-          loop and returns the result.
-
-        Use to bridge async handlers / hooks into sync code (CLI
-        commands, background workers, test scaffolding).
-        """
-        if not _is_async_callable(func):
-            return func
-
-        @functools.wraps(func)
-        def _sync_wrapper(*args: Any, **kwargs: Any) -> Any:
-            return asyncio.run(func(*args, **kwargs))
-
-        return _sync_wrapper
-
-    def make_response(self, value: Any) -> Response:
-        """Coerce a handler-return value into a `Response`.
-
-        Accepts (with this coercion table):
-        - `Response` -> returned as-is
-        - `str` / `bytes` -> wrapped as a text/HTML response
-        - `dict` / `list` -> wrapped as a JSON response via `jsonify`
-        - `tuple` of `(body, status)`, `(body, status, headers)` or
-          `(body, headers)` -> unpacked and re-coerced
-        - anything else -> JSON, matching what dispatch does with the same
-          value returned from a handler
-
-        A tuple of any other length is not a response tuple and is answered as
-        a plain value. `veloce.make_response` and dispatch read the same table
-        (`_unpack_response_tuple`); dispatch keeps its own fast lanes for the
-        shapes a handler returns most, but answers alike.
-        """
-        if isinstance(value, Response):
-            return value
-        if isinstance(value, tuple):
-            unpacked = _unpack_response_tuple(value)
-            if unpacked is not None:
-                body, code, headers = unpacked
-                resp = self.make_response(body)
-                if code is not None:
-                    resp.status_code = code
-                if headers:
-                    items = headers.items() if isinstance(headers, dict) else headers
-                    for k, v in items:
-                        resp.headers[k] = v
-                # `body` may already have been a `Response` carrying a cached
-                # encoding; the status line and headers just changed.
-                resp._encoded = None
-                return resp
-        if isinstance(value, (dict, list)):
-            return jsonify(value)
-        if isinstance(value, bytes):
-            return Response(body=value, content_type=MIME_HTML)
-        if isinstance(value, str):
-            return Response(
-                body=value.encode("utf-8"),
-                content_type=MIME_HTML,
-            )
-        # Anything else is JSON-encoded, which is what a handler returning the
-        # same value already gets from dispatch. Raising here made the public
-        # coercer refuse `123` and `None` while a handler returning them was
-        # answered `200` with a JSON body - one framework, two answers for one
-        # value.
-        return jsonify(value)
-
     # ── Blueprints and URL rules ───────────────────────────
 
     def register_blueprint(
         self,
-        blueprint: Any,
-        url_prefix: str | None = None,
+        blueprint: Annotated[Blueprint, Doc("Blueprint whose routes and hooks are mounted.")],
+        url_prefix: Annotated[
+            str | None, Doc("Path prefix to mount under; defaults to the blueprint's own.")
+        ] = None,
     ) -> None:
         """Mount a `Blueprint`'s routes + hooks onto this app.
 
@@ -1694,5 +1539,3 @@ class Veloce(
         # `app.static(prefix=app.static_url_path, directory=app.static_folder)`.
         self.static_folder: str = "static"
         self.static_url_path: str = "/static"
-
-    # ── ASGI compatibility layer ──────────────────────────

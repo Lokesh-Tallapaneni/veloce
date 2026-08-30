@@ -45,9 +45,15 @@ from __future__ import annotations
 import hashlib
 import linecache
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any, get_args, get_origin
 
-from veloce._constants import MSG_FIELD_REQUIRED, STATE_INJECTED_RESPONSE
+from veloce._constants import (
+    MSG_FIELD_REQUIRED,
+    MSG_MISSING_PARAMETER,
+    MSG_YIELD_NO_VALUE,
+    STATE_INJECTED_RESPONSE,
+)
 from veloce._handler_plan import (
     K_BG_TASKS,
     K_DEPENDS,
@@ -79,11 +85,6 @@ _GRAPH_BIND = frozenset({K_REQUEST, K_WEBSOCKET, K_BG_TASKS, K_RESPONSE})
 # interpreter and so cannot be reproduced in the sync compiled function.
 _SYNC_MARKERS = frozenset({MK_QUERY, MK_PATH, MK_HEADER, MK_COOKIE})
 
-# Same wording `DependencyResolver._exec_depends` raises, so both paths report a
-# non-yielding dependency identically. The callable is known at compile time, so
-# the message is built once per dependency rather than on the raise path.
-_MSG_NO_YIELD = "yield dependency {!r} returned without yielding a value"
-
 # Marker kinds that support repeated values via a list/set/tuple annotation.
 # MK_PATH binds a single path segment, so it has no list form.
 _LIST_MARKERS = frozenset({MK_QUERY, MK_HEADER, MK_COOKIE})
@@ -98,6 +99,30 @@ _MISSING = _Missing()
 
 class _NotCompilable(Exception):
     """Raised mid-emit when a slot the pre-check missed cannot be compiled."""
+
+
+@dataclass(slots=True)
+class _EmitContext:
+    """Compile-time state threaded through one graph emission.
+
+    `n` is a monotonically increasing index shared across the whole tree so
+    per-slot namespace keys (`_t{n}`, `_f{n}`, ...) and temp dict / result
+    locals (`_kw{n}`, `_r{n}`) never collide between sub-plans. `dep_vars`
+    maps a dependency's dedup key to the local holding its computed result, so
+    a callable referenced more than once is emitted (and run) once - mirroring
+    the interpreter's identity-keyed result cache. `in_progress` holds the keys
+    whose emission has not finished, so a dependency reachable from itself is
+    caught instead of emitted as a self-referential local. `scope_stack`
+    mirrors `DependencyResolver._scope_stack`, but is walked at compile time:
+    each `Security()` edge pushes its scopes for the duration of its sub-plan's
+    emission, so every `SecurityScopes` slot below sees the same ordered union
+    the interpreter would have built.
+    """
+
+    n: int = 0
+    dep_vars: dict[Any, str] = field(default_factory=dict)
+    in_progress: set[Any] = field(default_factory=set)
+    scope_stack: list[str] = field(default_factory=list)
 
 
 def _compile_resolver(source: str, kind: str, plan: HandlerPlan, ns: dict[str, Any]) -> Any:
@@ -237,22 +262,7 @@ def compile_graph_resolver(
     # Injected like the others so this module never imports `dependency`.
     ns["_SS"] = security_scopes_cls
     lines = ["async def _resolver(request, path_params, teardowns):", "    k = {}"]
-    # `n` is a monotonically increasing index shared across the whole tree so
-    # per-slot namespace keys (`_t{n}`, `_f{n}`, ...) and temp dict / result
-    # locals (`_kw{n}`, `_r{n}`) never collide between sub-plans. `dep_vars`
-    # maps a dependency callable's identity to the local holding its computed
-    # result, so a callable referenced more than once is emitted (and run)
-    # once - mirroring the interpreter's identity-keyed result cache.
-    # `scope_stack` mirrors `DependencyResolver._scope_stack`, but is walked at
-    # compile time: each `Security()` edge pushes its scopes for the duration of
-    # its sub-plan's emission, so every `SecurityScopes` slot below sees the
-    # same ordered union the interpreter would have built.
-    ctx: dict[str, Any] = {
-        "n": 0,
-        "dep_vars": {},
-        "in_progress": set(),
-        "scope_stack": [],
-    }
+    ctx = _EmitContext()
     try:
         for slot in plan.slots:
             _emit_graph_slot(lines, ns, slot, "k", ctx)
@@ -308,7 +318,7 @@ def _graph_compilable(plan: HandlerPlan, seen: set[int]) -> bool:
 
 # ── Graph emission ────────────────────────────────────────
 def _emit_graph_slot(
-    lines: list[str], ns: dict[str, Any], slot: Any, target: str, ctx: dict[str, Any]
+    lines: list[str], ns: dict[str, Any], slot: Any, target: str, ctx: _EmitContext
 ) -> None:
     """Emit code binding one slot's value into the `target` kwargs dict."""
     kind = slot.kind
@@ -355,10 +365,10 @@ def _emit_graph_slot(
         # sharing one here would let one request's mutation reach the next.
         # `SecurityScopes.__init__` copies the list, so the constant below is
         # never the object a dependency can reach.
-        n = ctx["n"]
-        ctx["n"] += 1
+        n = ctx.n
+        ctx.n += 1
         sref = f"_sc{n}"
-        ns[sref] = tuple(ctx["scope_stack"])
+        ns[sref] = tuple(ctx.scope_stack)
         lines.append(f"    {target}[{name!r}] = _SS({sref})")
         return
 
@@ -367,8 +377,8 @@ def _emit_graph_slot(
         lines.append(f"    {target}[{name!r}] = {var}")
         return
 
-    j = ctx["n"]
-    ctx["n"] += 1
+    j = ctx.n
+    ctx.n += 1
     if kind == K_PARAM_MARKER:
         _emit_marker(lines, ns, j, slot, target)
         return
@@ -379,7 +389,7 @@ def _emit_graph_slot(
     raise _NotCompilable
 
 
-def _emit_dep(lines: list[str], ns: dict[str, Any], slot: Any, ctx: dict[str, Any]) -> str:
+def _emit_dep(lines: list[str], ns: dict[str, Any], slot: Any, ctx: _EmitContext) -> str:
     """Emit a dependency's resolution and return the local holding its result.
 
     A callable already emitted returns its cached local unchanged. The dedup key
@@ -395,7 +405,7 @@ def _emit_dep(lines: list[str], ns: dict[str, Any], slot: Any, ctx: dict[str, An
     """
     dep_callable = slot.dep_callable
     cid = id(dep_callable)
-    scope_stack: list[str] = ctx["scope_stack"]
+    scope_stack = ctx.scope_stack
     # The scopes this edge contributes. A plain `Depends` carries none, so the
     # whole scope path below is a no-op for it.
     new_scopes: list[str] = slot.target_type if isinstance(slot.target_type, list) else []
@@ -403,19 +413,19 @@ def _emit_dep(lines: list[str], ns: dict[str, Any], slot: Any, ctx: dict[str, An
         key: Any = (cid, frozenset(scope_stack) | frozenset(new_scopes))
     else:
         key = cid
-    dep_vars = ctx["dep_vars"]
+    dep_vars = ctx.dep_vars
     cached = dep_vars.get(key)
     if cached is not None:
         return cached
-    in_progress = ctx["in_progress"]
+    in_progress = ctx.in_progress
     if key in in_progress:
         # A dependency reachable from itself cannot be linearised; bail to the
         # interpreter rather than emit a self-referential local.
         raise _NotCompilable
     in_progress.add(key)
 
-    n = ctx["n"]
-    ctx["n"] += 1
+    n = ctx.n
+    ctx.n += 1
     subkw = f"_kw{n}"
     var = f"_r{n}"
     fref = f"_f{n}"
@@ -440,7 +450,9 @@ def _emit_dep(lines: list[str], ns: dict[str, Any], slot: Any, ctx: dict[str, An
         # gets from appending at this point.
         gref = f"_g{n}"
         mref = f"_m{n}"
-        ns[mref] = _MSG_NO_YIELD.format(dep_callable)
+        # The callable is known at compile time, so the message is built once per
+        # dependency rather than on the raise path.
+        ns[mref] = MSG_YIELD_NO_VALUE.format(dependency=dep_callable)
         lines.append(f"    {gref} = {fref}(**{subkw})")
         lines.append("    try:")
         lines.append(f"        {var} = next({gref})")
@@ -450,7 +462,7 @@ def _emit_dep(lines: list[str], ns: dict[str, Any], slot: Any, ctx: dict[str, An
     elif slot.dep_is_async_gen:
         gref = f"_g{n}"
         mref = f"_m{n}"
-        ns[mref] = _MSG_NO_YIELD.format(dep_callable)
+        ns[mref] = MSG_YIELD_NO_VALUE.format(dependency=dep_callable)
         lines.append(f"    {gref} = {fref}(**{subkw})")
         lines.append("    try:")
         lines.append(f"        {var} = await {gref}.__anext__()")
@@ -614,7 +626,7 @@ def _emit_marker(
         else:
             lines.append(
                 f"        raise _RVE([{{'loc': [{loc!r}, {name!r}], "
-                f"'msg': 'Missing required parameter: {name}', "
+                f"'msg': {MSG_MISSING_PARAMETER.format(name=name)!r}, "
                 f"'type': 'value_error.missing'}}])"
             )
         lines.append("    else:")
@@ -648,7 +660,7 @@ def _emit_marker(
     else:
         lines.append(
             f"        raise _RVE([{{'loc': [{loc!r}, {name!r}], "
-            f"'msg': 'Missing required parameter: {name}', "
+            f"'msg': {MSG_MISSING_PARAMETER.format(name=name)!r}, "
             f"'type': 'value_error.missing'}}])"
         )
     lines.append("    else:")

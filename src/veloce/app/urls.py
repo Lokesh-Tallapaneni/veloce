@@ -8,7 +8,8 @@ caching the build until a route mutation drops the instance. Public surface:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from collections.abc import Iterator
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.app import Veloce
@@ -30,7 +31,7 @@ class URLRule:
         self.methods = methods
         self.endpoint = endpoint
 
-    def __iter__(self) -> Any:
+    def __iter__(self) -> Iterator[str | list[str]]:
         return iter((self.rule, self.methods, self.endpoint))
 
     def __repr__(self) -> str:
@@ -81,7 +82,7 @@ class _URLMap:
         self._by_endpoint = by_endpoint
         return result
 
-    def __iter__(self) -> Any:
+    def __iter__(self) -> Iterator[URLRule]:
         return iter(self._build())
 
     def __len__(self) -> int:

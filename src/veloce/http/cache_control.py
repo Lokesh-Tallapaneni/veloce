@@ -84,6 +84,24 @@ class CacheControl:
             else:
                 self._directives[_to_attr(token.lower())] = True
 
+    def to_header(self) -> str:
+        """Serialise back to a `Cache-Control` header value.
+
+        Bool-True directives emit just the directive name; numeric and
+        string directives emit `name=value`. Preserves source-observed
+        order; user-set directives append in set order.
+        """
+        parts: list[str] = []
+        for k, v in self._directives.items():
+            wire = _to_wire(k)
+            # Bool-True flags emit the bare directive; numeric and string
+            # values share one `name=value` form (int formats identically).
+            if v is True:
+                parts.append(wire)
+            else:
+                parts.append(f"{wire}={v}")
+        return ", ".join(parts)
+
     def __getattr__(self, name: str) -> Any:
         if name.startswith("_"):
             raise AttributeError(name)
@@ -108,24 +126,6 @@ class CacheControl:
 
     def __bool__(self) -> bool:
         return bool(self._directives)
-
-    def to_header(self) -> str:
-        """Serialise back to a `Cache-Control` header value.
-
-        Bool-True directives emit just the directive name; numeric and
-        string directives emit `name=value`. Preserves source-observed
-        order; user-set directives append in set order.
-        """
-        parts: list[str] = []
-        for k, v in self._directives.items():
-            wire = _to_wire(k)
-            # Bool-True flags emit the bare directive; numeric and string
-            # values share one `name=value` form (int formats identically).
-            if v is True:
-                parts.append(wire)
-            else:
-                parts.append(f"{wire}={v}")
-        return ", ".join(parts)
 
     def __str__(self) -> str:
         return self.to_header()

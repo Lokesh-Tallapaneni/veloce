@@ -48,6 +48,11 @@ scheme) - the transport adds no auth of its own.
 This transport satisfies the `Transport` contract through its per-request outbound
 sink (`send` in `_stream_response`): the SSE generator drains a queue the sink
 feeds, so one-way notifications reach the client while the call is in flight.
+
+This module owns the admission and response helpers both HTTP wires use, so the
+two cannot drift apart: `sse.py` imports `_protocol_response`, `_validate_origin`,
+`_authenticate`, `register_metadata_route` and `_SSE_RETRY_MS` from here rather
+than carrying its own. Changing one of them changes the legacy transport too.
 """
 
 from __future__ import annotations
@@ -61,6 +66,7 @@ from itertools import count
 from typing import TYPE_CHECKING, Any, cast
 
 import veloce.status as status
+from veloce._internal import _bearer_token_from
 from veloce.contrib.mcp._helpers import encode_envelope, transport_route_name
 from veloce.contrib.mcp._posture import record_endpoint
 from veloce.contrib.mcp.auth import PROTECTED_RESOURCE_METADATA_PATH, MCPAuth
@@ -91,7 +97,6 @@ from veloce.contrib.mcp.transports.event_store import _EVENT_ID_SEP, SSEEventSto
 from veloce.contrib.mcp.transports.session_store import HttpSessionStore, SessionBackend
 from veloce.http.response import JSONResponse, Response
 from veloce.principal import Principal, current_principal, set_principal
-from veloce.security._utils import _extract_bearer_token
 from veloce.sse import EventSourceResponse, ServerSentEvent
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -116,6 +121,11 @@ _LAST_EVENT_ID_HEADER = "Last-Event-ID"
 # The same name as the lower-case wire key, encoded once at import.
 _RAW_LAST_EVENT_ID = _LAST_EVENT_ID_HEADER.lower().encode("latin-1")
 
+# The lower-case wire key for the bearer credential, encoded once at import like
+# the one above. `_peek_header_key` compares it against the raw header tuples,
+# so reading the token never materialises the whole header mapping.
+_RAW_AUTHORIZATION = b"authorization"
+
 # Monotonic source of SSE event ids for the non-resumable priming event. The id
 # makes the stream's first frame addressable; when resumability is off the id is
 # process-local and not persisted (no replay window is kept).
@@ -131,6 +141,9 @@ _STREAM_ID_ENTROPY_BYTES = 12
 _STREAM_END = object()
 
 
+# ── Response envelopes ────────────────────────────────────
+
+
 def _protocol_response(
     payload: Any, *, status_code: int = status.HTTP_200_OK, headers: dict[str, str] | None = None
 ) -> Response:
@@ -144,6 +157,9 @@ def _protocol_response(
     if headers:
         response.headers.update(headers)
     return response
+
+
+# ── Route registration ────────────────────────────────────
 
 
 def register_http_transport(
@@ -412,6 +428,9 @@ async def _handle_delete(store: HttpSessionStore | None, request: Request) -> Re
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+# ── Verb handlers ─────────────────────────────────────────
+
+
 def _handle_get(event_store: SSEEventStore | None, request: Request) -> Response:
     """Resume a dropped SSE stream from `Last-Event-ID`, or answer 405.
 
@@ -439,6 +458,9 @@ def _handle_get(event_store: SSEEventStore | None, request: Request) -> Response
         yield ServerSentEvent(retry=_SSE_RETRY_MS)
 
     return EventSourceResponse(events())
+
+
+# ── Admission control ─────────────────────────────────────
 
 
 def _validate_origin(request: Request, allowed_origins: frozenset[str] | None) -> None:
@@ -504,7 +526,9 @@ def _require_header(request: Request, name: str) -> str:
     return value
 
 
-def _needs_stream(server: Any, message: dict[str, Any], event_store: Any) -> bool:
+def _needs_stream(
+    server: MCPServer, message: dict[str, Any], event_store: SSEEventStore | None
+) -> bool:
     """Whether this request can produce anything beyond its own single reply.
 
     The spec lets a POST carrying a request be answered either as JSON or as an
@@ -607,6 +631,9 @@ def _validate_standard_headers(request: Request, message: dict[str, Any]) -> Non
         raise HeaderMismatchError(f"Mcp-Name does not match params.{field} in the request body")
 
 
+# ── Refusal responses ─────────────────────────────────────
+
+
 def _method_not_allowed() -> Response:
     """Answer a GET on the MCP endpoint with HTTP 405 (no server-push stream)."""
     return Response(status_code=status.HTTP_405_METHOD_NOT_ALLOWED, headers={"Allow": "POST"})
@@ -635,9 +662,9 @@ async def _authenticate(
     # The framework's own extractor, not a second parse: RFC 6750 Sec. 2.1 and
     # RFC 7235 permit only SP/HTAB between scheme and token, and a bare `.strip()`
     # also trimmed newlines and NBSP - so a token this door accepted was one the
-    # HTTP door rejected. `auto_error=False` returns `None` instead of raising,
-    # since a challenge response is what this path owes the caller.
-    token = _extract_bearer_token(request, auto_error=False)
+    # HTTP door rejected. The pure extraction rather than `security/`'s wrapper,
+    # which raises where this path owes the caller a challenge response.
+    token = _bearer_token_from(request._peek_header_key(_RAW_AUTHORIZATION) or "")
     if not token:
         return None, _challenge(auth, 401, "invalid_token")
 
@@ -666,6 +693,9 @@ def _challenge(auth: MCPAuth, status_code: int, error: str) -> Response:
     return _protocol_response(
         body, status_code=status_code, headers={"WWW-Authenticate": ", ".join(parts)}
     )
+
+
+# ── SSE streaming ─────────────────────────────────────────
 
 
 def _stream_response(
@@ -710,7 +740,7 @@ def _stream_response(
     # A resumable stream has already recorded each payload in the event store, so
     # dropping the queue hand-off after teardown costs a reconnecting client
     # nothing: the replay comes from the store, not from here.
-    draining = [True]
+    draining = True
     # Set when the SSE generator tears down, however it ended. A long-lived
     # `subscriptions/listen` waits on this: its request is answered by its own
     # close, so without something to hold the dispatch task the stream would end
@@ -734,7 +764,7 @@ def _stream_response(
     # recording is what survives a dropped connection for later replay.
     async def send(message: dict[str, Any]) -> None:
         event_id = emit_id(message)
-        if draining[0]:
+        if draining:
             await queue.put((event_id, message))
 
     async def runner() -> None:
@@ -751,7 +781,7 @@ def _stream_response(
             response = await server.handle_message(message, session)
             if response is not None:
                 response_id = emit_id(response)
-                if draining[0]:
+                if draining:
                     await queue.put((response_id, response))
             elif message.get("id") in session.listen_streams:
                 # This request opened a listen stream, so it is answered when the
@@ -768,15 +798,16 @@ def _stream_response(
             _logger.exception("MCP HTTP request handling failed")
             err = _error(message.get("id"), _JSONRPC_INTERNAL_ERROR, "internal error")
             err_id = emit_id(err)
-            if draining[0]:
+            if draining:
                 await queue.put((err_id, err))
         finally:
             server.unregister_connection(conn_token)
             _notifier_var.reset(token)
-            if draining[0]:
+            if draining:
                 await queue.put(_STREAM_END)
 
     async def events() -> Any:
+        nonlocal draining
         # Disconnection is not cancellation (MCP transport): a client that closes
         # the stream must not abort the in-flight call, so the dispatch task is
         # never cancelled on generator teardown. It holds its own context and
@@ -809,7 +840,7 @@ def _stream_response(
             # will read this queue again. Tell the runner to stop filling it and
             # release whatever is already buffered, and release a listen stream
             # still waiting for the client so its connection is unregistered.
-            draining[0] = False
+            draining = False
             client_gone.set()
             while not queue.empty():
                 queue.get_nowait()

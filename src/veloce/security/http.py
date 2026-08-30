@@ -28,6 +28,40 @@ _DIGEST_PREFIX = (AUTH_SCHEME_DIGEST + " ").lower()
 _DIGEST_PREFIX_LEN = len(_DIGEST_PREFIX)
 
 
+def _default_nonce() -> str:
+    """Generate an opaque nonce for the Digest challenge.
+
+    16 random bytes hex-encoded - well above the 64-bit entropy floor
+    RFC 7616 Sec. 5.3 recommends. Server-side nonce replay tracking is
+    application territory.
+    """
+    return secrets.token_hex(16)
+
+
+def _parse_digest(value: str) -> HTTPDigestCredentials:
+    """Split a `key=value, key="quoted value"` Digest field list.
+
+    RFC 7616 Sec. 3.4 - the field set is open-ended, so we collect every
+    pair and assign known names to the credential's slots. Unknown
+    fields are ignored (e.g. `userhash=true` extensions). Quoted
+    values are unwrapped per RFC 5322 quoted-pair semantics; unquoted
+    values pass through verbatim.
+    """
+    _, fields = parse_header_params(value, delimiter=",", unescape=True)
+    return HTTPDigestCredentials(
+        username=fields.get("username", ""),
+        realm=fields.get("realm", ""),
+        nonce=fields.get("nonce", ""),
+        uri=fields.get("uri", ""),
+        response=fields.get("response", ""),
+        qop=fields.get("qop", ""),
+        nc=fields.get("nc", ""),
+        cnonce=fields.get("cnonce", ""),
+        opaque=fields.get("opaque", ""),
+        algorithm=fields.get("algorithm", ""),
+    )
+
+
 @dataclass(slots=True)
 class HTTPBasicCredentials:
     """HTTP Basic auth credentials."""
@@ -207,40 +241,6 @@ class HTTPDigest(SecurityScheme):
     def openapi_scheme(self) -> dict[str, Any] | None:
         """HTTP authentication, published with the scheme it advertises."""
         return {"type": "http", "scheme": "digest"}
-
-
-def _default_nonce() -> str:
-    """Generate an opaque nonce for the Digest challenge.
-
-    16 random bytes hex-encoded - well above the 64-bit entropy floor
-    RFC 7616 Sec. 5.3 recommends. Server-side nonce replay tracking is
-    application territory.
-    """
-    return secrets.token_hex(16)
-
-
-def _parse_digest(value: str) -> HTTPDigestCredentials:
-    """Split a `key=value, key="quoted value"` Digest field list.
-
-    RFC 7616 Sec. 3.4 - the field set is open-ended, so we collect every
-    pair and assign known names to the credential's slots. Unknown
-    fields are ignored (e.g. `userhash=true` extensions). Quoted
-    values are unwrapped per RFC 5322 quoted-pair semantics; unquoted
-    values pass through verbatim.
-    """
-    _, fields = parse_header_params(value, delimiter=",", unescape=True)
-    return HTTPDigestCredentials(
-        username=fields.get("username", ""),
-        realm=fields.get("realm", ""),
-        nonce=fields.get("nonce", ""),
-        uri=fields.get("uri", ""),
-        response=fields.get("response", ""),
-        qop=fields.get("qop", ""),
-        nc=fields.get("nc", ""),
-        cnonce=fields.get("cnonce", ""),
-        opaque=fields.get("opaque", ""),
-        algorithm=fields.get("algorithm", ""),
-    )
 
 
 class HTTPBearer(_BearerScheme):

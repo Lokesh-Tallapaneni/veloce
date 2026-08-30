@@ -62,6 +62,9 @@ _SERVER_ID_PREFIX = "srv-"
 _CONTROL_METHODS = frozenset({"ping", "notifications/cancelled"})
 
 
+# ── The transport ─────────────────────────────────────────
+
+
 class StdioTransport:
     """Drive an `MCPServer` over a line-delimited JSON byte stream.
 
@@ -320,6 +323,9 @@ class StdioTransport:
             future.set_result(result if isinstance(result, dict) else {})
 
 
+# ── Errors ────────────────────────────────────────────────
+
+
 class MCPRequestError(Exception):
     """A server->client request failed (the client replied with an error or closed)."""
 
@@ -331,6 +337,9 @@ _STDERR_FD = 2
 # Set while a stdio server holds the process wire. Two servers on one process
 # would each divert the other's descriptors, so the second is refused instead.
 _wire_claimed = False
+
+
+# ── Wire isolation ────────────────────────────────────────
 
 
 def _descriptor_is_open(fd: int) -> bool:

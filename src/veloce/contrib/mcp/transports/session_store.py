@@ -60,6 +60,9 @@ _DEFAULT_MAX_SESSIONS = 10_000
 _DEFAULT_IDLE_TTL_SECONDS = 3600.0
 
 
+# ── Records and backends ──────────────────────────────────
+
+
 @dataclass(slots=True)
 class SessionRecord:
     """What a session id means, independently of the worker serving it.
@@ -113,6 +116,9 @@ class SessionBackend(Protocol):
     async def delete(self, session_id: str) -> None:
         """Drop `session_id`, whether or not it was live."""
         ...
+
+
+# ── The store ─────────────────────────────────────────────
 
 
 class _LiveSession:

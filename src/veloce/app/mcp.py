@@ -9,9 +9,11 @@ subsystem at all.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Coroutine, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
+
+from typing_extensions import Doc
 
 from veloce.app._host import AppHost
 from veloce.principal import set_principal
@@ -82,41 +84,37 @@ class MCPCompleterRegistration:
 class MCPMixin(AppHost):
     """Register MCP tools, prompts, completers and hooks, and mount a server."""
 
-    def _init_mcp_state(self) -> None:
-        """Set up the registries `mcp_tool` / `mcp_prompt` / `mcp_completer` write into."""
-        # MCP-only tool registrations (contrib.mcp), recorded by
-        # `@app.mcp_tool(...)` and consumed once at `mount_mcp` time when the
-        # tool registry is assembled.
-        self._mcp_tools: list[MCPToolRegistration] = []
-        # MCP prompt registrations (contrib.mcp), recorded by
-        # `@app.mcp_prompt(...)` and consumed at `mount_mcp` time.
-        self._mcp_prompts: list[MCPPromptRegistration] = []
-        # Hooks that run around every MCP call - tool, resource read or prompt
-        # render - whichever way the primitive was registered. A route-backed tool
-        # replays the HTTP request lifecycle and so already sees `before_request`;
-        # a tool registered with `@app.mcp_tool` has no route, so these are the
-        # only place a cross-cutting concern can sit for it. Empty lists cost one
-        # falsy check per call.
-        self._mcp_before_call: list[Callable[..., Any]] = []
-        self._mcp_after_call: list[Callable[..., Any]] = []
-        # MCP argument-completer registrations (contrib.mcp), recorded by
-        # `@app.mcp_completer(...)` and bound onto its descriptor at `mount_mcp`
-        # time so `completion/complete` can answer for that argument.
-        self._mcp_completers: list[MCPCompleterRegistration] = []
-
     def mcp_tool(
         self,
-        description: str,
+        description: Annotated[
+            str, Doc("Required LLM-facing description, separate from the docstring.")
+        ],
         *,
-        name: str | None = None,
-        namespace: str | None = None,
-        scopes: Sequence[str] | None = None,
-        tags: Sequence[str] | None = None,
-        icons: Sequence[Icon] | None = None,
-        task_support: bool = False,
-        annotations: dict[str, Any] | None = None,
-        meta: dict[str, Any] | None = None,
-        version: str | None = None,
+        name: Annotated[
+            str | None, Doc("Tool name; defaults to the decorated function's own.")
+        ] = None,
+        namespace: Annotated[
+            str | None, Doc("Prefix qualifying the tool name, for a shared catalogue.")
+        ] = None,
+        scopes: Annotated[
+            Sequence[str] | None, Doc("Scopes the calling principal must hold to see and call it.")
+        ] = None,
+        tags: Annotated[
+            Sequence[str] | None, Doc("Free-form labels published with the tool.")
+        ] = None,
+        icons: Annotated[
+            Sequence[Icon] | None, Doc("Icons a client may render beside the tool.")
+        ] = None,
+        task_support: Annotated[
+            bool, Doc("Allow the call to be started as a long-running MCP task.")
+        ] = False,
+        annotations: Annotated[
+            dict[str, Any] | None, Doc("MCP tool annotations, such as `readOnlyHint`.")
+        ] = None,
+        meta: Annotated[
+            dict[str, Any] | None, Doc("Opaque `_meta` published with the tool.")
+        ] = None,
+        version: Annotated[str | None, Doc("Version string published with the tool.")] = None,
     ) -> Callable[..., Any]:
         """Register an MCP-only tool callable by an AI agent (contrib.mcp).
 
@@ -140,9 +138,7 @@ class MCPMixin(AppHost):
             async def add(a: int, b: int) -> int:
                 return a + b
         """
-        # `app/` is core and `contrib/` is optional, so this is deferred to keep the
-        # layering: importing the optional integration eagerly would make every
-        # `import veloce` pay for machinery most apps never mount.
+        # Deferred: `contrib/` is optional.
         from veloce.contrib.mcp.safety import require_mcp_description, validate_tool_annotations
 
         scope_set = frozenset(scopes) if scopes else None
@@ -197,9 +193,7 @@ class MCPMixin(AppHost):
             async def summarise(topic: str) -> str:
                 return f"Summarise {topic} in three bullet points."
         """
-        # `app/` is core and `contrib/` is optional, so this is deferred to keep the
-        # layering: importing the optional integration eagerly would make every
-        # `import veloce` pay for machinery most apps never mount.
+        # Deferred: `contrib/` is optional.
         from veloce.contrib.mcp.safety import require_mcp_description
 
         scope_set = frozenset(scopes) if scopes else None
@@ -302,22 +296,52 @@ class MCPMixin(AppHost):
 
     def mount_mcp(
         self,
-        transport: str = "stdio",
+        transport: Annotated[
+            str, Doc("One of `stdio`, `http`, or the deprecated `sse`.")
+        ] = "stdio",
         *,
-        path: str = "/mcp",
-        auth: Any = None,
-        principal: Any = None,
-        allowed_origins: Sequence[str] | None = None,
-        exclude_middleware: Sequence[str] | None = None,
-        sessions: bool = False,
-        resumable: bool = False,
-        tool_filter: Any = None,
-        cache_ttl_ms: int | None = None,
-        page_size: int | None = None,
-        tool_search: bool = False,
-        session_backend: Any = None,
-        message_path: str = "/messages",
-    ) -> Any:
+        path: Annotated[
+            str, Doc("Where an HTTP or SSE transport mounts; ignored on stdio.")
+        ] = "/mcp",
+        auth: Annotated[
+            Any, Doc("An `MCPAuth` making an HTTP endpoint an OAuth 2.1 resource server.")
+        ] = None,
+        principal: Annotated[
+            Any, Doc("`Principal` whose identity and scopes the served tools run under.")
+        ] = None,
+        allowed_origins: Annotated[
+            Sequence[str] | None, Doc("Enable `Origin` validation, the DNS-rebinding defense.")
+        ] = None,
+        exclude_middleware: Annotated[
+            Sequence[str] | None, Doc("App middleware the transport routes opt out of.")
+        ] = None,
+        sessions: Annotated[bool, Doc("Opt into the `Mcp-Session-Id` lifecycle.")] = False,
+        resumable: Annotated[
+            bool, Doc("Opt into SSE resumability, replaying missed events on reconnect.")
+        ] = False,
+        tool_filter: Annotated[
+            Any, Doc("`(tool, principal) -> bool` narrowing what `tools/list` reports.")
+        ] = None,
+        cache_ttl_ms: Annotated[
+            int | None, Doc("Freshness hint sent with cacheable results; `0` marks them stale.")
+        ] = None,
+        page_size: Annotated[
+            int | None, Doc("Opt the list methods into cursor pagination at this page size.")
+        ] = None,
+        tool_search: Annotated[
+            bool,
+            Doc(
+                "Publish `search_tools` / `describe_tools` / `run_tools` in place of the catalogue."
+            ),
+        ] = False,
+        session_backend: Annotated[
+            Any,
+            Doc("Store sharing HTTP sessions between workers, with async `read`/`write`/`delete`."),
+        ] = None,
+        message_path: Annotated[
+            str, Doc("URL an SSE stream names for the client to POST to; ignored elsewhere.")
+        ] = "/messages",
+    ) -> Coroutine[Any, Any, None] | None:
         """Build the MCP server and serve the registered tools.
 
         Assembles the tool registry from `@app.mcp_tool` registrations plus every
@@ -409,9 +433,7 @@ class MCPMixin(AppHost):
         `message_path` is the URL an SSE stream names for the client to POST to;
         ignored on the other transports.
         """
-        # `app/` is core and `contrib/` is optional, so this is deferred to keep the
-        # layering: importing the optional integration eagerly would make every
-        # `import veloce` pay for machinery most apps never mount.
+        # Deferred: `contrib/` is optional.
         from veloce.contrib.mcp.server import DEFAULT_CACHE_TTL_MS, MCPServer
 
         # Omitted means the server's own default freshness hint.
@@ -437,9 +459,7 @@ class MCPMixin(AppHost):
             )
 
         if transport == "stdio":
-            # `app/` is core and `contrib/` is optional, so this is deferred to keep the
-            # layering: importing the optional integration eagerly would make every
-            # `import veloce` pay for machinery most apps never mount.
+            # Deferred: `contrib/` is optional.
             from veloce.contrib.mcp.transports.stdio import serve_stdio
 
             server = _build_server()
@@ -453,9 +473,7 @@ class MCPMixin(AppHost):
             return _serve()
 
         if transport == "http":
-            # `app/` is core and `contrib/` is optional, so this is deferred to keep the
-            # layering: importing the optional integration eagerly would make every
-            # `import veloce` pay for machinery most apps never mount.
+            # Deferred: `contrib/` is optional.
             from veloce.contrib.mcp.transports.http import register_http_transport
 
             server = _build_server()
@@ -486,9 +504,7 @@ class MCPMixin(AppHost):
             return None
 
         if transport == "sse":
-            # `app/` is core and `contrib/` is optional, so this is deferred to keep the
-            # layering: importing the optional integration eagerly would make every
-            # `import veloce` pay for machinery most apps never mount.
+            # Deferred: `contrib/` is optional.
             from veloce.contrib.mcp.transports.sse import register_sse_transport
 
             server = _build_server()
@@ -507,3 +523,25 @@ class MCPMixin(AppHost):
             f"Unsupported MCP transport {transport!r}; supported transports are "
             "'stdio', 'http', and 'sse' (the deprecated split-endpoint wire)."
         )
+
+    def _init_mcp_state(self) -> None:
+        """Set up the registries `mcp_tool` / `mcp_prompt` / `mcp_completer` write into."""
+        # MCP-only tool registrations (contrib.mcp), recorded by
+        # `@app.mcp_tool(...)` and consumed once at `mount_mcp` time when the
+        # tool registry is assembled.
+        self._mcp_tools: list[MCPToolRegistration] = []
+        # MCP prompt registrations (contrib.mcp), recorded by
+        # `@app.mcp_prompt(...)` and consumed at `mount_mcp` time.
+        self._mcp_prompts: list[MCPPromptRegistration] = []
+        # Hooks that run around every MCP call - tool, resource read or prompt
+        # render - whichever way the primitive was registered. A route-backed tool
+        # replays the HTTP request lifecycle and so already sees `before_request`;
+        # a tool registered with `@app.mcp_tool` has no route, so these are the
+        # only place a cross-cutting concern can sit for it. Empty lists cost one
+        # falsy check per call.
+        self._mcp_before_call: list[Callable[..., Any]] = []
+        self._mcp_after_call: list[Callable[..., Any]] = []
+        # MCP argument-completer registrations (contrib.mcp), recorded by
+        # `@app.mcp_completer(...)` and bound onto its descriptor at `mount_mcp`
+        # time so `completion/complete` can answer for that argument.
+        self._mcp_completers: list[MCPCompleterRegistration] = []

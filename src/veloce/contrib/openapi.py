@@ -18,7 +18,7 @@ import uuid
 import warnings
 import weakref
 from decimal import Decimal
-from typing import Any, Literal, Union, get_args, get_origin, get_type_hints
+from typing import TYPE_CHECKING, Any, Literal, Union, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel, create_model
 
@@ -38,6 +38,9 @@ from veloce.dependency import Depends
 from veloce.routing.converters import path_param_schemas
 from veloce.security.base import SecurityScheme
 from veloce.status import HTTP_200_OK, HTTP_422_UNPROCESSABLE_ENTITY
+
+if TYPE_CHECKING:  # pragma: no cover
+    from veloce.app import Veloce
 
 _logger = logging.getLogger(__name__)
 
@@ -140,7 +143,7 @@ def _param_marker(param: Any, hints: dict[str, Any]) -> Any:
     return marker if marker is not None else default
 
 
-def _deep_merge(target: dict, overlay: dict) -> None:
+def _deep_merge(target: dict[str, Any], overlay: dict[str, Any]) -> None:
     """Recursively merge `overlay` into `target` in place.
 
     Nested dicts merge key-by-key; any non-dict value (scalar, list)
@@ -168,7 +171,7 @@ def _is_model_type(annotation: Any) -> bool:
     return is_msgspec_struct(annotation)
 
 
-def _literal_enum_schema(values: list) -> dict[str, Any]:
+def _literal_enum_schema(values: list[Any]) -> dict[str, Any]:
     """Build an OpenAPI schema for a fixed set of literal / enum values."""
     schema: dict[str, Any] = {"enum": values}
     if not values:
@@ -214,7 +217,7 @@ _SCALAR_TYPE_SCHEMAS: dict[Any, dict[str, Any]] = {
 }
 
 
-def _python_type_to_schema(annotation: Any) -> dict:
+def _python_type_to_schema(annotation: Any) -> dict[str, Any]:
     """Convert a Python type to its OpenAPI 3.1 / JSON Schema 2020-12 form.
 
     This builds the schema for a non-body parameter (query / path / header
@@ -381,7 +384,7 @@ class SchemaRegistry:
             self._order.append(key)
         return {"$ref": f"{_REF_PLACEHOLDER_PREFIX}{entry.token}"}
 
-    def finalize(self, document: dict[str, Any]) -> dict[str, dict]:
+    def finalize(self, document: dict[str, Any]) -> dict[str, dict[str, Any]]:
         """Resolve placeholders, rewrite `document` in place, return schemas.
 
         Assigns each entry a final component name (bare class name when that
@@ -390,7 +393,7 @@ class SchemaRegistry:
         twin, then rewrites every placeholder `$ref` reachable from `document`.
         """
         token_to_name: dict[str, str] = {}
-        components: dict[str, dict] = {}
+        components: dict[str, dict[str, Any]] = {}
 
         # Group entries by the human-readable base name they want. A serialization
         # entry is suffixed `-Output` only when it actually diverges from its
@@ -497,7 +500,7 @@ class SchemaRegistry:
         return components
 
     def _diverging_def_renames(
-        self, defs: dict[str, dict], components: dict[str, dict]
+        self, defs: dict[str, dict[str, Any]], components: dict[str, dict[str, Any]]
     ) -> dict[str, str]:
         """Map nested-def names needing an `-Output` variant to unique names.
 
@@ -536,7 +539,7 @@ class SchemaRegistry:
         return renames
 
     @staticmethod
-    def _unique_def_name(components: dict[str, dict], base: str) -> str:
+    def _unique_def_name(components: dict[str, dict[str, Any]], base: str) -> str:
         """Return a component name derived from `base` not already in use.
 
         The `-Output` suffix mirrors the top-level serialization variant naming
@@ -550,7 +553,7 @@ class SchemaRegistry:
         return [self._entries[k].token for k in self._order]
 
 
-def _iter_dicts(node: Any) -> collections.abc.Iterator[dict]:
+def _iter_dicts(node: Any) -> collections.abc.Iterator[dict[str, Any]]:
     """Yield every mapping in a JSON tree, the outermost first.
 
     One walk for the several passes that visit a generated schema: rewriting a
@@ -627,7 +630,7 @@ class _SchemaEntry:
         cls._counter += 1
         self.token = str(cls._counter)
         self.body: dict[str, Any] = {}
-        self.defs: dict[str, dict] = {}
+        self.defs: dict[str, dict[str, Any]] = {}
         # Set when this entry collapses onto another (byte-identical output).
         self.alias_token: str | None = None
 
@@ -700,7 +703,7 @@ def _local_def_refs(node: Any) -> set[str]:
     }
 
 
-def _copy_with_local_defs(node: dict, renames: dict[str, str]) -> dict:
+def _copy_with_local_defs(node: dict[str, Any], renames: dict[str, str]) -> dict[str, Any]:
     """Deep-copy `node`, repointing renamed `#/$defs/<old>` refs to the new names.
 
     Used to emit a diverging nested def's `-Output` variant: the source schema is
@@ -742,7 +745,9 @@ def _rewrite_refs(node: Any, token_to_name: dict[str, str]) -> None:
             mapping["$ref"] = f"#/components/schemas/{ref[len(_PYDANTIC_DEF_PREFIX) :]}"
 
 
-def _register_schema(name: str, schema: dict, registry: dict[str, dict]) -> None:
+def _register_schema(
+    name: str, schema: dict[str, Any], registry: dict[str, dict[str, Any]]
+) -> None:
     """Hoist a generated schema's `$defs` into `registry` and record it by name."""
     _rewrite_byte_format(schema)
     if "$defs" in schema:
@@ -758,7 +763,7 @@ def _register_schema(name: str, schema: dict, registry: dict[str, dict]) -> None
         registry[name] = schema
 
 
-def _adapted_to_schema(model: Any, registry: dict[str, dict]) -> dict:
+def _adapted_to_schema(model: Any, registry: dict[str, dict[str, Any]]) -> dict[str, Any]:
     """Convert a dataclass / `TypedDict` to a name-keyed `$ref`, extending `registry`.
 
     The adapted counterpart to `_pydantic_to_schema`: both hoist their `$defs`
@@ -777,10 +782,10 @@ def _adapted_to_schema(model: Any, registry: dict[str, dict]) -> dict:
 
 def _pydantic_to_schema(
     model: type[BaseModel],
-    registry: dict[str, dict],
+    registry: dict[str, dict[str, Any]],
     mode: str = "validation",
     by_alias: bool = True,
-) -> dict:
+) -> dict[str, Any]:
     """Convert a Pydantic model to a name-keyed `$ref`, extending `registry`.
 
     Standalone renderer for callers that build a self-contained schema envelope
@@ -815,7 +820,7 @@ _SEQUENCE_ORIGINS = (list, collections.abc.Sequence, tuple, set, frozenset, coll
 #: Derived models built for a route's `response_model_include` /
 #: `response_model_exclude`, keyed by `(model, include, exclude)` so two routes
 #: filtering a model the same way share one component rather than emitting two.
-_FILTERED_MODELS: dict[tuple[int, frozenset | None, frozenset | None], Any] = {}
+_FILTERED_MODELS: dict[tuple[int, frozenset[str] | None, frozenset[str] | None], Any] = {}
 
 #: Longest joined field list to spell out in a derived component's name.
 _FILTERED_NAME_LIMIT = 48
@@ -873,7 +878,7 @@ def _response_model_to_schema(
     registry: SchemaRegistry,
     include: set[str] | None = None,
     exclude: set[str] | None = None,
-) -> dict | None:
+) -> dict[str, Any] | None:
     """Render `response_model` into an OpenAPI schema object.
 
     Handles four shapes:
@@ -898,7 +903,7 @@ def _response_model_to_schema(
         return {"type": "array", "items": {}}
 
     if origin in (Union, types.UnionType):
-        variants: list[dict] = []
+        variants: list[dict[str, Any]] = []
         for arg in get_args(response_model):
             if arg is type(None):
                 variants.append({"type": "null"})
@@ -922,7 +927,7 @@ def _response_model_to_schema(
 # ── Info / parameter / body / response builders ────────────
 
 
-def _build_info_object(app: Any) -> dict[str, Any]:
+def _build_info_object(app: Veloce) -> dict[str, Any]:
     """Return the OpenAPI `info` object assembled from app metadata."""
     # Read directly: `Veloce.__init__` requires both to be non-empty strings, so
     # a fallback here is a second copy of a default that cannot be reached. The
@@ -978,7 +983,7 @@ class _FormField:
     """One `Form()` / `File()` parameter, as the request body will describe it."""
 
     alias: str
-    schema: dict
+    schema: dict[str, Any]
     required: bool
     is_file: bool
 
@@ -988,7 +993,7 @@ class _BodyField:
     """One `Body(embed=True)` parameter - a named key of the JSON object body."""
 
     alias: str
-    schema: dict
+    schema: dict[str, Any]
     required: bool
 
 
@@ -996,7 +1001,7 @@ class _BodyField:
 class _ScalarBody:
     """A non-embedded `Body()` over a non-model: the whole JSON body."""
 
-    schema: dict
+    schema: dict[str, Any]
     required: bool
 
 
@@ -1009,11 +1014,23 @@ class _RouteParameters:
     only if you had read the docstring. Naming them puts that in the type.
     """
 
-    parameters: list[dict]
-    request_body_schema: dict | None
+    parameters: list[dict[str, Any]]
+    request_body_schema: dict[str, Any] | None
     form_fields: list[_FormField]
     body_fields: list[_BodyField]
     scalar_body: _ScalarBody | None
+
+
+def _is_required(d: Any, marker: Any) -> bool:
+    """Whether the parameter `d` (optionally carrying `marker`) must be supplied.
+
+    A default relaxes required, and so does an `Optional[T]` annotation: the
+    resolver binds `None` when the value is absent, so a document that called it
+    required would contradict what the resolver accepts. Where a marker is
+    present its default wins - the marker is the declaration the author wrote.
+    """
+    carrier = marker if marker is not None else d
+    return not (carrier.has_default or d.is_optional)
 
 
 def _extract_parameters(info: Any, schemas_registry: SchemaRegistry) -> _RouteParameters:
@@ -1027,8 +1044,8 @@ def _extract_parameters(info: Any, schemas_registry: SchemaRegistry) -> _RoutePa
     server enforces. Depends/Security and JSON `Body()` markers are not yielded
     as parameters - they belong to other parts of the operation object.
     """
-    parameters: list[dict] = []
-    request_body_schema: dict | None = None
+    parameters: list[dict[str, Any]] = []
+    request_body_schema: dict[str, Any] | None = None
     form_fields: list[_FormField] = []
     body_fields: list[_BodyField] = []
     scalar_body: _ScalarBody | None = None
@@ -1058,11 +1075,11 @@ def _extract_parameters(info: Any, schemas_registry: SchemaRegistry) -> _RoutePa
                 body_schema = {"type": "array", "items": body_schema}
             if marker is not None:
                 _apply_marker_constraints(body_schema, marker)
-                body_required = not (marker.has_default or d.is_optional)
+                body_required = _is_required(d, marker)
                 body_alias = marker.alias or d.name
                 embedded = bool(getattr(marker, "embed", False))
             else:
-                body_required = not (d.has_default or d.is_optional)
+                body_required = _is_required(d, None)
                 body_alias = d.name
                 embedded = False
             if embedded:
@@ -1081,13 +1098,13 @@ def _extract_parameters(info: Any, schemas_registry: SchemaRegistry) -> _RoutePa
                     field_schema["description"] = marker.description
                 if getattr(marker, "title", None):
                     field_schema["title"] = marker.title
-                field_required = not (marker.has_default or d.is_optional)
+                field_required = _is_required(d, marker)
                 field_alias = marker.alias or d.name
             else:
                 # A bare `UploadFile`: optional when it carries a default or an
                 # `Optional` annotation - the resolver leaves the kwarg unset and
                 # the handler default applies, so the field is not required.
-                field_required = not (d.has_default or d.is_optional)
+                field_required = _is_required(d, None)
                 field_alias = d.name
             form_fields.append(_FormField(field_alias, field_schema, field_required, d.is_file))
             continue
@@ -1120,13 +1137,13 @@ def _extract_parameters(info: Any, schemas_registry: SchemaRegistry) -> _RoutePa
         if location == "path":
             required = True
         elif marker is not None:
-            required = not (marker.has_default or d.is_optional)
+            required = _is_required(d, marker)
             if marker.has_default and marker.default is not ...:
                 default_val = marker.default
                 if isinstance(default_val, (str, int, float, bool, type(None))):
                     param_schema["default"] = default_val
         else:
-            required = not (d.has_default or d.is_optional)
+            required = _is_required(d, None)
             if d.has_default:
                 default_val = d.default
                 if isinstance(default_val, (str, int, float, bool, type(None))):
@@ -1154,7 +1171,7 @@ def _extract_parameters(info: Any, schemas_registry: SchemaRegistry) -> _RoutePa
     return _RouteParameters(parameters, request_body_schema, form_fields, body_fields, scalar_body)
 
 
-def _declare_undocumented_path_params(info: Any, parameters: list[dict]) -> None:
+def _declare_undocumented_path_params(info: Any, parameters: list[dict[str, Any]]) -> None:
     """Document a path parameter no handler parameter declares.
 
     A route's path parameters are part of its contract whether or not the
@@ -1174,11 +1191,11 @@ def _declare_undocumented_path_params(info: Any, parameters: list[dict]) -> None
 
 
 def _extract_request_body(
-    request_body_schema: dict | None,
+    request_body_schema: dict[str, Any] | None,
     form_fields: list[_FormField],
     body_fields: list[_BodyField] | None = None,
     scalar_body: _ScalarBody | None = None,
-) -> dict | None:
+) -> dict[str, Any] | None:
     """Build the OpenAPI `requestBody` object, or `None` when no body params exist.
 
     A JSON Pydantic body takes precedence over form fields, matching the
@@ -1347,7 +1364,7 @@ def _repoint_validation_error_refs(schema: dict[str, Any], http_name: str) -> No
 
 def _extract_responses(
     info: Any, schemas_registry: SchemaRegistry, has_validatable_params: bool
-) -> dict[str, dict]:
+) -> dict[str, dict[str, Any]]:
     """Build the operation `responses` map.
 
     Seeds with the success response (re-keyed to `info.status_code` when
@@ -1361,7 +1378,7 @@ def _extract_responses(
     request-bound parameter fails validation, so the documented responses match
     what the operation actually returns.
     """
-    responses: dict[str, dict] = {
+    responses: dict[str, dict[str, Any]] = {
         str(HTTP_200_OK): {"description": info.response_description},
     }
     primary_status = str(info.status_code if info.status_code else HTTP_200_OK)
@@ -1423,7 +1440,7 @@ def _extract_responses(
 # ── Security scheme discovery ──────────────────────────────
 
 
-def _scheme_definition(scheme: Any) -> tuple[str, dict] | None:
+def _scheme_definition(scheme: Any) -> tuple[str, dict[str, Any]] | None:
     """Return `(name, OpenAPI security scheme object)` for a Security() target.
 
     The scheme describes itself through `SecurityScheme.openapi_scheme`. A
@@ -1466,7 +1483,7 @@ def _dependency_params(target: Any) -> collections.abc.Iterator[tuple[Any, Any, 
 
 
 def _collect_security_requirements(
-    info: Any, registry: dict[str, dict]
+    info: Any, registry: dict[str, dict[str, Any]]
 ) -> list[dict[str, list[str]]]:
     """Collect one OpenAPI security requirement per reachable `Security()`.
 
@@ -1570,13 +1587,12 @@ def _dependency_graph_has_validatable(info: Any) -> bool:
     return visit(info.handler)
 
 
-def _build_operation(
-    info: Any,
-    method_lower: str,
-    schemas_registry: SchemaRegistry,
-    security_schemes_registry: dict[str, dict],
-) -> dict[str, Any]:
-    """Assemble one OpenAPI operation object for a single route entry."""
+def _operation_base(info: Any, method_lower: str) -> dict[str, Any]:
+    """Build the operation fields a path operation and a webhook both carry.
+
+    Shared so a field added to one is not silently missing from the other; the
+    caller adds whatever its own kind of operation defines on top.
+    """
     # OpenAPI 3.1 Sec. 4.8.10 - operationId must be unique across the document.
     # Explicit override wins; default = `<name>_<method>`. Collisions among the
     # auto-generated form are resolved later in `_disambiguate_operation_ids`.
@@ -1586,13 +1602,33 @@ def _build_operation(
         "operationId": op_id,
         "responses": {"200": {"description": info.response_description}},
     }
-
     if info.description:
         operation["description"] = info.description
     if info.tags:
         operation["tags"] = info.tags
     if info.deprecated:
         operation["deprecated"] = True
+    return operation
+
+
+def _apply_openapi_extra(operation: dict[str, Any], info: Any) -> None:
+    """Deep-merge the author's `openapi_extra` over a finished operation.
+
+    Nested dicts merge key-by-key; scalars and lists in `openapi_extra` overwrite.
+    """
+    extra = info.openapi_extra
+    if extra:
+        _deep_merge(operation, extra)
+
+
+def _build_operation(
+    info: Any,
+    method_lower: str,
+    schemas_registry: SchemaRegistry,
+    security_schemes_registry: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Assemble one OpenAPI operation object for a single route entry."""
+    operation = _operation_base(info, method_lower)
     # OpenAPI 3.1 Sec. 4.8.8 - route-level `callbacks` map emitted verbatim.
     if info.callbacks:
         operation["callbacks"] = info.callbacks
@@ -1624,18 +1660,11 @@ def _build_operation(
         or _dependency_graph_has_validatable(info)
     )
     operation["responses"] = _extract_responses(info, schemas_registry, has_validatable_params)
-
-    # `openapi_extra` - deep-merge the user-supplied dict over the
-    # generated operation. Nested dicts merge key-by-key; scalars and
-    # lists in `openapi_extra` overwrite.
-    extra = info.openapi_extra
-    if extra:
-        _deep_merge(operation, extra)
-
+    _apply_openapi_extra(operation, info)
     return operation
 
 
-def _webhook_request_body(handler: Any, registry: SchemaRegistry) -> dict | None:
+def _webhook_request_body(handler: Any, registry: SchemaRegistry) -> dict[str, Any] | None:
     """Return the OpenAPI schema for a webhook handler's Pydantic body param.
 
     A webhook handler documents the payload an external caller will
@@ -1654,9 +1683,10 @@ def _webhook_request_body(handler: Any, registry: SchemaRegistry) -> dict | None
 
 
 def _walk_webhooks(
-    app: Any,
+    app: Veloce,
     schemas_registry: SchemaRegistry,
     auto_ops: list[tuple[dict[str, Any], str, str]],
+    explicit_ops: list[tuple[dict[str, Any], str, str]] | None = None,
 ) -> dict[str, Any]:
     """Return the OpenAPI 3.1 `webhooks` map from `app.webhooks`.
 
@@ -1667,7 +1697,12 @@ def _walk_webhooks(
     document-wide disambiguation pass as normal routes; two webhooks sharing a
     handler name (or a webhook colliding with a route) would otherwise emit a
     duplicate operationId, which is invalid for code generation (OpenAPI 3.1
-    Sec. 4.8.10).
+    Sec. 4.8.10). A webhook that pins its own `operation_id` goes to
+    `explicit_ops` instead, so the pass reserves it rather than renaming it.
+
+    `app.webhooks` is an ordinary `Blueprint` and each entry an ordinary
+    `RouteInfo`, so a webhook accepts every operation keyword a route does;
+    the shared `_operation_base` is what keeps them describing the same fields.
     """
     webhook_items: dict[str, Any] = {}
     webhooks_router = app.webhooks
@@ -1677,24 +1712,23 @@ def _walk_webhooks(
     for wpath, wmethods, winfo in walker():
         event = wpath.strip("/") or wpath
         for wmethod in wmethods:
-            op: dict[str, Any] = {
-                "summary": winfo.summary or winfo.name,
-                "operationId": f"{winfo.name}_{wmethod.lower()}",
-                "responses": {"200": {"description": winfo.response_description}},
-            }
+            method_lower = wmethod.lower()
+            op = _operation_base(winfo, method_lower)
             # The disambiguator keys collisions on a deterministic identifier; a
             # webhook has no URL path, so its event name stands in as the
             # suffix source if a collision must be resolved.
-            auto_ops.append((op, event, wmethod.lower()))
-            if winfo.description:
-                op["description"] = winfo.description
+            if winfo.operation_id and explicit_ops is not None:
+                explicit_ops.append((op, event, method_lower))
+            else:
+                auto_ops.append((op, event, method_lower))
             body = _webhook_request_body(winfo.handler, schemas_registry)
             if body is not None:
                 op["requestBody"] = {
                     "required": True,
                     "content": {MIME_JSON: {"schema": body}},
                 }
-            webhook_items.setdefault(event, {})[wmethod.lower()] = op
+            _apply_openapi_extra(op, winfo)
+            webhook_items.setdefault(event, {})[method_lower] = op
     return webhook_items
 
 
@@ -1837,6 +1871,10 @@ def _validate_document(schema: dict[str, Any]) -> None:
 # ── Public API ─────────────────────────────────────────────
 
 
+# `app` is `Any` rather than `Veloce`: `OpenAPIMixin.openapi()` calls this with
+# `self`, which only the assembled subclass declares to be a `Veloce`. Every
+# helper it hands the app to takes the concrete type, so the check is restored
+# one frame in.
 def get_openapi_schema(app: Any) -> dict[str, Any]:
     """Generate OpenAPI 3.1 schema from the app's registered routes."""
     schema: dict[str, Any] = {
@@ -1858,7 +1896,7 @@ def get_openapi_schema(app: Any) -> dict[str, Any]:
         schema["externalDocs"] = app.openapi_external_docs
 
     schemas_registry = SchemaRegistry(separate_input_output=app.separate_input_output_schemas)
-    security_schemes_registry: dict[str, dict] = {}
+    security_schemes_registry: dict[str, dict[str, Any]] = {}
 
     # Operations whose operationId was auto-generated (no explicit override),
     # recorded so a deterministic suffix can resolve duplicates afterwards.
@@ -1899,7 +1937,7 @@ def get_openapi_schema(app: Any) -> dict[str, Any]:
     # Webhook operations are appended to `auto_ops` so the disambiguation pass
     # below dedupes operationIds across BOTH routes and webhooks deterministically
     # (routes first in collection order, then webhooks in walker order).
-    webhook_items = _walk_webhooks(app, schemas_registry, auto_ops)
+    webhook_items = _walk_webhooks(app, schemas_registry, auto_ops, explicit_ops)
     if webhook_items:
         schema["webhooks"] = webhook_items
 

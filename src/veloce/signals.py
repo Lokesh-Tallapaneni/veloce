@@ -219,35 +219,6 @@ class Signal:
             except Exception:
                 continue
 
-    def _iter_live_pairs(self, sender: Any) -> Iterator[tuple[Callable, bool]]:
-        """Yield `(target, is_async)` for live matching receivers; prune dead refs.
-
-        Walks `self._subs` once, resolves weakrefs, drops dead entries,
-        and yields the resolved target plus its connect-time `is_async`
-        flag for each entry whose stored sender matches `sender` via
-        `_matches`. After iteration the subscription list contains no
-        dead refs.
-        """
-        live: list[tuple[Any, Any, bool, bool]] = []
-        for sub_sender, ref, is_weak, is_async in self._subs:
-            target = ref() if is_weak else ref
-            if target is None:  # dead weakref - drop on the next pass
-                continue
-            live.append((sub_sender, ref, is_weak, is_async))
-            if _matches(sub_sender, sender):
-                yield target, is_async
-        if len(live) != len(self._subs):
-            self._subs = live
-
-    def _iter_live_targets(self, sender: Any) -> Iterator[Callable]:
-        """Yield live receivers that match `sender`; prune dead weakrefs in place.
-
-        Thin wrapper over `_iter_live_pairs` that discards the `is_async`
-        flag, so the sync `send`/`send_robust` paths stay unchanged.
-        """
-        for target, _is_async in self._iter_live_pairs(sender):
-            yield target
-
     def send(self, sender: Any = None, **kwargs: Any) -> SignalResult:
         """Fire receivers subscribed for `sender` (and for ANY_SENDER).
 
@@ -281,13 +252,7 @@ class Signal:
             try:
                 value: Any = target(sender, **kwargs)
             except Exception as exc:
-                _logger.warning(
-                    MSG_RECEIVER_RAISED,
-                    getattr(target, "__qualname__", repr(target)),
-                    self.name,
-                    exc.__class__.__name__,
-                    exc_info=True,
-                )
+                self._log_receiver_raised(target, exc)
                 value = exc
             else:
                 if inspect.iscoroutine(value):
@@ -423,6 +388,35 @@ class Signal:
             if _matches(sub_sender, sender):
                 return True
         return False
+
+    def _iter_live_pairs(self, sender: Any) -> Iterator[tuple[Callable, bool]]:
+        """Yield `(target, is_async)` for live matching receivers; prune dead refs.
+
+        Walks `self._subs` once, resolves weakrefs, drops dead entries,
+        and yields the resolved target plus its connect-time `is_async`
+        flag for each entry whose stored sender matches `sender` via
+        `_matches`. After iteration the subscription list contains no
+        dead refs.
+        """
+        live: list[tuple[Any, Any, bool, bool]] = []
+        for sub_sender, ref, is_weak, is_async in self._subs:
+            target = ref() if is_weak else ref
+            if target is None:  # dead weakref - drop on the next pass
+                continue
+            live.append((sub_sender, ref, is_weak, is_async))
+            if _matches(sub_sender, sender):
+                yield target, is_async
+        if len(live) != len(self._subs):
+            self._subs = live
+
+    def _iter_live_targets(self, sender: Any) -> Iterator[Callable]:
+        """Yield live receivers that match `sender`; prune dead weakrefs in place.
+
+        Thin wrapper over `_iter_live_pairs` that discards the `is_async`
+        flag, so the sync `send`/`send_robust` paths stay unchanged.
+        """
+        for target, _is_async in self._iter_live_pairs(sender):
+            yield target
 
     def _log_receiver_raised(self, target: Callable, exc: BaseException) -> None:
         """Log a receiver failure at WARNING with the traceback attached."""

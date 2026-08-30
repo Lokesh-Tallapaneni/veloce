@@ -21,7 +21,12 @@ from pydantic import TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
 from typing_extensions import Doc
 
-from veloce._constants import MSG_FIELD_REQUIRED, STATE_INJECTED_RESPONSE
+from veloce._constants import (
+    MSG_FIELD_REQUIRED,
+    MSG_MISSING_PARAMETER,
+    MSG_YIELD_NO_VALUE,
+    STATE_INJECTED_RESPONSE,
+)
 from veloce._handler_plan import (
     K_BG_TASKS,
     K_BODY_MODEL,
@@ -272,7 +277,7 @@ def _err_missing_marker(loc: str, name: str) -> RequestValidationError:
         [
             {
                 "loc": [loc, name],
-                "msg": f"Missing required parameter: {name}",
+                "msg": MSG_MISSING_PARAMETER.format(name=name),
                 "type": "value_error.missing",
             }
         ]
@@ -1278,18 +1283,14 @@ class DependencyResolver:
             try:
                 result = next(gen)
             except StopIteration as err:
-                raise RuntimeError(
-                    f"yield dependency {actual!r} returned without yielding a value"
-                ) from err
+                raise RuntimeError(MSG_YIELD_NO_VALUE.format(dependency=actual)) from err
             self._teardowns.append(("sync", gen))
         elif is_async_gen:
             agen = actual(**sub_kwargs)
             try:
                 result = await agen.__anext__()
             except StopAsyncIteration as err:
-                raise RuntimeError(
-                    f"yield dependency {actual!r} returned without yielding a value"
-                ) from err
+                raise RuntimeError(MSG_YIELD_NO_VALUE.format(dependency=actual)) from err
             self._teardowns.append(("async", agen))
         elif is_coro:
             result = await actual(**sub_kwargs)

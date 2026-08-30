@@ -12,13 +12,14 @@ class, instantiated lazily).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import orjson
 
 from veloce._internal import _require_methods
 from veloce.encoders import orjson_default
-from veloce.http.response import JSONResponse
+from veloce.http.response import JSONResponse, Response
 from veloce.status import HTTP_200_OK
 
 
@@ -83,7 +84,7 @@ class JSONProvider:
         """Parse JSON `data` into Python objects."""
         raise NotImplementedError
 
-    def response(self, value: Any, **kwargs: Any) -> Any:
+    def response(self, value: Any, **kwargs: Any) -> Response:
         """Build a `Response` carrying `value` as JSON.
 
         The default implementation delegates to `dumps` and wraps the result
@@ -140,7 +141,7 @@ class DefaultJSONProvider(JSONProvider):
 # whether this app configured one at all.
 
 
-def resolve_dumps(app: Any) -> Any:
+def resolve_dumps(app: Any) -> Callable[..., bytes] | None:
     """`app`'s serialiser, or `None` when the direct encoder already matches it.
 
     Separate from `dumps_for` because it answers a different question: not "encode
@@ -152,4 +153,5 @@ def resolve_dumps(app: Any) -> Any:
     provider = app.json
     if type(provider) is DefaultJSONProvider and not provider._config_options:
         return None
-    return provider.dumps
+    dumps: Callable[..., bytes] = provider.dumps
+    return dumps

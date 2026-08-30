@@ -85,7 +85,7 @@ def _precondition_failed(
     return False
 
 
-async def _stat_path(loop: Any, path: str) -> os.stat_result | None:
+async def _stat_path(loop: asyncio.AbstractEventLoop, path: str) -> os.stat_result | None:
     """`os.stat(path)` off the event loop, or `None` when it does not exist.
 
     Raises `PermissionError` when the filesystem refuses the probe, so a denial
@@ -106,7 +106,7 @@ async def _stat_path(loop: Any, path: str) -> os.stat_result | None:
     return result
 
 
-async def _stat_regular(loop: Any, path: str) -> os.stat_result | None:
+async def _stat_regular(loop: asyncio.AbstractEventLoop, path: str) -> os.stat_result | None:
     """As `_stat_path`, but `None` unless `path` is a regular file."""
     result = await _stat_path(loop, path)
     return result if result is not None and stat.S_ISREG(result.st_mode) else None
@@ -136,6 +136,47 @@ def _not_modified(etag: str, last_modified: str) -> Response:
 
 #: Sent when neither the handler nor the app configures a cache lifetime.
 _DEFAULT_CACHE_CONTROL = "public, max-age=3600"
+
+
+def _conditional_hit(request: Request, etag: str, mtime: float) -> bool:
+    """Whether the request's preconditions say the client's copy is current.
+
+    RFC 9110 Sec. 13.2 precedence: `If-None-Match` supersedes `If-Modified-Since`
+    when both are present. `*` matches whenever a representation exists, wherever
+    it appears in the list (RFC 9110 Sec. 13.1.2).
+
+    Reads the parsed property rather than re-splitting the raw header:
+    `_split_etag_list` does not break on a comma inside an opaque tag's quoted
+    string, which `split(",")` did - so `If-None-Match: "abc,def"` never matched
+    and the file was re-sent on every request. It is also cached per request,
+    where the raw split re-parsed.
+    """
+    if_none_match = request.if_none_match
+    if if_none_match:
+        if "*" in if_none_match:
+            return True
+        return any(_etag_matches_weak(etag, token) for token in if_none_match)
+    ims_ts = request.if_modified_since
+    # Floor mtime to whole seconds because HTTP-dates have second resolution;
+    # otherwise `mtime=1.5` would always appear "newer" than `IMS=1`.
+    return ims_ts is not None and int(mtime) <= int(ims_ts)
+
+
+def _resolve_range(first: tuple[int | None, int | None], size: int) -> tuple[int, int] | None:
+    """Turn one parsed `bytes=` range into absolute offsets, or `None` if unusable.
+
+    `None` covers both an open-open range and a suffix range of zero bytes; the
+    caller answers those with a 416, as it does an out-of-bounds result.
+    """
+    start, end = first
+    if start is None and end is None:
+        return None
+    if start is None:
+        # Suffix range: last `end` bytes. `bytes=-500` over a 200-byte file
+        # should return the whole file, per RFC 9110 Sec. 14.1.2.
+        suffix = min(end or 0, size)
+        return (size - suffix, size - 1) if suffix > 0 else None
+    return (start, end if end is not None and end < size else size - 1)
 
 
 class StaticFiles:
@@ -286,7 +327,7 @@ class StaticFiles:
             target = f"{target}?{request.query_string}"
         return RedirectResponse(url=target, status_code=self.redirect_status)
 
-    async def _serve_404_html(self, loop: Any) -> Response | None:
+    async def _serve_404_html(self, loop: asyncio.AbstractEventLoop) -> Response | None:
         """Return a 404 response from the root `404.html`, or None if absent.
 
         The page is served with status 404 and `text/html`; it deliberately
@@ -319,7 +360,7 @@ class StaticFiles:
         self,
         request: Request,
         file_path: str,
-        loop: Any,
+        loop: asyncio.AbstractEventLoop,
     ) -> tuple[str, str, os.stat_result] | None:
         """Pick a precompressed sibling for `file_path`, or None.
 
@@ -363,7 +404,7 @@ class StaticFiles:
                 return (variant_path, enc, variant_stat)
         return None
 
-    def _cache_control_for(self, request: Any) -> str:
+    def _cache_control_for(self, request: Request) -> str:
         """Choose the `Cache-Control` to send, from the handler or the app default.
 
         An explicit `max_age=` on the handler wins; otherwise
@@ -572,27 +613,8 @@ class StaticFiles:
                 )
 
             # ── Conditional GET (RFC 9110 Sec. 13.2) ──────────────────
-            # Conditional GET. Per RFC 9110 Sec. 13.2 precedence: If-None-Match
-            # supersedes If-Modified-Since when both are present.
-            # Read the parsed property rather than re-splitting the raw header:
-            # `_split_etag_list` does not break on a comma inside an opaque tag's
-            # quoted string, which `split(",")` did - so `If-None-Match:
-            # "abc,def"` never matched and the file was re-sent on every request.
-            # It is also cached per request, where the raw split re-parsed.
-            if_none_match = request.if_none_match
-            if if_none_match:
-                if if_none_match[0] == "*":
-                    return _not_modified(etag, last_modified)
-                for token in if_none_match:
-                    if _etag_matches_weak(etag, token):
-                        return _not_modified(etag, last_modified)
-            else:
-                ims_ts = request.if_modified_since
-                # Floor mtime to whole seconds because HTTP-dates have second
-                # resolution; otherwise `mtime=1.5` would always appear
-                # "newer" than `IMS=1`.
-                if ims_ts is not None and int(mtime) <= int(ims_ts):
-                    return _not_modified(etag, last_modified)
+            if _conditional_hit(request, etag, mtime):
+                return _not_modified(etag, last_modified)
 
             # ── Range (RFC 9110 Sec. 14.2) ────────────────────────────
             # Range request - RFC 9110 Sec. 14.2. Single-range only; multi-range
@@ -629,16 +651,7 @@ class StaticFiles:
                 and range_spec.unit == HEADER_VALUE_BYTES
                 and len(range_spec.ranges) == 1
             ):
-                start, end = range_spec.ranges[0]
-                if start is None and end is None:
-                    resolved = None
-                elif start is None:
-                    # Suffix range: last `end` bytes. `bytes=-500` over a 200-byte
-                    # file should return the whole file, per RFC 9110 Sec. 14.1.2.
-                    suffix = min(end or 0, size)
-                    resolved = (size - suffix, size - 1) if suffix > 0 else None
-                else:
-                    resolved = (start, end if end is not None and end < size else size - 1)
+                resolved = _resolve_range(range_spec.ranges[0], size)
 
                 if resolved is None or resolved[0] >= size or resolved[0] > resolved[1]:
                     return Response(
@@ -752,7 +765,7 @@ class StaticFiles:
             return _forbidden()
 
     async def _iter_file(
-        self, path: str, loop: Any, start: int = 0, length: int | None = None
+        self, path: str, loop: asyncio.AbstractEventLoop, start: int = 0, length: int | None = None
     ) -> AsyncIterator[bytes]:
         """Yield the file in `STREAM_CHUNK_SIZE`-byte chunks via the executor.
 
@@ -794,7 +807,9 @@ class StaticFiles:
         """
         return _file_etag(path, size, mtime)
 
-    async def _render_directory_index(self, dir_path: str, url_path: str, loop: Any) -> Response:
+    async def _render_directory_index(
+        self, dir_path: str, url_path: str, loop: asyncio.AbstractEventLoop
+    ) -> Response:
         """Render an HTML index of `dir_path`'s entries.
 
         Entries are HTML-escaped via `html.escape` so a filename

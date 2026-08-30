@@ -2,8 +2,9 @@
 
 Ships the stdio transport (`StdioTransport`, `serve_stdio`), the Streamable HTTP
 transport (`register_http_transport`), and the deprecated split-endpoint SSE
-transport (`register_sse_transport`) for clients that speak only the older wire. Both satisfy the `Transport` contract
-in `base.py`, so the server pushes outbound notifications without knowing the wire.
+transport (`register_sse_transport`) for clients that speak only the older wire.
+All three satisfy the `Transport` contract in `base.py`, so the server pushes
+outbound notifications without knowing the wire.
 
 `SessionBackend` and `SessionRecord` are the seam for sharing HTTP sessions
 between workers; implement the first over your own store to hand the second

@@ -84,8 +84,8 @@ def escape(value: Any) -> Markup:
 
     Objects that implement `__html__()` are trusted: their return is
     wrapped as-is. Otherwise the value is `str()`-coerced and the five
-    HTML-significant characters are replaced with numeric character
-    references (per WHATWG HTML Sec. 13).
+    HTML-significant characters are replaced with their named or numeric
+    character references (per WHATWG HTML Sec. 13).
     """
     if hasattr(value, "__html__"):
         return Markup(value.__html__())

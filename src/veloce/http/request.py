@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 import orjson
@@ -190,7 +191,7 @@ class Request:
         body: bytes,
         transport: asyncio.Transport | None = None,
         app: Any = None,
-        scope: dict | None = None,
+        scope: dict[str, Any] | None = None,
         body_source: Any = None,
     ) -> None:
         # ASGI servers and `Veloce.add_route` already feed an uppercase
@@ -828,7 +829,7 @@ class Request:
 
     # ── Caching directives ────────────────────────────────
     @property
-    def cache_control(self) -> Any:
+    def cache_control(self) -> CacheControl:
         """Parsed `Cache-Control` header.
 
         Returns a `CacheControl` view: `req.cache_control.no_cache`
@@ -862,7 +863,7 @@ class Request:
 
     # ── URL and routing ───────────────────────────────────
     @property
-    def url(self) -> Any:
+    def url(self) -> URL:
         """Full URL object - lazy construction."""
         if self._url is None:
             scope_scheme = self.scope.get("scheme")
@@ -1459,7 +1460,7 @@ class Request:
         except (LookupError, UnicodeDecodeError):
             return body.decode("latin-1")
 
-    async def form(self) -> Any:
+    async def form(self) -> FormData:
         """Parse form data including file uploads."""
         if self._form is None:
             mt = self.mimetype
@@ -1529,7 +1530,7 @@ class Request:
                 self._form = FormData()
         return self._form
 
-    async def files(self) -> Any:
+    async def files(self) -> FormData:
         """View of uploaded files only - a `FormData` subset.
 
         Parses the form (via `form()`) and returns a `FormData`
@@ -1557,7 +1558,7 @@ class Request:
         self._files = files
         return self._files
 
-    async def values(self) -> Any:
+    async def values(self) -> MultiDict:
         """Merge the query string and form body - the `request.values` shape.
 
         Returns a fresh `MultiDict` with query-string entries first,
@@ -1604,7 +1605,7 @@ class Request:
         source = self._body_source
         return source is not None and source.disconnected
 
-    async def stream(self) -> Any:
+    async def stream(self) -> AsyncIterator[bytes]:
         """Async-iterate the request body in chunks - ASGI shape.
 
         Streamed requests (raw HTTP/1.1) yield each chunk as the socket

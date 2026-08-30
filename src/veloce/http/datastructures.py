@@ -402,7 +402,7 @@ class URL:
         non-default port (e.g. 8443) survives into `netloc` / absolute URLs.
         """
         host_header = headers.get(HEADER_HOST, "localhost")
-        # Precedence (ASGI Sec. HTTP scope): the scope's `scheme` is the
+        # Precedence (ASGI HTTP connection scope): the scope's `scheme` is the
         # authoritative answer when one was supplied - that's
         # what uvicorn sets under TLS. `X-Forwarded-Proto` is a hint set
         # by reverse proxies and only meaningful when ProxyFix or similar
@@ -1048,7 +1048,7 @@ class Cookies(_GetListMixin, MultiDict):
     """Cookie collection parsed from the `Cookie` header.
 
     Built on `multidict.MultiDict`. Parsing delegates to `iter_cookies`
-    (RFC 6265 section 5.4) so values are percent-decoded. Duplicate names
+    (RFC 6265 Sec. 5.4) so values are percent-decoded. Duplicate names
     collapse to the first occurrence per the spec.
     """
 
@@ -1060,7 +1060,7 @@ class Cookies(_GetListMixin, MultiDict):
 
         Delegates to `iter_cookies` for RFC 6265-compliant parsing
         (percent-decoding, quote-stripping). Duplicate names collapse
-        to the first occurrence per RFC 6265 section 5.4.
+        to the first occurrence per RFC 6265 Sec. 5.4.
         """
         return cls(iter_cookies(header_value))
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import tempfile
-from typing import Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn
 
 from python_multipart import MultipartParser
 from python_multipart.exceptions import FormParserError
@@ -13,6 +13,9 @@ from veloce._constants import MIME_TEXT_PLAIN
 from veloce._header_parsing import parse_header_params
 from veloce.exceptions import BadRequest, RequestEntityTooLarge
 from veloce.http.datastructures import FormData, Headers, UploadFile
+
+if TYPE_CHECKING:  # pragma: no cover
+    from python_multipart.multipart import MultipartCallbacks
 
 # Multipart-parsing safety limits - guard against algorithmic-complexity
 # DoS from a body crafted with pathologically many or oversized parts.
@@ -76,39 +79,88 @@ def _part_charset(content_type: str) -> str | None:
     return charset
 
 
-class _PartState:
-    """The parser's working state for the part currently being read.
+def _decode_with_fallback(
+    raw: bytes,
+    charset_fallback: str | None,
+    message: str,
+    cause: UnicodeDecodeError,
+) -> str:
+    """Decode bytes that UTF-8 rejected, applying the configured fallback.
 
-    `python_multipart` drives this through six free-function callbacks that have
-    to share state, and that state was a `dict[str, Any]` with fourteen string
-    keys. Every access was an unchecked lookup - `state["part_szie"]` is a
-    `KeyError` at parse time rather than an error anyone sees when writing it,
-    and no reader could tell which keys existed without collecting them from
-    six functions.
+    `"replace"` substitutes U+FFFD, any other codec name decodes with
+    replacement, and `None` refuses the body with `message`. Part headers and
+    field values share this triage so a change to one policy cannot leave the
+    other decoding differently within the same request.
+    """
+    if charset_fallback == "replace":
+        return raw.decode("utf-8", errors="replace")
+    if charset_fallback:
+        return raw.decode(charset_fallback, errors="replace")
+    raise BadRequest(message) from cause
+
+
+class _MultipartCollector:
+    """The parser's working state and callbacks for one multipart body.
+
+    `python_multipart` drives parsing through six callbacks that share the
+    in-flight part's state and every size/count cap the body is held to.
+    Holding them as methods puts the caps in one `__init__` signature rather
+    than in seven closed-over locals no callback's signature mentions, so a
+    reader can see which limits a phase consults without reading the others.
 
     Slotted, so a typo is an `AttributeError` at the first write rather than a
-    silently created key, and so the per-request allocation is a fixed object
-    rather than a growable dict.
+    silently created attribute, and so the per-request allocation is a fixed
+    object rather than a growable dict.
     """
 
     __slots__ = (
+        "charset_fallback",
         "disposition_params",
         "disposition_parsed",
         "field_memory",
+        "field_size_cap",
         "fields_seen",
+        "file_size_cap",
         "files_seen",
         "header_field",
         "header_value",
         "headers",
         "is_file",
+        "max_field_memory",
+        "max_fields",
+        "max_files",
+        "max_parts",
         "part_open",
         "part_size",
         "parts_seen",
+        "result",
         "size_cap",
         "spool",
     )
 
-    def __init__(self, field_size_cap: int) -> None:
+    def __init__(
+        self,
+        *,
+        max_parts: int | None,
+        max_files: int | None,
+        max_fields: int | None,
+        max_part_size: int,
+        max_file_size: int | None,
+        max_field_size: int | None,
+        max_field_memory: int | None,
+        charset_fallback: str | None,
+    ) -> None:
+        self.max_parts = max_parts
+        self.max_files = max_files
+        self.max_fields = max_fields
+        self.max_field_memory = max_field_memory
+        self.charset_fallback = charset_fallback
+        # A file/field-specific size limit overrides the shared per-part cap
+        # for that part kind; otherwise the shared cap applies to both.
+        self.file_size_cap = max_file_size if max_file_size is not None else max_part_size
+        self.field_size_cap = max_field_size if max_field_size is not None else max_part_size
+
+        self.result = FormData()
         # True between a part's begin and its end. A body that stops mid-part
         # leaves it set, which is how a truncated upload is told apart from a
         # complete one - the parser itself reports no error for either.
@@ -125,12 +177,183 @@ class _PartState:
         # Whether the current part is a file, resolved at the header->data
         # transition so the per-byte path can pick the right size cap.
         self.is_file = False
-        self.size_cap = field_size_cap
+        self.size_cap = self.field_size_cap
         self.disposition_parsed = False
         # Parsed Content-Disposition params, cached at the header->data
         # transition so `on_part_end` reuses them instead of re-walking the
         # quoted-string-aware header a second time per part.
         self.disposition_params: dict[str, str] = {}
+
+    @property
+    def callbacks(self) -> MultipartCallbacks:
+        """Return the callback table `MultipartParser` is constructed with."""
+        return {
+            "on_part_begin": self.on_part_begin,
+            "on_header_field": self.on_header_field,
+            "on_header_value": self.on_header_value,
+            "on_header_end": self.on_header_end,
+            "on_part_data": self.on_part_data,
+            "on_part_end": self.on_part_end,
+        }
+
+    def on_part_begin(self) -> None:
+        self.part_open = True
+        self.parts_seen += 1
+        max_parts = self.max_parts
+        if max_parts is not None and self.parts_seen > max_parts:
+            self._too_large(f"multipart form exceeds the {max_parts}-part limit")
+        self.headers = {}
+        self.header_field = bytearray()
+        self.header_value = bytearray()
+        self.spool = tempfile.SpooledTemporaryFile(  # noqa: SIM115
+            max_size=MULTIPART_SPOOL_MAX_SIZE
+        )
+        self.part_size = 0
+        self.is_file = False
+        self.size_cap = self.field_size_cap
+        self.disposition_parsed = False
+        self.disposition_params = {}
+
+    def on_header_field(self, data: bytes, start: int, end: int) -> None:
+        self.header_field += data[start:end]
+
+    def on_header_value(self, data: bytes, start: int, end: int) -> None:
+        self.header_value += data[start:end]
+
+    def on_header_end(self) -> None:
+        raw_name = bytes(self.header_field)
+        raw_value = bytes(self.header_value)
+        try:
+            name = raw_name.decode("utf-8").lower()
+            value = raw_value.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            fallback = self.charset_fallback
+            message = "multipart part header is not valid UTF-8"
+            name = _decode_with_fallback(raw_name, fallback, message, exc).lower()
+            value = _decode_with_fallback(raw_value, fallback, message, exc)
+        self.headers[name] = value
+        self.header_field = bytearray()
+        self.header_value = bytearray()
+
+    def on_part_data(self, data: bytes, start: int, end: int) -> None:
+        if not self.disposition_parsed:
+            self._resolve_part_kind()
+        chunk_len = end - start
+        self.part_size += chunk_len
+        cap = self.size_cap
+        if self.part_size > cap:
+            kind = "file" if self.is_file else "field"
+            self._too_large(f"multipart {kind} exceeds the {cap}-byte size limit")
+        max_field_memory = self.max_field_memory
+        if not self.is_file and max_field_memory is not None:
+            self.field_memory += chunk_len
+            if self.field_memory > max_field_memory:
+                self._too_large(
+                    f"multipart text fields exceed the {max_field_memory}-byte memory limit"
+                )
+        self.spool.write(data[start:end])
+
+    def on_part_end(self) -> None:
+        self.part_open = False
+        # An empty part never emits part data, so classify it here too.
+        if not self.disposition_parsed:
+            self._resolve_part_kind()
+        # Reuse the Content-Disposition params parsed in _resolve_part_kind.
+        params = self.disposition_params
+        name = params.get("name", "")
+        filename = params.get("filename")
+
+        spool = self.spool
+        self.spool = None
+        if not name:
+            spool.close()
+            return
+
+        spool.seek(0)
+        if filename is not None:
+            self.result.add(
+                name,
+                UploadFile(
+                    filename=filename,
+                    content_type=self.headers.get("content-type", MIME_TEXT_PLAIN),
+                    file=spool,
+                    size=self.part_size,
+                    # Snapshot the per-part headers so the UploadFile owns its
+                    # own copy, decoupled from the reused parser state.
+                    headers=Headers(self.headers),
+                ),
+            )
+            return
+
+        raw_bytes = spool.read()
+        spool.close()
+        value = self._decode_field(name, raw_bytes)
+        # Count field-name bytes toward the resident-memory ceiling so a
+        # flood of large-named empty fields is bounded too.
+        max_field_memory = self.max_field_memory
+        if max_field_memory is not None:
+            self.field_memory += len(name.encode("utf-8"))
+            if self.field_memory > max_field_memory:
+                self._too_large(
+                    f"multipart text fields exceed the {max_field_memory}-byte memory limit"
+                )
+        self.result.add(name, value)
+
+    def _too_large(self, message: str) -> NoReturn:
+        """Raise `RequestEntityTooLarge`; never returns.
+
+        Annotated `NoReturn` so its call sites read as terminating, and so
+        mypy narrows what follows them.
+        """
+        raise RequestEntityTooLarge(message)
+
+    def _resolve_part_kind(self) -> None:
+        # Headers are complete once part data begins; classify the part as a
+        # file or text field so the right count/size limits apply per byte.
+        disposition = self.headers.get("content-disposition", "")
+        _, params = _parse_content_disposition(disposition)
+        self.disposition_params = params
+        is_file = params.get("filename") is not None
+        self.is_file = is_file
+        self.size_cap = self.file_size_cap if is_file else self.field_size_cap
+        if is_file:
+            self.files_seen += 1
+            max_files = self.max_files
+            if max_files is not None and self.files_seen > max_files:
+                self._too_large(f"multipart form exceeds the {max_files}-file limit")
+        else:
+            self.fields_seen += 1
+            max_fields = self.max_fields
+            if max_fields is not None and self.fields_seen > max_fields:
+                self._too_large(f"multipart form exceeds the {max_fields}-field limit")
+        self.disposition_parsed = True
+
+    def _decode_field(self, name: str, raw_bytes: bytes) -> str:
+        # A part may declare its own charset (RFC 7578 Sec. 5.1.2); honor it
+        # before falling back to the global UTF-8 / charset_fallback path.
+        part_charset = _part_charset(self.headers.get("content-type", ""))
+        if part_charset is not None:
+            # A part that *declares* a charset is asserting its bytes are
+            # valid in that encoding, so decode strictly: bytes that don't
+            # match (invalid UTF-8 under charset=utf-8, a byte > 0x7f under
+            # charset=ascii) are a client error, not text to silently
+            # corrupt with U+FFFD. The global charset_fallback path below
+            # still tolerates undeclared parts as before.
+            try:
+                return raw_bytes.decode(part_charset)
+            except UnicodeDecodeError as exc:
+                raise BadRequest(
+                    f"multipart field {name!r} value is not valid {part_charset}"
+                ) from exc
+        try:
+            return raw_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            return _decode_with_fallback(
+                raw_bytes,
+                self.charset_fallback,
+                f"multipart field {name!r} value is not valid UTF-8",
+                exc,
+            )
 
 
 def parse_multipart_form(
@@ -180,11 +403,6 @@ def parse_multipart_form(
     invalid in it raise `BadRequest` (400) rather than being corrupted with
     U+FFFD, since the part asserted its own encoding.
     """
-    # A file/field-specific size limit overrides the shared per-part cap
-    # for that part kind; otherwise the shared cap applies to both.
-    file_size_cap = max_file_size if max_file_size is not None else max_part_size
-    field_size_cap = max_field_size if max_field_size is not None else max_part_size
-
     # The boundary is a Content-Type parameter, so extract it with the same
     # quoted-string-aware walker used for the part headers below
     # (`parse_header_params`) rather than an ad-hoc `split(";")` + quote strip.
@@ -200,175 +418,18 @@ def parse_multipart_form(
     if not _valid_boundary(boundary):
         raise BadRequest("multipart/form-data boundary is malformed")
 
-    result = FormData()
-    state = _PartState(field_size_cap)
-
-    def _too_large(message: str) -> NoReturn:
-        """Raise `RequestEntityTooLarge`; never returns.
-
-        Annotated `NoReturn` so its six call sites read as terminating, and so
-        mypy narrows what follows them.
-        """
-        raise RequestEntityTooLarge(message)
-
-    def on_part_begin() -> None:
-        state.part_open = True
-        state.parts_seen += 1
-        if max_parts is not None and state.parts_seen > max_parts:
-            _too_large(f"multipart form exceeds the {max_parts}-part limit")
-        state.headers = {}
-        state.header_field = bytearray()
-        state.header_value = bytearray()
-        state.spool = tempfile.SpooledTemporaryFile(  # noqa: SIM115
-            max_size=MULTIPART_SPOOL_MAX_SIZE
-        )
-        state.part_size = 0
-        state.is_file = False
-        state.size_cap = field_size_cap
-        state.disposition_parsed = False
-        state.disposition_params = {}
-
-    def on_header_field(data: bytes, start: int, end: int) -> None:
-        state.header_field += data[start:end]
-
-    def on_header_value(data: bytes, start: int, end: int) -> None:
-        state.header_value += data[start:end]
-
-    def on_header_end() -> None:
-        raw_name = bytes(state.header_field)
-        raw_value = bytes(state.header_value)
-        try:
-            name = raw_name.decode("utf-8").lower()
-            value = raw_value.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            if charset_fallback == "replace":
-                name = raw_name.decode("utf-8", errors="replace").lower()
-                value = raw_value.decode("utf-8", errors="replace")
-            elif charset_fallback:
-                name = raw_name.decode(charset_fallback, errors="replace").lower()
-                value = raw_value.decode(charset_fallback, errors="replace")
-            else:
-                raise BadRequest("multipart part header is not valid UTF-8") from exc
-        state.headers[name] = value
-        state.header_field = bytearray()
-        state.header_value = bytearray()
-
-    def _resolve_part_kind() -> None:
-        # Headers are complete once part data begins; classify the part as a
-        # file or text field so the right count/size limits apply per byte.
-        disposition = state.headers.get("content-disposition", "")
-        _, params = _parse_content_disposition(disposition)
-        state.disposition_params = params
-        is_file = params.get("filename") is not None
-        state.is_file = is_file
-        state.size_cap = file_size_cap if is_file else field_size_cap
-        if is_file:
-            state.files_seen += 1
-            if max_files is not None and state.files_seen > max_files:
-                _too_large(f"multipart form exceeds the {max_files}-file limit")
-        else:
-            state.fields_seen += 1
-            if max_fields is not None and state.fields_seen > max_fields:
-                _too_large(f"multipart form exceeds the {max_fields}-field limit")
-        state.disposition_parsed = True
-
-    def on_part_data(data: bytes, start: int, end: int) -> None:
-        if not state.disposition_parsed:
-            _resolve_part_kind()
-        chunk_len = end - start
-        state.part_size += chunk_len
-        cap = state.size_cap
-        if state.part_size > cap:
-            kind = "file" if state.is_file else "field"
-            _too_large(f"multipart {kind} exceeds the {cap}-byte size limit")
-        if not state.is_file and max_field_memory is not None:
-            state.field_memory += chunk_len
-            if state.field_memory > max_field_memory:
-                _too_large(f"multipart text fields exceed the {max_field_memory}-byte memory limit")
-        state.spool.write(data[start:end])
-
-    def on_part_end() -> None:
-        state.part_open = False
-        # An empty part never emits part data, so classify it here too.
-        if not state.disposition_parsed:
-            _resolve_part_kind()
-        # Reuse the Content-Disposition params parsed in _resolve_part_kind.
-        params = state.disposition_params
-        name = params.get("name", "")
-        filename = params.get("filename")
-
-        spool = state.spool
-        state.spool = None
-        if not name:
-            spool.close()
-            return
-
-        spool.seek(0)
-        if filename is not None:
-            result.add(
-                name,
-                UploadFile(
-                    filename=filename,
-                    content_type=state.headers.get("content-type", MIME_TEXT_PLAIN),
-                    file=spool,
-                    size=state.part_size,
-                    # Snapshot the per-part headers so the UploadFile owns its
-                    # own copy, decoupled from the reused parser state dict.
-                    headers=Headers(state.headers),
-                ),
-            )
-        else:
-            raw_bytes = spool.read()
-            spool.close()
-            # A part may declare its own charset (RFC 7578 Sec. 5.1.2); honor it
-            # before falling back to the global UTF-8 / charset_fallback path.
-            part_charset = _part_charset(state.headers.get("content-type", ""))
-            if part_charset is not None:
-                # A part that *declares* a charset is asserting its bytes are
-                # valid in that encoding, so decode strictly: bytes that don't
-                # match (invalid UTF-8 under charset=utf-8, a byte > 0x7f under
-                # charset=ascii) are a client error, not text to silently
-                # corrupt with U+FFFD. The global charset_fallback path below
-                # still tolerates undeclared parts as before.
-                try:
-                    value = raw_bytes.decode(part_charset)
-                except UnicodeDecodeError as exc:
-                    raise BadRequest(
-                        f"multipart field {name!r} value is not valid {part_charset}"
-                    ) from exc
-            else:
-                try:
-                    value = raw_bytes.decode("utf-8")
-                except UnicodeDecodeError as exc:
-                    if charset_fallback == "replace":
-                        value = raw_bytes.decode("utf-8", errors="replace")
-                    elif charset_fallback:
-                        value = raw_bytes.decode(charset_fallback, errors="replace")
-                    else:
-                        raise BadRequest(
-                            f"multipart field {name!r} value is not valid UTF-8"
-                        ) from exc
-            # Count field-name bytes toward the resident-memory ceiling so a
-            # flood of large-named empty fields is bounded too.
-            if max_field_memory is not None:
-                state.field_memory += len(name.encode("utf-8"))
-                if state.field_memory > max_field_memory:
-                    _too_large(
-                        f"multipart text fields exceed the {max_field_memory}-byte memory limit"
-                    )
-            result.add(name, value)
-
-    parser = MultipartParser(
-        boundary.encode("latin-1"),
-        {
-            "on_part_begin": on_part_begin,
-            "on_header_field": on_header_field,
-            "on_header_value": on_header_value,
-            "on_header_end": on_header_end,
-            "on_part_data": on_part_data,
-            "on_part_end": on_part_end,
-        },
+    collector = _MultipartCollector(
+        max_parts=max_parts,
+        max_files=max_files,
+        max_fields=max_fields,
+        max_part_size=max_part_size,
+        max_file_size=max_file_size,
+        max_field_size=max_field_size,
+        max_field_memory=max_field_memory,
+        charset_fallback=charset_fallback,
     )
+    result = collector.result
+    parser = MultipartParser(boundary.encode("latin-1"), collector.callbacks)
     try:
         try:
             parser.write(body)
@@ -379,7 +440,7 @@ def parse_multipart_form(
             # 200 would silently drop the missing fields/files, so reject the
             # whole body with 400 — the same posture as a malformed boundary.
             raise BadRequest("multipart/form-data body is malformed") from exc
-        if state.part_open:
+        if collector.part_open:
             # The body ended inside a part: no closing delimiter, and for the
             # underlying parser that is simply the end of input rather than an
             # error. Accepting it would return 200 with the truncated part's
@@ -393,7 +454,7 @@ def parse_multipart_form(
                     value.file.close()
         raise
     finally:
-        in_progress = state.spool
+        in_progress = collector.spool
         if in_progress is not None:
             with contextlib.suppress(Exception):
                 in_progress.close()
