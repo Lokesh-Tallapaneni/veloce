@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from tests._openapi import document
-from veloce import Veloce
+from tests.conftest import make_request
+from veloce import Request, Veloce
+from veloce.contrib.openapi import get_openapi_schema
 from veloce.testclient import TestClient
 
 # ── R26: operation_id ─────────────────────────────────────────────────
@@ -47,3 +49,26 @@ def test_operation_id_works_via_route_decorator():
     spec = document(app)
     op = spec["paths"]["/x"]["post"]
     assert op["operationId"] == "create_x_explicit"
+
+
+# ── include_in_schema ────────────────────────────────────────────────
+#
+# Moved here from `test_response_model_filtering.py`, where it sat under a
+# section literally headed "unrelated route options this module also covers".
+# It is route-level OpenAPI metadata, which is this module's subject; the
+# parameter-level flag of the same name is `test_param_include_in_schema.py`.
+
+
+async def test_include_in_schema_false():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/internal", include_in_schema=False)
+    async def internal(request: Request):
+        return {"secret": True}
+
+    schema = get_openapi_schema(app)
+    assert "/internal" not in schema["paths"]
+
+    # But route still works
+    resp = await app.handle_request(make_request(path="/internal"))
+    assert resp.status_code == 200

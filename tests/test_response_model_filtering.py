@@ -24,9 +24,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from tests.conftest import make_request
-from veloce import Request, Veloce
-from veloce.contrib.openapi import get_openapi_schema
+from veloce import Veloce
 from veloce.testclient import TestClient
 
 
@@ -153,21 +151,3 @@ def test_a_required_field_that_survives_filtering_stays_required():
     app = _app(response_model_include={"name", "price"})
     schema = _resolve(app, _response_schema(app))
     assert sorted(schema.get("required") or []) == ["name", "price"]
-
-
-# ── unrelated route options this module also covers ──────────────────
-
-
-async def test_include_in_schema_false():
-    app = Veloce(openapi_url=None)
-
-    @app.get("/internal", include_in_schema=False)
-    async def internal(request: Request):
-        return {"secret": True}
-
-    schema = get_openapi_schema(app)
-    assert "/internal" not in schema["paths"]
-
-    # But route still works
-    resp = await app.handle_request(make_request(path="/internal"))
-    assert resp.status_code == 200

@@ -24,17 +24,43 @@ def _modules() -> list[pathlib.Path]:
     return sorted(TESTS.rglob("test_*.py"))
 
 
+#: How the marker can be spelled, as `ast.unparse` renders it.
+MARKER_SPELLINGS = ("pytest.mark.asyncio", "mark.asyncio")
+
+
 def _marked(path: pathlib.Path) -> list[str]:
-    """Names of functions carrying the redundant marker."""
+    """Every place the redundant marker is applied, by name.
+
+    Decorators *and* `pytestmark`. This looked at decorators only, so a module
+    applying the marker to all of its tests at once - `pytestmark =
+    pytest.mark.asyncio` at module level, which is the broadest form there is -
+    was the one thing the guard could not see.
+    """
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     found: list[str] = []
+
     for node in ast.walk(tree):
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            for decorator in node.decorator_list:
+                if ast.unparse(decorator) in MARKER_SPELLINGS:
+                    found.append(node.name)
+
+    for node in tree.body:
+        targets = (
+            node.targets
+            if isinstance(node, ast.Assign)
+            else [node.target]
+            if isinstance(node, ast.AnnAssign)
+            else []
+        )
+        if not any(isinstance(t, ast.Name) and t.id == "pytestmark" for t in targets):
             continue
-        for decorator in node.decorator_list:
-            source = ast.unparse(decorator)
-            if source in ("pytest.mark.asyncio", "mark.asyncio"):
-                found.append(node.name)
+        value = node.value
+        applied = value.elts if isinstance(value, (ast.List, ast.Tuple)) else [value]
+        for mark in applied:
+            if mark is not None and ast.unparse(mark) in MARKER_SPELLINGS:
+                found.append("pytestmark")
+
     return found
 
 
@@ -93,3 +119,27 @@ def test_the_scan_ignores_other_markers(tmp_path):
         encoding="utf-8",
     )
     assert _marked(probe) == []
+
+
+def test_the_scan_sees_a_module_level_pytestmark(tmp_path):
+    """The half that was missing: the broadest way to apply the marker.
+
+    A module-level `pytestmark` marks every test in the file at once, so it is
+    the form that matters most and the one the decorator-only scan missed.
+    """
+    module = tmp_path / "probe.py"
+    module.write_text(
+        "import pytest\n\npytestmark = pytest.mark.asyncio\n\n\nasync def test_x():\n    pass\n",
+        encoding="utf-8",
+    )
+    assert _marked(module) == ["pytestmark"]
+
+
+def test_the_scan_ignores_an_unrelated_pytestmark(tmp_path):
+    """A `pytestmark` carrying some other marker is not this guard's business."""
+    module = tmp_path / "probe.py"
+    module.write_text(
+        "import pytest\n\npytestmark = pytest.mark.slow\n\n\nasync def test_x():\n    pass\n",
+        encoding="utf-8",
+    )
+    assert _marked(module) == []

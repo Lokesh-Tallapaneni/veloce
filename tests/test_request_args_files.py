@@ -5,8 +5,9 @@ from __future__ import annotations
 import pytest
 
 from tests.conftest import make_request
-from veloce import FilesKeyError, Request
+from veloce import FilesKeyError, Request, Veloce
 from veloce.http.datastructures import FormData, UploadFile
+from veloce.testclient import TestClient
 
 
 class _AppStub:
@@ -219,3 +220,33 @@ def test_formdata_get_upload_returns_first_uploadfile_only():
     assert fd.get_upload("text") is None
     upload = fd.get_upload("file")
     assert upload is file_a
+
+
+# ── Part names ───────────────────────────────────────────────────────
+#
+# Moved here from `test_openapi_through_the_client.py`, which is named and
+# documented for OpenAPI emission and which this test does not touch.
+
+
+def test_multipart_form_quoted_semicolon_in_part_name_end_to_end() -> None:
+    app = Veloce(openapi_url=None)
+    observed: dict = {}
+
+    @app.post("/parts")
+    async def parts(request: Request):
+        form = await request.form()
+        observed["value"] = form.get("x;y")
+        observed["keys"] = list(form.keys())
+        return {"ok": True}
+
+    body = b'--BOUND\r\nContent-Disposition: form-data; name="x;y"\r\n\r\nhello\r\n--BOUND--\r\n'
+    with TestClient(app) as client:
+        resp = client.post(
+            "/parts",
+            content=body,
+            headers={"Content-Type": "multipart/form-data; boundary=BOUND"},
+        )
+
+    assert resp.status_code == 200
+    assert "x;y" in observed["keys"]
+    assert observed["value"] == "hello"

@@ -168,3 +168,32 @@ def test_auth_property_cached_across_repeat_access():
         client.get("/auth", headers={"Authorization": "Bearer abc"})
     assert observed["same"] is True
     assert observed["scheme"] == "bearer"
+
+
+# ── Digest parameter decoding ────────────────────────────────────────
+#
+# Moved here from `test_openapi_through_the_client.py`, which is named and
+# documented for OpenAPI emission and which this test does not touch.
+
+
+def test_authorization_digest_backslash_escaped_quote_decoded() -> None:
+    app = Veloce(openapi_url=None)
+    observed: dict = {}
+
+    @app.get("/whoami")
+    async def whoami(request: Request):
+        auth = request.auth
+        observed["type"] = auth.type if auth else None
+        observed["params"] = dict(auth.params) if auth else {}
+        return {"ok": True}
+
+    header_value = (
+        'Digest username="a\\"b", realm="test", nonce="abc", uri="/whoami", response="deadbeef"'
+    )
+    with TestClient(app) as client:
+        resp = client.get("/whoami", headers={"Authorization": header_value})
+
+    assert resp.status_code == 200
+    assert observed["type"] == "digest"
+    assert observed["params"]["username"] == 'a"b'
+    assert observed["params"]["realm"] == "test"
