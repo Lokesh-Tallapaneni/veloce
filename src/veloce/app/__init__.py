@@ -7,9 +7,8 @@ construction - plus sixteen focused sibling modules mixed into it: `asgi`,
 `testing` and `urls`.
 
 This gateway re-exports the `veloce.app` surface by name, so every
-`from veloce.app import X` path keeps resolving unchanged. The list above used
-to name five of them as though it were complete, which is how it read after the
-split it describes added the rest.
+`from veloce.app import X` path keeps resolving unchanged. The list above names
+every sibling module; keep it complete when one is added.
 
 None of the mixins declares `__slots__`. `Veloce` is deliberately unslotted -
 an application sets its own attributes on it - so a mixin's `__slots__ = ()`

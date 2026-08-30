@@ -192,11 +192,10 @@ class MiddlewareMixin(AppHost):
     ) -> Callable[[Callable], Callable] | None:
         """Add middleware - supports both a class form and a decorator form.
 
-        The two forms return different things, which the old `-> Any` hid: the
-        decorator form returns the decorator, and the **class form returns
-        `None`** because it is a statement, not a decorator. Writing
-        `@app.middleware(CORSMiddleware)` therefore fails at decoration rather
-        than silently doing nothing.
+        The two forms return different things: the decorator form returns the
+        decorator, and the **class form returns `None`** because it is a
+        statement, not a decorator. Writing `@app.middleware(CORSMiddleware)`
+        therefore fails at decoration rather than silently doing nothing.
 
         Class form: app.middleware(CORSMiddleware, allow_origins=["*"])
         Decorator form:
@@ -232,7 +231,6 @@ class MiddlewareMixin(AppHost):
                     "@app.middleware('http') is the decorator form"
                 )
             self.add_middleware(middleware_class_or_type, **kwargs)
-            # Explicit: the class form is a statement. mypy flagged the implicit
-            # `None` the moment the return type stopped being `Any`, which is
-            # the whole reason for narrowing it.
+            # Explicit: the class form is a statement, and the annotation says
+            # so, so the `None` is written rather than left implicit.
             return None

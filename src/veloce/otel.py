@@ -48,14 +48,21 @@ the span is a clean root. Extraction happens on the span-emit path, which runs
 on every dispatch outcome (success, an earlier ``before_request`` short-circuit,
 or an error), so continuation never depends on hook ordering.
 
-**Scope.** This is a *server-span* bridge: it continues an inbound trace and
-emits one server span per request, but it does not inject context into
-*outbound* calls your handler makes, nor does it open a live span that wraps
-handler execution for fine-grained child spans - for that you would instrument
-at the call site / ASGI layer. The span is driven off the same low-cardinality
-dimensions a metrics exporter consumes.
+**Scope.** In the default mode this is a *server-span* bridge: it continues an
+inbound trace and emits one backdated server span per request, driven off the
+same low-cardinality dimensions a metrics exporter consumes. It opens no span
+around the handler, so a span the handler creates is not parented under it and
+an outbound call carries no context.
 
-**Streamed response bodies are not traced.** For a streaming body
+``instrument_with_otel(app, live=True)`` lifts all three limits: an ASGI-layer
+wrapper opens a real span at request start and attaches it to the OpenTelemetry
+context for the whole handler, so in-handler and outbound spans are its
+children. It is opt-in because it costs an ASGI wrapper and one context
+attach/detach per request; see :func:`instrument_with_otel` for the full
+per-mode contract.
+
+**Streamed response bodies are not traced in the default mode.** For a
+streaming body
 (:class:`~veloce.http.response.StreamingResponse`,
 :class:`~veloce.sse.EventSourceResponse`, a chunked
 :class:`~veloce.http.response.FileResponse`) the instrumentation hook fires
@@ -69,7 +76,8 @@ sends headers and an empty terminal frame - so it is *not* marked streamed even
 on a streaming route, and is traced normally.) Closing a span accurately
 around a stream would require
 moving the span lifecycle onto the ASGI send path so it ends after the stream
-completes or fails; that is out of scope for this metrics-driven bridge.
+completes or fails - which is what ``live=True`` does, and why live mode times a
+streamed response end to end and skips no streamed records.
 
 **Span naming and cardinality.** The span is named for the matched route
 *template* (``metrics.route``, e.g. ``/items/{id}``), which is low-cardinality

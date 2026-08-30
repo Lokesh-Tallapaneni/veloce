@@ -260,11 +260,11 @@ class ErrorsMixin(AppHost):
     ) -> Response:
         """Invoke a matched error handler and coerce whatever it returns.
 
-        Shared by `handle_http_exception` and `handle_user_exception`, which
-        carried this block byte-for-byte twice. Both are out-of-band entry
-        points, so a caller may have no request to hand: the synthetic `GET /`
-        exists so a handler that reads `request` gets an object rather than
-        `None`, and a real request is used whenever the caller has one.
+        Shared by `handle_http_exception` and `handle_user_exception`. Both are
+        out-of-band entry points, so a caller may have no request to hand: the
+        synthetic `GET /` exists so a handler that reads `request` gets an
+        object rather than `None`, and a real request is used whenever the
+        caller has one.
 
         The error path, so the extra call costs nothing that matters.
         """

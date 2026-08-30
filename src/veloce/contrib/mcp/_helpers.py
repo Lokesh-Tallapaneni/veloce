@@ -51,11 +51,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.resources import MCPResource
 
 
-# The current call's outbound notification sink, scoped per request so a handler's
-# progress / log notifications reach the right client. A ContextVar (not an
-# instance attribute) keeps concurrent calls isolated on the Streamable HTTP
-# transport, where many requests share one `MCPServer`; the serial stdio transport
-# `_meta` keys the modern revision reserves. Prefixed per the spec's naming
+# The `_meta` keys the modern revision reserves. Prefixed per the spec's naming
 # rules, so an application's own `_meta` entries cannot collide with them. They
 # live here rather than in `server` because `session` and the HTTP transport
 # read them too, and importing the dispatch core from a leaf for two string
@@ -69,6 +65,10 @@ META_LOG_LEVEL = "io.modelcontextprotocol/logLevel"
 META_SERVER_INFO = "io.modelcontextprotocol/serverInfo"
 
 
+# The current call's outbound notification sink, scoped per request so a handler's
+# progress / log notifications reach the right client. A ContextVar (not an
+# instance attribute) keeps concurrent calls isolated on the Streamable HTTP
+# transport, where many requests share one `MCPServer`; the serial stdio transport
 # sets it once per serve task. `None` means no channel is wired (off-transport).
 _notifier_var: ContextVar[Callable[[dict[str, Any]], Awaitable[None]] | None] = ContextVar(
     "_mcp_notifier", default=None
@@ -125,14 +125,6 @@ _era_modern_var: ContextVar[bool] = ContextVar("_mcp_era_modern", default=False)
 _requester_var: ContextVar[Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]] | None] = (
     ContextVar("_mcp_requester", default=None)
 )
-
-# Set on a detached task runner (`_run_task`) so the serial stdio transport can
-# refuse a server->client request issued from it. A task-augmented call returns
-# its `CreateTaskResult` immediately, so the stdio serve loop resumes reading
-# stdin while the runner executes; if the runner called `ctx.sample` / `elicit` /
-# `roots` its `request()` would start a second reader of the same stdin, racing
-# the serve loop for inbound lines. `False` on the synchronous call path, where
-# the serve loop is parked in the handler and `request()` is the sole reader.
 
 
 class _InFlight:

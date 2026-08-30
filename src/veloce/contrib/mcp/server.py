@@ -125,14 +125,14 @@ MethodHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any] | None]]
 # proceed). The tools surface is stable across the supported revisions.
 LATEST_PROTOCOL_VERSION = "2025-11-25"
 
+#: The revision before `LATEST_PROTOCOL_VERSION`, still served.
+PRIOR_PROTOCOL_VERSION = "2025-06-18"
+
 # Revisions whose ``tools`` surface this server is compatible with. A client
 # that requests one of these gets it echoed back from ``initialize``; any other
 # request falls back to `LATEST_PROTOCOL_VERSION`. ``2025-03-26`` is excluded: it
 # predates the ``title`` / ``outputSchema`` / ``structuredContent`` fields this
 # server emits.
-#: The revision before `LATEST_PROTOCOL_VERSION`, still served.
-PRIOR_PROTOCOL_VERSION = "2025-06-18"
-
 _SUPPORTED_PROTOCOL_VERSIONS = frozenset({PRIOR_PROTOCOL_VERSION, LATEST_PROTOCOL_VERSION})
 
 # The first "modern" revision: no `initialize` handshake, no protocol-level
@@ -172,7 +172,6 @@ SERVED_PROTOCOL_VERSIONS: tuple[str, ...] = (
 # server does not yet produce.
 RESULT_TYPE_COMPLETE = "complete"
 RESULT_TYPE_TASK = "task"
-# The methods the spec requires caching hints on, for a `complete` result.
 # Methods a handshake-era client has and a modern one does not. Still served to the
 # revision that defined them, reported as not found to the revision that removed
 # them, so a client discovers the surface it actually has.
@@ -181,6 +180,8 @@ RESULT_TYPE_TASK = "task"
 # capability that owns it, as `Capability.handshake_only_methods`, and the
 # effective set is their union (see `_handshake_only_methods`).
 _CORE_HANDSHAKE_ONLY_METHODS = frozenset({"ping"})
+
+# The methods the spec requires caching hints on, for a `complete` result.
 _CACHEABLE_METHODS = frozenset(
     {
         "server/discover",

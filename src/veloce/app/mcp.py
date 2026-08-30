@@ -22,19 +22,21 @@ if TYPE_CHECKING:  # pragma: no cover
 
 @dataclass(frozen=True, slots=True)
 class MCPToolRegistration:
-    """One `@app.mcp_tool(...)` registration.
+    """One `@app.mcp_tool(...)` registration, read by `contrib.mcp` at mount time.
 
-    Was an eleven-element positional tuple whose field contract was restated at
-    five sites - a prose comment here, the nested `tuple[...]` annotation, the
-    `append`, a second prose comment in `contrib/mcp/registry.py`, and the
-    eleven-name destructure below it - and read back through an untyped
-    `getattr(app, "_mcp_tools", ())`.
+    `handler` is the decorated callable; `name` defaults to its `__name__`, and
+    `namespace` prefixes that (`<namespace>_<name>`). `description` is the
+    required LLM-facing text, separate from the docstring. `scopes` are the
+    authorization scopes a caller must hold, `tags` group the tool for
+    filtering, and `icons` is a sequence of `Icon` a client may render.
+    `task_support` lets a client run the tool as a background task.
+    `annotations` are the validated behaviour hints (`readOnlyHint` and its
+    siblings), `meta` is passed through to the tool descriptor, and `version`
+    labels the registration so two tools may share a name.
 
-    Positional coupling across a subpackage boundary is the hazard: the writer
-    and the reader had to agree on the order of eleven values, with nothing
-    checking that they did. The two prose descriptions had already drifted -
-    this one called the ninth field `declared`, the other called it
-    `annotations`.
+    Fields are read by keyword across the `app` / `contrib.mcp` boundary. Do not
+    rely on their order: this was an eleven-element tuple, and the two ends had
+    to agree on the position of every value with nothing checking that they did.
     """
 
     handler: Callable[..., Any]
