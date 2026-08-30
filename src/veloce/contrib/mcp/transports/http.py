@@ -227,7 +227,7 @@ def register_http_transport(
         if request.method == "DELETE":
             return await _handle_delete(store, request)
         if request.method == "GET":
-            return _handle_get(event_store, request)
+            return await _handle_get(event_store, request, store)
         return await _handle_http(server, request, store, event_store)
 
     app.add_route(
@@ -386,7 +386,9 @@ async def _handle_delete(store: HttpSessionStore | None, request: Request) -> Re
 # ── Verb handlers ─────────────────────────────────────────
 
 
-def _handle_get(event_store: SSEEventStore | None, request: Request) -> Response:
+async def _handle_get(
+    event_store: SSEEventStore | None, request: Request, store: HttpSessionStore | None
+) -> Response:
     """Resume a dropped SSE stream from `Last-Event-ID`, or answer 405.
 
     A `GET` is meaningful only under resumability and only as a resume: the client
@@ -394,6 +396,14 @@ def _handle_get(event_store: SSEEventStore | None, request: Request) -> Response
     events that one stream produced after it (scoped to that stream, never another
     POST's). Without resumability, or without the header, there is no standalone
     server-push stream, so the verb is unsupported (HTTP 405).
+
+    Under session management the id is checked first, through the same
+    `_bind_session` gate a `POST` goes through: a missing header is HTTP 400 and a
+    terminated or unknown one HTTP 404. `SSEEventStore` has no session dimension,
+    so without this a client whose session had been `DELETE`d - or evicted by the
+    idle TTL or the `max_sessions` reclaim - could still replay that stream's
+    buffered payloads, tool results included, from a session `DELETE` next door
+    already answered 404 for.
 
     The caller has already run admission control, so a replay cannot bypass the
     DNS-rebinding defense or reach an unauthenticated client.
@@ -403,6 +413,11 @@ def _handle_get(event_store: SSEEventStore | None, request: Request) -> Response
     last_event_id = request._peek_header_key(_RAW_LAST_EVENT_ID)
     if not last_event_id:
         return _method_not_allowed()
+    if store is not None:
+        try:
+            await _bind_session(store, request, is_initialize=False)
+        except MCPError as exc:
+            return _protocol_response(exc.to_error(None), status_code=exc.http_status)
     missed = event_store.replay_after(last_event_id)
 
     async def events() -> Any:
