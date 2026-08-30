@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import os
 import re
 import sys
 import textwrap
@@ -252,23 +254,35 @@ def test_run_parser_has_env_file_flags():
     assert args.env_file is None
 
 
-@pytest.fixture
-def isolated_environ(monkeypatch):
+@contextlib.contextmanager
+def _restored_environ(monkeypatch):
     """Undo whatever `_apply_env_file` writes into the real `os.environ`.
 
     `monkeypatch.delenv(key, raising=False)` on a key that is not there
     registers nothing to undo, so a key the loader then *sets* survives the
     test - and the next one reads an environment the suite arranged rather
     than the one it meant to.
-    """
-    import os
 
+    Written as a context manager rather than inline in the fixture so the
+    meta-test below can drive the restore and assert on it. A test the fixture
+    is still holding open cannot observe that fixture's teardown, which is why
+    the meta-test hand-rolled its own copy and proved nothing about the fixture.
+    """
     before = dict(os.environ)
-    yield
-    for key in set(os.environ) - set(before):
-        monkeypatch.delenv(key, raising=False)
-    os.environ.clear()
-    os.environ.update(before)
+    try:
+        yield
+    finally:
+        for key in set(os.environ) - set(before):
+            monkeypatch.delenv(key, raising=False)
+        os.environ.clear()
+        os.environ.update(before)
+
+
+@pytest.fixture
+def isolated_environ(monkeypatch):
+    """Restore `os.environ` after a test that lets `_apply_env_file` write it."""
+    with _restored_environ(monkeypatch):
+        yield
 
 
 @pytest.mark.usefixtures("isolated_environ")
@@ -281,8 +295,6 @@ def test_env_file_populates_environ(tmp_path, monkeypatch):
     parser = build_parser()
     args = parser.parse_args(["run", "demo:app", "--env-file", str(env)])
     _apply_env_file(args)
-
-    import os
 
     assert os.environ["CLI_ENV_KEY"] == "from_file"
     assert os.environ["CLI_ENV_OTHER"] == "quoted value"
@@ -298,8 +310,6 @@ def test_no_env_file_disables_loading(tmp_path, monkeypatch):
     args = parser.parse_args(["run", "demo:app", "--env-file", str(env), "--no-env-file"])
     _apply_env_file(args)
 
-    import os
-
     assert "CLI_ENV_DISABLED" not in os.environ
 
 
@@ -312,8 +322,6 @@ def test_env_file_does_not_overwrite_existing_environ(tmp_path, monkeypatch):
     parser = build_parser()
     args = parser.parse_args(["run", "demo:app", "--env-file", str(env)])
     _apply_env_file(args)
-
-    import os
 
     # Real environ wins — the file value is ignored.
     assert os.environ["CLI_ENV_PRESET"] == "already_set"
@@ -1024,31 +1032,24 @@ class TestTheEnvFileTestsDoNotLeak:
     """
 
     def test_a_key_the_loader_set_is_gone_afterwards(self, tmp_path, monkeypatch):
-        import os
-
         key = "CLI_LEAK_PROBE"
         assert key not in os.environ
 
         env = tmp_path / ".env"
-        env.write_text(f"{key}=leaked\n", encoding="utf-8")
+        env.write_text(f"{key}=leaked" + chr(10), encoding="utf-8")
 
-        def _run_with_fixture():
-            before = dict(os.environ)
-            try:
-                args = build_parser().parse_args(["run", "demo:app", "--env-file", str(env)])
-                _apply_env_file(args)
-                assert os.environ[key] == "leaked"
-            finally:
-                os.environ.clear()
-                os.environ.update(before)
+        # The fixture's own restore, driven directly. Hand-rolling a save and
+        # restore here proved the closure worked and said nothing about
+        # `isolated_environ`, which is what this class is named for.
+        with _restored_environ(monkeypatch):
+            args = build_parser().parse_args(["run", "demo:app", "--env-file", str(env)])
+            _apply_env_file(args)
+            assert os.environ[key] == "leaked"
 
-        _run_with_fixture()
-        assert key not in os.environ, "the loader's write outlived the test"
+        assert key not in os.environ, "the loader's write outlived the restore"
 
     @pytest.mark.usefixtures("isolated_environ")
     def test_the_fixture_restores_a_key_it_overwrote(self, tmp_path):
-        import os
-
         key = "CLI_EXISTING_PROBE"
         os.environ[key] = "original"
         try:
