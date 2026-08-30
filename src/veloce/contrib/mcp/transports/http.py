@@ -310,7 +310,7 @@ async def _handle_http(
         )
     ):
         return _stream_response(
-            server, message, current_principal(), session, session_id, event_store
+            server, message, current_principal(), session, session_id, event_store, store
         )
 
     response = await server.handle_message(message, session)
@@ -602,6 +602,7 @@ def _stream_response(
     session: MCPSession,
     session_id: str | None = None,
     event_store: SSEEventStore | None = None,
+    store: HttpSessionStore | None = None,
 ) -> EventSourceResponse:
     """Answer one request as an SSE stream: its notifications then its response.
 
@@ -676,6 +677,15 @@ def _stream_response(
         set_principal(principal)
         try:
             response = await server.handle_message(message, session)
+            # Publish what this message changed, as the JSON reply path does at its
+            # own equivalent point. A conformant client offers both content types on
+            # POST and `_needs_stream` keeps the stream for everything but
+            # `tools/call`, so `initialize` - the message that establishes the whole
+            # session - always arrives here. Persisting only on the JSON path wrote a
+            # record with no capabilities and no client identity, which `resolve`
+            # then copied back over the live session.
+            if store is not None and session_id is not None:
+                await store.persist(session_id, session)
             if response is not None:
                 response_id = emit_id(response)
                 if draining:
