@@ -388,9 +388,13 @@ class MCPAuthorizationServer:
                 await self.store.delete_token(_digest(token))
                 return None
             # An audience-bound token names the server it was minted for; one that
-            # names a different server is not ours to accept. A token carrying no
-            # resource was never bound and is left to the scope check.
-            if resource is not None and record.resource is not None and record.resource != resource:
+            # names a different server is not ours to accept. Neither is one that
+            # names nothing: `resource` is optional at `/authorize` (RFC 8707
+            # Sec. 2), so exempting an unbound token let a client reach every
+            # server sharing this authorization server by asking for less than
+            # the binding requires. A verifier built without `resource=` enforces
+            # no audience at all and warns about it above.
+            if resource is not None and record.resource != resource:
                 return None
             return Principal(
                 subject=record.subject,
