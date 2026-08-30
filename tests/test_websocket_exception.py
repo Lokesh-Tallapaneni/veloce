@@ -95,7 +95,7 @@ def test_no_reason_sends_empty_string():
     assert close.get("reason", "") == ""
 
 
-def test_importable_from_package_root():
+def test_websocket_exception_is_importable_from_package_root():
     # The import *is* the assertion - the test is named for it, and moving
     # it to module top would move the failure to collection.
     from veloce import WebSocketDisconnect, WebSocketException

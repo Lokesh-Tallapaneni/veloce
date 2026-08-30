@@ -423,7 +423,7 @@ def test_a_handler_with_every_inlined_kind_together():
     assert body == {"item_id": 9, "name": "42", "ratio": 0.5}
 
 
-def test_repeated_requests_are_stable():
+def test_the_generated_resolver_does_not_drift_across_requests():
     """Generated code is built once and reused; a stateful bug would drift."""
     client = TestClient(_app())
     for _ in range(20):

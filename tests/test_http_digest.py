@@ -40,7 +40,7 @@ def test_realm_with_backslash_is_escaped():
     assert r'realm="c:\\x"' in exc.value.headers["WWW-Authenticate"]
 
 
-def test_realm_with_control_chars_raises_at_construction():
+def test_digest_realm_with_control_chars_raises_at_construction():
     with pytest.raises(ValueError):
         HTTPDigest(realm="bad\r\nInjected: 1")
 

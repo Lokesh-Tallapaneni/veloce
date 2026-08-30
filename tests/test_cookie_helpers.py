@@ -44,7 +44,7 @@ def test_parse_cookie_strips_quotes():
 # ── dump_cookie ─────────────────────────────────────────────────────
 
 
-def test_dump_cookie_basic():
+def test_dump_cookie_renders_the_default_attributes():
     assert dump_cookie("session", "abc") == "session=abc; Path=/"
 
 

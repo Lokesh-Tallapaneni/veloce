@@ -360,7 +360,7 @@ def test_two_clients_get_the_coding_each_asked_for():
     assert _decode("gzip", first.body) == _decode("br", second.body) == BODY
 
 
-def test_repeated_requests_are_stable():
+def test_repeated_requests_compress_identically():
     app = _app(CompressionMiddleware())
     client = TestClient(app)
     for _ in range(10):

@@ -66,7 +66,6 @@ KNOWN_SHARED = {
         "test_server_write_backpressure.py",
         "test_websocket_native_backpressure.py",
     },
-    "test_dump_cookie_basic": {"test_cookie_helpers.py", "test_cookies.py"},
     "test_dump_cookie_rejects_crlf_in_samesite": {"test_cookies.py", "test_http_e2e.py"},
     "test_empty_body": {"test_asgi_body_source.py", "test_request_get_data.py"},
     "test_explicit_context_wins_over_processor": {
@@ -81,10 +80,6 @@ KNOWN_SHARED = {
         "test_staticfiles_conditional_parity.py",
     },
     "test_import_error_sentinel_shape": {"test_metrics.py", "test_otel.py"},
-    "test_importable_from_package_root": {
-        "test_websocket_exception.py",
-        "test_websocket_request_validation.py",
-    },
     "test_include_keeps_only_the_named_fields": {
         "test_response_model_dump_kwargs.py",
         "test_response_model_filtering.py",
@@ -104,18 +99,9 @@ KNOWN_SHARED = {
     },
     "test_post_form_data": {"test_async_test_client.py", "test_testclient_request.py"},
     "test_query_params": {"test_app.py", "test_async_test_client.py", "test_testclient_request.py"},
-    "test_realm_with_control_chars_raises_at_construction": {
-        "test_http_basic.py",
-        "test_http_digest.py",
-    },
     "test_redirect_not_followed_by_default": {
         "test_async_test_client.py",
         "test_testclient_redirects.py",
-    },
-    "test_repeated_requests_are_stable": {
-        "test_compression_negotiation.py",
-        "test_datetime_converter_accelerator.py",
-        "test_resolver_inlined_coercion.py",
     },
     "test_swagger_ui": {"test_e2e_smoke.py", "test_openapi_customization.py"},
     "test_teardown_appcontext_not_fired_on_shutdown": {

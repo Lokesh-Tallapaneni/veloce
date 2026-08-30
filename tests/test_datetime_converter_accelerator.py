@@ -385,7 +385,7 @@ def test_a_date_segment_routes():
     assert TestClient(_routed_app()).get("/on/2026-08-26").json() == {"iso": "2026-08-26"}
 
 
-def test_repeated_requests_are_stable():
+def test_the_parser_does_not_drift_across_requests():
     """Generated once, reused; a stateful parser bug would drift."""
     client = TestClient(_routed_app())
     for _ in range(20):

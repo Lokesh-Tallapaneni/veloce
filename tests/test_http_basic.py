@@ -77,7 +77,7 @@ def test_realm_with_backslash_escaped_on_invalid_credentials():
     assert r'realm="c:\\x"' in exc.value.headers["WWW-Authenticate"]
 
 
-def test_realm_with_control_chars_raises_at_construction():
+def test_basic_realm_with_control_chars_raises_at_construction():
     with pytest.raises(ValueError):
         HTTPBasic(realm="x\nfoo")
 

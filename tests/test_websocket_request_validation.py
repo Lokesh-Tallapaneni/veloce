@@ -11,7 +11,6 @@ from veloce import (
     WebSocket,
     WebSocketRequestValidationError,
 )
-from veloce import WebSocketRequestValidationError as Exc
 
 
 def _run_ws(app: Veloce, path: str, query_string: bytes = b"") -> list[dict]:
@@ -98,6 +97,14 @@ def test_validation_failure_is_swallowed():
     assert any(m["type"] == "websocket.close" for m in sent)
 
 
-def test_importable_from_package_root():
+def test_request_validation_error_is_importable_from_package_root():
+    """The import *is* the assertion, as in the sibling module.
 
-    assert Exc is WebSocketRequestValidationError
+    This compared `Exc` against `WebSocketRequestValidationError`, which the two
+    module-top imports bind to the same object - so it held whatever the export
+    did, and would have held with the name absent from `veloce.__all__`.
+    """
+    from veloce import WebSocketRequestValidationError as Imported
+
+    assert issubclass(Imported, Exception)
+    assert Imported.__module__.startswith("veloce.")
