@@ -298,7 +298,18 @@ class CORSMiddleware(Middleware):
 
     async def process_response(self, request: Request, response: Response) -> Response:
         """Add CORS response headers."""
-        origin = request._state.get("_cors_origin", "")
+        # `_cors_origin` is a cache `process_request` writes, so it is missing
+        # whenever the response phase runs without the request phase - which is
+        # what a refusal is. An over-`MAX_CONTENT_LENGTH` body is rejected
+        # before dispatch, against a request built only to give this phase
+        # something to run against, and reading `""` there sent the 413 out with
+        # no `Access-Control-Allow-Origin`: the browser reports an opaque CORS
+        # failure and the status saying what was wrong never reaches the client.
+        # Reading the header is not the same as running the request phase: the
+        # refusal still refuses before reading the body, it just stops losing
+        # the one header the client needs to be allowed to see the refusal.
+        cached = request._state.get("_cors_origin")
+        origin: str = cached if cached is not None else request.headers.get(HEADER_ORIGIN, "")
         # Plain (non-preflight) cross-origin responses still need
         # Access-Control-Allow-Origin and Vary: Origin if the value
         # depends on the request origin.

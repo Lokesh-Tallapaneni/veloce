@@ -106,14 +106,25 @@ def test_a_body_within_the_limit_is_unaffected():
 # ── The residual, pinned so it is a decision and not a surprise ──────
 
 
-def test_a_pre_dispatch_rejection_carries_no_cors_header():
-    """`CORSMiddleware` needs its request phase, which a refusal does not run.
+def test_a_pre_dispatch_rejection_carries_the_cors_header_too():
+    """Both refusal paths ship the header, and neither runs the request phase.
 
-    Recorded deliberately: running the request middleware chain for a body we
-    are refusing on its declared length would give up the point of refusing
-    early. A `stream=True` route refuses from inside dispatch, so its request
-    phase has already run and it does carry the header - that asymmetry is the
-    cost of refusing before reading, not an oversight.
+    This previously pinned the opposite - that a buffered refusal carried no
+    `Access-Control-Allow-Origin` while a streamed one did - on the ground that
+    "running the request middleware chain for a body we are refusing on its
+    declared length would give up the point of refusing early".
+
+    That cost is real, and it is not what was being paid. `CORSMiddleware` read
+    the origin from a cache its request phase writes; the refusal only had to
+    read the `Origin` header it already holds. Nothing about refusing early
+    changed - no request middleware runs on this path now either - and the
+    asymmetry between the two doors is gone.
+
+    It mattered because a browser cannot read a cross-origin response with no
+    `Access-Control-Allow-Origin`: the client saw a network-level CORS failure
+    instead of the 413 that says what was wrong. `AsgiMixin._emit_response`'s
+    own docstring says the cold reject path exists so a refusal can ship these
+    headers, which is the behaviour asserted here now.
     """
 
     origin = {"origin": "https://site.example"}
@@ -125,5 +136,5 @@ def test_a_pre_dispatch_rejection_carries_no_cors_header():
     ).post("/u", content=_OVER, headers=origin)
 
     assert buffered.status_code == streamed.status_code == 413
-    assert buffered.headers.get("access-control-allow-origin") is None
+    assert buffered.headers.get("access-control-allow-origin") == "https://site.example"
     assert streamed.headers.get("access-control-allow-origin") == "https://site.example"
