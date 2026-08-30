@@ -25,7 +25,7 @@ PRIVATE = "_current_app_var"
 
 def _sites() -> list[tuple[str, int, str]]:
     found = []
-    for path in sorted(TESTS.glob("test_*.py")):
+    for path in sorted(TESTS.rglob("test_*.py")):
         if path.name == pathlib.Path(__file__).name:
             continue
         lines = path.read_text(encoding="utf-8").split("\n")
@@ -45,7 +45,7 @@ def test_the_contextvar_scan_reads_a_real_corpus():
     test tree into subdirectories would leave this module green while reading
     no files at all.
     """
-    scanned = [p for p in sorted(TESTS.glob("test_*.py")) if p.name != pathlib.Path(__file__).name]
+    scanned = [p for p in sorted(TESTS.rglob("test_*.py")) if p.name != pathlib.Path(__file__).name]
     assert len(scanned) > 100, (
         "the module glob matched almost nothing, so the contextvar scan reads nothing"
     )

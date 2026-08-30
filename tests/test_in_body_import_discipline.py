@@ -45,7 +45,7 @@ TESTS = pathlib.Path(__file__).resolve().parent
 
 
 def _modules() -> list[pathlib.Path]:
-    return sorted(TESTS.glob("test_*.py"))
+    return sorted(TESTS.rglob("test_*.py"))
 
 
 def _top_level_bindings(tree: ast.Module) -> dict[str, tuple]:

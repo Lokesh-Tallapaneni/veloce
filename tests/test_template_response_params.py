@@ -12,23 +12,18 @@ from veloce.contrib.templating import Jinja2Templates
 from veloce.http.response import HTMLResponse, Response
 
 
-@pytest.fixture
-def tmpl_dir(tmp_path: Path) -> Path:
-    return tmp_path
-
-
-def test_template_response_default_is_html(tmpl_dir: Path):
-    (tmpl_dir / "x.html").write_text("<p>{{ v }}</p>")
-    templates = Jinja2Templates(directory=str(tmpl_dir))
+def test_template_response_default_is_html(tmp_path: Path):
+    (tmp_path / "x.html").write_text("<p>{{ v }}</p>")
+    templates = Jinja2Templates(directory=str(tmp_path))
     resp = templates.TemplateResponse("x.html", {"v": "hi"})
     assert isinstance(resp, HTMLResponse)
     assert resp.mimetype == "text/html"
     assert resp.background is None
 
 
-def test_template_response_media_type_non_html(tmpl_dir: Path):
-    (tmpl_dir / "feed.xml").write_text("<rss>{{ title }}</rss>")
-    templates = Jinja2Templates(directory=str(tmpl_dir))
+def test_template_response_media_type_non_html(tmp_path: Path):
+    (tmp_path / "feed.xml").write_text("<rss>{{ title }}</rss>")
+    templates = Jinja2Templates(directory=str(tmp_path))
     resp = templates.TemplateResponse(
         "feed.xml", {"title": "News"}, media_type="application/rss+xml"
     )
@@ -36,9 +31,9 @@ def test_template_response_media_type_non_html(tmpl_dir: Path):
     assert resp.body == b"<rss>News</rss>"
 
 
-async def test_template_response_background_bare_callable(tmpl_dir: Path):
-    (tmpl_dir / "x.html").write_text("ok")
-    templates = Jinja2Templates(directory=str(tmpl_dir))
+async def test_template_response_background_bare_callable(tmp_path: Path):
+    (tmp_path / "x.html").write_text("ok")
+    templates = Jinja2Templates(directory=str(tmp_path))
     fired: list[str] = []
 
     def side_effect():
@@ -51,17 +46,17 @@ async def test_template_response_background_bare_callable(tmpl_dir: Path):
     assert fired == ["ran"]
 
 
-def test_template_response_background_task_object(tmpl_dir: Path):
-    (tmpl_dir / "x.html").write_text("ok")
-    templates = Jinja2Templates(directory=str(tmpl_dir))
+def test_template_response_background_task_object(tmp_path: Path):
+    (tmp_path / "x.html").write_text("ok")
+    templates = Jinja2Templates(directory=str(tmp_path))
     task = BackgroundTask(lambda a: None, "arg")
     resp = templates.TemplateResponse("x.html", {}, background=task)
     assert resp.background is task
 
 
-async def test_template_response_background_tasks_collection(tmpl_dir: Path):
-    (tmpl_dir / "x.html").write_text("ok")
-    templates = Jinja2Templates(directory=str(tmpl_dir))
+async def test_template_response_background_tasks_collection(tmp_path: Path):
+    (tmp_path / "x.html").write_text("ok")
+    templates = Jinja2Templates(directory=str(tmp_path))
     fired: list[int] = []
     tasks = BackgroundTasks()
     tasks.add_task(lambda: fired.append(1))
@@ -72,25 +67,25 @@ async def test_template_response_background_tasks_collection(tmpl_dir: Path):
     assert fired == [1, 2]
 
 
-def test_template_response_background_invalid_type(tmpl_dir: Path):
-    (tmpl_dir / "x.html").write_text("ok")
-    templates = Jinja2Templates(directory=str(tmpl_dir))
+def test_template_response_background_invalid_type(tmp_path: Path):
+    (tmp_path / "x.html").write_text("ok")
+    templates = Jinja2Templates(directory=str(tmp_path))
     with pytest.raises(TypeError):
         templates.TemplateResponse("x.html", {}, background=123)
 
 
-def test_template_response_media_type_returns_base_response(tmpl_dir: Path):
-    (tmpl_dir / "x.html").write_text("plain")
-    templates = Jinja2Templates(directory=str(tmpl_dir))
+def test_template_response_media_type_returns_base_response(tmp_path: Path):
+    (tmp_path / "x.html").write_text("plain")
+    templates = Jinja2Templates(directory=str(tmp_path))
     resp = templates.TemplateResponse("x.html", {}, media_type="text/plain")
     assert isinstance(resp, Response)
     assert not isinstance(resp, HTMLResponse)
 
 
-async def test_template_response_integration(tmpl_dir: Path):
-    (tmpl_dir / "x.txt").write_text("body-{{ v }}")
+async def test_template_response_integration(tmp_path: Path):
+    (tmp_path / "x.txt").write_text("body-{{ v }}")
     app = Veloce(debug=True, openapi_url=None)
-    templates = Jinja2Templates(directory=str(tmpl_dir))
+    templates = Jinja2Templates(directory=str(tmp_path))
     fired: list[str] = []
 
     @app.get("/")

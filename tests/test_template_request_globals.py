@@ -17,8 +17,6 @@ import asyncio
 import re
 from pathlib import Path
 
-import pytest
-
 from veloce import CSPMiddleware, Veloce
 from veloce.contrib.templating import Jinja2Templates, render_template_string
 from veloce.http.response import StreamingResponse
@@ -27,15 +25,10 @@ from veloce.testclient import AsyncTestClient, TestClient
 NONCE_IN_HEADER = re.compile(r"'nonce-([\w-]+)'")
 
 
-@pytest.fixture
-def tmpl_dir(tmp_path: Path) -> Path:
-    return tmp_path
-
-
 def _armed_app() -> Veloce:
     """An app whose CSP policy carries a nonce placeholder.
 
-    It took a `tmpl_dir` it never read: the templates are loaded by
+    It took a `tmp_path` it never read: the templates are loaded by
     `Jinja2Templates`, which each caller constructs itself.
     """
     app = Veloce(openapi_url=None)
@@ -49,10 +42,10 @@ def _header_nonce(response) -> str:
     return match.group(1)
 
 
-def test_csp_nonce_resolves_without_threading_the_request(tmpl_dir: Path):
-    (tmpl_dir / "p.html").write_text('<script nonce="{{ csp_nonce }}">x</script>')
+def test_csp_nonce_resolves_without_threading_the_request(tmp_path: Path):
+    (tmp_path / "p.html").write_text('<script nonce="{{ csp_nonce }}">x</script>')
     app = _armed_app()
-    templates = Jinja2Templates(directory=str(tmpl_dir))
+    templates = Jinja2Templates(directory=str(tmp_path))
 
     @app.get("/")
     async def index():
@@ -62,10 +55,10 @@ def test_csp_nonce_resolves_without_threading_the_request(tmpl_dir: Path):
     assert f'nonce="{_header_nonce(response)}"' in response.text
 
 
-def test_csp_nonce_also_supports_the_call_form(tmpl_dir: Path):
-    (tmpl_dir / "p.html").write_text('<script nonce="{{ csp_nonce() }}">x</script>')
+def test_csp_nonce_also_supports_the_call_form(tmp_path: Path):
+    (tmp_path / "p.html").write_text('<script nonce="{{ csp_nonce() }}">x</script>')
     app = _armed_app()
-    templates = Jinja2Templates(directory=str(tmpl_dir))
+    templates = Jinja2Templates(directory=str(tmp_path))
 
     @app.get("/")
     async def index():
@@ -75,10 +68,10 @@ def test_csp_nonce_also_supports_the_call_form(tmpl_dir: Path):
     assert f'nonce="{_header_nonce(response)}"' in response.text
 
 
-def test_request_resolves_without_threading_the_request(tmpl_dir: Path):
-    (tmpl_dir / "p.html").write_text("{{ request.path }}|{{ request.query_params.get('q') }}")
+def test_request_resolves_without_threading_the_request(tmp_path: Path):
+    (tmp_path / "p.html").write_text("{{ request.path }}|{{ request.query_params.get('q') }}")
     app = Veloce(openapi_url=None)
-    templates = Jinja2Templates(directory=str(tmpl_dir))
+    templates = Jinja2Templates(directory=str(tmp_path))
 
     @app.get("/here")
     async def here():
@@ -87,10 +80,10 @@ def test_request_resolves_without_threading_the_request(tmpl_dir: Path):
     assert TestClient(app).get("/here?q=v").text == "/here|v"
 
 
-def test_explicit_context_still_wins_over_the_resolved_name(tmpl_dir: Path):
-    (tmpl_dir / "p.html").write_text("{{ request }}")
+def test_explicit_context_still_wins_over_the_resolved_name(tmp_path: Path):
+    (tmp_path / "p.html").write_text("{{ request }}")
     app = Veloce(openapi_url=None)
-    templates = Jinja2Templates(directory=str(tmpl_dir))
+    templates = Jinja2Templates(directory=str(tmp_path))
 
     @app.get("/")
     async def index():
@@ -99,11 +92,11 @@ def test_explicit_context_still_wins_over_the_resolved_name(tmpl_dir: Path):
     assert TestClient(app).get("/").text == "OVERRIDDEN"
 
 
-def test_nonce_is_empty_rather_than_an_error_without_csp(tmpl_dir: Path):
+def test_nonce_is_empty_rather_than_an_error_without_csp(tmp_path: Path):
     """A page must still render when no nonce is armed."""
-    (tmpl_dir / "p.html").write_text('<script nonce="{{ csp_nonce }}">x</script>')
+    (tmp_path / "p.html").write_text('<script nonce="{{ csp_nonce }}">x</script>')
     app = Veloce(openapi_url=None)  # no CSPMiddleware
-    templates = Jinja2Templates(directory=str(tmpl_dir))
+    templates = Jinja2Templates(directory=str(tmp_path))
 
     @app.get("/")
     async def index():
@@ -114,9 +107,9 @@ def test_nonce_is_empty_rather_than_an_error_without_csp(tmpl_dir: Path):
     assert 'nonce=""' in response.text
 
 
-def test_nonce_conditional_reflects_whether_one_is_armed(tmpl_dir: Path):
-    (tmpl_dir / "p.html").write_text("{% if csp_nonce %}armed{% else %}off{% endif %}")
-    templates = Jinja2Templates(directory=str(tmpl_dir))
+def test_nonce_conditional_reflects_whether_one_is_armed(tmp_path: Path):
+    (tmp_path / "p.html").write_text("{% if csp_nonce %}armed{% else %}off{% endif %}")
+    templates = Jinja2Templates(directory=str(tmp_path))
 
     armed = _armed_app()
 
@@ -134,12 +127,12 @@ def test_nonce_conditional_reflects_whether_one_is_armed(tmpl_dir: Path):
     assert TestClient(plain).get("/").text == "off"
 
 
-def test_names_resolve_on_the_streaming_render_path(tmpl_dir: Path):
+def test_names_resolve_on_the_streaming_render_path(tmp_path: Path):
     """`stream` renders chunks after the handler returns, so the resolution
     has to survive into the response-consuming task."""
-    (tmpl_dir / "p.html").write_text('<script nonce="{{ csp_nonce }}">{{ request.path }}</script>')
+    (tmp_path / "p.html").write_text('<script nonce="{{ csp_nonce }}">{{ request.path }}</script>')
     app = _armed_app()
-    templates = Jinja2Templates(directory=str(tmpl_dir))
+    templates = Jinja2Templates(directory=str(tmp_path))
 
     @app.get("/streamed")
     async def streamed():
@@ -150,10 +143,10 @@ def test_names_resolve_on_the_streaming_render_path(tmpl_dir: Path):
     assert "/streamed" in response.text
 
 
-def test_names_resolve_on_the_async_render_path(tmpl_dir: Path):
-    (tmpl_dir / "p.html").write_text('<script nonce="{{ csp_nonce }}">x</script>')
+def test_names_resolve_on_the_async_render_path(tmp_path: Path):
+    (tmp_path / "p.html").write_text('<script nonce="{{ csp_nonce }}">x</script>')
     app = _armed_app()
-    templates = Jinja2Templates(directory=str(tmpl_dir))
+    templates = Jinja2Templates(directory=str(tmp_path))
 
     @app.get("/")
     async def index():
@@ -185,12 +178,12 @@ def test_rendering_outside_a_request_context_yields_an_empty_nonce():
         assert render_template_string("[{{ csp_nonce }}]") == "[]"
 
 
-def test_each_concurrent_request_renders_its_own_nonce(tmpl_dir: Path):
+def test_each_concurrent_request_renders_its_own_nonce(tmp_path: Path):
     """One environment serves every request, so a request-scoped value that
     leaked into it would hand one client another client's nonce."""
-    (tmpl_dir / "p.html").write_text("{{ request.query_params.get('i') }}|{{ csp_nonce }}")
+    (tmp_path / "p.html").write_text("{{ request.query_params.get('i') }}|{{ csp_nonce }}")
     app = _armed_app()
-    templates = Jinja2Templates(directory=str(tmpl_dir))
+    templates = Jinja2Templates(directory=str(tmp_path))
 
     @app.get("/c")
     async def c():

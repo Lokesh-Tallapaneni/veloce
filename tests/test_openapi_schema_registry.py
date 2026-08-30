@@ -15,9 +15,9 @@ from __future__ import annotations
 import sys
 import types
 
-import pytest
 from pydantic import BaseModel, computed_field
 
+from tests.conftest import FABRICATED_MODULE_ROOT
 from veloce import Veloce
 
 # The generator auto-adds shared `HTTPValidationError` / `ValidationError`
@@ -31,26 +31,17 @@ def _model_component_names(schema: dict) -> set[str]:
     return set(schema["components"]["schemas"]) - _VALIDATION_ENVELOPE_NAMES
 
 
-#: Modules this file fabricated, so the autouse fixture below can take them
-#: back out. Importing this module used to inject three of them into
-#: `sys.modules` permanently - for the rest of the process, affecting every
-#: later test - because the models need a resolvable `__module__`.
-_FABRICATED: list[str] = []
-
-
-@pytest.fixture(autouse=True, scope="module")
-def _remove_fabricated_modules():
-    """Drop the fabricated modules again once this module's tests are done."""
-    yield
-    for module in _FABRICATED:
-        sys.modules.pop(module, None)
-
-
 def _make_named_model(cls_name: str, module: str, fields: dict[str, type]) -> type[BaseModel]:
-    """Build a fresh BaseModel subclass with an explicit name and module."""
+    """Build a fresh BaseModel subclass with an explicit name and module.
+
+    The fake module goes under `conftest.FABRICATED_MODULE_ROOT`, whose session
+    finalizer takes it back out. Importing this file injects the modules at
+    COLLECTION, so the removal cannot live here: a module-scoped teardown fires
+    only when a test in this module is selected, and under `pytest -k` the
+    fakes stayed in `sys.modules` for the rest of the process.
+    """
     if module not in sys.modules:
         sys.modules[module] = types.ModuleType(module)
-        _FABRICATED.append(module)
     model = type(cls_name, (BaseModel,), {"__annotations__": dict(fields)})
     model.__module__ = module
     model.__qualname__ = cls_name
@@ -106,9 +97,9 @@ class _DeepOuter(BaseModel):
 # but live in different modules, to exercise collision-aware naming. Defined at
 # module scope (and bound to module-global names) so `get_type_hints` resolves
 # the string annotations under `from __future__ import annotations`.
-_UserSchemas = _make_named_model("User", "myapp.schemas", {"name": str})
-_UserDb = _make_named_model("User", "myapp.db", {"id": int})
-_UniqueItem = _make_named_model("UniqueItem", "myapp.solo", {"value": int})
+_UserSchemas = _make_named_model("User", f"{FABRICATED_MODULE_ROOT}.schemas", {"name": str})
+_UserDb = _make_named_model("User", f"{FABRICATED_MODULE_ROOT}.db", {"id": int})
+_UniqueItem = _make_named_model("UniqueItem", f"{FABRICATED_MODULE_ROOT}.solo", {"value": int})
 
 
 def test_same_name_models_do_not_collide() -> None:

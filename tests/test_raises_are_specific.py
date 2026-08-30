@@ -25,7 +25,7 @@ BROAD = {"Exception", "BaseException"}
 
 def _broad_raises() -> list[tuple[str, int, bool]]:
     found = []
-    for path in sorted(TESTS.glob("test_*.py")):
+    for path in sorted(TESTS.rglob("test_*.py")):
         if path.name == pathlib.Path(__file__).name:
             continue
         text = path.read_text(encoding="utf-8")

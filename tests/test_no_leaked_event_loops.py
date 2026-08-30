@@ -41,7 +41,7 @@ def _functions_that_make_a_loop() -> list[tuple[str, str, int, str]]:
     function is judged on itself.
     """
     found = []
-    for path in sorted(TESTS.glob("*.py")):
+    for path in sorted(TESTS.rglob("*.py")):
         if path.name == pathlib.Path(__file__).name:
             continue
         text = path.read_text(encoding="utf-8")

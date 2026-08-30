@@ -34,7 +34,7 @@ DIRECT_CONSTRUCTION_CEILING = 68
 
 def _modules_constructing_request() -> list[str]:
     found = []
-    for path in sorted(TESTS.glob("test_*.py")):
+    for path in sorted(TESTS.rglob("test_*.py")):
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         except SyntaxError:  # pragma: no cover - a broken test module fails elsewhere
@@ -49,7 +49,7 @@ def _modules_constructing_request() -> list[str]:
 def _modules_importing_the_factory() -> list[str]:
     return [
         path.name
-        for path in sorted(TESTS.glob("test_*.py"))
+        for path in sorted(TESTS.rglob("test_*.py"))
         if "import make_request" in path.read_text(encoding="utf-8")
     ]
 

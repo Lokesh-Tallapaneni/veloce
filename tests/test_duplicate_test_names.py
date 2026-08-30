@@ -167,7 +167,7 @@ KNOWN_SHARED = {
 
 def _definitions() -> dict[str, list[tuple[str, int, str]]]:
     found: dict[str, list[tuple[str, int, str]]] = collections.defaultdict(list)
-    for path in sorted(TESTS.glob("test_*.py")):
+    for path in sorted(TESTS.rglob("test_*.py")):
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith(
                 "test_"

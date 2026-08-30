@@ -29,10 +29,10 @@ def test_register_and_parse_custom_converter():
 
 
 def test_custom_converter_matches_in_route():
-    register_converter("slug2", SlugConverter)
+    register_converter("slug", SlugConverter)
     app = Veloce()
 
-    @app.get("/posts/{name:slug2}")
+    @app.get("/posts/{name:slug}")
     async def post(name: str):
         return {"slug": name}
 
@@ -43,10 +43,10 @@ def test_custom_converter_matches_in_route():
 
 
 def test_custom_converter_rejects_non_match_as_route_miss():
-    register_converter("slug3", SlugConverter)
+    register_converter("slug", SlugConverter)
     app = Veloce()
 
-    @app.get("/x/{name:slug3}")
+    @app.get("/x/{name:slug}")
     async def x(name: str):
         return {}
 
@@ -72,28 +72,28 @@ def test_unknown_converter_still_raises():
 
 
 def test_custom_converter_in_regex_forced_segment_raises_at_registration():
-    # A custom converter sharing a segment with static text (`/v{name:slug4}/api`)
+    # A custom converter sharing a segment with static text (`/v{name:slug}/api`)
     # forces the regex fallback, but the converter's match() has no regex
     # representation. Registration must raise rather than miscompile the route
-    # into a regex matching the literal text "slug4".
-    register_converter("slug4", SlugConverter)
+    # into a regex matching the literal text "slug".
+    register_converter("slug", SlugConverter)
     app = Veloce()
 
-    with pytest.raises(ValueError, match="custom converter 'slug4' cannot be used"):
+    with pytest.raises(ValueError, match="custom converter 'slug' cannot be used"):
 
-        @app.get("/v{name:slug4}/api")
+        @app.get("/v{name:slug}/api")
         async def handler(name: str):
             return {}
 
 
 def test_custom_converter_in_multi_placeholder_segment_raises():
     # Two placeholders in one segment also force the regex fallback.
-    register_converter("slug5", SlugConverter)
+    register_converter("slug", SlugConverter)
     app = Veloce()
 
-    with pytest.raises(ValueError, match="custom converter 'slug5' cannot be used"):
+    with pytest.raises(ValueError, match="custom converter 'slug' cannot be used"):
 
-        @app.get("/{a:slug5}.{b}")
+        @app.get("/{a:slug}.{b}")
         async def handler(a: str, b: str):
             return {}
 
@@ -101,10 +101,10 @@ def test_custom_converter_in_multi_placeholder_segment_raises():
 def test_custom_converter_whole_segment_stays_radix():
     # A custom converter spanning the whole segment is a radix route, not a
     # regex route — it must register cleanly and honour converter semantics.
-    register_converter("slug6", SlugConverter)
+    register_converter("slug", SlugConverter)
     app = Veloce()
 
-    @app.get("/items/{name:slug6}")
+    @app.get("/items/{name:slug}")
     async def handler(name: str):
         return {"slug": name}
 

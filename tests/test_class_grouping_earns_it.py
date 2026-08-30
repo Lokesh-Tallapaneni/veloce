@@ -44,7 +44,7 @@ def _contributes(cls: ast.ClassDef) -> str | None:
 
 def _mixed_modules() -> list[tuple[pathlib.Path, ast.ClassDef]]:
     found = []
-    for path in sorted(TESTS.glob("test_*.py")):
+    for path in sorted(TESTS.rglob("test_*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         bare = [
             n

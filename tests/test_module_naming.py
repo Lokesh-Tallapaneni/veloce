@@ -61,7 +61,7 @@ _ISSUE = re.compile(r"(?:^|_)(?:issue|pr|ticket)[-_]?\d+")
 
 
 def _modules() -> list[pathlib.Path]:
-    return sorted(TESTS.glob("test_*.py"))
+    return sorted(TESTS.rglob("test_*.py"))
 
 
 def _words(path: pathlib.Path) -> list[str]:

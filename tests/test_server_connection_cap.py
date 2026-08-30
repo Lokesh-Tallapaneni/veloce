@@ -7,28 +7,10 @@ Split out of `test_polish_e2e.py`, a module named for a fix wave.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 
+from tests._protocol import _FakeTransport
 from veloce import Veloce
 from veloce.serving.protocol import HttpProtocol
-
-
-class _FakeTransport(asyncio.Transport):
-    """Minimal asyncio.Transport stand-in for protocol unit tests."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.writes: list[bytes] = []
-        self.closed = False
-
-    def write(self, data: bytes) -> None:
-        self.writes.append(data)
-
-    def close(self) -> None:
-        self.closed = True
-
-    def is_closing(self) -> bool:
-        return self.closed
 
 
 def _reset_connection_counter() -> None:
@@ -39,12 +21,12 @@ def _reset_connection_counter() -> None:
 
 def test_third_concurrent_connection_gets_503_and_closed():
     _reset_connection_counter()
+    admitted: list[HttpProtocol] = []
     loop = asyncio.new_event_loop()
     try:
         app = Veloce(openapi_url=None)
         app.config["MAX_CONCURRENT_CONNECTIONS"] = 2
 
-        admitted: list[HttpProtocol] = []
         for _ in range(2):
             proto = HttpProtocol(app, loop)
             transport = _FakeTransport()
@@ -75,6 +57,7 @@ def test_third_concurrent_connection_gets_503_and_closed():
 
 def test_disconnect_releases_slot_for_new_connection():
     _reset_connection_counter()
+    proto_d: HttpProtocol | None = None
     loop = asyncio.new_event_loop()
     try:
         app = Veloce(openapi_url=None)
@@ -100,7 +83,7 @@ def test_disconnect_releases_slot_for_new_connection():
         emitted = b"".join(d_transport.writes)
         assert b"503" not in emitted
     finally:
-        with contextlib.suppress(Exception):
+        if proto_d is not None:
             proto_d.connection_lost(None)
         _reset_connection_counter()
         loop.close()

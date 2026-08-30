@@ -12,15 +12,10 @@ from veloce.contrib.templating import Jinja2Templates, render_template
 from veloce.testclient import TestClient
 
 
-@pytest.fixture
-def tmpl_dir(tmp_path: Path) -> Path:
-    return tmp_path
-
-
-def test_fallback_list_picks_first_existing(tmpl_dir: Path):
-    (tmpl_dir / "base.html").write_text("BASE {{ name }}")
+def test_fallback_list_picks_first_existing(tmp_path: Path):
+    (tmp_path / "base.html").write_text("BASE {{ name }}")
     app = Veloce(debug=True, openapi_url=None)
-    templates = Jinja2Templates(directory=str(tmpl_dir))
+    templates = Jinja2Templates(directory=str(tmp_path))
 
     @app.get("/")
     async def index():
@@ -30,12 +25,12 @@ def test_fallback_list_picks_first_existing(tmpl_dir: Path):
     assert resp.body == b"BASE x"
 
 
-def test_fallback_list_prefers_earlier_candidate(tmpl_dir: Path):
-    (tmpl_dir / "theme").mkdir()
-    (tmpl_dir / "theme" / "page.html").write_text("THEME")
-    (tmpl_dir / "base.html").write_text("BASE")
+def test_fallback_list_prefers_earlier_candidate(tmp_path: Path):
+    (tmp_path / "theme").mkdir()
+    (tmp_path / "theme" / "page.html").write_text("THEME")
+    (tmp_path / "base.html").write_text("BASE")
     app = Veloce(debug=True, openapi_url=None)
-    templates = Jinja2Templates(directory=str(tmpl_dir))
+    templates = Jinja2Templates(directory=str(tmp_path))
 
     @app.get("/")
     async def index():
@@ -45,22 +40,22 @@ def test_fallback_list_prefers_earlier_candidate(tmpl_dir: Path):
     assert resp.body == b"THEME"
 
 
-def test_fallback_list_all_missing_raises(tmpl_dir: Path):
-    templates = Jinja2Templates(directory=str(tmpl_dir))
+def test_fallback_list_all_missing_raises(tmp_path: Path):
+    templates = Jinja2Templates(directory=str(tmp_path))
     with pytest.raises(jinja2.TemplateNotFound):
         templates.render(["a.html", "b.html"])
 
 
-def test_single_string_unchanged(tmpl_dir: Path):
-    (tmpl_dir / "x.html").write_text("ONE {{ v }}")
-    templates = Jinja2Templates(directory=str(tmpl_dir))
+def test_single_string_unchanged(tmp_path: Path):
+    (tmp_path / "x.html").write_text("ONE {{ v }}")
+    templates = Jinja2Templates(directory=str(tmp_path))
     assert templates.render("x.html", {"v": "y"}) == "ONE y"
 
 
-def test_render_module_helper_accepts_list(tmpl_dir: Path):
-    (tmpl_dir / "y.html").write_text("Y-HELPER")
+def test_render_module_helper_accepts_list(tmp_path: Path):
+    (tmp_path / "y.html").write_text("Y-HELPER")
     app = Veloce(debug=True, openapi_url=None)
-    app._templates = Jinja2Templates(directory=str(tmpl_dir))
+    app._templates = Jinja2Templates(directory=str(tmp_path))
 
     @app.get("/")
     async def index():
@@ -70,9 +65,9 @@ def test_render_module_helper_accepts_list(tmpl_dir: Path):
     assert resp.body == b"Y-HELPER"
 
 
-def test_fallback_cache_when_auto_reload_off(tmpl_dir: Path):
-    (tmpl_dir / "base.html").write_text("BASE")
-    templates = Jinja2Templates(directory=str(tmpl_dir), auto_reload=False)
+def test_fallback_cache_when_auto_reload_off(tmp_path: Path):
+    (tmp_path / "base.html").write_text("BASE")
+    templates = Jinja2Templates(directory=str(tmp_path), auto_reload=False)
 
     first = templates.render(["theme/page.html", "base.html"])
     assert first == "BASE"
@@ -84,9 +79,9 @@ def test_fallback_cache_when_auto_reload_off(tmpl_dir: Path):
     assert second == "BASE"
 
 
-def test_fallback_cache_evicts_oldest_at_cap(tmpl_dir: Path):
-    (tmpl_dir / "base.html").write_text("BASE")
-    templates = Jinja2Templates(directory=str(tmpl_dir), auto_reload=False)
+def test_fallback_cache_evicts_oldest_at_cap(tmp_path: Path):
+    (tmp_path / "base.html").write_text("BASE")
+    templates = Jinja2Templates(directory=str(tmp_path), auto_reload=False)
     templates.RESOLVED_CACHE_MAX = 3
 
     # Each candidate list has a distinct (non-existent) leading name, so every
@@ -109,12 +104,12 @@ def test_fallback_cache_evicts_oldest_at_cap(tmpl_dir: Path):
     assert (id(templates.env), ("miss-3.html", "base.html")) in templates._resolved_cache
 
 
-def test_resolved_cache_cap_zero_does_not_crash(tmpl_dir: Path):
+def test_resolved_cache_cap_zero_does_not_crash(tmp_path: Path):
     """`RESOLVED_CACHE_MAX <= 0` disables the resolution cache rather than
     raising `StopIteration` on the first insert (cap 0 is a natural "off" value).
     """
-    (tmpl_dir / "base.html").write_text("BASE {{ name }}")
-    templates = Jinja2Templates(directory=str(tmpl_dir), auto_reload=False)
+    (tmp_path / "base.html").write_text("BASE {{ name }}")
+    templates = Jinja2Templates(directory=str(tmp_path), auto_reload=False)
     templates.RESOLVED_CACHE_MAX = 0
     app = Veloce(debug=True, openapi_url=None)
 

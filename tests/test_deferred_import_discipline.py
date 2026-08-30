@@ -18,7 +18,7 @@ GUARDS = ("importorskip", "pytest.skip", "skip_module")
 
 
 def _modules() -> list[pathlib.Path]:
-    return sorted(p for p in TESTS.glob("test_*.py") if p.name != pathlib.Path(__file__).name)
+    return sorted(p for p in TESTS.rglob("test_*.py") if p.name != pathlib.Path(__file__).name)
 
 
 def test_the_late_import_scan_reads_a_real_corpus():

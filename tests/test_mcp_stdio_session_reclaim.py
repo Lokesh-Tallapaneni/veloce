@@ -14,6 +14,7 @@ This asserts stdio does the same, which is the asymmetry that was the bug.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 
 import orjson
 
@@ -22,7 +23,7 @@ from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.transports.stdio import StdioTransport
 
 
-def _app() -> Veloce:
+def _app(observe: Callable[[asyncio.Task], None] | None = None) -> Veloce:
     app = Veloce(title="Stdio", version="1.0.0", openapi_url=None)
     # Without this the server builds no `ConnectionRegistry` at all, and an
     # assertion about what EOF unregisters has nothing to look at.
@@ -30,6 +31,11 @@ def _app() -> Veloce:
 
     @app.mcp_tool(description="Never settles on its own", task_support=True)
     async def forever() -> str:
+        # Hands the caller the runner executing this call, by identity. The
+        # reclaim empties the task registry before `serve` returns, so a test
+        # asserting on the runner cannot look it up afterwards.
+        if observe is not None:
+            observe(asyncio.current_task())
         await asyncio.Event().wait()
         return "unreachable"
 
@@ -44,9 +50,15 @@ def _line(payload: dict) -> bytes:
     return orjson.dumps(payload)
 
 
-async def _run(lines: list[dict]) -> tuple[MCPServer, list[bytes]]:
-    """Drive a stdio transport over the given client lines, then EOF."""
-    server = MCPServer(_app())
+async def _run(
+    lines: list[dict], observe: Callable[[asyncio.Task], None] | None = None
+) -> tuple[MCPServer, list[bytes]]:
+    """Drive a stdio transport over the given client lines, then EOF.
+
+    `observe`, when given, is handed the runner of every `forever` call as it
+    starts.
+    """
+    server = MCPServer(_app(observe))
     pending = [_line(item) for item in lines]
     written: list[bytes] = []
 
@@ -101,6 +113,8 @@ async def test_a_never_settling_task_is_reclaimed_on_eof():
 
 async def test_the_runner_is_cancelled_not_merely_dropped():
     """Dropping the record while the coroutine ran would still leak the work."""
+    running: list[asyncio.Task] = []
+
     server, _ = await _run(
         [
             _INIT,
@@ -110,10 +124,19 @@ async def test_the_runner_is_cancelled_not_merely_dropped():
                 "method": "tools/call",
                 "params": {"name": "forever", "arguments": {}, "task": {"ttl": 600000}},
             },
-        ]
+        ],
+        observe=running.append,
     )
-    await asyncio.sleep(0)
-    assert not [t for t in asyncio.all_tasks() if "forever" in repr(t) and not t.done()]
+    # The runner itself, captured by identity while the registry still held it.
+    # Filtering `asyncio.all_tasks()` on `"forever" in repr(t)` matched nothing
+    # once the tool was renamed or `Task.__repr__` dropped the coroutine name,
+    # and an empty comprehension is what this test exists to reject.
+    assert running, "the task-augmented call registered no runner"
+    for _ in range(50):
+        if all(runner.done() for runner in running):
+            break
+        await asyncio.sleep(0)
+    assert all(runner.cancelled() for runner in running)
     assert server._tasks.tasks == {}
 
 

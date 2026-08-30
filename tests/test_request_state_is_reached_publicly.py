@@ -27,7 +27,7 @@ TESTS = pathlib.Path(__file__).resolve().parent
 
 
 def _modules() -> list[pathlib.Path]:
-    return sorted(TESTS.glob("test_*.py"))
+    return sorted(TESTS.rglob("test_*.py"))
 
 
 def _private_state_accesses(path: pathlib.Path) -> list[int]:

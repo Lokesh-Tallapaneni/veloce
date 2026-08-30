@@ -44,14 +44,14 @@ def test_the_guide_documents_both_conventions():
 def test_the_claim_test_families_exist():
     """The guide points at these names; they must be findable."""
     for pattern in ("*claims*", "*contract*", "*parity*", "*invariant*"):
-        assert list(TESTS.glob(f"test_{pattern}.py")), pattern
+        assert list(TESTS.rglob(f"test_{pattern}.py")), pattern
 
 
 def test_some_test_executes_documentation_code_blocks():
     """The practice the guide asks for, present somewhere in the suite."""
     executors = [
         path.name
-        for path in TESTS.glob("test_*.py")
+        for path in TESTS.rglob("test_*.py")
         if "```" in path.read_text(encoding="utf-8")
         or (
             "docs/" in path.read_text(encoding="utf-8")
@@ -106,9 +106,25 @@ def test_every_abstract_base_checks_its_subclasses():
     assert not unguarded, f"abstract bases with no subclass check: {unguarded}"
 
 
-def test_the_helper_the_guide_names_exists():
+def test_the_helper_the_guide_names_refuses_a_missing_method():
+    """Asserting the name is importable proves nothing the import at the top of
+    this module has not already proved; call it and pin what it does."""
 
-    assert callable(_require_methods)
+    class Base:
+        def flush(self) -> None:
+            raise NotImplementedError
+
+    class Complete(Base):
+        def flush(self) -> None:
+            return None
+
+    _require_methods(Complete, Base, ("flush",))
+
+    class Incomplete(Base):
+        pass
+
+    with pytest.raises(TypeError, match="Incomplete does not implement Base: flush missing"):
+        _require_methods(Incomplete, Base, ("flush",))
 
 
 def test_at_least_six_bases_are_guarded():
