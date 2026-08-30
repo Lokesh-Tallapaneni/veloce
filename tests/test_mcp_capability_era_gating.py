@@ -155,9 +155,12 @@ def test_a_capability_written_without_the_revision_parameter_still_works():
         def handlers(self):  # noqa: ANN201
             return {}
 
-    server = MCPServer(_app())
+    # Handed to the constructor, so the server classifies it. Appending to
+    # `_capabilities` afterwards left it trivially absent from the era-aware
+    # set - which is computed once in `__init__` - so the assertion below held
+    # even if the constructor stopped detecting era-awareness at all.
     legacy = Legacy()
-    server._capabilities = (*server._capabilities, legacy)
+    server = MCPServer(_app(), capabilities=[legacy])
 
     assert legacy not in server._era_aware_capabilities
     assert "house" in server._advertised_capabilities(True)
