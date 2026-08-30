@@ -116,6 +116,8 @@ def test_the_request_only_branch_is_covered_broadly():
 
 def test_the_two_branches_are_really_different_paths():
     """The premise. If these ever became one flag, the floors above would be theatre."""
+    # Deferred deliberately: importing here keeps this premise check
+    # independent of whatever the module's other tests import.
     from veloce.routing.router import RouteInfo
 
     assert "is_trivial_plan" in RouteInfo.__slots__

@@ -138,7 +138,12 @@ UNEXPORTED: dict[str, str] = {
     # Callback aliases whose owning object is itself unexported, so the alias
     # is written as `veloce.health.ReadinessCheck` if it is written at all.
     "health.ReadinessCheck": "callback alias for a health check; used as veloce.health.ReadinessCheck",
-    "routing.router.RouteHandler": "router-internal handler alias; RouteInfo/RouteMatch are equally internal",
+    # `routing/route_info.py`, `_node.py` and `_regex.py` - the record, tree and
+    # fallback layers split out of `router.py`. `router.py` re-imports each, so
+    # the old `veloce.routing.router.X` paths still resolve; these are the names
+    # under their new home.
+    "routing.route_info.MCPRouteOptions": "the record behind RouteInfo.mcp; read through its properties",
+    "routing.route_info.RouteHandler": "router-internal handler alias; RouteInfo/RouteMatch are equally internal",
     "testclient.StreamBody": "accepted shape of TestClient's `stream=`; callers pass an iterable, not the alias",
     # MCP integration internals, consistent with the other names from these
     # modules above.
@@ -229,7 +234,6 @@ UNEXPORTED: dict[str, str] = {
     "routing.converters.build_route_regex": "implementation behind the Converter base / register_converter seam",
     "routing.converters.path_param_schemas": "implementation behind the Converter base / register_converter seam",
     # ── remaining leaf internals ─────────────────────────────────
-    "routing.router.MCPRouteOptions": "the record behind RouteInfo.mcp; read through its properties",
     "app.mcp.MCPToolRegistration": "one @app.mcp_tool registration, read at mount time",
     "app.mcp.MCPPromptRegistration": "one @app.mcp_prompt registration, read at mount time",
     "app.mcp.MCPCompleterRegistration": "one @app.mcp_completer registration, read at mount time",
@@ -243,8 +247,6 @@ UNEXPORTED: dict[str, str] = {
     "http.dates.parse_date": "header-level date parsing behind the request helpers",
     "http.response.header_pop": "raw header-list helper used by the emit paths",
     "middleware.base.Auditable": "protocol the startup audit checks middleware against",
-    "routing.router.RadixNode": "the routing tree's node; an internal data structure",
-    "routing.router.RegexRoute": "the regex fallback's route record; internal",
     "serving.reloader.is_reloader_child": "reloader process-role probe, used by the runner",
     "serving.reloader.run_with_reloader": "reloader entry point, reached through Veloce.run",
 }
