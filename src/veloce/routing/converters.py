@@ -97,11 +97,11 @@ class _Converter:
     #: for the same position, the lower value is tried first, so
     #: `/items/{id:int}` beats `/items/{slug:str}` however they were declared.
     #:
-    #: Declared on the converter rather than in a table the router keeps,
-    #: because a table only knows the classes someone remembered to add: six of
-    #: the eleven built-ins were missing from it and silently tied with `str`,
-    #: which made route resolution depend on the order the decorators appear in
-    #: the file. A custom converter that does not declare one is assumed no
+    #: Declared on the converter rather than in a table the router keeps: a
+    #: table only knows the classes someone remembered to add, and a converter
+    #: missing from it ties with `str`, which makes route resolution depend on
+    #: the order the decorators appear in the file. A custom converter that
+    #: does not declare one is assumed no
     #: more restrictive than `str`, which is the only safe assumption about a
     #: pattern the framework cannot see.
     specificity = 50

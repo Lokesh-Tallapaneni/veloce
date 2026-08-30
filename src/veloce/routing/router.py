@@ -209,11 +209,8 @@ _NO_CONVERTER = StringConverter()
 def _converter_sort_key(node: RadixNode) -> int:
     """Order competing parameter segments, most restrictive first.
 
-    The value comes from the converter (`_Converter.specificity`), not from a
-    table here: a table lists only the classes someone remembered to add, and
-    six of the eleven built-ins were missing from the one this replaced. They
-    silently scored the same as `str`, so which handler answered
-    `/a/2020-01-01` depended on the order the two routes appeared in the file.
+    The value comes from the converter's own `specificity`, not from a table
+    here; `_Converter.specificity` documents why it is declared there.
 
     Runs once per `add_route` at startup, never on the per-request match path.
     """
@@ -694,9 +691,8 @@ def _slash_mismatch(node: Any, request_has_slash: bool) -> bool:
 
     One predicate because two consumers must agree: `_match_tree` decides
     whether a request routes, and `get_allowed_methods` decides what the `Allow`
-    header advertises. Written twice - which they were, in two different shapes
-    130 lines apart - they can disagree, and then a 405 names a method that
-    would not have matched, or omits one that would.
+    header advertises. Written separately they can disagree, and then a 405
+    names a method that would not have matched, or omits one that would.
     """
     if node.tolerant_slash:
         return False
@@ -1130,8 +1126,8 @@ class Router:
             excluded_middleware=info.excluded_middleware,
         )
         # `stream` is a slot assigned after construction rather than an
-        # `__init__` argument, so it has to be carried across explicitly - it
-        # was the one field this copy dropped.
+        # `__init__` argument, so it has to be carried across explicitly; a
+        # field added that way is the kind this copy silently drops.
         merged.stream = info.stream
         merged.strict_slashes = info.strict_slashes
         return merged

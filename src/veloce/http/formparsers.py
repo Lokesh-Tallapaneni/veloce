@@ -21,7 +21,7 @@ DEFAULT_MAX_MULTIPART_PART_SIZE = 10 * 1024 * 1024  # 10 MiB per part
 # Spool threshold: in memory until this size, then rolls to a temp file.
 MULTIPART_SPOOL_MAX_SIZE = 1024 * 1024  # 1 MiB
 
-# RFC 2046 §5.1.1 boundary token grammar: 1-70 characters drawn from the
+# RFC 2046 Sec. 5.1.1 boundary token grammar: 1-70 characters drawn from the
 # bcharsnospace set plus space, with no trailing space. Validating the
 # extracted boundary up front rejects a malformed Content-Type before it
 # reaches the underlying parser, where an over-long or non-ASCII boundary
@@ -31,7 +31,7 @@ _BOUNDARY_BCHARS = frozenset(
 )
 _MAX_BOUNDARY_LENGTH = 70
 
-# RFC 7578 §5.1.2 leaves the field encoding to the part's own charset
+# RFC 7578 Sec. 5.1.2 leaves the field encoding to the part's own charset
 # parameter. Only a small, well-understood set is honored; anything else is
 # rejected rather than silently decoded with replacement characters, keeping
 # the strict-by-default posture for the field text path.
@@ -61,7 +61,7 @@ def _part_charset(content_type: str) -> str | None:
     """Return the validated lowercased charset declared on a part, or None.
 
     Reads the `charset` parameter from the part's own Content-Type header
-    (RFC 7578 §5.1.2). An unrecognized charset raises `BadRequest` so the
+    (RFC 7578 Sec. 5.1.2). An unrecognized charset raises `BadRequest` so the
     caller never decodes field bytes with an unsupported codec.
     """
     if not content_type:
@@ -174,7 +174,7 @@ def parse_multipart_form(
     rejects them with `BadRequest` (400). Pass `"replace"` to substitute
     U+FFFD (the pre-0.1.4 behaviour) or `"latin-1"` to decode as
     ISO-8859-1 for legacy clients. A part that declares its own
-    `Content-Type` charset (RFC 7578 §5.1.2) is decoded with that charset
+    `Content-Type` charset (RFC 7578 Sec. 5.1.2) is decoded with that charset
     instead, provided it is one of `ascii`, `us-ascii`, `utf-8`, or
     `iso-8859-1`. A declared charset is decoded strictly: bytes that are
     invalid in it raise `BadRequest` (400) rather than being corrupted with
@@ -320,7 +320,7 @@ def parse_multipart_form(
         else:
             raw_bytes = spool.read()
             spool.close()
-            # A part may declare its own charset (RFC 7578 §5.1.2); honor it
+            # A part may declare its own charset (RFC 7578 Sec. 5.1.2); honor it
             # before falling back to the global UTF-8 / charset_fallback path.
             part_charset = _part_charset(state.headers.get("content-type", ""))
             if part_charset is not None:

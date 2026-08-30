@@ -332,8 +332,8 @@ class StaticFiles:
         `app.css.gz` present serves gzip rather than the uncompressed asset.
         The q>0 gate is load-bearing: a missing `Accept-Encoding` header
         expresses no preference and must not falsely select a variant.
-        Permission errors on the sibling propagate as 403 (via the caller's
-        sentinel) to match the read policy on the original file.
+        Permission errors on the sibling propagate as 403, matching the read
+        policy on the original file.
         """
         if not self.precompressed:
             return None
@@ -446,9 +446,9 @@ class StaticFiles:
             # Single stat call replaces isfile + later stat. `stat` raises
             # FileNotFoundError on a missing entry, and `S_ISREG`/`S_ISDIR`
             # on the result tells us file-vs-dir without another syscall.
-            # `PermissionError` returns a tagged sentinel so we can surface
-            # 403 - matching the `safe_join` traversal guard above - rather
-            # than letting it bubble to a 500.
+            # `PermissionError` propagates to this method's single `except`,
+            # which answers 403 - matching the `safe_join` traversal guard
+            # above - rather than letting it bubble to a 500.
             stat_result = await _stat_path(loop, file_path)
             is_dir = stat_result is not None and stat.S_ISDIR(stat_result.st_mode)
             is_file = stat_result is not None and stat.S_ISREG(stat_result.st_mode)

@@ -103,7 +103,7 @@ _RAW_ACCEPT_CHARSET = HEADER_ACCEPT_CHARSET.lower().encode("latin-1")
 def _split_etag_list(value: str) -> tuple[str, ...]:
     """Split an `If-Match`/`If-None-Match` list on commas outside quoted strings.
 
-    RFC 9110 §8.8.3 `etagc = %x21 / %x23-7E / obs-text` permits a comma inside
+    RFC 9110 Sec. 8.8.3 `etagc = %x21 / %x23-7E / obs-text` permits a comma inside
     an opaque-tag's quoted string, so a naive `split(",")` corrupts a valid tag
     like `"abc,def"`. Track whether the scan is inside double quotes and only
     break on a comma seen at the top level. The `W/` weak prefix and the

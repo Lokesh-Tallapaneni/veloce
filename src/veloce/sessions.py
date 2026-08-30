@@ -7,7 +7,7 @@ can cheaply tell whether the session needs to be written back.
 `permanent` selects the longer `permanent_lifetime` for
 the session cookie's `Max-Age` instead of the default `max_age`.
 
-The session cookie's `Max-Age`/`Expires` semantics follow RFC 6265 §5.2.
+The session cookie's `Max-Age`/`Expires` semantics follow RFC 6265 Sec. 5.2.
 """
 
 from __future__ import annotations

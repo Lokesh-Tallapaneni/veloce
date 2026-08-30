@@ -49,14 +49,14 @@ if TYPE_CHECKING:  # pragma: no cover
 # globally unique and cryptographically secure per the transport spec.
 _SESSION_ID_ENTROPY_BYTES = 24
 
-# Idle seconds a session is retained without being touched before it is reclaimed.
-# A client that initializes and disappears (never sending `DELETE`) would otherwise
-# leak its id and its `MCPSession` for the process lifetime; eviction runs lazily
-# on session resolution so no background timer is needed.
 # Live sessions held per worker. Generous for any real deployment; the point is
 # that the count has a ceiling that does not depend on clients behaving.
 _DEFAULT_MAX_SESSIONS = 10_000
 
+# Idle seconds a session is retained without being touched before it is reclaimed.
+# A client that initializes and disappears (never sending `DELETE`) would otherwise
+# leak its id and its `MCPSession` for the process lifetime; eviction runs lazily
+# on session resolution so no background timer is needed.
 _DEFAULT_IDLE_TTL_SECONDS = 3600.0
 
 

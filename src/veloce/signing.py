@@ -80,7 +80,7 @@ def _derive_key(secret: bytes, salt: bytes) -> bytes:
 class Signer:
     """HMAC-SHA256 signer for arbitrary JSON-serialisable values.
 
-    Usage:
+    Usage::
         s = Signer(secret="server-secret", salt="reset-token")
         token = s.dumps({"user_id": 42})
         ...

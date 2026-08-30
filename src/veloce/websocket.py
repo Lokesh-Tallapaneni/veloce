@@ -779,7 +779,7 @@ class WebSocket:
           `allow_missing=True` switch; this in-handler helper is
           deliberately strict-by-default.
 
-        Usage:
+        Usage::
             @app.websocket("/ws")
             async def chat(ws: WebSocket):
                 if not ws.check_origin("https://app.example.com"):
@@ -1267,7 +1267,7 @@ class WebSocket:
     async def iter_text(self) -> Any:
         """Async-iterate over incoming text frames until the peer closes.
 
-        Usage:
+        Usage::
             async for msg in ws.iter_text():
                 ...
 
