@@ -351,6 +351,21 @@ class SchemaRegistry:
             if entry.alias_token is not None:
                 continue
             name = token_to_name[entry.token]
+            # The nested-def half below checks for a committed component of the
+            # same name and different content; this write did not, so a model
+            # reachable two ways - nested inside one route's request body, and as
+            # another route's response model - had whichever came second silently
+            # replace the first. With a `computed_field` on it, the published
+            # request schema then required a read-only field the model does not
+            # accept as input. The first writer stands, matching
+            # `_diverging_def_renames`, and `token_to_name` is updated before the
+            # `$ref` rewrite below so every reference follows the new name.
+            committed = components.get(name)
+            if committed is not None and committed != entry.body:
+                name = _unique_component_name(
+                    f"{name}-Output" if entry.mode == "serialization" else name, components
+                )
+                token_to_name[entry.token] = name
             components[name] = entry.body
             local_renames = self._diverging_def_renames(entry.defs, components)
             for def_name, def_schema in entry.defs.items():
@@ -725,7 +740,7 @@ _FILTERED_NAME_LIMIT = 48
 def _filtered_struct(
     model: Any, include: set[str] | None, exclude: set[str] | None, key: _FilterKey
 ) -> Any:
-    """The `msgspec.Struct` half of `_filtered_response_model`.
+    """Derive the `msgspec.Struct` half of `_filtered_response_model`.
 
     Separate because the two backends describe their fields differently -
     `model_fields` against `__struct_fields__` and `__annotations__` - and

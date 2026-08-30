@@ -193,7 +193,7 @@ def _read_file_chunk(handle: BinaryIO) -> bytes:
 
 
 def advertised_length(status_code: int, body: bytes) -> int | None:
-    """The `Content-Length` to synthesize for a response, or `None` for unknown.
+    """Return the `Content-Length` to synthesize, or `None` when it is unknown.
 
     A body-permitting status advertises what it carries. A 304 may advertise the
     length the equivalent 200 would have carried (RFC 9110 Sec. 8.6 / 15.4.5),
