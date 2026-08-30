@@ -11,7 +11,7 @@ from __future__ import annotations
 import orjson
 import pytest
 
-from tests._mcp import INVALID_PARAMS, UNSUPPORTED_PROTOCOL_VERSION
+from tests._mcp import INVALID_PARAMS, UNSUPPORTED_PROTOCOL_VERSION, initialize
 from veloce import TestClient, Veloce
 from veloce.contrib.mcp.errors import ProtocolVersionError
 from veloce.contrib.mcp.server import (
@@ -103,16 +103,7 @@ async def test_a_legacy_result_never_carries_result_type():
     out = await _drive(
         _app(),
         [
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2025-11-25",
-                    "capabilities": {},
-                    "clientInfo": {"name": "legacy", "version": "1"},
-                },
-            },
+            initialize("2025-11-25", id=1, client_info={"name": "legacy", "version": "1"}),
             {"jsonrpc": "2.0", "method": "notifications/initialized"},
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
         ],
@@ -145,18 +136,7 @@ async def test_an_unserved_version_is_rejected_recoverably(version: str):
 async def test_the_legacy_handshake_still_serves_its_own_revision():
     out = await _drive(
         _app(),
-        [
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2025-06-18",
-                    "capabilities": {},
-                    "clientInfo": {"name": "legacy", "version": "1"},
-                },
-            }
-        ],
+        [initialize(id=1, client_info={"name": "legacy", "version": "1"})],
     )
     assert out[0]["result"]["protocolVersion"] == "2025-06-18"
 

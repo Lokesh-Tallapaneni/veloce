@@ -34,6 +34,7 @@ from __future__ import annotations
 import orjson
 import pytest
 
+from tests._mcp import initialize
 from veloce import Depends, Veloce
 from veloce.testclient import TestClient
 
@@ -71,16 +72,7 @@ def _call_tool(app, arguments=None):
     client = TestClient(app)
     client.post(
         "/mcp",
-        json={
-            "jsonrpc": "2.0",
-            "id": 0,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2025-06-18",
-                "capabilities": {},
-                "clientInfo": {"name": "p", "version": "1"},
-            },
-        },
+        json=initialize(client_info={"name": "p", "version": "1"}),
         headers={"Accept": "application/json"},
     )
     listing = client.post(

@@ -27,6 +27,7 @@ import sys
 
 import pytest
 
+from tests._mcp import initialize
 from veloce import Veloce
 from veloce.audit import run
 from veloce.cli import main
@@ -291,16 +292,7 @@ def test_reporting_does_not_change_what_the_endpoint_serves():
     client = app.test_client()
     client.post(
         "/mcp",
-        json={
-            "jsonrpc": "2.0",
-            "id": 0,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2025-06-18",
-                "capabilities": {},
-                "clientInfo": {"name": "t", "version": "1"},
-            },
-        },
+        json=initialize(client_info={"name": "t", "version": "1"}),
         headers={"Accept": "application/json"},
     )
     response = client.post(

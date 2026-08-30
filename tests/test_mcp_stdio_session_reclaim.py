@@ -18,7 +18,7 @@ from collections.abc import Callable
 
 import orjson
 
-from tests._mcp import live_tasks
+from tests._mcp import initialize, live_tasks
 from veloce import Veloce
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.transports.stdio import StdioTransport
@@ -74,16 +74,7 @@ async def _run(
     return server, written
 
 
-_INIT = {
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "initialize",
-    "params": {
-        "protocolVersion": "2025-06-18",
-        "capabilities": {},
-        "clientInfo": {"name": "probe", "version": "1"},
-    },
-}
+_INIT = initialize(id=1)
 
 
 _URI = "res://ledger"

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+from tests._mcp import initialize
 from veloce import Veloce
 from veloce.contrib.mcp.server import DEFAULT_CACHE_TTL_MS, MCPServer
 from veloce.contrib.mcp.session import MCPSession
@@ -189,16 +190,7 @@ async def test_a_handshake_era_client_sees_no_hints():
     """The handshake revisions have no such fields; they must not leak into them."""
     server = MCPServer(_app())
     await server.handle_message(
-        {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2025-11-25",
-                "capabilities": {},
-                "clientInfo": {"name": "c", "version": "1"},
-            },
-        }
+        initialize("2025-11-25", id=1, client_info={"name": "c", "version": "1"})
     )
     await server.handle_message({"jsonrpc": "2.0", "method": "notifications/initialized"})
     response = await server.handle_message({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})

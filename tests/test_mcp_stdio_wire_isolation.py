@@ -21,6 +21,7 @@ import sys
 
 import pytest
 
+from tests._mcp import initialize
 from veloce import Veloce
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.transports import stdio
@@ -39,16 +40,7 @@ app = Veloce(title="WireProbe", openapi_url=None)
 _FOOTER = "\nasyncio.run(app.mount_mcp())\n"
 
 _REQUESTS = [
-    {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "initialize",
-        "params": {
-            "protocolVersion": "2025-06-18",
-            "capabilities": {},
-            "clientInfo": {"name": "probe", "version": "1"},
-        },
-    },
+    initialize(id=1),
     {"jsonrpc": "2.0", "method": "notifications/initialized"},
     {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "probe"}},
 ]

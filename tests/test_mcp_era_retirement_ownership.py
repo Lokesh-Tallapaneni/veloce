@@ -22,7 +22,7 @@ import json
 
 import pytest
 
-from tests._mcp import METHOD_NOT_FOUND
+from tests._mcp import METHOD_NOT_FOUND, initialize
 from tests._mcp_source import attribute_chains, module_level_names, tree
 from veloce import Veloce
 from veloce.contrib.mcp.capabilities.base import Capability, _ServerCapability
@@ -203,16 +203,7 @@ def test_a_retired_method_still_works_on_the_handshake_revision(method):
     client = _mounted().test_client()
     _post(
         client,
-        {
-            "jsonrpc": "2.0",
-            "id": 0,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2025-06-18",
-                "capabilities": {},
-                "clientInfo": {"name": "t", "version": "1"},
-            },
-        },
+        initialize(client_info={"name": "t", "version": "1"}),
     )
     body = {"jsonrpc": "2.0", "id": 1, "method": method}
     if method == "logging/setLevel":

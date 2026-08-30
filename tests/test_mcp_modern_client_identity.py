@@ -12,6 +12,7 @@ import json
 
 import pytest
 
+from tests._mcp import initialize
 from veloce import Veloce
 from veloce.contrib.mcp.context import MCPContext
 from veloce.contrib.mcp.errors import MCPCapabilityError
@@ -136,16 +137,12 @@ async def test_the_handshake_era_still_records_identity():
     server = MCPServer(_app())
     session = MCPSession()
     await server.handle_message(
-        {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2025-11-25",
-                "capabilities": {"sampling": {}},
-                "clientInfo": {"name": "legacy-client", "version": "0.1"},
-            },
-        },
+        initialize(
+            "2025-11-25",
+            id=1,
+            capabilities={"sampling": {}},
+            client_info={"name": "legacy-client", "version": "0.1"},
+        ),
         session,
     )
     await server.handle_message({"jsonrpc": "2.0", "method": "notifications/initialized"}, session)

@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import pytest
 
+from tests._mcp import initialize
 from veloce import Depends, Middleware, Response, Veloce, request
 from veloce.testclient import TestClient
 
@@ -318,16 +319,7 @@ def test_a_raising_handler_runs_teardown_on_both_doors():
     client = TestClient(app)
     client.post(
         "/mcp",
-        json={
-            "jsonrpc": "2.0",
-            "id": 0,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2025-06-18",
-                "capabilities": {},
-                "clientInfo": {"name": "p", "version": "1"},
-            },
-        },
+        json=initialize(client_info={"name": "p", "version": "1"}),
         headers={"Accept": "application/json"},
     )
     events.clear()

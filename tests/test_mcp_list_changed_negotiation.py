@@ -13,6 +13,7 @@ announcement did not know which list it was announcing.
 
 from __future__ import annotations
 
+from tests._mcp import initialize
 from veloce import MCPContext, Veloce
 from veloce.contrib.mcp._helpers import _notifier_var
 from veloce.contrib.mcp.server import MCPServer
@@ -75,16 +76,7 @@ def _session(*, persistent: bool = True) -> MCPSession:
 
 async def _advertise(app: Veloce, session: MCPSession) -> dict:
     response = await MCPServer(app).handle_message(
-        {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2025-06-18",
-                "capabilities": {},
-                "clientInfo": {"name": "probe", "version": "1"},
-            },
-        },
+        initialize(id=1),
         session,
     )
     capabilities: dict = response["result"]["capabilities"]

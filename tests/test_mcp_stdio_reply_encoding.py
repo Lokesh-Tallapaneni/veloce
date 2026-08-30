@@ -34,7 +34,7 @@ import sys
 
 import pytest
 
-from tests._mcp import INTERNAL_ERROR
+from tests._mcp import INTERNAL_ERROR, initialize
 from tests._mcp_source import call_args, tree
 
 # `logging.basicConfig` is in the header because one case asserts the encoder
@@ -141,16 +141,7 @@ def wire(tmp_path_factory) -> Wire:
     script = tmp_path_factory.mktemp("stdio") / "server.py"
     script.write_text(_HEADER + _TOOLS + _FOOTER, encoding="utf-8")
     requests = [
-        {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2025-06-18",
-                "capabilities": {},
-                "clientInfo": {"name": "probe", "version": "1"},
-            },
-        },
+        initialize(id=1),
         {"jsonrpc": "2.0", "method": "notifications/initialized"},
         *(
             {

@@ -22,20 +22,12 @@ from tests._mcp import (
     call,
     call_error,
     call_raw,
+    initialize,
 )
 from veloce import Veloce
 from veloce.contrib.mcp import MCPServer
 
-_INIT = {
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "initialize",
-    "params": {
-        "protocolVersion": "2025-06-18",
-        "capabilities": {},
-        "clientInfo": {"name": "probe", "version": "1"},
-    },
-}
+_INIT = initialize(id=1)
 
 
 def _app() -> Veloce:
