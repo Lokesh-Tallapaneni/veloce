@@ -31,9 +31,9 @@ def _app() -> Veloce:
 
 def test_the_dev_server_installs_an_access_log():
     app = _app()
-    assert app._instrumentation == []
+    assert app.instrumentation_hooks == ()
     app._install_dev_access_log()
-    assert len(app._instrumentation) == 1
+    assert len(app.instrumentation_hooks) == 1
 
 
 def test_it_does_not_double_up_on_an_app_that_installed_its_own():
@@ -41,14 +41,14 @@ def test_it_does_not_double_up_on_an_app_that_installed_its_own():
     app = _app()
     instrument_access_log(app)
     app._install_dev_access_log()
-    assert len(app._instrumentation) == 1
+    assert len(app.instrumentation_hooks) == 1
 
 
 def test_installing_twice_is_a_no_op():
     app = _app()
     app._install_dev_access_log()
     app._install_dev_access_log()
-    assert len(app._instrumentation) == 1
+    assert len(app.instrumentation_hooks) == 1
 
 
 def test_an_applications_own_instrumentation_is_not_mistaken_for_one():
@@ -60,7 +60,7 @@ def test_an_applications_own_instrumentation_is_not_mistaken_for_one():
 
     app.add_instrumentation(my_metrics)
     app._install_dev_access_log()
-    assert len(app._instrumentation) == 2
+    assert len(app.instrumentation_hooks) == 2
 
 
 def test_a_served_request_produces_a_line(caplog):
@@ -110,7 +110,7 @@ def test_a_user_access_log_suppresses_the_built_in_one():
     my_access_log.is_access_log = True
     app.add_instrumentation(my_access_log)
     app._install_dev_access_log()
-    assert app._instrumentation == [my_access_log]
+    assert app.instrumentation_hooks == (my_access_log,)
 
 
 def test_an_unmarked_hook_does_not_suppress_it():
@@ -121,14 +121,14 @@ def test_an_unmarked_hook_does_not_suppress_it():
 
     app.add_instrumentation(timing)
     app._install_dev_access_log()
-    assert len(app._instrumentation) == 2
+    assert len(app.instrumentation_hooks) == 2
 
 
 def test_the_built_in_hook_carries_the_marker():
     """So a second installer can recognise it the same way."""
     app = Veloce(openapi_url=None)
     app._install_dev_access_log()
-    assert getattr(app._instrumentation[0], "is_access_log", False) is True
+    assert getattr(app.instrumentation_hooks[0], "is_access_log", False) is True
 
 
 class TestTheFlagIsActuallyWired:
@@ -152,15 +152,15 @@ class TestTheFlagIsActuallyWired:
 
     def test_the_flag_on_installs_the_access_log(self, monkeypatch, capsys):
         app = _app()
-        assert app._instrumentation == []
+        assert app.instrumentation_hooks == ()
         self._run_without_serving(app, monkeypatch, access_log=True)
-        assert len(app._instrumentation) == 1
-        assert getattr(app._instrumentation[0], "is_access_log", False)
+        assert len(app.instrumentation_hooks) == 1
+        assert getattr(app.instrumentation_hooks[0], "is_access_log", False)
 
     def test_the_flag_off_installs_nothing(self, monkeypatch, capsys):
         app = _app()
         self._run_without_serving(app, monkeypatch, access_log=False)
-        assert app._instrumentation == []
+        assert app.instrumentation_hooks == ()
 
     def test_the_flag_on_also_prints_the_banner(self, monkeypatch, capsys):
         app = _app()
@@ -177,4 +177,4 @@ class TestTheFlagIsActuallyWired:
         app = _app()
         self._run_without_serving(app, monkeypatch, access_log=True)
         self._run_without_serving(app, monkeypatch, access_log=True)
-        assert len(app._instrumentation) == 1
+        assert len(app.instrumentation_hooks) == 1

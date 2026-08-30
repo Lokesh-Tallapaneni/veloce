@@ -671,6 +671,20 @@ class Veloce(
             Router.include_router(self, router, prefix=effective or "")
             self._invalidate_route_caches()
 
+    @property
+    def instrumentation_hooks(self) -> tuple[Callable[..., Any], ...]:
+        """The registered instrumentation hooks, in the order they will run.
+
+        The read half of `add_instrumentation`, which had none: a caller
+        checking whether it has already installed its own hook - the
+        idempotency guard `veloce.otel` performs - otherwise has to read the
+        private list the dispatch core iterates.
+
+        A tuple, so a caller cannot register or reorder through it; use
+        `add_instrumentation` for that.
+        """
+        return tuple(self._instrumentation)
+
     def add_instrumentation(
         self,
         hook: Callable | None = None,

@@ -198,7 +198,7 @@ def _existing_bridge(app: Veloce, stacklevel: int) -> Callable[..., Any] | None:
     The `stacklevel` differs by entry point so the warning points at the
     original `instrument_with_otel` call.
     """
-    for hook in app._instrumentation:
+    for hook in app.instrumentation_hooks:
         if getattr(hook, _BRIDGE_MARKER, False):
             warnings.warn(
                 "instrument_with_otel was already called on this app; "

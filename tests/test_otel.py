@@ -611,13 +611,13 @@ def test_re_instrument_warns_and_does_not_register_twice() -> None:
 
     app = Veloce(openapi_url=None)
     first = instrument_with_otel(app)
-    assert len(app._instrumentation) == 1
+    assert len(app.instrumentation_hooks) == 1
 
     with pytest.warns(RuntimeWarning, match="already called"):
         second = instrument_with_otel(app)
 
     # No duplicate hook, and the existing one is handed back unchanged.
-    assert len(app._instrumentation) == 1
+    assert len(app.instrumentation_hooks) == 1
     assert second is first
 
 
@@ -650,8 +650,8 @@ def test_two_apps_in_one_process_each_get_a_bridge() -> None:
     instrument_with_otel(app_a)
     instrument_with_otel(app_b)
 
-    assert len(app_a._instrumentation) == 1
-    assert len(app_b._instrumentation) == 1
+    assert len(app_a.instrumentation_hooks) == 1
+    assert len(app_b.instrumentation_hooks) == 1
 
 
 # ── on_span enrichment callback ───────────────────────────────────────
@@ -988,7 +988,7 @@ def test_live_is_idempotent_no_duplicate_wrapper_or_hook() -> None:
     with pytest.warns(RuntimeWarning, match="already called"):
         instrument_with_otel(app, tracer_provider=provider, live=True)
 
-    assert len(app._instrumentation) == 1
+    assert len(app.instrumentation_hooks) == 1
     # The live span wrapper is a single PH_ASGI_WRAP feature, not an entry in the
     # raw `_asgi_middleware` list; a second install must not register a duplicate.
     otel_specs = [spec for spec in app._features if spec.name == "otel.live_span"]

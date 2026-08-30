@@ -129,7 +129,7 @@ def test_hook_returned_for_introspection(make_logger):
     app = _app()
     logger, _ = make_logger("test.obs.json5")
     hook = log_requests_as_json(app, logger=logger)
-    assert app._instrumentation[-1] is hook
+    assert app.instrumentation_hooks[-1] is hook
 
 
 # -- instrument_access_log ----------------------------------------
@@ -216,7 +216,7 @@ def test_access_log_hook_returned(make_logger):
     app = _app()
     logger, _ = make_logger("test.obs.acc6")
     hook = instrument_access_log(app, logger=logger)
-    assert app._instrumentation[-1] is hook
+    assert app.instrumentation_hooks[-1] is hook
 
 
 def test_the_logger_capture_restores_the_global_registry():
