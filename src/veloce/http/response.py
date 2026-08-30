@@ -159,18 +159,32 @@ def _format_content_disposition(disposition: str, filename: str) -> str:
     return f"{disposition}; {param}"
 
 
-async def _stream_file(path: str, loop: Any) -> Any:
-    """Yield a file's bytes in chunks, each read in the executor.
+async def _stream_file(path: str, loop: Any, limit: int | None = None) -> Any:
+    """Yield a file's bytes in chunks, each read in the executor, up to `limit`.
 
     The open and every read are offloaded, so no disk I/O runs on the event
     loop, and only one chunk is resident at a time.
+
+    `limit` is the `Content-Length` the response already declared. The stat that
+    produced it and these reads are two different moments, so a file appended to
+    in between - a log, an asset replaced by a deploy - would otherwise yield
+    more bytes than the head promised. On the native transport that surplus lands
+    on a keep-alive connection behind the response the client was counting, and
+    is read as the start of the next one. `None` reads to EOF, for a caller with
+    no declared length to honour.
     """
     handle = await loop.run_in_executor(None, _open_file_binary, path)
+    remaining = limit
     try:
-        while True:
+        while remaining is None or remaining > 0:
             chunk = await loop.run_in_executor(None, _read_file_chunk, handle)
             if not chunk:
                 return
+            if remaining is not None:
+                if len(chunk) >= remaining:
+                    yield chunk[:remaining]
+                    return
+                remaining -= len(chunk)
             yield chunk
     finally:
         await loop.run_in_executor(None, handle.close)
@@ -2007,5 +2021,7 @@ class FileResponse(Response):
             resp, status_code=HTTP_200_OK, body=b"", content_type=content_type, headers=hdrs
         )
         resp.headers[HEADER_CONTENT_LENGTH] = str(st.st_size)
-        resp._stream = _stream_file(path, loop)
+        # The same size the header declares, so the two cannot disagree if the
+        # file grows between this stat and the reads below.
+        resp._stream = _stream_file(path, loop, st.st_size)
         return resp
