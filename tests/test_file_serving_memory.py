@@ -92,10 +92,12 @@ async def _drain(app, path: str, headers: list | None = None) -> dict:
 async def _peak_mb(coro_factory) -> tuple[float, object]:
     """Peak traced allocation, in MB, while awaiting `coro_factory()`."""
     tracemalloc.start()
-    base = tracemalloc.get_traced_memory()[0]
-    result = await coro_factory()
-    _current, peak = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
+    try:
+        base = tracemalloc.get_traced_memory()[0]
+        result = await coro_factory()
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
     return (peak - base) / 1e6, result
 
 

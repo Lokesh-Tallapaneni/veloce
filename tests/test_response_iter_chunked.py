@@ -98,7 +98,7 @@ def test_iter_encoded_returns_sync_iterator_for_buffered_response():
     assert chunks == [b"hello"]
 
 
-def test_iter_encoded_returns_async_iterator_for_streaming_response():
+async def test_iter_encoded_returns_async_iterator_for_streaming_response():
     async def gen() -> AsyncIterator[bytes]:
         yield b"a"
         yield b"b"
@@ -111,12 +111,4 @@ def test_iter_encoded_returns_async_iterator_for_streaming_response():
     assert not asyncio.iscoroutine(iterator)
     assert hasattr(iterator, "__aiter__"), "streaming iter must be async"
 
-    async def _drain() -> list[bytes]:
-        return [chunk async for chunk in iterator]
-
-    loop = asyncio.new_event_loop()
-    try:
-        chunks = loop.run_until_complete(_drain())
-    finally:
-        loop.close()
-    assert chunks == [b"a", b"b"]
+    assert [chunk async for chunk in iterator] == [b"a", b"b"]

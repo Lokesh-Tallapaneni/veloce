@@ -225,7 +225,12 @@ def test_the_http_transport_refuses_an_unserved_version_header():
             },
         )
 
-    assert response.status_code >= 400 or b'"error"' in response.body, response.body
+    # Not `status >= 400 or "error" in body`: an unrelated 500 or a generic
+    # -32603 satisfies that while the gate misattributes its refusal.
+    assert response.status_code == 400, response.body
+    error = response.json()["error"]
+    assert error["code"] == ProtocolVersionError.code, error
+    assert "1999-01-01" in error["message"], error
 
 
 # ── Argument validation is a tool execution error ─────────────────

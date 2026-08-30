@@ -7,9 +7,8 @@ import importlib.util
 import orjson
 import pytest
 
+import veloce
 from veloce import JSONResponse, ORJSONResponse, UJSONResponse, Veloce
-from veloce import ORJSONResponse as _ORJ
-from veloce import UJSONResponse as _UJ
 from veloce.testclient import TestClient
 
 # ── ORJSONResponse ─────────────────────────────────────────────────────
@@ -174,6 +173,6 @@ def test_ujson_response_raises_when_ujson_missing():
 
 
 def test_classes_in_veloce_exports():
-
-    assert _ORJ is ORJSONResponse
-    assert _UJ is UJSONResponse
+    # The module-top `from veloce import ...` already proves the names are
+    # importable; what needs asserting is that they are advertised.
+    assert {"ORJSONResponse", "UJSONResponse"} <= set(veloce.__all__)

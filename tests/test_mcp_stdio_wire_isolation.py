@@ -122,10 +122,11 @@ def test_handler_output_never_reaches_the_wire(tmp_path, body):
 @pytest.mark.parametrize(
     ("body", "needle"),
     [
-        ("    print('a stray line')\n", "a stray line"),
-        (
+        pytest.param("    print('a stray line')\n", "a stray line", id="print"),
+        pytest.param(
             "    subprocess.run([sys.executable, '-c', \"print('from a child')\"], check=False)\n",
             "from a child",
+            id="child process",
         ),
     ],
 )

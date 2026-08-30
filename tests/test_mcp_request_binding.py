@@ -14,6 +14,7 @@ import asyncio
 import gc
 
 import orjson
+import pytest
 
 import veloce
 from veloce import MCPContext, Request, TestClient, Veloce, g
@@ -92,8 +93,6 @@ async def test_the_app_binding_is_released_too():
 
 async def test_a_bare_context_still_reports_no_state_after_a_call():
     """The guard on `MCPContext.state` must not be defeated by a stale binding."""
-    import pytest
-
     await _call(_app(), "tools/call", {"name": "noop", "arguments": {}})
     with pytest.raises(RuntimeError, match="request being handled"):
         MCPContext("bare").state

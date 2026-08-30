@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import dataclasses
+
+import pytest
+
 from veloce.contrib.mcp.descriptors import MCPDescriptor
 from veloce.contrib.mcp.icons import Icon, coerce_icons, render_icons
 
@@ -25,6 +29,8 @@ def test_icon_is_immutable_and_slotted():
     """`Icon` is a frozen slotted value object."""
     icon = Icon("https://x/i.png")
     assert not hasattr(icon, "__dict__")
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        icon.src = "https://x/other.png"
 
 
 def test_coerce_icons_normalises_none_and_empty_to_empty_tuple():

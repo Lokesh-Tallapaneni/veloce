@@ -61,7 +61,7 @@ async def test_after_request():
 # ── An after-request hook is called by its own signature ─────────────
 
 
-def _app_with(hook, *, blueprint=False):
+def _app_with(hook):
     app = Veloce(openapi_url=None)
     app.after_request(hook)
 
