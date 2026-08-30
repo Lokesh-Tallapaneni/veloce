@@ -467,6 +467,38 @@ def _etag_matches_weak(server_etag: str, client_token: str) -> bool:
     return a == b
 
 
+def _preconditions_say_unchanged(
+    if_none_match: tuple[str, ...] | list[str],
+    if_modified_since: float | None,
+    etag: str,
+    mtime: float | None,
+) -> bool:
+    """Whether the read-side preconditions say the client's copy is current.
+
+    RFC 9110 Sec. 13.2 precedence, in one place: `If-None-Match` supersedes
+    `If-Modified-Since` when both are present, and an explicit non-match ends
+    the decision rather than falling through to the date. `*` matches whenever a
+    representation exists, wherever it appears in the list (Sec. 13.1.2), and
+    the ETag comparison is weak (Sec. 8.8.3.2).
+
+    The rule was written twice - `Response.make_conditional` and
+    `StaticFiles.handle`'s helper - which is how the two came to differ in the
+    fall-through case. Both callers keep their own surroundings, because those
+    genuinely differ: `make_conditional` reads its validators off the response's
+    own headers and mutates the response, where the static path already holds
+    the stat's `etag` and `mtime` as values.
+    """
+    if if_none_match:
+        if "*" in if_none_match:
+            return True
+        return any(_etag_matches_weak(etag, token) for token in if_none_match)
+    # HTTP-dates have second resolution, so an mtime of 1.5 must not read as
+    # newer than an `If-Modified-Since` of 1.
+    return (
+        if_modified_since is not None and mtime is not None and int(mtime) <= int(if_modified_since)
+    )
+
+
 def _etag_matches_strong(server_etag: str, client_token: str) -> bool:
     """Strong comparison of two ETag tokens per RFC 9110 Sec. 8.8.3.1.
 

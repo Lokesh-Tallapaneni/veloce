@@ -54,9 +54,9 @@ from veloce._internal import (
     MIME_PLAIN,
     _encode_response_head,
     _etag_matches_strong,
-    _etag_matches_weak,
     _file_etag,
     _header_value_has_crlf,
+    _preconditions_say_unchanged,
     _quote_header_value,
     _reject_header_crlf,
     _write_chunked,
@@ -1295,28 +1295,21 @@ class Response:
         # Sec. 5.1), so a handler-set `Etag`/`etag` is honored too.
         ours_etag = header_get(self.headers, HEADER_ETAG) or ""
         inm = getattr(request, "if_none_match", ())
-        if inm and ours_etag:
-            if "*" in inm:
+        if inm:
+            # An `If-None-Match` the response cannot answer (no ETag of its own)
+            # is not a match, and per Sec. 13.2 it still supersedes the date.
+            if ours_etag and _preconditions_say_unchanged(inm, None, ours_etag, None):
                 self._downgrade_to_304()
-                return self
-            # Weak comparison per RFC 9110 Sec. 8.8.3.2.
-            for tag in inm:
-                if _etag_matches_weak(ours_etag, tag):
-                    self._downgrade_to_304()
-                    return self
-            # Explicit non-match - caller's other preconditions don't apply.
             return self
 
-        # If-Modified-Since (only consulted when If-None-Match absent).
+        # If-Modified-Since, only consulted when If-None-Match is absent.
         ours_lm = header_get(self.headers, HEADER_LAST_MODIFIED) or ""
         ims = getattr(request, "if_modified_since", None)
         if ims is not None and ours_lm:
             ours_dt = parse_date(ours_lm)
             if ours_dt is None:
                 return self
-            ours_ts = ours_dt.timestamp()
-            # HTTP-date second resolution - integer floor.
-            if int(ours_ts) <= int(ims):
+            if _preconditions_say_unchanged((), ims, ours_etag, ours_dt.timestamp()):
                 self._downgrade_to_304()
         return self
 

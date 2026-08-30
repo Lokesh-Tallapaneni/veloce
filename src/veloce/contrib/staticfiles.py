@@ -38,8 +38,8 @@ from veloce._constants import (
 )
 from veloce._internal import (
     _etag_matches_strong,
-    _etag_matches_weak,
     _file_etag,
+    _preconditions_say_unchanged,
     guess_content_type,
 )
 from veloce.http.dates import http_date
@@ -151,15 +151,9 @@ def _conditional_hit(request: Request, etag: str, mtime: float) -> bool:
     and the file was re-sent on every request. It is also cached per request,
     where the raw split re-parsed.
     """
-    if_none_match = request.if_none_match
-    if if_none_match:
-        if "*" in if_none_match:
-            return True
-        return any(_etag_matches_weak(etag, token) for token in if_none_match)
-    ims_ts = request.if_modified_since
-    # Floor mtime to whole seconds because HTTP-dates have second resolution;
-    # otherwise `mtime=1.5` would always appear "newer" than `IMS=1`.
-    return ims_ts is not None and int(mtime) <= int(ims_ts)
+    return _preconditions_say_unchanged(
+        request.if_none_match, request.if_modified_since, etag, mtime
+    )
 
 
 def _resolve_range(first: tuple[int | None, int | None], size: int) -> tuple[int, int] | None:
