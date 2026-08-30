@@ -21,11 +21,19 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import CORSMiddleware, SecurityHeadersMiddleware, Veloce
+from veloce import CORSMiddleware, Middleware, SecurityHeadersMiddleware, Veloce, current_app
 from veloce.testclient import TestClient
 
 ORIGIN = "https://ok.example"
 ALLOW = "access-control-allow-origin"
+
+
+class _StampsAppTitle(Middleware):
+    """Reaches for `current_app` in the response phase, as a real one would."""
+
+    async def process_response(self, request, response):
+        response.headers["X-App"] = current_app.title
+        return response
 
 
 def _app(limit: int | None = 10) -> Veloce:
@@ -108,3 +116,49 @@ def test_every_refusal_size_behaves_the_same(size):
 
     assert resp.status_code == 413
     assert resp.headers.get(ALLOW) == ORIGIN
+
+
+def test_current_app_works_inside_a_refusals_response_phase():
+    """The root of the same defect, and worse than the missing header.
+
+    The refusal built a bare `Request` with no `app` and never bound the
+    `current_app` / `request` contextvars, so a `process_response` reaching for
+    `current_app` raised `RuntimeError: Working outside of application context`
+    - and that escaped to the client in place of the 413.
+    """
+    app = Veloce(openapi_url=None, title="Probe")
+    app.config["MAX_CONTENT_LENGTH"] = 10
+    app.add_middleware(_StampsAppTitle())
+
+    @app.post("/p")
+    async def p():
+        return {"ok": True}
+
+    client = TestClient(app)
+
+    assert client.post("/p", content=b"ok").headers.get("x-app") == "Probe"
+    over = client.post("/p", content=b"x" * 500)
+    assert over.status_code == 413
+    assert over.headers.get("x-app") == "Probe"
+
+
+def test_the_refused_request_knows_its_app():
+    """`request.app` is what a middleware reads when it does not use the proxy."""
+    seen: list[object] = []
+
+    class Records(Middleware):
+        async def process_response(self, request, response):
+            seen.append(request.app)
+            return response
+
+    app = Veloce(openapi_url=None)
+    app.config["MAX_CONTENT_LENGTH"] = 10
+    app.add_middleware(Records())
+
+    @app.post("/p")
+    async def p():
+        return {"ok": True}
+
+    TestClient(app).post("/p", content=b"x" * 500)
+
+    assert seen and seen[0] is app, "the refused request carried no app"

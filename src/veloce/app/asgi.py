@@ -29,6 +29,7 @@ from veloce._internal import (
     MIME_JSON,
     MIME_OCTET,
     _current_app_var,
+    _current_request_var,
     _encode_header_value,
     _extract_host,
     _reject_header_crlf,
@@ -293,11 +294,24 @@ class AsgiMixin(AppHost):
         fixed and the others not, which is what happened to the native
         transport's own 413.
         """
+        # The response phase runs against this request, so it has to look like
+        # one a response middleware can work with. Without `app` and the two
+        # contextvars, any `process_response` calling `current_app` raised
+        # `RuntimeError: Working outside of application context` and that
+        # escaped to the client in place of the 413.
+        #
+        # This binds only what the *response* phase reads. The request phase is
+        # still not run - refusing before reading the body is the point of this
+        # path - so a middleware that caches state in `process_request` will not
+        # find it here, and must fall back, as `CORSMiddleware` does for the
+        # `Origin` header.
+        request = Request(method, path, query, raw_headers, b"", scope=scope)
+        request.app = self
+        _current_app_var.set(self)
+        _current_request_var.set(request)
         await self._emit_response(
             send,
-            await self._body_too_large_response(
-                Request(method, path, query, raw_headers, b"", scope=scope), cp, max_size
-            ),
+            await self._body_too_large_response(request, cp, max_size),
         )
 
     async def _emit_response(self, send: Callable, response: Response) -> None:
