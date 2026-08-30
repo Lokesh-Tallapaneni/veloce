@@ -1878,10 +1878,40 @@ class FileResponse(Response):
     ) -> None:
         """Write the head, then the file's chunks, on the raw transport.
 
-        The head is the buffered one - a file's length is known, so the body is
-        length-delimited and not chunk-framed. `drain` throttles a producer
-        outrunning a slow client, exactly as the other streaming responses do.
+        A file's length is known, so the body is normally length-delimited and
+        not chunk-framed - which is why this does not go through
+        `StreamingResponse.stream_to`.
+
+        That holds only while the head still carries the `Content-Length`
+        `from_path` set. A response middleware may legitimately remove it:
+        `CompressionMiddleware` does for every streamed body, because the
+        compressed length is not the length that was stat'd. `encode()` then
+        falls back to `len(self.body)`, which is `0` here, and the head went out
+        declaring `Content-Length: 0` in front of the body bytes - which a
+        keep-alive client reads as the start of the next response.
+
+        With no declared length there is nothing to delimit the body, so it is
+        chunk-framed, exactly as `StreamingResponse` frames a body whose length
+        it does not know. `drain` throttles a producer outrunning a slow client
+        in both cases.
         """
+        if header_get(self.headers, HEADER_CONTENT_LENGTH) is None:
+            # Through `_encode_streaming_head`, as every other streaming
+            # response does: `encode()` would default a `Content-Length` from
+            # `len(self.body)` and emit `Content-Length: 0` beside the chunked
+            # framing, which is the same contradiction in a new place.
+            transport.write(
+                self._encode_streaming_head(
+                    {
+                        HEADER_CONTENT_TYPE: self.content_type,
+                        HEADER_TRANSFER_ENCODING: HEADER_VALUE_CHUNKED,
+                    },
+                    keep_alive,
+                )
+            )
+            await _write_chunked(transport, self._stream, drain)
+            return
+
         transport.write(self.encode(keep_alive=keep_alive))
         async for chunk in self._stream:
             transport.write(chunk)
