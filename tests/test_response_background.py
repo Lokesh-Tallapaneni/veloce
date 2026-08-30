@@ -37,12 +37,19 @@ async def _until(predicate, *, turns: int = 2000) -> None:
 
     The same module already demonstrated the deterministic idiom with an
     `asyncio.Event`; this is the form that needs no change to the task itself.
+
+    The later turns yield real time. A *sync* background callable is offloaded to
+    a thread-pool worker, and `sleep(0)` yields to the event loop without
+    consuming any wall-clock - so a pure-yield spin can burn its whole budget in
+    microseconds while the worker has not been scheduled once. That is a flake
+    that appears only under load; the first turns stay zero-cost for work that is
+    already on the loop.
     """
 
-    for _ in range(turns):
+    for turn in range(turns):
         if predicate():
             return
-        await asyncio.sleep(0)
+        await asyncio.sleep(0 if turn < 10 else 0.001)
     raise AssertionError("the background task never ran")
 
 
