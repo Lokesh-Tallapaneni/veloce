@@ -11,10 +11,6 @@ from veloce._protocol_constants import AUTH_SCHEME_BEARER
 from veloce.exceptions import HTTPException
 from veloce.status import HTTP_401_UNAUTHORIZED
 
-_BEARER_PREFIX = AUTH_SCHEME_BEARER + " "
-_BEARER_PREFIX_LOWER = _BEARER_PREFIX.lower()
-_BEARER_PREFIX_LEN = len(_BEARER_PREFIX)
-
 
 def _validate_realm(realm: str) -> None:
     """Reject control characters in a realm at construction (fail fast).

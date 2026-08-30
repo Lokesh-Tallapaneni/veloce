@@ -6,7 +6,7 @@ one at a time. The win shows up clearly when each dependency does I/O
 (an `asyncio.sleep` here stands in for any awaitable wait): the total
 resolve time becomes `max(dep_durations)` rather than `sum(...)`.
 
-Constraints — preserved by `parallel_group_end`:
+Constraints — preserved by `compute_dep_waves`:
 - Security() scope-pushing dependencies stay sequential.
 - yield-style dependencies stay sequential.
 - two siblings sharing a `use_cache=True` callable stay sequential.
@@ -21,8 +21,7 @@ from veloce import Depends, Security, Veloce
 from veloce._handler_plan import (
     _slot_parallel_safe,
     build_plan,
-    compute_parallel_groups,
-    parallel_group_end,
+    compute_dep_waves,
 )
 from veloce.dependency import K_DEPENDS
 from veloce.testclient import TestClient
@@ -109,8 +108,8 @@ def test_yield_dependency_still_tears_down_in_order():
     assert events == ["enter", "plain", "handler", "exit"]
 
 
-async def test_group_end_helper_stops_at_security_dependency():
-    """`parallel_group_end` refuses to expand past a Security() slot."""
+async def test_the_wave_builder_excludes_a_security_dependency():
+    """A Security() slot is left out of the batch, not batched with its siblings."""
     plain = SimpleNamespace(
         kind=K_DEPENDS,
         target_type=None,
@@ -129,9 +128,9 @@ async def test_group_end_helper_stops_at_security_dependency():
         dep_callable=lambda: None,
         sub_plan=None,
     )
-    # plain, plain, sec, plain — the run should stop at the Security() slot.
-    end = parallel_group_end([plain, plain, sec, plain], 0)
-    assert end == 2
+    # plain, plain, sec, plain - every plain slot batches, the Security() one
+    # is excluded entirely and stays inline so its scope push/pop is ordered.
+    assert compute_dep_waves([plain, plain, sec, plain]) == [[0, 1, 3]]
 
 
 async def test_group_end_helper_refuses_nested_security():
@@ -168,18 +167,15 @@ async def test_group_end_helper_refuses_nested_security():
         dep_callable=lambda: None,
         sub_plan=None,
     )
-    # The first slot fails the safety check, so the parallelisable run
-    # cannot be expanded at all — `end == start`, which the caller
-    # treats as "fall back to sequential" (it only gathers when
-    # `end > start + 1`).
-    end = parallel_group_end([outer_with_nested_sec, plain], 0)
-    assert end == 0
+    # The outer dep fails the safety check, so only one safe slot remains and
+    # no wave is built at all - the resolver runs both inline, in slot order.
+    assert compute_dep_waves([outer_with_nested_sec, plain]) == []
     # The transitive-safe helper directly returns False, too.
     assert _slot_parallel_safe(outer_with_nested_sec, set()) is False
     assert _slot_parallel_safe(plain, set()) is True
 
 
-# ── Precomputed parallel grouping (registration-time) ──────────────────
+# ── Precomputed dependency waves (registration-time) ───────────────────
 
 
 def test_independent_deps_are_grouped():
@@ -193,11 +189,11 @@ def test_independent_deps_are_grouped():
         return x + y
 
     plan = build_plan(h)
-    # Two independent plain deps form one parallel group [0, 2).
-    assert compute_parallel_groups(plan.slots) == {0: 2}
-    # Twice, because the grouping is derived from the plan rather than cached
+    # Two independent plain deps form one wave.
+    assert compute_dep_waves(plan.slots) == [[0, 1]]
+    # Twice, because the waves are derived from the plan rather than cached
     # on it: a second call must give the same answer, not a consumed one.
-    assert compute_parallel_groups(plan.slots) == {0: 2}
+    assert compute_dep_waves(plan.slots) == [[0, 1]]
 
 
 def test_three_independent_deps_grouped():
@@ -213,7 +209,7 @@ def test_three_independent_deps_grouped():
     async def h(x: int = Depends(a), y: int = Depends(b), z: int = Depends(c)):
         return x + y + z
 
-    assert compute_parallel_groups(build_plan(h).slots) == {0: 3}
+    assert compute_dep_waves(build_plan(h).slots) == [[0, 1, 2]]
 
 
 def test_security_dep_breaks_group():
@@ -226,8 +222,9 @@ def test_security_dep_breaks_group():
     async def h(x: int = Depends(a), s: str = Security(guard, scopes=["read"])):
         return x
 
-    # The Security() slot is not parallel-safe, so no multi-slot group forms.
-    assert compute_parallel_groups(build_plan(h).slots) == {}
+    # The Security() slot is not parallel-safe, so one safe dep is left and
+    # `compute_dep_waves` builds nothing.
+    assert compute_dep_waves(build_plan(h).slots) == []
 
 
 def test_yield_dep_breaks_group():
@@ -240,7 +237,7 @@ def test_yield_dep_breaks_group():
     async def h(x: int = Depends(a), r: str = Depends(res)):
         return x
 
-    assert compute_parallel_groups(build_plan(h).slots) == {}
+    assert compute_dep_waves(build_plan(h).slots) == []
 
 
 def test_cache_collision_breaks_group():
@@ -250,5 +247,5 @@ def test_cache_collision_breaks_group():
     async def h(x: int = Depends(a), y: int = Depends(a)):
         return x + y
 
-    # Same use_cache=True callable cannot share a parallel run.
-    assert compute_parallel_groups(build_plan(h).slots) == {}
+    # Same use_cache=True callable cannot share a wave.
+    assert compute_dep_waves(build_plan(h).slots) == []

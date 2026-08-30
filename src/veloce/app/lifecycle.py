@@ -416,7 +416,6 @@ class LifecycleMixin(AppHost):
         started app leaves no orphaned resources.
         """
         stack = contextlib.AsyncExitStack()
-        stack = contextlib.AsyncExitStack()
         try:
             # The lifespan CM is entered first so it exits last, after every
             # on_shutdown handler has run - resources it provides outlive the

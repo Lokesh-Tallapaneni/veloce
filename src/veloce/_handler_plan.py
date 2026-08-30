@@ -386,55 +386,6 @@ def _slot_parallel_safe(slot: _Slot, seen_plans: set[int]) -> bool:
     return True
 
 
-def parallel_group_end(slots: list[_Slot], start: int) -> int:
-    """Index past the last K_DEPENDS sibling safely parallelisable with `start`.
-
-    A run extends while each slot is K_DEPENDS, parallel-safe, and does not
-    share a `use_cache=True` callable with an earlier slot in the run (which
-    would race on the shared result cache). Returns `start + 1` when the run
-    cannot grow, so the caller runs that slot sequentially.
-    """
-    n = len(slots)
-    if start >= n:
-        return start
-    seen_cached: set[Any] = set()
-    end = start
-    while end < n:
-        s = slots[end]
-        if s.kind != K_DEPENDS:
-            break
-        if not _slot_parallel_safe(s, set()):
-            break
-        if s.use_cache:
-            if s.dep_callable in seen_cached:
-                break
-            seen_cached.add(s.dep_callable)
-        end += 1
-    return end
-
-
-def compute_parallel_groups(slots: list[_Slot]) -> dict[int, int]:
-    """Precompute the parallel-dependency grouping for a slot list.
-
-    Returns `{start_index: end_index}` for every contiguous K_DEPENDS run of
-    two or more slots that may run concurrently. The resolver consults this
-    map per request instead of re-deriving the grouping each time - the
-    grouping depends only on the plan, never on request data.
-    """
-    groups: dict[int, int] = {}
-    i = 0
-    n = len(slots)
-    while i < n:
-        if slots[i].kind == K_DEPENDS:
-            end = parallel_group_end(slots, i)
-            if end > i + 1:
-                groups[i] = end
-                i = end
-                continue
-        i += 1
-    return groups
-
-
 def _cached_callables(slot: _Slot, seen_plans: set[int]) -> set[Any]:
     """Every `use_cache=True` callable reachable from a K_DEPENDS subtree.
 
@@ -464,11 +415,9 @@ def _cached_callables(slot: _Slot, seen_plans: set[int]) -> set[Any]:
 def compute_dep_waves(slots: list[_Slot]) -> list[list[int]]:
     """Topological waves of parallel-safe K_DEPENDS slot indices.
 
-    Unlike `compute_parallel_groups` (which only fuses a contiguous run of
-    K_DEPENDS siblings in slot order), this batches every parallel-safe
-    dependency regardless of declaration order or intervening non-dependency
-    slots, so `dep_a, q: int = Query(), dep_b` resolves `dep_a` and `dep_b`
-    concurrently. The waves are an ordered list; the resolver runs each wave's
+    Batches every parallel-safe dependency regardless of declaration order or
+    intervening non-dependency slots, so `dep_a, q: int = Query(), dep_b`
+    resolves `dep_a` and `dep_b` concurrently. The waves are an ordered list; the resolver runs each wave's
     slots together and the waves themselves in sequence.
 
     Two dependencies sharing a cached callable anywhere in their subtrees are
@@ -555,11 +504,7 @@ class HandlerPlan:
         # compiled fast path; a sentinel = tried and not compilable.
         self.compiled_graph_resolver: Any = None
         # Parallel-dependency grouping, derived once here so the resolver does
-        # not re-scan slot safety on every request. The waves are the only
-        # projection built at plan time; `compute_parallel_groups` produces the
-        # contiguous-run map for direct callers, and is not called from here
-        # because nothing on the request path reads it - the compat shim that
-        # names it delegates to `parallel_group_end` instead.
+        # not re-scan slot safety on every request.
         self.dep_waves = compute_dep_waves(slots)
         # Resolver-facing projection of the waves, built once here. Every batched
         # dependency is resolved at the earliest batched slot index
