@@ -22,7 +22,7 @@ from __future__ import annotations
 import ast
 import pathlib
 
-SRC = pathlib.Path(__file__).resolve().parents[1] / "src" / "veloce"
+from tests._source import SRC
 
 # The documented home for internals shared across subpackages.
 SANCTIONED = "veloce._internal"

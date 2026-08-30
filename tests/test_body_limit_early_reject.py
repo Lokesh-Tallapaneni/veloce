@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import pytest
 
+from tests._asgi_drive import http_scope
 from veloce import Veloce
 from veloce.testclient import TestClient
 
@@ -161,24 +162,24 @@ class _CountingReceive:
         self.status: int | None = None
 
     async def run(self) -> int:
-        scope = {
-            "type": "http",
-            "asgi": {"version": "3.0"},
-            "http_version": "1.1",
-            "method": self.method,
-            "path": "/any",
-            "raw_path": b"/any",
-            "query_string": b"",
-            "headers": [
+        scope = http_scope(
+            type="http",
+            asgi={"version": "3.0"},
+            http_version="1.1",
+            method=self.method,
+            path="/any",
+            raw_path=b"/any",
+            query_string=b"",
+            headers=[
                 (b"host", b"example.com"),
                 (b"content-type", b"application/octet-stream"),
                 (b"content-length", str(len(self.body)).encode()),
             ],
-            "client": ("127.0.0.1", 1234),
-            "server": ("127.0.0.1", 8000),
-            "scheme": "http",
-            "root_path": "",
-        }
+            client=("127.0.0.1", 1234),
+            server=("127.0.0.1", 8000),
+            scheme="http",
+            root_path="",
+        )
         sent = False
 
         async def receive():

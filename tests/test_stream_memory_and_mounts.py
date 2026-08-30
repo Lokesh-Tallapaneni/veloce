@@ -22,6 +22,7 @@ import tracemalloc
 import orjson
 import pytest
 
+from tests._asgi_drive import http_scope
 from veloce import Veloce
 
 _CHUNK = 1024 * 1024
@@ -48,16 +49,16 @@ def _sink_app() -> Veloce:
 
 
 async def _drive(app: Veloce, path: str, chunk: bytes, count: int) -> dict:
-    scope = {
-        "type": "http",
-        "method": "POST",
-        "path": path,
-        "query_string": b"",
-        "headers": [],
-        "root_path": "",
-        "scheme": "http",
-        "http_version": "1.1",
-    }
+    scope = http_scope(
+        type="http",
+        method="POST",
+        path=path,
+        query_string=b"",
+        headers=[],
+        root_path="",
+        scheme="http",
+        http_version="1.1",
+    )
     sent = 0
 
     async def receive() -> dict:

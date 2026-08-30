@@ -5,6 +5,7 @@ from __future__ import annotations
 import orjson
 import pytest
 
+from tests._asgi_drive import http_scope
 from tests.conftest import make_request
 from veloce import Request, Response, Veloce
 from veloce.contrib.staticfiles import StaticFiles
@@ -55,19 +56,19 @@ class TestMountedRequestCarriesTheConnection:
         return app
 
     async def _call(self, app: Veloce, path: str) -> dict:
-        scope = {
-            "type": "http",
-            "method": "GET",
-            "path": path,
-            "raw_path": path.encode(),
-            "query_string": b"",
-            "headers": [(b"host", b"example.com")],
-            "root_path": "",
-            "scheme": "https",
-            "http_version": "1.1",
-            "client": ("203.0.113.9", 1234),
-            "server": ("example.com", 443),
-        }
+        scope = http_scope(
+            type="http",
+            method="GET",
+            path=path,
+            raw_path=path.encode(),
+            query_string=b"",
+            headers=[(b"host", b"example.com")],
+            root_path="",
+            scheme="https",
+            http_version="1.1",
+            client=("203.0.113.9", 1234),
+            server=("example.com", 443),
+        )
         chunks: list[dict] = []
 
         async def receive():

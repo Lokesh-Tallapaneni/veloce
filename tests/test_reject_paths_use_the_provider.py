@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import json
 
+from tests._asgi_drive import http_scope
 from tests._loops import protocol_loop
 from veloce import Veloce
 from veloce.json_provider import DefaultJSONProvider
@@ -66,20 +67,20 @@ def _app(**config) -> Veloce:
 
 
 def _scope(path: str, body: bytes = b"", method: str = "GET", query: bytes = b"") -> dict:
-    return {
-        "type": "http",
-        "asgi": {"version": "3.0"},
-        "http_version": "1.1",
-        "method": method,
-        "path": path,
-        "raw_path": path.encode(),
-        "query_string": query,
-        "headers": [(b"content-length", str(len(body)).encode())] if body else [],
-        "client": ("127.0.0.1", 1),
-        "server": ("127.0.0.1", 80),
-        "scheme": "http",
-        "root_path": "",
-    }
+    return http_scope(
+        type="http",
+        asgi={"version": "3.0"},
+        http_version="1.1",
+        method=method,
+        path=path,
+        raw_path=path.encode(),
+        query_string=query,
+        headers=[(b"content-length", str(len(body)).encode())] if body else [],
+        client=("127.0.0.1", 1),
+        server=("127.0.0.1", 80),
+        scheme="http",
+        root_path="",
+    )
 
 
 async def _drive(app, scope: dict, body: bytes = b"") -> tuple[int, bytes]:

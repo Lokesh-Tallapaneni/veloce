@@ -19,6 +19,7 @@ import asyncio
 import orjson
 import pytest
 
+from tests._asgi_drive import http_scope
 from veloce import Request, Veloce
 from veloce.testclient import TestClient
 
@@ -80,18 +81,18 @@ def test_the_asgi_scope_beats_the_constructor():
     seen = {}
 
     async def drive():
-        scope = {
-            "type": "http",
-            "method": "GET",
-            "path": "/info",
-            "raw_path": b"/info",
-            "query_string": b"",
-            "headers": [(b"host", b"testserver")],
-            "root_path": "/from-server",
-            "scheme": "http",
-            "client": ("127.0.0.1", 1234),
-            "server": ("testserver", 80),
-        }
+        scope = http_scope(
+            type="http",
+            method="GET",
+            path="/info",
+            raw_path=b"/info",
+            query_string=b"",
+            headers=[(b"host", b"testserver")],
+            root_path="/from-server",
+            scheme="http",
+            client=("127.0.0.1", 1234),
+            server=("testserver", 80),
+        )
 
         async def receive():
             return {"type": "http.request", "body": b"", "more_body": False}
@@ -112,18 +113,18 @@ def test_an_empty_scope_root_path_falls_back_to_the_constructor():
     seen = {}
 
     async def drive():
-        scope = {
-            "type": "http",
-            "method": "GET",
-            "path": "/info",
-            "raw_path": b"/info",
-            "query_string": b"",
-            "headers": [(b"host", b"testserver")],
-            "root_path": "",
-            "scheme": "http",
-            "client": ("127.0.0.1", 1234),
-            "server": ("testserver", 80),
-        }
+        scope = http_scope(
+            type="http",
+            method="GET",
+            path="/info",
+            raw_path=b"/info",
+            query_string=b"",
+            headers=[(b"host", b"testserver")],
+            root_path="",
+            scheme="http",
+            client=("127.0.0.1", 1234),
+            server=("testserver", 80),
+        )
 
         async def receive():
             return {"type": "http.request", "body": b"", "more_body": False}

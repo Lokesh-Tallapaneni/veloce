@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from tests._asgi_drive import http_scope
 from veloce import Response, Veloce
 from veloce.testclient import TestClient
 
@@ -130,13 +131,9 @@ async def test_non_ascii_query_string_returns_400():
 
     # The TestClient encodes the query string as ASCII, so drive the ASGI app
     # directly with a scope carrying raw UTF-8 bytes (`q=café` un-%-encoded).
-    scope = {
-        "type": "http",
-        "method": "GET",
-        "path": "/x",
-        "query_string": "q=café".encode(),
-        "headers": [],
-    }
+    scope = http_scope(
+        type="http", method="GET", path="/x", query_string="q=café".encode(), headers=[]
+    )
     sent: list[dict] = []
 
     async def receive():

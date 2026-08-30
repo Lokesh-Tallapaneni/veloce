@@ -21,7 +21,8 @@ import sys
 
 import pytest
 
-SRC = pathlib.Path(__file__).resolve().parents[1] / "src" / "veloce"
+from tests._source import SRC
+
 NOTE = re.compile(r"#.*\bbreaks\b.*\bcycle\b", re.I)
 
 

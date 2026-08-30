@@ -29,6 +29,7 @@ import asyncio
 
 import pytest
 
+from tests._asgi_drive import http_scope
 from veloce import InMemoryRateLimitBackend, RateLimitMiddleware, TokenBucket, Veloce
 
 
@@ -52,19 +53,19 @@ async def _hit(app, hosts):
 
     for host in hosts:
         await app(
-            {
-                "type": "http",
-                "method": "GET",
-                "path": "/",
-                "raw_path": b"/",
-                "query_string": b"",
-                "headers": [],
-                "client": (host, 1),
-                "scheme": "http",
-                "server": ("t", 80),
-                "http_version": "1.1",
-                "root_path": "",
-            },
+            http_scope(
+                type="http",
+                method="GET",
+                path="/",
+                raw_path=b"/",
+                query_string=b"",
+                headers=[],
+                client=(host, 1),
+                scheme="http",
+                server=("t", 80),
+                http_version="1.1",
+                root_path="",
+            ),
             receive,
             send,
         )
@@ -139,19 +140,19 @@ def test_a_client_that_exceeds_the_limit_is_refused():
 
         for _ in range(4):
             await app(
-                {
-                    "type": "http",
-                    "method": "GET",
-                    "path": "/",
-                    "raw_path": b"/",
-                    "query_string": b"",
-                    "headers": [],
-                    "client": ("10.0.0.9", 1),
-                    "scheme": "http",
-                    "server": ("t", 80),
-                    "http_version": "1.1",
-                    "root_path": "",
-                },
+                http_scope(
+                    type="http",
+                    method="GET",
+                    path="/",
+                    raw_path=b"/",
+                    query_string=b"",
+                    headers=[],
+                    client=("10.0.0.9", 1),
+                    scheme="http",
+                    server=("t", 80),
+                    http_version="1.1",
+                    root_path="",
+                ),
                 receive,
                 send,
             )

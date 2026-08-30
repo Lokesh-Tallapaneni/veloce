@@ -18,12 +18,11 @@ would go wrong when a new extra is added and a message is not updated.
 
 from __future__ import annotations
 
-import pathlib
 import re
 
 import pytest
 
-SRC = pathlib.Path(__file__).resolve().parent.parent / "src" / "veloce"
+from tests._source import SRC
 
 # Messages, not prose: docstrings and module headers document install lines too,
 # and those are not what a blocked user sees.

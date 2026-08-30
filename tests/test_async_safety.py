@@ -1,19 +1,17 @@
 """Tests for async safety — no leaks, proper resource management."""
 
 import asyncio
-import pathlib
 import time
 
 import orjson
 import pytest
 
-import veloce
 from tests._protocol import _FakeTransport, _run_until
+from tests._source import SRC
 from tests.conftest import make_request
 from veloce import Request, StreamingResponse, Veloce
 from veloce.serving.protocol import HttpProtocol
 
-SRC = pathlib.Path(veloce.__file__).parent
 PACKAGE_MODULES = sorted(SRC.rglob("*.py"))
 
 

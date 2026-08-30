@@ -31,13 +31,13 @@ became. Each is now read from the module that owns it:
 from __future__ import annotations
 
 import ast
-import pathlib
 import subprocess
 import sys
 
 import pytest
 
 import veloce.status
+from tests._source import SRC
 from veloce import Depends, SessionMiddleware, Veloce
 from veloce._protocol_constants import ASGI_EVENT_HTTP_DISCONNECT, ASGI_EVENT_HTTP_REQUEST
 from veloce.contrib.mcp import _helpers
@@ -52,8 +52,6 @@ from veloce.http._body import too_large_payload
 from veloce.http.cookies import dump_cookie
 from veloce.security.session import SessionAuth
 from veloce.testclient import TestClient
-
-SRC = pathlib.Path(__file__).resolve().parents[1] / "src" / "veloce"
 
 
 def _app(**kwargs) -> Veloce:

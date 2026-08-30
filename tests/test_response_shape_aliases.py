@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from tests._asgi_drive import http_scope
 from tests.conftest import make_request
 from veloce import Response
 from veloce.http.response import StreamingResponse
@@ -44,7 +45,7 @@ def test_calculate_content_length_writes_header():
 
 
 def test_request_environ_returns_scope():
-    scope = {"type": "http", "method": "GET", "path": "/"}
+    scope = http_scope(type="http", method="GET", path="/")
     req = make_request(method="GET", path="/", query_string="", headers={}, body=b"", scope=scope)
     # Same dict object — middleware can read everything through this alias.
     assert req.environ is scope

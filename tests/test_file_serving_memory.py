@@ -28,6 +28,7 @@ import warnings
 
 import pytest
 
+from tests._asgi_drive import http_scope
 from veloce import Veloce
 from veloce.contrib.staticfiles import StaticFiles
 from veloce.helpers import async_send_file
@@ -50,20 +51,20 @@ def files(tmp_path):
 
 
 def _scope(path: str, headers: list | None = None) -> dict:
-    return {
-        "type": "http",
-        "asgi": {"version": "3.0"},
-        "http_version": "1.1",
-        "method": "GET",
-        "path": path,
-        "raw_path": path.encode(),
-        "query_string": b"",
-        "headers": headers or [],
-        "client": ("127.0.0.1", 1),
-        "server": ("127.0.0.1", 80),
-        "scheme": "http",
-        "root_path": "",
-    }
+    return http_scope(
+        type="http",
+        asgi={"version": "3.0"},
+        http_version="1.1",
+        method="GET",
+        path=path,
+        raw_path=path.encode(),
+        query_string=b"",
+        headers=headers or [],
+        client=("127.0.0.1", 1),
+        server=("127.0.0.1", 80),
+        scheme="http",
+        root_path="",
+    )
 
 
 async def _drain(app, path: str, headers: list | None = None) -> dict:

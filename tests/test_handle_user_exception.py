@@ -6,6 +6,7 @@ import logging
 
 import orjson
 
+from tests._asgi_drive import http_scope
 from veloce import HTTPException, JSONResponse, Veloce
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.transports.stdio import StdioTransport
@@ -111,20 +112,20 @@ async def test_error_body_is_identical_across_http_and_mcp_doors():
         sent.append(message)
 
     await app._asgi_app(
-        {
-            "type": "http",
-            "asgi": {"version": "3.0"},
-            "http_version": "1.1",
-            "method": "GET",
-            "scheme": "http",
-            "path": "/items/7",
-            "raw_path": b"/items/7",
-            "query_string": b"",
-            "root_path": "",
-            "headers": [(b"host", b"t")],
-            "client": ("127.0.0.1", 5000),
-            "server": ("127.0.0.1", 8000),
-        },
+        http_scope(
+            type="http",
+            asgi={"version": "3.0"},
+            http_version="1.1",
+            method="GET",
+            scheme="http",
+            path="/items/7",
+            raw_path=b"/items/7",
+            query_string=b"",
+            root_path="",
+            headers=[(b"host", b"t")],
+            client=("127.0.0.1", 5000),
+            server=("127.0.0.1", 8000),
+        ),
         receive,
         send,
     )

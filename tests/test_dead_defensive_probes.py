@@ -20,17 +20,15 @@ These tests freeze the invariants the removals rely on.
 from __future__ import annotations
 
 import ast
-import pathlib
 
 import pytest
 
+from tests._source import SRC
 from veloce import Veloce
 from veloce.contrib.mcp.icons import Icon
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.staticfiles import StaticFiles
 from veloce.testclient import TestClient
-
-SRC = pathlib.Path(__file__).resolve().parents[1] / "src" / "veloce"
 
 #: Settings assigned unconditionally by `Veloce.__init__` and read directly in
 #: `contrib/`. A `getattr` fallback for any of these duplicates its default.

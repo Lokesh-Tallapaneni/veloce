@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
+from tests._asgi_drive import http_scope
 from veloce import Request, Veloce
 from veloce.http.datastructures import Headers, QueryParams
 from veloce.testclient import TestClient
@@ -150,25 +151,25 @@ async def test_app_duplicate_request_headers_preserved():
         return {"ok": True}
 
     # Build the scope by hand to inject duplicates that a dict couldn't carry.
-    scope = {
-        "type": "http",
-        "asgi": {"version": "3.0", "spec_version": "2.3"},
-        "http_version": "1.1",
-        "method": "GET",
-        "scheme": "http",
-        "path": "/d",
-        "raw_path": b"/d",
-        "query_string": b"",
-        "root_path": "",
-        "headers": [
+    scope = http_scope(
+        type="http",
+        asgi={"version": "3.0", "spec_version": "2.3"},
+        http_version="1.1",
+        method="GET",
+        scheme="http",
+        path="/d",
+        raw_path=b"/d",
+        query_string=b"",
+        root_path="",
+        headers=[
             (b"host", b"testserver"),
             (b"x-trace", b"hop1"),
             (b"x-trace", b"hop2"),
             (b"x-trace", b"hop3"),
         ],
-        "client": ("testclient", 50000),
-        "server": ("testserver", 80),
-    }
+        client=("testclient", 50000),
+        server=("testserver", 80),
+    )
 
     async def drive():
         body_sent = False

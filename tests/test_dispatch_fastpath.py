@@ -22,6 +22,7 @@ import asyncio
 
 from pydantic import BaseModel
 
+from tests._asgi_drive import http_scope
 from tests.conftest import make_request
 from veloce import (
     BackgroundTask,
@@ -146,7 +147,7 @@ async def test_head_empty_body_with_content_length_on_fast_route():
             received["chunks"].append(msg.get("body", b""))
 
     await app(
-        {"type": "http", "method": "HEAD", "path": "/x", "query_string": b"", "headers": []},
+        http_scope(type="http", method="HEAD", path="/x", query_string=b"", headers=[]),
         receive,
         send,
     )

@@ -23,6 +23,7 @@ import inspect
 
 import pytest
 
+from tests._asgi_drive import http_scope
 from tests._native_client import NativeClient
 from veloce import JSONResponse, Veloce
 from veloce._internal import _encode_response_head
@@ -58,19 +59,19 @@ def _asgi_set_cookies() -> list[str]:
             return {"type": "http.request", "body": b"", "more_body": False}
 
         await _app()(
-            {
-                "type": "http",
-                "method": "GET",
-                "path": "/c",
-                "raw_path": b"/c",
-                "query_string": b"",
-                "headers": [],
-                "client": ("1.2.3.4", 1),
-                "scheme": "http",
-                "server": ("t", 80),
-                "http_version": "1.1",
-                "root_path": "",
-            },
+            http_scope(
+                type="http",
+                method="GET",
+                path="/c",
+                raw_path=b"/c",
+                query_string=b"",
+                headers=[],
+                client=("1.2.3.4", 1),
+                scheme="http",
+                server=("t", 80),
+                http_version="1.1",
+                root_path="",
+            ),
             receive,
             send,
         )

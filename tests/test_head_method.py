@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from tests._asgi_drive import http_scope
 from tests.conftest import make_request
 from veloce import Request, Veloce
 
@@ -89,13 +90,7 @@ async def test_head_has_empty_body_via_asgi():
         elif msg["type"] == "http.response.body":
             received["chunks"].append(msg.get("body", b""))
 
-    scope = {
-        "type": "http",
-        "method": "HEAD",
-        "path": "/x",
-        "query_string": b"",
-        "headers": [],
-    }
+    scope = http_scope(type="http", method="HEAD", path="/x", query_string=b"", headers=[])
     await app(scope, receive, send)
 
     assert received["status"] == 200

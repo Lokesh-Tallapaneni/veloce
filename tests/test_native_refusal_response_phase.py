@@ -32,6 +32,7 @@ import asyncio
 
 import pytest
 
+from tests._asgi_drive import http_scope
 from veloce import CORSMiddleware, Middleware, SecurityHeadersMiddleware, Veloce
 from veloce.serving.protocol import HttpProtocol
 
@@ -126,19 +127,19 @@ def _asgi(app, declared: int, origin: str | None = _ORIGIN) -> dict[str, str]:
                 body_parts.append(message.get("body", b""))
 
         await app(
-            {
-                "type": "http",
-                "method": "POST",
-                "path": "/up",
-                "raw_path": b"/up",
-                "query_string": b"",
-                "headers": headers,
-                "client": ("1.2.3.4", 1),
-                "scheme": "http",
-                "server": ("t", 80),
-                "http_version": "1.1",
-                "root_path": "",
-            },
+            http_scope(
+                type="http",
+                method="POST",
+                path="/up",
+                raw_path=b"/up",
+                query_string=b"",
+                headers=headers,
+                client=("1.2.3.4", 1),
+                scheme="http",
+                server=("t", 80),
+                http_version="1.1",
+                root_path="",
+            ),
             receive,
             send,
         )
