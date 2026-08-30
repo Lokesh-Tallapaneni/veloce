@@ -558,6 +558,23 @@ def _repoint_validation_error_refs(schema: dict[str, Any], http_name: str) -> No
                     target["$ref"] = new_ref
 
 
+def _has_validatable_params(inputs: Any, request_body: Any, info: Any) -> bool:
+    """Whether this operation can raise `RequestValidationError`, and so advertise a 422.
+
+    Named rather than inlined because the parity test in
+    `tests/test_openapi_helper_split.py` has to pass `_extract_responses` the
+    same value the orchestrator does. It was a copy of this expression, and the
+    copy had already drifted - it omitted the dependency-graph disjunct, so a
+    route validated solely through a dependency was compared against the wrong
+    expectation, which is the thing that test exists to rule out.
+    """
+    return (
+        bool(inputs.parameters)
+        or request_body is not None
+        or _dependency_graph_has_validatable(info)
+    )
+
+
 def _extract_responses(
     info: Any, schemas_registry: SchemaRegistry, has_validatable_params: bool
 ) -> dict[str, dict[str, Any]]:
@@ -850,12 +867,9 @@ def _build_operation(
     # or any validated input inside a `Depends(...)` sub-dependency. A handler
     # with none of these never raises `RequestValidationError`, so it must not
     # advertise a 422.
-    has_validatable_params = (
-        bool(inputs.parameters)
-        or request_body is not None
-        or _dependency_graph_has_validatable(info)
+    operation["responses"] = _extract_responses(
+        info, schemas_registry, _has_validatable_params(inputs, request_body, info)
     )
-    operation["responses"] = _extract_responses(info, schemas_registry, has_validatable_params)
     _apply_openapi_extra(operation, info)
     return operation
 

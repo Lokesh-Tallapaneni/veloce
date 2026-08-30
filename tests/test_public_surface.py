@@ -12,10 +12,6 @@ import importlib
 import os
 
 import veloce
-from veloce.http import Request, UploadFile
-from veloce.middleware import Middleware, SessionMiddleware
-from veloce.routing import Query, Router
-from veloce.security import HTTPBasic, OAuth2PasswordBearer
 from veloce.serving import HttpProtocol
 
 VELOCE_ALL = {
@@ -427,28 +423,41 @@ def test_veloce_app_paths_resolve():
 
 
 def test_routing_subpackage():
+    """The import *is* the assertion: `veloce.routing` must publish these.
+
+    This read four names the module already imported at its top, so every
+    assertion was `<a bound name> is not None` - true before the test ran, and
+    true however the subpackage's `__all__` changed. Importing here is what puts
+    the failure in the test that reports it.
+    """
+    from veloce.routing import Query, Router
 
     assert Router is not None
     assert Query is not None
 
 
 def test_http_subpackage():
+    """As above: importing here is what the test asserts."""
+    from veloce.http import Request, UploadFile
 
     assert Request is not None
     assert UploadFile is not None
 
 
 def test_middleware_subpackage():
-    # The import *is* the assertion: this module checks the subpackage
-    # publishes these names, so binding them at module top would move
-    # the failure to collection and out of the test that reports it.
+    """As above: importing here is what the test asserts.
+
+    The comment saying so was already here, beside names bound at module top.
+    """
+    from veloce.middleware import Middleware, SessionMiddleware
 
     assert Middleware is not None
     assert SessionMiddleware is not None
 
 
 def test_security_subpackage():
-    # As above: importing here is what the test asserts.
+    """As above: importing here is what the test asserts."""
+    from veloce.security import HTTPBasic, OAuth2PasswordBearer
 
     assert HTTPBasic is not None
     assert OAuth2PasswordBearer is not None

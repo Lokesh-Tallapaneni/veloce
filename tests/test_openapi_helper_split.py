@@ -32,6 +32,7 @@ from veloce.contrib.openapi import (
     _extract_parameters,
     _extract_request_body,
     _extract_responses,
+    _has_validatable_params,
     _repoint_validation_error_refs,
     _walk_webhooks,
     get_openapi_schema,
@@ -209,17 +210,13 @@ def test_get_openapi_schema_helpers_assemble_same_operation() -> None:
     request_body = _extract_request_body(
         inputs.request_body_schema, inputs.form_fields, inputs.body_fields, inputs.scalar_body
     )
-    # Mirror the orchestrator's argument exactly. This copy used to omit the
-    # `_dependency_graph_has_validatable` disjunct, so it agreed only for routes
-    # whose 422 comes from their own parameters or body - the case this fixture
-    # happens to be. A route validated solely through a dependency would have
-    # been compared against the wrong expectation, which is the whole thing this
-    # parity test exists to rule out.
-    has_validatable_params = (
-        bool(inputs.parameters)
-        or request_body is not None
-        or _dependency_graph_has_validatable(info)
-    )
+    # The orchestrator's own predicate, not a copy of it. This was written out
+    # here and had already drifted - it omitted the `_dependency_graph_has_validatable`
+    # disjunct, so it agreed only for routes whose 422 comes from their own
+    # parameters or body, which is the case this fixture happens to be. A route
+    # validated solely through a dependency would have been compared against the
+    # wrong expectation, which is the thing this parity test exists to rule out.
+    has_validatable_params = _has_validatable_params(inputs, request_body, info)
     responses = _extract_responses(info, schemas_registry, has_validatable_params)
     # `_walk_webhooks` appends each webhook's auto operationId to `auto_ops` for
     # the document-wide disambiguation pass; the list is unused here.
