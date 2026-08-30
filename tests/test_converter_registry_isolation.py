@@ -117,7 +117,7 @@ class TestUnregisterConverter:
     @staticmethod
     def _converter_class():
         class Custom(StringConverter):
-            pass
+            __slots__ = ()
 
         return Custom
 

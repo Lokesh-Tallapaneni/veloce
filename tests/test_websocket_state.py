@@ -2,9 +2,26 @@
 
 from __future__ import annotations
 
+import veloce
 from veloce import Veloce
 from veloce.testclient import TestClient
 from veloce.websocket import WebSocket, WebSocketState
+
+
+def test_the_state_enum_is_importable_from_the_package_root():
+    """It is the declared return type of two public `WebSocket` properties.
+
+    A user annotating against `ws.application_state` needs the name, so it is
+    exported. This asserts the package-root import itself - the version it
+    replaces compared two names bound by one `veloce.websocket` import, which no
+    source change could have made fail.
+    """
+    # The import *is* the assertion - the test is named for it, and moving
+    # it to module top would move the failure to collection.
+    from veloce import WebSocketState as FromRoot
+
+    assert FromRoot is WebSocketState
+    assert "WebSocketState" in veloce.__all__
 
 
 def test_state_enum_values():

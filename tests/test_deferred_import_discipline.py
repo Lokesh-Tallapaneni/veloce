@@ -21,14 +21,14 @@ def _modules() -> list[pathlib.Path]:
     return sorted(p for p in TESTS.glob("test_*.py") if p.name != pathlib.Path(__file__).name)
 
 
-def test_the_scan_reads_a_real_corpus():
+def test_the_late_import_scan_reads_a_real_corpus():
     """A scan of nothing passes every check below it.
 
     The glob is non-recursive and hard-codes the flat layout, so moving the
     test tree into subdirectories would leave this module green while reading
     no files at all.
     """
-    assert len(_modules()) > 100, "the module glob matched almost nothing"
+    assert len(_modules()) > 100, "the module glob matched almost nothing, so the late-import scan reads nothing"
 
 
 def test_every_late_import_sits_under_a_skip_guard() -> None:

@@ -184,7 +184,7 @@ def test_an_unavailable_algorithm_is_dropped(monkeypatch):
     """A missing package must not fail every response."""
     import veloce.middleware.compression as compression
 
-    monkeypatch.setitem(compression._CODECS, "br", None)
+    monkeypatch.delitem(compression._CODECS, "br")
     assert "br" not in CompressionMiddleware(algorithms=("br", "gzip")).algorithms
 
 
@@ -192,7 +192,7 @@ def test_asking_only_for_an_unavailable_algorithm_raises(monkeypatch):
     """Silently serving plaintext would hide the misconfiguration."""
     import veloce.middleware.compression as compression
 
-    monkeypatch.setitem(compression._CODECS, "br", None)
+    monkeypatch.delitem(compression._CODECS, "br")
     with pytest.raises(ValueError, match="brotli"):
         CompressionMiddleware(algorithms=("br",))
 

@@ -355,7 +355,7 @@ class _ServeStub:
 
     def __init__(self, sockets, fail_after: int) -> None:
         self.sockets = sockets
-        self._server = None
+        self._servers: list[_FakeServer] = []
         self.timeout = 30
         self.alive = True
         self.created: list[_FakeServer] = []
@@ -390,11 +390,11 @@ async def test_serve_closes_partial_listeners_when_a_later_bind_fails() -> None:
         await VeloceWorker._serve(stub, _Loop())
 
     # The one listener that bound before the failure must be closed and awaited,
-    # and never published as self._server (which would survive into _shutdown).
+    # and never published on self._servers (which would survive into _shutdown).
     assert len(stub.created) == 1
     assert stub.created[0].closed is True
     assert stub.created[0].waited is True
-    assert stub._server is None
+    assert stub._servers == []
 
 
 class _CfgStub:

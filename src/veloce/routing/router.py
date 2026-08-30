@@ -29,11 +29,12 @@ from veloce._protocol_constants import (
     ROUTE_METHOD_WEBSOCKET,
     URL_SCHEME_HTTP,
 )
+from veloce._ws_listener import build_listener_handler
 from veloce.exceptions import DuplicateRouteError
 from veloce.middleware.base import Middleware
 from veloce.routing.converters import (
+    Converter,
     StringConverter,
-    _Converter,
     _is_parametrized_spec,
     _iter_placeholders,
     _looks_like_regex,
@@ -43,7 +44,6 @@ from veloce.routing.converters import (
     parse_converter,
 )
 from veloce.status import HTTP_200_OK
-from veloce.websocket import build_listener_handler
 
 RouteHandler = Callable[..., Coroutine[Any, Any, Any]]
 
@@ -146,7 +146,7 @@ def _cached_split_path(path: str) -> tuple[str, ...]:
     return tuple(s for s in path.split("/") if s)
 
 
-def _reverse_converters_for(template: str) -> dict[str, _Converter]:
+def _reverse_converters_for(template: str) -> dict[str, Converter]:
     """Map each typed placeholder in `template` to its converter for url_for.
 
     A bare `{name}` (no spec) and a raw-regex placeholder (`{id:[0-9]+}`) have
@@ -159,7 +159,7 @@ def _reverse_converters_for(template: str) -> dict[str, _Converter]:
     than promised away. `any(...)` is whitelisted explicitly
     because it carries parentheses that the bare-identifier test reads as regex.
     """
-    converters: dict[str, _Converter] = {}
+    converters: dict[str, Converter] = {}
     for ph in _iter_placeholders(template):
         spec = ph.spec
         if not spec:
@@ -210,7 +210,7 @@ def _converter_sort_key(node: RadixNode) -> int:
     """Order competing parameter segments, most restrictive first.
 
     The value comes from the converter's own `specificity`, not from a table
-    here; `_Converter.specificity` documents why it is declared there.
+    here; `Converter.specificity` documents why it is declared there.
 
     Runs once per `add_route` at startup, never on the per-request match path.
     """
@@ -273,7 +273,7 @@ class RadixNode:
         self.tolerant_slash = False
         # Converter applied at match time. `add_route` sets it on every param
         # node; static and wildcard nodes keep the placeholder and never read it.
-        self.converter: _Converter = _NO_CONVERTER
+        self.converter: Converter = _NO_CONVERTER
 
 
 @dataclass(frozen=True, slots=True)
@@ -382,7 +382,7 @@ class RouteInfo:
         self,
         handler: RouteHandler,
         param_names: list[str],
-        dependencies: list | None = None,
+        dependencies: list[Any] | None = None,
         response_model: Any = None,
         tags: list[str] | None = None,
         summary: str | None = None,
@@ -570,49 +570,55 @@ class RouteInfo:
         self._mw_chain_cache: tuple[int, list[Any], list[Any]] | None = None
 
     # ── MCP options, read through the one record that holds them ──
+    #
+    # Each accessor repeats its field's declared type from `MCPRouteOptions`
+    # rather than widening to `Any`: `RouteInfo` is subpackage-public, and
+    # `contrib.mcp` reads every one of these through the property. The
+    # no-record branch needs no widening - `False` and `None` already
+    # inhabit the field type each one returns.
 
     @property
-    def expose_as_mcp_tool(self) -> Any:
+    def expose_as_mcp_tool(self) -> bool:
         return False if self.mcp is None else self.mcp.expose_as_mcp_tool
 
     @property
-    def mcp_description(self) -> Any:
+    def mcp_description(self) -> str | None:
         return None if self.mcp is None else self.mcp.mcp_description
 
     @property
-    def expose_as_mcp_resource(self) -> Any:
+    def expose_as_mcp_resource(self) -> bool:
         return False if self.mcp is None else self.mcp.expose_as_mcp_resource
 
     @property
-    def mcp_resource_uri(self) -> Any:
+    def mcp_resource_uri(self) -> str | None:
         return None if self.mcp is None else self.mcp.mcp_resource_uri
 
     @property
-    def mcp_resource_mime_type(self) -> Any:
+    def mcp_resource_mime_type(self) -> str | None:
         return None if self.mcp is None else self.mcp.mcp_resource_mime_type
 
     @property
-    def mcp_meta(self) -> Any:
+    def mcp_meta(self) -> dict[str, Any] | None:
         return None if self.mcp is None else self.mcp.mcp_meta
 
     @property
-    def mcp_resource_size(self) -> Any:
+    def mcp_resource_size(self) -> int | None:
         return None if self.mcp is None else self.mcp.mcp_resource_size
 
     @property
-    def mcp_resource_annotations(self) -> Any:
+    def mcp_resource_annotations(self) -> dict[str, Any] | None:
         return None if self.mcp is None else self.mcp.mcp_resource_annotations
 
     @property
-    def mcp_scopes(self) -> Any:
+    def mcp_scopes(self) -> frozenset[str] | None:
         return None if self.mcp is None else self.mcp.mcp_scopes
 
     @property
-    def mcp_icons(self) -> Any:
+    def mcp_icons(self) -> tuple[Any, ...] | None:
         return None if self.mcp is None else self.mcp.mcp_icons
 
     @property
-    def mcp_task_support(self) -> Any:
+    def mcp_task_support(self) -> bool:
         return False if self.mcp is None else self.mcp.mcp_task_support
 
 
@@ -667,7 +673,7 @@ class RegexRoute:
         # Built-in converter per placeholder name, so matched groups are
         # coerced to the same Python types the radix tree produces
         # (`{n:int}` -> int, not "3"). Bare and raw-regex groups are absent.
-        self.converters: dict[str, _Converter] = extract_regex_converters(template)
+        self.converters: dict[str, Converter] = extract_regex_converters(template)
         # Mirrors `RadixNode.tolerant_slash` - set by `strict_slashes=False`
         # so a regex route accepts the missing/extra trailing slash too.
         self.tolerant_slash = False
@@ -791,7 +797,7 @@ class Router:
         # value through the same converter the matcher applies, so a reversed URL
         # is guaranteed to resolve. A param with no typed converter (bare
         # `{name}` or a raw-regex segment) is omitted and skips validation.
-        self._reverse_converters: dict[str, dict[str, _Converter]] = {}
+        self._reverse_converters: dict[str, dict[str, Converter]] = {}
         # Regex fallback routes, in registration order. Empty for the common
         # case; `match()` guards on `if self._regex_routes:` so the radix
         # fast path pays nothing when no regex route is registered.

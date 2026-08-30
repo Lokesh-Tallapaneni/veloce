@@ -11,7 +11,7 @@ It swept stale buckets, but only once per `window_seconds`, and only those whose
 newest stamp had aged out. Distinct keys arriving *within* a window accumulated
 without limit:
 
-    30,000 requests from 30,000 addresses in a /64  ->  len(_buckets) == 30000
+    30,000 requests from 30,000 addresses in a /64  ->  30,000 live buckets
 
 which is a single machine's worth of IPv6 source addresses. The bound is now the
 same on both constructors, with the same `max_keys` name and the same eviction
@@ -81,14 +81,14 @@ def _drive(mw, count, prefix="2001:db8::"):
 def test_the_legacy_constructor_bounds_its_bucket_dict():
     """The defect: 30,000 addresses produced 30,000 live buckets."""
     mw = _drive(RateLimitMiddleware(max_requests=1000, window_seconds=60, max_keys=64), 4000)
-    assert len(mw._buckets) <= 64
+    assert len(mw._log._buckets) <= 64
 
 
 def test_a_bare_middleware_is_bounded_by_default():
     """`RateLimitMiddleware()` with no arguments must not be the unbounded one."""
     mw = _drive(RateLimitMiddleware(max_requests=10_000), 300)
     assert mw._max_keys > 0
-    assert len(mw._buckets) <= mw._max_keys
+    assert len(mw._log._buckets) <= mw._max_keys
 
 
 def test_the_default_bound_matches_the_strategy_backends():
@@ -98,7 +98,7 @@ def test_the_default_bound_matches_the_strategy_backends():
 
 def test_the_bound_is_configurable():
     mw = _drive(RateLimitMiddleware(max_requests=1000, max_keys=8), 200)
-    assert len(mw._buckets) <= 8
+    assert len(mw._log._buckets) <= 8
 
 
 def test_a_bound_below_one_is_refused():
@@ -121,7 +121,7 @@ def test_a_single_client_is_still_limited_under_the_bound():
     mw = RateLimitMiddleware(max_requests=3, window_seconds=60, max_keys=8)
     app = _app(mw)
     asyncio.run(_hit(app, ["10.0.0.1"] * 3))
-    assert len(mw._buckets["host:10.0.0.1"]) == 3
+    assert len(mw._log._buckets["host:10.0.0.1"]) == 3
 
 
 def test_a_client_that_exceeds_the_limit_is_refused():
@@ -169,13 +169,13 @@ def test_the_most_recent_client_keeps_its_counter_after_eviction():
     mw = RateLimitMiddleware(max_requests=100, window_seconds=60, max_keys=4)
     app = _app(mw)
     asyncio.run(_hit(app, [f"10.0.0.{i}" for i in range(20)]))
-    assert "host:10.0.0.19" in mw._buckets
+    assert "host:10.0.0.19" in mw._log._buckets
 
 
 def test_eviction_keeps_the_dict_at_the_bound_not_empty():
     """A bound that cleared everything would reset every counter at once."""
     mw = _drive(RateLimitMiddleware(max_requests=100, max_keys=16), 100)
-    assert 1 <= len(mw._buckets) <= 16
+    assert 1 <= len(mw._log._buckets) <= 16
 
 
 # ── the strategy constructor is unchanged ────────────────────────────

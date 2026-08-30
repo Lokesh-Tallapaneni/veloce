@@ -116,8 +116,6 @@ UNEXPORTED: dict[str, str] = {
     "status.status_permits_body": "internal predicate used by the response encoders",
     # `websocket.py` — handshake internals. `WebSocket` is the public object.
     "websocket.compute_accept": "RFC 6455 handshake internals",
-    "websocket.WebSocketState": "connection-state enum used by the dispatch core",
-    "websocket.build_listener_handler": "internal handler factory",
     # `workers.py` — the gunicorn worker class, named to gunicorn by dotted
     # string on the command line, never imported.
     "workers.VeloceWorker": "gunicorn worker, referenced by dotted path",

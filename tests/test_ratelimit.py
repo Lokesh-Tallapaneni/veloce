@@ -646,16 +646,17 @@ async def test_rate_limit_middleware_evicts_stale_buckets():
     mw = RateLimitMiddleware(max_requests=1000, window_seconds=1)
     now = _time.monotonic()
     stale = now - 3600
-    mw._buckets = {f"stale-{i}": [stale] for i in range(100)}
-    mw._buckets["fresh"] = [now]  # a live bucket — must survive the sweep
-    mw._last_sweep = stale  # force the next request to trigger a sweep
+    log = mw._log
+    log._buckets = {f"stale-{i}": [stale] for i in range(100)}
+    log._buckets["fresh"] = [now]  # a live bucket — must survive the sweep
+    log.last_sweep = stale  # force the next request to trigger a sweep
 
     req = Request(method="GET", path="/", query_string="", headers={}, body=b"")
     await mw.process_request(req)
 
     # The 100 stale buckets are evicted; the live bucket is kept.
-    assert not any(k.startswith("stale-") for k in mw._buckets)
-    assert "fresh" in mw._buckets
+    assert not any(k.startswith("stale-") for k in log._buckets)
+    assert "fresh" in log._buckets
 
 
 def test_reset_never_exceeds_the_window():
@@ -667,12 +668,12 @@ def test_reset_never_exceeds_the_window():
     mw = RateLimitMiddleware(max_requests=1, window_seconds=60)
     now = 1000.0
     # Oldest stamp equal to (and, defensively, later than) `now`.
-    assert mw._reset_after(deque([now]), now) <= 60
-    assert mw._reset_after(deque([now + 5]), now) <= 60
+    assert mw._log.reset_after(deque([now]), now) <= 60
+    assert mw._log.reset_after(deque([now + 5]), now) <= 60
     # A partly-elapsed window still reports the real remainder.
-    assert mw._reset_after(deque([now - 30]), now) == 30
+    assert mw._log.reset_after(deque([now - 30]), now) == 30
     # An expired stamp reports nothing left to wait for.
-    assert mw._reset_after(deque([now - 120]), now) == 0
+    assert mw._log.reset_after(deque([now - 120]), now) == 0
 
 
 def test_strict_overrides_false_warns_instead_of_failing_startup(caplog):
@@ -918,7 +919,7 @@ def test_reset_after_ceils_subsecond_remainder():
     from collections import deque
 
     mw = RateLimitMiddleware(max_requests=1, window_seconds=60)
-    assert mw._reset_after(deque([0.4]), 60.0) == 1
+    assert mw._log.reset_after(deque([0.4]), 60.0) == 1
 
 
 def test_ratelimit_xff_keys_on_rightmost_hop():

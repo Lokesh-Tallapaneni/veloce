@@ -21,97 +21,100 @@ from veloce import (
 from veloce.testclient import TestClient
 
 
-class TestSecurity:
-    async def test_http_bearer(self):
-        app = Veloce(openapi_url=None)
-        security = HTTPBearer()
+async def test_http_bearer():
+    app = Veloce(openapi_url=None)
+    security = HTTPBearer()
 
-        @app.get("/protected")
-        async def protected(token=Depends(security)):
-            return {"token": token}
+    @app.get("/protected")
+    async def protected(token=Depends(security)):
+        return {"token": token}
 
-        resp = await app.handle_request(
-            make_request(path="/protected", headers={"authorization": "Bearer mytoken123"})
-        )
-        assert resp.status_code == 200
-        assert orjson.loads(resp.body)["token"] == "mytoken123"
+    resp = await app.handle_request(
+        make_request(path="/protected", headers={"authorization": "Bearer mytoken123"})
+    )
+    assert resp.status_code == 200
+    assert orjson.loads(resp.body)["token"] == "mytoken123"
 
-    async def test_http_bearer_missing(self):
-        app = Veloce(openapi_url=None)
-        security = HTTPBearer()
 
-        @app.get("/protected")
-        async def protected(token=Depends(security)):
-            return {"token": token}
+async def test_http_bearer_missing():
+    app = Veloce(openapi_url=None)
+    security = HTTPBearer()
 
-        resp = await app.handle_request(make_request(path="/protected"))
-        assert resp.status_code == 401
+    @app.get("/protected")
+    async def protected(token=Depends(security)):
+        return {"token": token}
 
-    async def test_http_basic(self):
-        app = Veloce(openapi_url=None)
-        security = HTTPBasic()
+    resp = await app.handle_request(make_request(path="/protected"))
+    assert resp.status_code == 401
 
-        @app.get("/admin")
-        async def admin(credentials=Depends(security)):
-            return {"user": credentials.username}
 
-        creds = base64.b64encode(b"admin:secret").decode()
-        resp = await app.handle_request(
-            make_request(path="/admin", headers={"authorization": f"Basic {creds}"})
-        )
-        assert resp.status_code == 200
-        assert orjson.loads(resp.body)["user"] == "admin"
+async def test_http_basic():
+    app = Veloce(openapi_url=None)
+    security = HTTPBasic()
 
-    async def test_api_key_header(self):
-        app = Veloce(openapi_url=None)
-        api_key = APIKeyHeader(name="X-API-Key")
+    @app.get("/admin")
+    async def admin(credentials=Depends(security)):
+        return {"user": credentials.username}
 
-        @app.get("/data")
-        async def data(key=Depends(api_key)):
-            return {"key": key}
+    creds = base64.b64encode(b"admin:secret").decode()
+    resp = await app.handle_request(
+        make_request(path="/admin", headers={"authorization": f"Basic {creds}"})
+    )
+    assert resp.status_code == 200
+    assert orjson.loads(resp.body)["user"] == "admin"
 
-        resp = await app.handle_request(
-            make_request(path="/data", headers={"x-api-key": "secret123"})
-        )
-        assert resp.status_code == 200
 
-    async def test_api_key_query(self):
-        app = Veloce(openapi_url=None)
-        api_key = APIKeyQuery(name="api_key")
+async def test_api_key_header():
+    app = Veloce(openapi_url=None)
+    api_key = APIKeyHeader(name="X-API-Key")
 
-        @app.get("/data")
-        async def data(key=Depends(api_key)):
-            return {"key": key}
+    @app.get("/data")
+    async def data(key=Depends(api_key)):
+        return {"key": key}
 
-        resp = await app.handle_request(make_request(path="/data", query_string="api_key=mykey"))
-        assert resp.status_code == 200
+    resp = await app.handle_request(make_request(path="/data", headers={"x-api-key": "secret123"}))
+    assert resp.status_code == 200
 
-    async def test_api_key_cookie(self):
-        app = Veloce(openapi_url=None)
-        api_key = APIKeyCookie(name="token")
 
-        @app.get("/data")
-        async def data(key=Depends(api_key)):
-            return {"key": key}
+async def test_api_key_query():
+    app = Veloce(openapi_url=None)
+    api_key = APIKeyQuery(name="api_key")
 
-        resp = await app.handle_request(
-            make_request(path="/data", headers={"cookie": "token=cookiekey"})
-        )
-        assert resp.status_code == 200
+    @app.get("/data")
+    async def data(key=Depends(api_key)):
+        return {"key": key}
 
-    async def test_oauth2_password_bearer(self):
-        app = Veloce(openapi_url=None)
-        oauth2 = OAuth2PasswordBearer(token_url="/token")
+    resp = await app.handle_request(make_request(path="/data", query_string="api_key=mykey"))
+    assert resp.status_code == 200
 
-        @app.get("/me")
-        async def me(token=Depends(oauth2)):
-            return {"token": token}
 
-        resp = await app.handle_request(
-            make_request(path="/me", headers={"authorization": "Bearer jwt.token.here"})
-        )
-        assert resp.status_code == 200
-        assert orjson.loads(resp.body)["token"] == "jwt.token.here"
+async def test_api_key_cookie():
+    app = Veloce(openapi_url=None)
+    api_key = APIKeyCookie(name="token")
+
+    @app.get("/data")
+    async def data(key=Depends(api_key)):
+        return {"key": key}
+
+    resp = await app.handle_request(
+        make_request(path="/data", headers={"cookie": "token=cookiekey"})
+    )
+    assert resp.status_code == 200
+
+
+async def test_oauth2_password_bearer():
+    app = Veloce(openapi_url=None)
+    oauth2 = OAuth2PasswordBearer(token_url="/token")
+
+    @app.get("/me")
+    async def me(token=Depends(oauth2)):
+        return {"token": token}
+
+    resp = await app.handle_request(
+        make_request(path="/me", headers={"authorization": "Bearer jwt.token.here"})
+    )
+    assert resp.status_code == 200
+    assert orjson.loads(resp.body)["token"] == "jwt.token.here"
 
 
 # ── the published scheme is the one the server accepts ───────────────

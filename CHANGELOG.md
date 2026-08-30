@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `WebSocketState` is exported from `veloce`; it is the declared return type of `WebSocket.application_state` and `.client_state`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
 ### Changed
 
 - A `tools/call` over the HTTP transport is answered as JSON when the tool cannot send a second message, instead of always framing an SSE stream. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

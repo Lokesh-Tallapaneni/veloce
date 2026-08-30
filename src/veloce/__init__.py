@@ -23,6 +23,9 @@ from typing import TYPE_CHECKING, Any
 
 # Status codes
 from veloce import status
+
+# Parameter markers
+from veloce._params import Body, Cookie, File, Form, Header, Path, Query
 from veloce._warnings import VeloceDeprecationWarning
 from veloce.app import Plugin, URLRule, Veloce
 from veloce.audit import AuditContext, AuditFailed, Finding
@@ -34,18 +37,6 @@ from veloce.cache import Cache, InMemoryCache, cached
 
 # Configuration
 from veloce.config import Config
-
-# MCP (Model Context Protocol) - the per-call context handle a tool handler
-# may declare. The server / transport classes stay under veloce.contrib.mcp.
-# Resolved on first access rather than at import: reaching it eagerly
-# initialises the whole MCP subpackage - server, registries, tasks, both
-# transports - for one re-exported name, which every `import veloce` paid for
-# whether or not the application exposes a single tool.
-if TYPE_CHECKING:  # pragma: no cover
-    from veloce.contrib.mcp.context import MCPContext
-
-# Parameter markers
-from veloce._params import Body, Cookie, File, Form, Header, Path, Query
 
 # Static files
 from veloce.contrib.staticfiles import StaticFiles
@@ -182,11 +173,13 @@ from veloce.markup import Markup, escape
 # Middleware
 from veloce.middleware import (
     BaseHTTPMiddleware,
+    CallNext,
     CompressionMiddleware,
     ConditionalGetMiddleware,
     CORSMiddleware,
     CSPMiddleware,
     CSRFMiddleware,
+    DispatchFunction,
     GZipMiddleware,
     HTTPSRedirectMiddleware,
     LoggingMiddleware,
@@ -313,7 +306,16 @@ from veloce.views import MethodView, View
 from veloce.watchdog import EventLoopWatchdog
 
 # WebSocket
-from veloce.websocket import WebSocket
+from veloce.websocket import WebSocket, WebSocketState
+
+# MCP (Model Context Protocol) - the per-call context handle a tool handler
+# may declare. The server / transport classes stay under veloce.contrib.mcp.
+# Resolved on first access rather than at import: reaching it eagerly
+# initialises the whole MCP subpackage - server, registries, tasks, both
+# transports - for one re-exported name, which every `import veloce` paid for
+# whether or not the application exposes a single tool.
+if TYPE_CHECKING:  # pragma: no cover
+    from veloce.contrib.mcp.context import MCPContext
 
 # `APIRouter` aliases `Router`, whose constructor takes the keyword
 # surface that name implies (`prefix=`, `tags=`, `dependencies=`,
@@ -345,8 +347,10 @@ __all__ = [
     # Middleware
     "Middleware",
     "BaseHTTPMiddleware",
+    "CallNext",
     "CORSMiddleware",
     "CSRFMiddleware",
+    "DispatchFunction",
     "ConditionalGetMiddleware",
     "CompressionMiddleware",
     "GZipMiddleware",
@@ -382,6 +386,7 @@ __all__ = [
     "WebSocketDisconnect",
     "WebSocketException",
     "WebSocketRequestValidationError",
+    "WebSocketState",
     # DI
     "Depends",
     "Security",

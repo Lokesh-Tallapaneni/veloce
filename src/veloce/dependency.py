@@ -15,7 +15,7 @@ import logging
 import weakref
 from collections.abc import Callable
 from enum import Enum
-from typing import Annotated, Any, Literal, get_args, get_origin
+from typing import TYPE_CHECKING, Annotated, Any, Literal, get_args, get_origin
 
 from pydantic import TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
@@ -52,6 +52,9 @@ from veloce._model_backend import ModelBackend, _msgspec, adapter_for, is_pydant
 from veloce._resolver_codegen import compile_graph_resolver, compile_param_resolver
 from veloce.background import BackgroundTasks
 from veloce.exceptions import HTTPException, RequestValidationError, ValidationError
+
+if TYPE_CHECKING:  # pragma: no cover
+    from veloce.http.datastructures import Cookies, FormData, Headers, QueryParams
 from veloce.http.request import Request
 from veloce.http.response import Response
 
@@ -893,6 +896,9 @@ class DependencyResolver:
         `["query", "<field>"]` so a bad `limit` blames `limit`, not the group.
         """
         mk = slot.marker_kind
+        # Declared up front: the four branches yield four different mappings,
+        # and the only things read off the result are `getlist` and `get`.
+        source: FormData | Headers | Cookies | QueryParams
         if mk == MK_FORM:
             source = await request.form()
         elif mk == MK_HEADER:
