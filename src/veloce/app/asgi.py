@@ -77,6 +77,7 @@ from veloce.http.request import Request
 from veloce.http.response import (
     JSONResponse,
     Response,
+    advertised_length,
 )
 from veloce.routing.router import RouteInfo
 from veloce.websocket import WebSocket
@@ -343,12 +344,11 @@ class AsgiMixin(AppHost):
         # `Content-Length` the equivalent 200 would have, which is what both
         # `Response.encode` and the buffered branch advertise. 1xx, 204 and 205
         # have no representation, so their length is 0.
-        is_304 = response.status_code == status.HTTP_304_NOT_MODIFIED
-        advertised_length = len(body) if (body_allowed or is_304) else 0
+        length = advertised_length(response.status_code, body)
         if not body_allowed:
             body = b""
-        if not has_cl:
-            headers.append((RAW_HEADER_CONTENT_LENGTH, str(advertised_length).encode("ascii")))
+        if not has_cl and length is not None:
+            headers.append((RAW_HEADER_CONTENT_LENGTH, str(length).encode("ascii")))
         # An explicit handler-set content-type still survives via `has_ct`.
         if not has_ct and body_allowed:
             headers.append((RAW_HEADER_CONTENT_TYPE, _content_type_bytes(response.content_type)))
@@ -776,11 +776,7 @@ class AsgiMixin(AppHost):
             # content-type so a `JSONResponse(204)` does not advertise
             # `application/json` over zero bytes.
             body_allowed = status.status_permits_body(response.status_code)
-            # A 304 (like HEAD) may carry the would-be-200 Content-Length while
-            # sending no body (RFC 9110 Sec. 8.6 / 15.4.5); 1xx/204/205 have no
-            # representation, so their length is 0.
-            is_304 = response.status_code == status.HTTP_304_NOT_MODIFIED
-            advertised_length = len(response.body) if (body_allowed or is_304) else 0
+            length = advertised_length(response.status_code, response.body)
             body_out = response.body if body_allowed else b""
 
             # RFC 9110 Sec. 9.3.2: HEAD responses must not include a payload
@@ -789,8 +785,11 @@ class AsgiMixin(AppHost):
             # produced. Blank the body but keep the advertised length, same as
             # the 304 case above.
             head_content_length: int | None = None
-            if scope["method"] == HTTP_METHOD_HEAD or is_304:
-                head_content_length = advertised_length
+            if (
+                scope["method"] == HTTP_METHOD_HEAD
+                or response.status_code == status.HTTP_304_NOT_MODIFIED
+            ):
+                head_content_length = length
                 body_out = b""
 
             # Build the ASGI header list. Each header MUST be its own
@@ -799,8 +798,12 @@ class AsgiMixin(AppHost):
             # one header value with `\r\nSet-Cookie: ` literal for the raw
             # HTTP/1.1 wire path; split that back into per-cookie tuples
             # here so the ASGI contract is honoured.
+            # `None` only when a 304 downgraded from a stream has no knowable
+            # length; the header is then omitted rather than claiming zero.
             content_length = (
-                head_content_length if head_content_length is not None else len(body_out)
+                (head_content_length if head_content_length is not None else len(body_out))
+                if (head_content_length is not None or length is not None)
+                else None
             )
             # CRLF-validate every header value - the ASGI emit path
             # bypasses `Response.encode()`, so the response-splitting
@@ -808,7 +811,9 @@ class AsgiMixin(AppHost):
             # small content-length values hit the precomputed caches.
             _ct_bytes = _content_type_bytes(response.content_type)
             _cl_bytes = (
-                _CL_BYTES_SMALL[content_length]
+                None
+                if content_length is None
+                else _CL_BYTES_SMALL[content_length]
                 if 0 <= content_length < _CL_SMALL_MAX
                 else str(content_length).encode("ascii")
             )
@@ -829,7 +834,7 @@ class AsgiMixin(AppHost):
             # middleware value (e.g. the compressed length from
             # `GZipMiddleware`) was emitted above and wins; prepending the
             # default too would put a duplicate header on the wire.
-            if not has_cl:
+            if not has_cl and _cl_bytes is not None:
                 # ASGI does not mandate header order, so append (O(1)) rather
                 # than insert at the front (O(n) list shift), matching the
                 # streaming branch above.

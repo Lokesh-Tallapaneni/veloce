@@ -192,6 +192,30 @@ def _read_file_chunk(handle: BinaryIO) -> bytes:
     return handle.read(FILE_STREAM_CHUNK)
 
 
+def advertised_length(status_code: int, body: bytes) -> int | None:
+    """The `Content-Length` to synthesize for a response, or `None` for unknown.
+
+    A body-permitting status advertises what it carries. A 304 may advertise the
+    length the equivalent 200 would have carried (RFC 9110 Sec. 8.6 / 15.4.5),
+    but only when that is knowable - from a body still attached, or from a
+    `Content-Length` its producer set, which takes precedence over this anyway.
+    Downgraded from a stream it is neither, and an unknown length is omitted
+    rather than reported as 0: RFC 9111 Sec. 4.3.4 has caches write a 304's
+    length over their stored entry, so a guessed 0 records a 200 KiB asset as
+    empty. Every other bodiless status (1xx, 204, 205) has no representation, so
+    its length is 0.
+
+    Shared by the three emit paths - `Response.encode` and both ASGI branches -
+    which each carried their own copy of this rule and disagreed about the
+    streamed case.
+    """
+    if status_permits_body(status_code):
+        return len(body)
+    if status_code == HTTP_304_NOT_MODIFIED:
+        return len(body) or None
+    return 0
+
+
 # Merged `Vary` values, keyed by `(existing_header, names_being_added)`. See
 # `Response.add_vary`: the merge is pure, and a given application asks the same
 # handful of questions on every response because its middleware order is fixed.
@@ -439,10 +463,9 @@ class Response:
         # HEAD) may advertise the would-be-200 Content-Length while sending no
         # body (RFC 9110 Sec. 8.6); 1xx/204/205 advertise 0.
         body_allowed = status_permits_body(self.status_code)
-        is_304 = self.status_code == HTTP_304_NOT_MODIFIED
         body = self.body if body_allowed else b""
-        advertised_length = len(self.body) if (body_allowed or is_304) else 0
-        default_headers = {HEADER_CONTENT_LENGTH: str(advertised_length)}
+        length = advertised_length(self.status_code, self.body)
+        default_headers = {} if length is None else {HEADER_CONTENT_LENGTH: str(length)}
         if body_allowed:
             default_headers = {HEADER_CONTENT_TYPE: self.content_type, **default_headers}
         parts = _encode_response_head(
@@ -1389,11 +1412,24 @@ class Response:
         # length with zero.
         if self.status_code == HTTP_304_NOT_MODIFIED:
             return
-        representation_length = str(len(self.body))
+        # A streamed response has an empty `body`, so its length has to come from
+        # the header the producer already set - a `FileResponse` past its
+        # streaming threshold knows its size from the same `stat` that gave it the
+        # validator. A generator-backed stream knows nothing, and an unknown length
+        # is omitted rather than reported as zero: that is the same lie in a
+        # smaller place.
+        declared = header_get(self.headers, HEADER_CONTENT_LENGTH)
+        representation_length = declared if self._stream is not None else str(len(self.body))
         self.status_code = HTTP_304_NOT_MODIFIED
         self.body = b""
+        # A 304 carries no content, so the stream is dropped as well as the body.
+        # Clearing only the body left the original chunks queued behind a bodiless
+        # status line, which is why the conditional-GET middleware refused to
+        # downgrade a streamed response at all rather than emit that.
+        self._stream = None
         header_pop(self.headers, HEADER_CONTENT_LENGTH)
-        self.headers[HEADER_CONTENT_LENGTH] = representation_length
+        if representation_length is not None:
+            self.headers[HEADER_CONTENT_LENGTH] = representation_length
         self._encoded = None
 
     # ── Content-Disposition and cookie removal ────────────────
@@ -1752,7 +1788,12 @@ class StreamingResponse(Response):
         the high-water mark, so the fast path pays one already-set check.
         """
         transport.write(self.encode(keep_alive=keep_alive))
-        await _write_chunked(transport, self._stream, drain)
+        # A downgrade to 304 drops the stream along with the body: a 304 carries
+        # no content (RFC 9110 Sec. 15.4.5), and this path writes chunks without
+        # consulting the status, so draining anyway would put the representation
+        # on the wire behind a bodiless status line.
+        if self._stream is not None:
+            await _write_chunked(transport, self._stream, drain)
 
 
 # Files at or below this size are read inline on the event loop by

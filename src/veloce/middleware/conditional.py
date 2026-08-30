@@ -55,14 +55,15 @@ class ConditionalGetMiddleware(Middleware):
         ):
             response.add_etag(weak=True)
 
-        # `make_conditional()` clears `body` but not `_stream`, so downgrading a
-        # streamed response to 304 would emit a bodiless status alongside the
-        # original chunks - protocol-invalid per RFC 9110 Sec. 15.4.5 (a 304
-        # carries no content). Skip the downgrade for streamed responses; they
-        # pass through unchanged (the stream is never buffered for revalidation).
-        if not response.is_streamed and (
-            header_present(response.headers, HEADER_ETAG)
-            or header_present(response.headers, HEADER_LAST_MODIFIED)
+        # Streamed responses downgrade too. `make_conditional()` used to clear
+        # `body` but not `_stream`, so a downgrade would have emitted a bodiless
+        # status alongside the original chunks - protocol-invalid per RFC 9110
+        # Sec. 15.4.5 - and this skipped them for that reason. It clears both now,
+        # so skipping here only cost every asset past `FileResponse`'s streaming
+        # threshold its revalidation: a large file re-sent in full on every
+        # request while the small one beside it answered 304.
+        if header_present(response.headers, HEADER_ETAG) or header_present(
+            response.headers, HEADER_LAST_MODIFIED
         ):
             return response.make_conditional(request)
         return response
