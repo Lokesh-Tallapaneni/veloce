@@ -21,9 +21,6 @@ and one for flashed messages:
 
 - `message_flashed(sender=app, message=..., category=...)`
 
-This list said "four" and named the first group only, so the other four read as
-undocumented internals.
-
 Receivers are stored as weakrefs by default so handlers don't pin
 their owners alive. Pass `weak=False` to keep a strong reference
 (useful for module-level functions that are anchored elsewhere).

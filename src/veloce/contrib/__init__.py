@@ -1,13 +1,14 @@
-"""Contrib sub-package — optional integrations (templating, OpenAPI, static files).
+"""Contrib sub-package — optional integrations.
 
 Names are resolved on first attribute access rather than at import, so an
 optional integration is not imported until one of its names is used.
 `from veloce.contrib import X` is unchanged; only the moment the work happens
 moves.
 
-Two of the four are deferred in practice: OpenAPI and Redis. Static files and
-templating are still pulled in by `import veloce` itself, because the top-level
-package imports `contrib.templating` for its own re-exports.
+Three of the five modules `_EXPORTS` names are deferred in practice: OpenAPI,
+Redis and the docs UI. Static files and templating are still pulled in by
+`import veloce` itself, because the top-level package imports
+`contrib.templating` for its own re-exports.
 """
 
 from __future__ import annotations

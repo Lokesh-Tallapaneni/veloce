@@ -1,4 +1,4 @@
-"""OpenAPI 3.1 schema generation and Swagger UI — auto-generated from routes."""
+"""OpenAPI 3.1 schema generation — auto-generated from routes."""
 
 from __future__ import annotations
 

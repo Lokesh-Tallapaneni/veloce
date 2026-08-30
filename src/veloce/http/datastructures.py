@@ -1,4 +1,4 @@
-"""Core data structures — UploadFile, Header, URL, FormData.
+"""Core data structures — the request and response containers.
 
 `Headers` and `QueryParams` subclass `multidict.CIMultiDict` and
 `multidict.MultiDict` respectively. They preserve duplicate keys and add
