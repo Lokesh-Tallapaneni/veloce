@@ -29,6 +29,7 @@ called multiple times on different apps.
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Callable
 from typing import Annotated, Any, TypeVar
 
@@ -42,6 +43,34 @@ from veloce.routing.router import RouteInfo, Router
 #: `_exception_handlers`, a status code for `_status_handlers`. Both flow
 #: through `_merge_scoped`, so the key type is carried rather than erased.
 _HandlerKey = TypeVar("_HandlerKey")
+
+
+#: Bound once so the route-name check reads the argument by name rather than by
+#: position. `Router.route` takes `name` as positional-or-keyword among some
+#: forty options, so an index would be a second place that has to move with it.
+_ROUTE_SIGNATURE = inspect.signature(Router.route)
+
+
+def _reject_dotted(name: str | None, label: str) -> None:
+    """Refuse a name carrying the character that separates endpoint segments.
+
+    An endpoint is `"{blueprint}.{route}"`, so a dot inside either half makes the
+    boundary unrecoverable. `_endpoint_blueprint` splits on the last dot, which
+    is right for nesting and wrong for a route named `"users.list"`: its
+    blueprint reads as `"admin.users"`, a blueprint nobody registered, and every
+    blueprint-scoped hook is silently skipped for that route - including an
+    authentication `before_request`.
+
+    Refused where it is written rather than resolved later, because the
+    ambiguity has no correct resolution: `"a.b.c"` is as good a description of a
+    nested blueprint's route as of a dotted route name on a flat one.
+    """
+    if name and "." in name:
+        raise ValueError(
+            f"{label} {name!r} may not contain a dot: `.` separates the blueprint "
+            "from the route in an endpoint, so a dotted name makes the route's "
+            "blueprint ambiguous and its hooks unreachable. Use an underscore."
+        )
 
 
 def _endpoint_blueprint(endpoint: str | None) -> str | None:
@@ -203,6 +232,7 @@ class Blueprint(Router):
             tags=tags,
             on_duplicate=on_duplicate,
         )
+        _reject_dotted(name, "Blueprint name")
         self.name = name
         self.url_prefix = url_prefix
         # Pending hook + handler registrations - applied to the app at
@@ -236,6 +266,23 @@ class Blueprint(Router):
         self._scoped_url_default_funcs: dict[str, list[Callable]] = {}
 
     # ── Hook decorators ───────────────────────────────────
+
+    def route(self, *args: Any, **kwargs: Any) -> Any:
+        """Declare a route, refusing a name that would break the endpoint split.
+
+        On the decorator rather than on `add_route`, because those are the two
+        different callers: every user-facing shortcut (`get`, `post`, ...)
+        reaches `route`, while `_readd_route` calls `add_route` directly with an
+        endpoint it has *already* composed - `"child.handler"` - which this
+        would otherwise reject as the framework re-registers its own routes.
+
+        The name is recovered by binding against `Router.route`'s own signature
+        rather than by indexing a position: it enumerates about forty options,
+        and one more should not silently move which argument is read.
+        """
+        bound = _ROUTE_SIGNATURE.bind_partial(self, *args, **kwargs)
+        _reject_dotted(bound.arguments.get("name"), "Blueprint route name")
+        return super().route(*args, **kwargs)
 
     def before_request(self, func: Callable) -> Callable:
         """Register a function to run before each blueprint request.
