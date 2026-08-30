@@ -259,8 +259,28 @@ class StdioTransport:
         business and must not stop this one.
         """
         if previous is not None and not previous.done():
-            with contextlib.suppress(BaseException):
+            # `Exception`, not `BaseException`: the intent is to ignore the
+            # *predecessor's* failure, and `asyncio.CancelledError` is
+            # `BaseException`-derived, so the wider catch also absorbed a cancel
+            # delivered to *this* task while parked on the shield. `serve`
+            # cancels every in-flight task as it unwinds and then evicts the
+            # session, so an absorbed cancel dispatched afterwards against a
+            # reclaimed session with nowhere to send its notifications. A
+            # predecessor that was itself cancelled still raises
+            # `CancelledError` here, and that one is caught explicitly - it is a
+            # failed predecessor, not a cancel of us.
+            try:
                 await asyncio.shield(previous)
+            except asyncio.CancelledError:
+                # Which task was cancelled, read off the shield: a cancelled
+                # predecessor is `cancelled()`, while a cancel of *this* task
+                # leaves the shielded predecessor running. `Task.cancelling()`
+                # would say the same thing but only from 3.11, and this supports
+                # 3.10.
+                if not previous.cancelled():
+                    raise
+            except Exception:
+                pass
         await self._dispatch(message, session)
 
     async def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -280,8 +300,16 @@ class StdioTransport:
         request_id = f"{_SERVER_ID_PREFIX}{next(self._server_ids)}"
         future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         self._pending[request_id] = future
-        await self._emit({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
+        # The emit is inside the `finally`'s reach: `encode_envelope` raises
+        # `TypeError` for a value no encoder can represent, and `ctx.elicit()` /
+        # `ctx.sample()` put author-supplied `params` straight into that
+        # envelope. Registering before the emit and opening the `try` after left
+        # one entry per failed issue for the process lifetime, which `_fail_pending`
+        # at EOF then settled for nobody.
         try:
+            await self._emit(
+                {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
+            )
             return await future
         except asyncio.CancelledError:
             raise MCPRequestError("connection closed before reply") from None
