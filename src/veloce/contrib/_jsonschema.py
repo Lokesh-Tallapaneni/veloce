@@ -710,6 +710,46 @@ _FILTERED_MODELS: dict[tuple[int, frozenset[str] | None, frozenset[str] | None],
 _FILTERED_NAME_LIMIT = 48
 
 
+def _filtered_struct(
+    model: Any, include: set[str] | None, exclude: set[str] | None, key: Any
+) -> Any:
+    """The `msgspec.Struct` half of `_filtered_response_model`.
+
+    Separate because the two backends describe their fields differently -
+    `model_fields` against `__struct_fields__` and `__annotations__` - and
+    because a Struct is derived with `msgspec.defstruct` rather than
+    `create_model`. The naming rule is shared, so a filtered component key reads
+    the same whichever backend declared the model.
+    """
+    annotations = _collect_annotations(model)
+    surviving = [
+        name
+        for name in model.__struct_fields__
+        if (include is None or name in include) and not (exclude and name in exclude)
+    ]
+    if not surviving:
+        # As above: an empty object is a less useful document than the model.
+        return model
+
+    suffix = "_".join(sorted(surviving))
+    if len(suffix) > _FILTERED_NAME_LIMIT:
+        suffix = hashlib.blake2b(suffix.encode(), digest_size=6).hexdigest()
+    derived = _msgspec.defstruct(
+        f"{model.__name__}_{suffix}",
+        [(name, annotations.get(name, Any)) for name in surviving],
+    )
+    _FILTERED_MODELS[key] = derived
+    return derived
+
+
+def _collect_annotations(model: Any) -> dict[str, Any]:
+    """Every annotation on `model` and its bases, nearest definition winning."""
+    collected: dict[str, Any] = {}
+    for base in reversed(model.__mro__):
+        collected.update(getattr(base, "__annotations__", {}))
+    return collected
+
+
 def _filtered_response_model(model: Any, include: set[str] | None, exclude: set[str] | None) -> Any:
     """Build a model carrying only the fields a route's include/exclude leaves.
 
@@ -733,6 +773,14 @@ def _filtered_response_model(model: Any, include: set[str] | None, exclude: set[
     cached = _FILTERED_MODELS.get(key)
     if cached is not None:
         return cached
+    # `_is_model_type` - the gate that reaches here - admits a `msgspec.Struct`
+    # as well as a Pydantic model, and only the latter has `model_fields`. A
+    # single Struct route carrying a filter raised `AttributeError` here and
+    # took the whole document with it, because `app.openapi()` builds one
+    # document for every route.
+    if not is_pydantic_model(model):
+        return _filtered_struct(model, include, exclude, key)
+
     fields: dict[str, Any] = {}
     for name, field in model.model_fields.items():
         if include is not None and name not in include:
