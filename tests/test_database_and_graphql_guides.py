@@ -29,10 +29,12 @@ scope, and a `(body, status)` tuple return really is honoured.
 
 from __future__ import annotations
 
+import ast
 import pathlib
 
 import pytest
 
+import veloce
 from tests._markdown import blocks
 from veloce import Veloce
 from veloce.testclient import TestClient
@@ -280,22 +282,57 @@ def test_every_python_block_parses(page):
             compile(code, f"{page.name}:{line_no}", "exec")
 
 
+#: Attribute calls that serve forever, as `owner.run(...)`.
+_SERVING_OWNERS = frozenset({"app", "uvicorn", "asyncio"})
+
+
+def _serves_forever(code: str) -> bool:
+    """Whether executing this block would serve or loop forever.
+
+    By AST rather than by substring. `"app.run(" in code` matches the text
+    inside a docstring or a comment in the block, and misses a `while 1:` or a
+    serving call written with different spacing - so a page could grow an
+    example the runner then tried to execute, and the suite would hang rather
+    than fail.
+    """
+    for node in ast.walk(ast.parse(code)):
+        if isinstance(node, ast.While):
+            if isinstance(node.test, ast.Constant) and node.test.value:
+                return True
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            owner = node.func.value
+            if (
+                node.func.attr == "run"
+                and isinstance(owner, ast.Name)
+                and owner.id in _SERVING_OWNERS
+            ):
+                return True
+    return False
+
+
 @pytest.mark.parametrize("page", [GUIDE, HOWTO], ids=["databases", "graphql"])
 def test_the_page_runs_cumulatively(page):
     """Blocks build one file, so the fair check is the whole page in order."""
-    import veloce
-
-    blocking = ("app.run(", "uvicorn.run", "while True", "asyncio.run(")
     namespace = {n: getattr(veloce, n) for n in veloce.__all__}
     namespace["app"] = Veloce(title="Guide", version="1.0.0", openapi_url=None)
     namespace["__name__"] = "__main__"
     for line_no, lang, code in blocks(page):
-        if lang != "python" or any(b in code for b in blocking):
+        if lang != "python" or _serves_forever(code):
             continue
         try:
             exec(compile(code, f"{page.name}:{line_no}", "exec"), namespace)
         except ModuleNotFoundError as exc:
-            pytest.skip(f"{page.name}:{line_no} needs {exc.name}")
+            # Not a skip. Every optional dependency this page needs is declared
+            # at module top, where the skip is visible and applies to the whole
+            # page; reaching here means one is missing from that list, and
+            # skipping would silently drop the rest of the page's verification
+            # from this block on - which is the failure this test exists to
+            # prevent for the *page*, reproduced in the runner.
+            pytest.fail(
+                f"{page.name}:{line_no} needs {exc.name}, which this module does not "
+                "declare in its `pytest.importorskip` header - add it there, so the "
+                "skip is visible and total rather than mid-page"
+            )
         except Exception as exc:  # noqa: BLE001 - the point is to report it
             pytest.fail(f"{page.name}:{line_no} raised {type(exc).__name__}: {exc}")
 
