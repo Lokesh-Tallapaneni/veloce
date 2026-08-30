@@ -2579,6 +2579,7 @@ dev = [
     { name = "ruff" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "strawberry-graphql", extra = ["asgi"] },
+    { name = "tomli", marker = "python_full_version < '3.11'" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "zstandard" },
 ]
@@ -2641,6 +2642,7 @@ dev = [
     { name = "ruff", specifier = ">=0.6" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0" },
     { name = "strawberry-graphql", extras = ["asgi"], specifier = ">=0.230" },
+    { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.23" },
     { name = "zstandard", specifier = ">=0.25.0" },
 ]
