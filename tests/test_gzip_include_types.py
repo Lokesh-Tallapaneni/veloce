@@ -83,5 +83,7 @@ async def test_compresslevel_passed_through():
     high = (
         await mw_high.process_response(_req(), Response(body=payload, content_type="text/plain"))
     ).body
-    # gzip output is highly compressible for this repeating payload — level 9 ≤ level 1.
-    assert len(high) <= len(low)
+    # Strictly smaller, not `<=`: for this repeating payload level 1 gives 68
+    # bytes and level 9 gives 49, so `<=` would also hold if `compresslevel`
+    # were ignored entirely and both emitted identical bytes.
+    assert len(high) < len(low)

@@ -22,11 +22,76 @@ import orjson
 
 from veloce import Veloce
 from veloce.contrib.mcp import MCPAuth, MCPServer
+from veloce.contrib.mcp.errors import (
+    _JSONRPC_FORBIDDEN,
+    _JSONRPC_HEADER_MISMATCH,
+    _JSONRPC_INTERNAL_ERROR,
+    _JSONRPC_INVALID_PARAMS,
+    _JSONRPC_INVALID_REQUEST,
+    _JSONRPC_METHOD_NOT_FOUND,
+    _JSONRPC_PARSE_ERROR,
+    _JSONRPC_RESOURCE_NOT_FOUND,
+    _JSONRPC_UNSUPPORTED_PROTOCOL_VERSION,
+)
+from veloce.contrib.mcp.server import (
+    LATEST_PROTOCOL_VERSION,
+    MODERN_PROTOCOL_VERSION,
+    PRIOR_PROTOCOL_VERSION,
+)
 from veloce.contrib.mcp.transports.stdio import StdioTransport
 from veloce.principal import Principal
 
 RESOURCE_SERVER_URL = "https://api.example.com/mcp"
 AUTHORIZATION_SERVER_URL = "https://auth.example.com"
+
+# ── The wire vocabulary ─────────────────────────────────────
+
+# The revisions, taken from the server rather than restated. Sixteen modules
+# hardcoded one of these literals under six different local names, so retiring
+# the revision `server.py` itself labels `PRIOR_` was a sixteen-module hand edit
+# - and one of the copies had already drifted into calling the prior revision
+# `_MODERN`. Re-exported rather than aliased so a test names the same constant
+# the source does. A test whose *subject* is the literal keeps the literal.
+HANDSHAKE_REVISION = PRIOR_PROTOCOL_VERSION
+LATEST_REVISION = LATEST_PROTOCOL_VERSION
+MODERN_REVISION = MODERN_PROTOCOL_VERSION
+
+# The JSON-RPC and MCP error codes, named once. They appeared as bare negative
+# integers across most of the cluster and under four different local spellings
+# in four modules, so a grep for any one name found a minority of its sites.
+PARSE_ERROR = _JSONRPC_PARSE_ERROR
+INVALID_REQUEST = _JSONRPC_INVALID_REQUEST
+METHOD_NOT_FOUND = _JSONRPC_METHOD_NOT_FOUND
+INVALID_PARAMS = _JSONRPC_INVALID_PARAMS
+INTERNAL_ERROR = _JSONRPC_INTERNAL_ERROR
+RESOURCE_NOT_FOUND = _JSONRPC_RESOURCE_NOT_FOUND
+FORBIDDEN = _JSONRPC_FORBIDDEN
+HEADER_MISMATCH = _JSONRPC_HEADER_MISMATCH
+UNSUPPORTED_PROTOCOL_VERSION = _JSONRPC_UNSUPPORTED_PROTOCOL_VERSION
+
+
+def initialize(
+    version: str = HANDSHAKE_REVISION,
+    *,
+    id: int = 0,
+    capabilities: dict | None = None,
+    client_info: dict | None = None,
+) -> dict:
+    """The `initialize` request a handshake opens with.
+
+    Seven modules carried this envelope byte for byte and thirty-odd more built
+    it inline. `version` is the only part that ever varies between them.
+    """
+    return {
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": version,
+            "capabilities": capabilities if capabilities is not None else {},
+            "clientInfo": client_info or {"name": "probe", "version": "1"},
+        },
+    }
 
 
 def greeting_server(completer: Callable | None = None) -> MCPServer:
@@ -198,12 +263,34 @@ class SSEStream:
                 continue
             self._buffer += (await asyncio.wait_for(self._chunks.get(), timeout)).decode()
 
-    async def message(self, timeout: float = 5.0) -> dict:
-        """Return the next JSON-RPC payload carried on the stream."""
+    async def message_frame(self, timeout: float = 5.0) -> dict[str, str]:
+        """Return the next `event: message` frame, as a field mapping.
+
+        `message()` discards the frame to return its payload, so a test asserting
+        on a frame-level field (`retry`, `id`) cannot use it. Skipping to the
+        wanted frame in the test body instead puts a `while` between the stream
+        and the assertion, which is what this exists to avoid.
+        """
         while True:
             frame = await self.event(timeout)
             if frame.get("event") == "message":
-                return json.loads(frame["data"])
+                return frame
+
+    async def message(self, timeout: float = 5.0) -> dict:
+        """Return the next JSON-RPC payload carried on the stream."""
+        return json.loads((await self.message_frame(timeout))["data"])
+
+    async def response(self, timeout: float = 5.0) -> dict:
+        """Return the next JSON-RPC *response* on the stream, skipping notifications.
+
+        A notification carries no `id`; a response always does (JSON-RPC 2.0
+        Sec. 5). Tests waiting for the answer to a call used to loop on that in
+        the test body.
+        """
+        while True:
+            payload = await self.message(timeout)
+            if "id" in payload:
+                return payload
 
     async def wait_status(self, timeout: float = 5.0) -> int:
         """Return the response status once the stream has opened.

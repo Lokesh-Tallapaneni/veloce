@@ -175,29 +175,7 @@ def test_optional_annotation_documents_null_and_allows_none():
     assert resp.json() is None
 
 
-# ── Response-contract audit ──────────────────────────────────────────
-
-
-def test_audit_flags_a_declared_model_that_contradicts_the_annotation():
-    app = Veloce(openapi_url=None)
-
-    @app.get("/x", response_model=Item)
-    async def x() -> Other:
-        return Other(other="v")
-
-    findings = app.response_contract_audit()
-    assert any("disagree" in f and "/x" in f for f in findings)
-
-
-def test_audit_lists_routes_with_no_response_schema():
-    app = Veloce(openapi_url=None)
-
-    @app.get("/free")
-    async def free():
-        return {"a": 1}
-
-    findings = app.response_contract_audit()
-    assert any("publish no response schema" in f and "/free" in f for f in findings)
+# ── the contract findings reach a developer at startup ───────────────
 
 
 def test_debug_logs_the_contract_findings_at_startup(caplog):
@@ -212,13 +190,3 @@ def test_debug_logs_the_contract_findings_at_startup(caplog):
     with caplog.at_level("WARNING"):
         app.test_client()  # constructing the client runs startup
     assert any("publish no response schema" in r.getMessage() for r in caplog.records)
-
-
-def test_audit_is_quiet_when_every_route_is_documented():
-    app = Veloce(openapi_url=None)
-
-    @app.get("/ok")
-    async def ok() -> Item:
-        return Item(id=1, name="a")
-
-    assert app.response_contract_audit() == []

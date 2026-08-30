@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
-from tests._mcp import Pipe
+from tests._mcp import INVALID_REQUEST, Pipe
 from veloce import Veloce
 from veloce.contrib.mcp import MCPSession
 from veloce.contrib.mcp.server import MCPServer
@@ -93,7 +93,7 @@ def test_pre_initialize_request_rejected_when_enforced():
     pipe = Pipe(MCPServer(_strict_app()))
     pipe.feed({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
     out = asyncio.run(pipe.run())
-    assert out[0]["error"]["code"] == -32600
+    assert out[0]["error"]["code"] == INVALID_REQUEST
     assert "before initialization" in out[0]["error"]["message"]
 
 

@@ -43,20 +43,12 @@ import re
 
 import pytest
 
+from tests._mcp import UNSUPPORTED_PROTOCOL_VERSION, initialize
 from veloce import Veloce
 from veloce.testclient import TestClient
 
 GUIDE = pathlib.Path(__file__).resolve().parents[1] / "docs/guide/mcp.md"
-INITIALIZE = {
-    "jsonrpc": "2.0",
-    "id": 0,
-    "method": "initialize",
-    "params": {
-        "protocolVersion": "2025-06-18",
-        "capabilities": {},
-        "clientInfo": {"name": "probe", "version": "1"},
-    },
-}
+INITIALIZE = initialize()
 
 
 def _tool_app() -> Veloce:
@@ -172,7 +164,7 @@ def test_a_modern_request_with_a_bad_version_is_rejected():
         },
         headers={"Accept": "application/json"},
     ).json()
-    assert body["error"]["code"] == -32022
+    assert body["error"]["code"] == UNSUPPORTED_PROTOCOL_VERSION
 
 
 def test_a_handshake_with_a_bad_version_negotiates_instead():

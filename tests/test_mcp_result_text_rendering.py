@@ -38,21 +38,13 @@ from decimal import Decimal
 
 import pytest
 
+from tests._mcp import initialize
 from veloce import MCPContext, Veloce
 from veloce.contrib.mcp.server import MCPServer
 from veloce.json_provider import DefaultJSONProvider
 from veloce.secret import Secret
 
-INITIALIZE = {
-    "jsonrpc": "2.0",
-    "id": 0,
-    "method": "initialize",
-    "params": {
-        "protocolVersion": "2025-06-18",
-        "capabilities": {},
-        "clientInfo": {"name": "probe", "version": "1"},
-    },
-}
+INITIALIZE = initialize()
 
 
 class ShoutingProvider(DefaultJSONProvider):

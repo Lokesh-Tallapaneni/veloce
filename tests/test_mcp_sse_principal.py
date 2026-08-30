@@ -19,9 +19,11 @@ module — just never called on the POST path.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import pathlib
 import urllib.parse
+from collections.abc import AsyncIterator
 
 import pytest
 
@@ -118,13 +120,18 @@ def _subject_of(response: dict) -> str | None:
     return json.loads(response["result"]["content"][0]["text"])["subject"]
 
 
-async def _open(app: Veloce, token: str | None) -> tuple[SSEStream, str]:
-    """Open a stream and return it with the POST path it advertised."""
-    stream = SSEStream(app, headers=_bearer(token) if token else None)
-    await stream.__aenter__()
-    frame = await stream.event()
-    assert frame["event"] == "endpoint"
-    return stream, frame["data"]
+@contextlib.asynccontextmanager
+async def _open(app: Veloce, token: str | None) -> AsyncIterator[tuple[SSEStream, str]]:
+    """Open a stream and yield it with the POST path it advertised.
+
+    A context manager rather than a bare opener: `SSEStream` documents
+    `async with` as its usage, and nine tests here drove `__aenter__` /
+    `__aexit__` by hand around four lines of try/finally each.
+    """
+    async with SSEStream(app, headers=_bearer(token) if token else None) as stream:
+        frame = await stream.event()
+        assert frame["event"] == "endpoint"
+        yield stream, frame["data"]
 
 
 # ── the privilege confusion ──────────────────────────────────────────
@@ -133,29 +140,22 @@ async def _open(app: Veloce, token: str | None) -> tuple[SSEStream, str]:
 async def test_the_tool_runs_as_the_poster_not_the_stream_opener():
     """The defect, exactly as reported: Bob's POST executed as Alice."""
     app = _app(auth=_auth())
-    stream, endpoint = await _open(app, "tok-alice")
-    try:
+    async with _open(app, "tok-alice") as (stream, endpoint):
         assert await _post(app, endpoint, _call(1, "whoami"), _bearer("tok-bob")) == 202
         assert _subject_of(await stream.message()) == "bob"
-    finally:
-        await stream.__aexit__()
 
 
 async def test_the_same_identity_on_both_halves_still_works():
     app = _app(auth=_auth())
-    stream, endpoint = await _open(app, "tok-alice")
-    try:
+    async with _open(app, "tok-alice") as (stream, endpoint):
         assert await _post(app, endpoint, _call(1, "whoami"), _bearer("tok-alice")) == 202
         assert _subject_of(await stream.message()) == "alice"
-    finally:
-        await stream.__aexit__()
 
 
 async def test_two_posts_from_different_callers_each_run_as_themselves():
     """One stream, two callers: neither may inherit the other's identity."""
     app = _app(auth=_auth())
-    stream, endpoint = await _open(app, "tok-alice")
-    try:
+    async with _open(app, "tok-alice") as (stream, endpoint):
         await _post(app, endpoint, _call(1, "whoami"), _bearer("tok-alice"))
         await _post(app, endpoint, _call(2, "whoami"), _bearer("tok-bob"))
         subjects = {}
@@ -163,19 +163,14 @@ async def test_two_posts_from_different_callers_each_run_as_themselves():
             response = await stream.message()
             subjects[response["id"]] = _subject_of(response)
         assert subjects == {1: "alice", 2: "bob"}
-    finally:
-        await stream.__aexit__()
 
 
 async def test_the_identity_reaches_a_tool_taking_a_context():
     """The context path is a separate call shape; it must see the same identity."""
     app = _app(auth=_auth())
-    stream, endpoint = await _open(app, "tok-alice")
-    try:
+    async with _open(app, "tok-alice") as (stream, endpoint):
         await _post(app, endpoint, _call(1, "whoami_ctx"), _bearer("tok-bob"))
         assert _subject_of(await stream.message()) == "bob"
-    finally:
-        await stream.__aexit__()
 
 
 # ── an unauthenticated POST is still refused ─────────────────────────
@@ -183,32 +178,23 @@ async def test_the_identity_reaches_a_tool_taking_a_context():
 
 async def test_a_post_with_no_credentials_is_refused():
     app = _app(auth=_auth())
-    stream, endpoint = await _open(app, "tok-alice")
-    try:
+    async with _open(app, "tok-alice") as (stream, endpoint):
         assert await _post(app, endpoint, _call(1, "whoami"), []) != 202
-    finally:
-        await stream.__aexit__()
 
 
 async def test_a_post_with_an_unknown_token_is_refused():
     app = _app(auth=_auth())
-    stream, endpoint = await _open(app, "tok-alice")
-    try:
+    async with _open(app, "tok-alice") as (stream, endpoint):
         assert await _post(app, endpoint, _call(1, "whoami"), _bearer("tok-nobody")) != 202
-    finally:
-        await stream.__aexit__()
 
 
 async def test_a_refused_post_does_not_run_the_tool():
     """The clearest statement of the property: no token, no execution."""
     app = _app(auth=_auth())
-    stream, endpoint = await _open(app, "tok-alice")
-    try:
+    async with _open(app, "tok-alice") as (stream, endpoint):
         await _post(app, endpoint, _call(1, "whoami"), [])
         with pytest.raises(asyncio.TimeoutError):
             await stream.message(timeout=0.4)
-    finally:
-        await stream.__aexit__()
 
 
 # ── the transport is unchanged without auth ──────────────────────────
@@ -216,23 +202,17 @@ async def test_a_refused_post_does_not_run_the_tool():
 
 async def test_no_auth_leaves_the_principal_unset():
     app = _app()
-    stream, endpoint = await _open(app, None)
-    try:
+    async with _open(app, None) as (stream, endpoint):
         assert await _post(app, endpoint, _call(1, "whoami"), []) == 202
         assert _subject_of(await stream.message()) is None
-    finally:
-        await stream.__aexit__()
 
 
 async def test_no_auth_ignores_a_bearer_header():
     """Without an `auth=`, a token is just a header; it must not become identity."""
     app = _app()
-    stream, endpoint = await _open(app, None)
-    try:
+    async with _open(app, None) as (stream, endpoint):
         await _post(app, endpoint, _call(1, "whoami"), _bearer("tok-bob"))
         assert _subject_of(await stream.message()) is None
-    finally:
-        await stream.__aexit__()
 
 
 # ── the two transports agree ─────────────────────────────────────────

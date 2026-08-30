@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests._mcp import await_tasks
+from tests._mcp import METHOD_NOT_FOUND, await_tasks
 from veloce import Veloce
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.session import MCPSession
@@ -142,7 +142,7 @@ async def test_a_handshake_task_keeps_the_names_its_revision_defined():
 @pytest.mark.parametrize("method", ["tasks/list", "tasks/result"])
 async def test_a_retired_method_is_not_found_for_a_modern_client(method: str):
     response = await _send(MCPServer(_app()), method, {"taskId": "x"}, MODERN_WITH_TASKS)
-    assert response["error"]["code"] == -32601
+    assert response["error"]["code"] == METHOD_NOT_FOUND
 
 
 @pytest.mark.parametrize("method", ["tasks/list", "tasks/result"])

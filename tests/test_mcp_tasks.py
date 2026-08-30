@@ -7,6 +7,7 @@ import contextlib
 
 import pytest
 
+from tests._mcp import INVALID_PARAMS, RESOURCE_NOT_FOUND
 from veloce import Veloce
 from veloce.contrib.mcp import MCPTask, TaskRegistry, TasksCapability
 from veloce.contrib.mcp.server import MCPServer, _notifier_var
@@ -173,7 +174,7 @@ def test_tasks_result_while_working_is_invalid_params():
         return early
 
     early = asyncio.run(run())
-    assert early["error"]["code"] == -32602
+    assert early["error"]["code"] == INVALID_PARAMS
 
 
 # -- Failure + lifecycle -----------------------------------------------
@@ -290,7 +291,7 @@ def test_unknown_task_id_is_resource_not_found():
             server, {"jsonrpc": "2.0", "id": 1, "method": "tasks/get", "params": {"taskId": "x"}}
         )
     )
-    assert resp["error"]["code"] == -32002
+    assert resp["error"]["code"] == RESOURCE_NOT_FOUND
 
 
 # -- Opt-out rejection -------------------------------------------------
@@ -306,7 +307,7 @@ def test_task_call_on_non_opting_tool_is_rejected():
 
     server = _server(app)
     resp = asyncio.run(_drive(server, _call("add", {"a": 1, "b": 2}, task=True)))
-    assert resp["error"]["code"] == -32602
+    assert resp["error"]["code"] == INVALID_PARAMS
 
 
 # -- Dual door: a route runs the same handler synchronously and as a task ----

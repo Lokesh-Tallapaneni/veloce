@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from veloce import FileResponse, Response
 
 
@@ -79,8 +81,6 @@ def test_returns_header_value():
 
 
 def test_file_response_rejects_crlf_filename(tmp_path):
-    import pytest
-
     f = tmp_path / "d.bin"
     f.write_bytes(b"x")
     # An embedded CR/LF in the filename is a header-injection attempt and is

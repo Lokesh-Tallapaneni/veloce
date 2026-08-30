@@ -16,12 +16,11 @@ import inspect
 
 import pytest
 
+from tests._mcp import INVALID_REQUEST
 from veloce import TestClient, Veloce
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.session import MCPSession
 from veloce.contrib.mcp.transports import stdio
-
-_INVALID_REQUEST = -32600
 
 
 def _client() -> TestClient:
@@ -91,7 +90,7 @@ def test_a_response_carrying_an_unknown_id_is_still_accepted():
 def test_something_that_is_neither_a_request_nor_a_response_is_refused(payload: dict):
     response = _post(_client(), payload)
     assert response.status_code == 200
-    assert response.json()["error"]["code"] == _INVALID_REQUEST
+    assert response.json()["error"]["code"] == INVALID_REQUEST
 
 
 # ── Requests are unaffected ──────────────────────────────────────────

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 
+from tests._sessions import seeded_session_response
 from tests.conftest import make_request
 from veloce import Request, Response, Session, SessionMiddleware, TestClient, Veloce
 
@@ -16,11 +17,7 @@ async def test_chunking_off_by_default_drops_oversized_cookie(caplog):
     """Default (chunked=False): the existing drop-with-warning behavior is
     unchanged — no Set-Cookie, one warning."""
     mw = SessionMiddleware(secret_key="k" * 32)
-    request = _req()
-    session = Session({"blob": "x" * 8192})
-    session.modified = True
-    request.state["session"] = session
-    response = Response(200, b"ok")
+    request, response = seeded_session_response({"blob": "x" * 8192})
 
     with caplog.at_level(logging.WARNING, logger="veloce.sessions"):
         result = await mw.process_response(request, response)
@@ -34,11 +31,7 @@ async def test_oversized_session_splits_into_chunks():
     """chunked=True: a >4KB session is written across numbered cookies, each
     within the size limit, and the base cookie is cleared."""
     mw = SessionMiddleware(secret_key="k" * 32, chunked=True)
-    request = _req()
-    session = Session({"blob": "x" * 8192})
-    session.modified = True
-    request.state["session"] = session
-    response = Response(200, b"ok")
+    request, response = seeded_session_response({"blob": "x" * 8192})
 
     await mw.process_response(request, response)
     raw = response.headers.get("Set-Cookie")
@@ -91,11 +84,7 @@ async def test_shrinking_session_clears_stale_chunks():
     """A session that was chunked then shrinks to fit one cookie writes the
     single cookie AND deletes every chunk slot so no stale chunk lingers."""
     mw = SessionMiddleware(secret_key="k" * 32, chunked=True)
-    request = _req()
-    session = Session({"user": "alice"})
-    session.modified = True
-    request.state["session"] = session
-    response = Response(200, b"ok")
+    request, response = seeded_session_response({"user": "alice"})
 
     await mw.process_response(request, response)
     lines = response.headers["Set-Cookie"].split("\r\nSet-Cookie: ")
@@ -130,11 +119,7 @@ async def test_chunk_request_reassembly_requires_contiguous_chunks():
     truncated cookie set cannot reconstruct an arbitrary value."""
     mw = SessionMiddleware(secret_key="k" * 32, chunked=True)
     # Build a real chunked cookie set, then drop chunk .1 to create a gap.
-    request = _req()
-    session = Session({"blob": "z" * 8192})
-    session.modified = True
-    request.state["session"] = session
-    response = Response(200, b"ok")
+    request, response = seeded_session_response({"blob": "z" * 8192})
     await mw.process_response(request, response)
 
     cookies = {}
@@ -159,11 +144,7 @@ async def test_exceeding_max_chunks_drops_with_warning(caplog):
     """A value that needs more than max_chunks cookies is dropped with a
     warning — no partial Set-Cookie."""
     mw = SessionMiddleware(secret_key="k" * 32, chunked=True, max_chunks=2)
-    request = _req()
-    session = Session({"blob": "q" * 20000})
-    session.modified = True
-    request.state["session"] = session
-    response = Response(200, b"ok")
+    request, response = seeded_session_response({"blob": "q" * 20000})
 
     with caplog.at_level(logging.WARNING, logger="veloce.sessions"):
         await mw.process_response(request, response)
@@ -195,11 +176,7 @@ async def test_exceeding_max_chunks_clears_stale_base_and_chunks():
     cookie AND every chunk slot are deleted, so a previously-persisted smaller
     session is not silently resurrected from the client's stale cookies."""
     mw = SessionMiddleware(secret_key="k" * 32, chunked=True, max_chunks=2)
-    request = _req()
-    session = Session({"blob": "q" * 20000})
-    session.modified = True
-    request.state["session"] = session
-    response = Response(200, b"ok")
+    request, response = seeded_session_response({"blob": "q" * 20000})
 
     await mw.process_response(request, response)
 

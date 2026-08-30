@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from tests.conftest import make_request
-from veloce import RangeSpec, Request
+from veloce import RangeSpec, Request, Veloce
+from veloce.testclient import TestClient
 
 
 def _req(range_value: str | None = None) -> Request:
@@ -126,3 +127,24 @@ def test_request_range_cached_identity():
     miss = _req()
     assert miss.range is None
     assert miss.range is miss.range
+
+
+def test_range_property_cached_across_repeat_access():
+    """The end-to-end counterpart of `test_request_range_cached_identity`.
+
+    Caching also holds on a `Request` the ASGI path built, not only on
+    one this module builds by hand.
+    """
+    app = Veloce(openapi_url=None)
+    observed = {}
+
+    @app.get("/range")
+    async def range_route(request: Request):
+        r1 = request.range
+        r2 = request.range
+        observed["same"] = r1 is r2
+        return {"ok": True}
+
+    with TestClient(app) as client:
+        client.get("/range", headers={"Range": "bytes=0-100"})
+    assert observed["same"] is True

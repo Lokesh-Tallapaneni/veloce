@@ -195,16 +195,16 @@ def test_an_empty_docs_url_leaves_the_schema_and_redoc():
     assert client.get("/docs").status_code == 404
 
 
-def test_an_empty_string_matches_none():
+@pytest.mark.parametrize("value", ["", None])
+def test_an_empty_string_matches_none(value):
     """Two spellings of "disabled" must not behave differently."""
-    for value in ("", None):
-        app = Veloce(docs_url=value)
+    app = Veloce(docs_url=value)
 
-        @app.get("/x", name="x")
-        async def x() -> dict:
-            return {}
+    @app.get("/x", name="x")
+    async def x() -> dict:
+        return {}
 
-        assert TestClient(app).get("/docs").status_code == 404
+    assert TestClient(app).get("/docs").status_code == 404
 
 
 def test_both_empty_disables_both_uis():

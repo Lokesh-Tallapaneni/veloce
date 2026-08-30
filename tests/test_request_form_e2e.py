@@ -1,6 +1,8 @@
-"""End-to-end tests for request props (#9, #27, #28) and form parser (#51).
+"""Form parsing from the framework boundary — end-to-end via TestClient.
 
-Exercises each fix from the framework boundary via TestClient.
+`MAX_FORM_PARTS`, Content-Disposition quoting, the charset fallback and
+`FormData`'s duplicate handling, each driven through a real request rather
+than by calling the parser directly.
 """
 
 from __future__ import annotations
@@ -89,40 +91,6 @@ def test_urlencoded_non_utf8_body_is_bad_request_not_413():
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
     assert resp.status_code == 400
-
-
-def test_auth_property_cached_across_repeat_access():
-    app = Veloce(openapi_url=None)
-    observed = {}
-
-    @app.get("/auth")
-    async def auth_route(request: Request):
-        a1 = request.auth
-        a2 = request.auth
-        observed["same"] = a1 is a2
-        observed["scheme"] = a1.type if a1 else None
-        return {"ok": True}
-
-    with TestClient(app) as client:
-        client.get("/auth", headers={"Authorization": "Bearer abc"})
-    assert observed["same"] is True
-    assert observed["scheme"] == "bearer"
-
-
-def test_range_property_cached_across_repeat_access():
-    app = Veloce(openapi_url=None)
-    observed = {}
-
-    @app.get("/range")
-    async def range_route(request: Request):
-        r1 = request.range
-        r2 = request.range
-        observed["same"] = r1 is r2
-        return {"ok": True}
-
-    with TestClient(app) as client:
-        client.get("/range", headers={"Range": "bytes=0-100"})
-    assert observed["same"] is True
 
 
 def test_form_parser_quoted_semicolon_in_name():

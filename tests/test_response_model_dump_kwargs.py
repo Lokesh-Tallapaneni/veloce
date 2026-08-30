@@ -40,6 +40,12 @@ class User(BaseModel):
     role: str = "member"
 
 
+class Defaulted(BaseModel):
+    name: str
+    description: str = "unset"
+    tax: float = 0.0
+
+
 class Aliased(BaseModel):
     user_id: int = Field(alias="userId")
     display: str = Field(alias="displayName")
@@ -334,6 +340,44 @@ def test_an_empty_list_response_model_is_still_a_list():
         return []
 
     assert TestClient(app).get("/us").json() == []
+
+
+# ── exclude_defaults, where a default can also be written explicitly ─
+#
+# `User`'s defaulted fields are never assigned a value, so the cases below -
+# a defaulted field given a non-default, and one given a value equal to its
+# default - cannot be expressed against it.
+
+
+def _defaulted_app(payload, **options) -> Veloce:
+    app = Veloce(openapi_url=None)
+    model = list[Defaulted] if isinstance(payload, list) else Defaulted
+
+    @app.get("/d", response_model=model, **options)
+    async def read():
+        return payload
+
+    return app
+
+
+def test_a_defaulted_field_given_a_non_default_value_is_retained():
+    app = _defaulted_app({"name": "widget", "tax": 7.5}, response_model_exclude_defaults=True)
+    assert TestClient(app).get("/d").json() == {"name": "widget", "tax": 7.5}
+
+
+def test_a_value_equal_to_its_default_is_dropped():
+    """`exclude_defaults` compares values; `exclude_unset` would keep this."""
+    app = _defaulted_app(
+        {"name": "widget", "description": "unset"}, response_model_exclude_defaults=True
+    )
+    assert TestClient(app).get("/d").json() == {"name": "widget"}
+
+
+def test_a_list_response_model_excludes_defaults_per_element():
+    app = _defaulted_app(
+        [{"name": "a"}, {"name": "b", "tax": 1.0}], response_model_exclude_defaults=True
+    )
+    assert TestClient(app).get("/d").json() == [{"name": "a"}, {"name": "b", "tax": 1.0}]
 
 
 # ── the inferred-model path, which is now the common one ─────────────

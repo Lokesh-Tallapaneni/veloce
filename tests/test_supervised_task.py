@@ -16,11 +16,13 @@ from veloce import Veloce
 
 async def test_supervise_restarts_after_crash():
     runs: list[int] = []
+    third_run = asyncio.Event()
 
     async def worker():
         runs.append(1)
         if len(runs) < 3:
             raise RuntimeError("boom")
+        third_run.set()
         # Third run blocks until cancelled at shutdown.
         await asyncio.Event().wait()
 
@@ -28,11 +30,11 @@ async def test_supervise_restarts_after_crash():
     await app._run_lifecycle("startup")
     app.supervise(lambda: worker(), name="w", backoff=0.0, max_restarts=10)
 
-    # Yield enough to let the supervisor cycle through the two crashes.
-    for _ in range(20):
-        await asyncio.sleep(0)
-        if len(runs) >= 3:
-            break
+    # Wait on the worker's own signal. A fixed budget of `sleep(0)` ticks
+    # encodes how many awaits the supervisor currently takes between
+    # restarts, so one extra `await` in it turns this into a restart-is-
+    # broken failure that is really a stale budget.
+    await asyncio.wait_for(third_run.wait(), timeout=1.0)
 
     assert len(runs) == 3
     await app._run_lifecycle("shutdown")
@@ -59,10 +61,7 @@ async def test_supervise_circuit_breaker_gives_up():
     task = app.get_spawned_task("cb")
     assert task is not None
     # The supervisor returns (does not raise) once the breaker trips.
-    for _ in range(50):
-        await asyncio.sleep(0)
-        if task.done():
-            break
+    await asyncio.wait([task], timeout=1.0)
 
     assert task.done()
     assert not task.cancelled()
@@ -146,10 +145,7 @@ async def test_supervise_max_restarts_one_allows_one_restart():
     app.supervise(lambda: crash(), name="one", backoff=0.0, max_restarts=1, restart_window=1000.0)
     task = app.get_spawned_task("one")
     assert task is not None
-    for _ in range(50):
-        await asyncio.sleep(0)
-        if task.done():
-            break
+    await asyncio.wait([task], timeout=1.0)
     assert task.done() and not task.cancelled()
     assert len(runs) == 2
     await app._run_lifecycle("shutdown")
@@ -160,10 +156,13 @@ async def test_supervise_factory_sync_exception_restarts():
     a fatal error that stops supervision."""
     runs: list[int] = []
 
+    third_call = asyncio.Event()
+
     def factory():
         runs.append(len(runs) + 1)
         if len(runs) < 3:
             raise RuntimeError("setup failed")
+        third_call.set()
 
         async def ok():
             await asyncio.Event().wait()  # long-lived success
@@ -175,11 +174,8 @@ async def test_supervise_factory_sync_exception_restarts():
     app.supervise(factory, name="f", backoff=0.0, max_restarts=10, restart_window=1000.0)
     task = app.get_spawned_task("f")
     assert task is not None
-    for _ in range(50):
-        await asyncio.sleep(0)
-        if len(runs) >= 3:
-            break
+    await asyncio.wait_for(third_call.wait(), timeout=1.0)
     # Factory raised twice (each a crash + restart), then returned a coroutine.
-    assert len(runs) >= 3
+    assert len(runs) == 3
     assert not task.done()
     await app._run_lifecycle("shutdown")

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import pytest
@@ -218,20 +217,17 @@ def test_from_file_silent_on_missing(tmp_path: Path):
     assert cfg.from_file(str(tmp_path / "absent.json"), silent=True) is False
 
 
-def test_from_file_requires_mapping_return():
+def test_from_file_requires_mapping_return(tmp_path: Path):
     """A loader that returns a non-mapping must be rejected."""
     cfg = Config()
-    # Write a JSON list (not a mapping) and try to load it.
-    import tempfile
-
-    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
-        f.write("[1, 2, 3]")
-        path = f.name
-    try:
-        with pytest.raises(TypeError):
-            cfg.from_file(path, load=json.load)
-    finally:
-        os.unlink(path)
+    # A JSON list, not a mapping.
+    path = tmp_path / "list.json"
+    path.write_text("[1, 2, 3]")
+    # Matched on the message, not just the type: `from_mapping` raises its own
+    # TypeError on a non-mapping further down, so a bare `raises(TypeError)`
+    # passes even with this guard removed and pins nothing.
+    with pytest.raises(TypeError, match="expected a mapping"):
+        cfg.from_file(str(path), load=json.load)
 
 
 # ── from_env_file ────────────────────────────────────────────────────

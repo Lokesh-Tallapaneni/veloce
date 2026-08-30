@@ -18,16 +18,15 @@ import base64
 
 import pytest
 
+from tests._mcp import HANDSHAKE_REVISION, HEADER_MISMATCH, MODERN_REVISION
 from veloce import Veloce
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.transports.http import register_http_transport
 from veloce.testclient import TestClient
 
-MODERN = "2026-07-28"
-HANDSHAKE = "2025-06-18"
+MODERN = MODERN_REVISION
+HANDSHAKE = HANDSHAKE_REVISION
 _META_KEY = "io.modelcontextprotocol/protocolVersion"
-
-HEADER_MISMATCH = -32020
 
 
 def _client() -> TestClient:

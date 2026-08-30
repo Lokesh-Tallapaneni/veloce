@@ -20,6 +20,7 @@ non-empty, so an app that passes none pays nothing.
 
 from __future__ import annotations
 
+import pathlib
 import subprocess
 import sys
 import warnings
@@ -158,12 +159,18 @@ def test_the_app_still_works_with_a_typo():
 
 def test_the_check_is_skipped_when_there_is_nothing_to_check():
     """It imports `difflib` and `inspect`; neither should load for a bare app."""
+    # An absolute path: a relative `'src'` resolves against whatever directory
+    # pytest was launched from, so it silently points at nothing and the child
+    # imports whichever `veloce` happens to be installed.
+    src = pathlib.Path(__file__).resolve().parents[1] / "src"
     code = (
-        "import sys; sys.path.insert(0, 'src');"
+        f"import sys; sys.path.insert(0, r'{src}');"
         "import veloce; veloce.Veloce(openapi_url=None);"
         "print('difflib' in sys.modules)"
     )
-    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True
+    )
     assert result.stdout.strip() == "False", result.stderr
 
 

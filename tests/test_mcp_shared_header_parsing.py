@@ -29,23 +29,14 @@ import json
 
 import pytest
 
-from tests._mcp import auth
+from tests._mcp import auth, initialize
 from veloce import Depends, HTTPBearer, Veloce
 from veloce.contrib.mcp import MCPAuth
 from veloce.contrib.mcp.context import MCPContext
 from veloce.principal import Principal
 from veloce.testclient import TestClient
 
-INITIALIZE = {
-    "jsonrpc": "2.0",
-    "id": 0,
-    "method": "initialize",
-    "params": {
-        "protocolVersion": "2025-06-18",
-        "capabilities": {},
-        "clientInfo": {"name": "probe", "version": "1"},
-    },
-}
+INITIALIZE = initialize()
 CALL = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "add"}}
 
 

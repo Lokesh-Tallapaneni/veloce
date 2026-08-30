@@ -26,7 +26,13 @@ from __future__ import annotations
 
 import pytest
 
-from tests._response_accessors import CLEARABLE, CLEARABLE_IDS
+from tests._response_accessors import (
+    CLEARABLE,
+    CLEARABLE_CANONICAL,
+    CLEARABLE_IDS,
+    CLEARABLE_PROPS,
+    CLEARABLE_STORED,
+)
 from veloce import Veloce
 from veloce.http.response import Response
 from veloce.testclient import TestClient
@@ -44,8 +50,8 @@ def test_clearing_removes_the_header(prop, canonical, value, stored):
     assert not [k for k in response.headers if k.lower() == canonical.lower()]
 
 
-@pytest.mark.parametrize(("prop", "canonical", "value", "stored"), CLEARABLE, ids=CLEARABLE_IDS)
-def test_clearing_works_under_the_canonical_casing_too(prop, canonical, value, stored):
+@pytest.mark.parametrize(("prop", "canonical", "value"), CLEARABLE_CANONICAL, ids=CLEARABLE_IDS)
+def test_clearing_works_under_the_canonical_casing_too(prop, canonical, value):
     """The case that already worked must keep working."""
     response = Response(body=b"x", headers={canonical: value})
     setattr(response, prop, None)
@@ -53,24 +59,22 @@ def test_clearing_works_under_the_canonical_casing_too(prop, canonical, value, s
     assert canonical not in response.headers
 
 
-@pytest.mark.parametrize(("prop", "canonical", "value", "stored"), CLEARABLE, ids=CLEARABLE_IDS)
-def test_clearing_an_absent_header_is_a_no_op(prop, canonical, value, stored):
+@pytest.mark.parametrize("prop", CLEARABLE_PROPS, ids=CLEARABLE_IDS)
+def test_clearing_an_absent_header_is_a_no_op(prop):
     response = Response(body=b"x", headers={"X-Other": "keep"})
     setattr(response, prop, None)
     assert response.headers == {"X-Other": "keep"}
 
 
-@pytest.mark.parametrize(("prop", "canonical", "value", "stored"), CLEARABLE, ids=CLEARABLE_IDS)
-def test_clearing_removes_only_the_named_header(prop, canonical, value, stored):
+@pytest.mark.parametrize(("prop", "value", "stored"), CLEARABLE_STORED, ids=CLEARABLE_IDS)
+def test_clearing_removes_only_the_named_header(prop, value, stored):
     response = Response(body=b"x", headers={stored: value, "X-Other": "keep"})
     setattr(response, prop, None)
     assert response.headers.get("X-Other") == "keep"
 
 
-@pytest.mark.parametrize(("prop", "canonical", "value", "stored"), CLEARABLE, ids=CLEARABLE_IDS)
-def test_setting_a_value_over_a_non_canonical_casing_still_reads_back(
-    prop, canonical, value, stored
-):
+@pytest.mark.parametrize(("prop", "value", "stored"), CLEARABLE_STORED, ids=CLEARABLE_IDS)
+def test_setting_a_value_over_a_non_canonical_casing_still_reads_back(prop, value, stored):
     """The `= value` half, which was always fine - pinned so it stays that way.
 
     A round trip rather than a literal: each property parses its own header, so

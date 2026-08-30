@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import pytest
 
+from tests._mcp import INVALID_PARAMS
 from veloce import Veloce
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.session import MCPSession
@@ -72,7 +73,7 @@ async def _send(method: str, params: dict, *, modern: bool = False) -> dict:
 async def test_a_task_augmented_request_is_refused(method: str, params: dict):
     response = await _send(method, {**params, "task": {}})
     assert "error" in response, response
-    assert response["error"]["code"] == -32602
+    assert response["error"]["code"] == INVALID_PARAMS
 
 
 @pytest.mark.parametrize(
@@ -91,13 +92,13 @@ async def test_the_refusal_names_the_method_and_the_way_forward(method: str, par
 
 async def test_the_refusal_holds_on_the_modern_revision_too():
     response = await _send("resources/read", {"uri": "res://doc", "task": {}}, modern=True)
-    assert response["error"]["code"] == -32602
+    assert response["error"]["code"] == INVALID_PARAMS
 
 
 async def test_a_task_field_carrying_options_is_still_refused():
     """The field's contents do not matter; the method cannot honour any of them."""
     response = await _send("resources/read", {"uri": "res://doc", "task": {"ttl": 60000}})
-    assert response["error"]["code"] == -32602
+    assert response["error"]["code"] == INVALID_PARAMS
 
 
 # ── Requests without the field are unaffected ────────────────────────
@@ -128,7 +129,7 @@ async def test_a_tool_that_did_not_opt_in_reports_that_it_cannot():
     response = await _send(
         "tools/call", {"name": "quick", "arguments": {}, "task": {}}, modern=True
     )
-    assert response["error"]["code"] == -32602
+    assert response["error"]["code"] == INVALID_PARAMS
     assert "does not support task execution" in response["error"]["message"]
 
 

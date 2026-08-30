@@ -22,6 +22,7 @@ import json
 
 import pytest
 
+from tests._mcp import METHOD_NOT_FOUND
 from tests._mcp_source import attribute_chains, module_level_names, tree
 from veloce import Veloce
 from veloce.contrib.mcp.capabilities.base import Capability, _ServerCapability
@@ -194,7 +195,7 @@ def test_a_retired_method_is_not_found_on_the_modern_revision(method):
         _modern(method),
         {"MCP-Protocol-Version": MODERN_PROTOCOL_VERSION, "Mcp-Method": method},
     )
-    assert response.json()["error"]["code"] == -32601
+    assert response.json()["error"]["code"] == METHOD_NOT_FOUND
 
 
 @pytest.mark.parametrize("method", ["ping", "logging/setLevel"])

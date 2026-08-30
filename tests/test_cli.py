@@ -271,7 +271,8 @@ def isolated_environ(monkeypatch):
     os.environ.update(before)
 
 
-def test_env_file_populates_environ(tmp_path, monkeypatch, isolated_environ):
+@pytest.mark.usefixtures("isolated_environ")
+def test_env_file_populates_environ(tmp_path, monkeypatch):
     env = tmp_path / ".env"
     env.write_text("CLI_ENV_KEY=from_file\nexport CLI_ENV_OTHER='quoted value'\n")
     monkeypatch.delenv("CLI_ENV_KEY", raising=False)
@@ -287,7 +288,8 @@ def test_env_file_populates_environ(tmp_path, monkeypatch, isolated_environ):
     assert os.environ["CLI_ENV_OTHER"] == "quoted value"
 
 
-def test_no_env_file_disables_loading(tmp_path, monkeypatch, isolated_environ):
+@pytest.mark.usefixtures("isolated_environ")
+def test_no_env_file_disables_loading(tmp_path, monkeypatch):
     env = tmp_path / ".env"
     env.write_text("CLI_ENV_DISABLED=should_not_load\n")
     monkeypatch.delenv("CLI_ENV_DISABLED", raising=False)
@@ -301,7 +303,8 @@ def test_no_env_file_disables_loading(tmp_path, monkeypatch, isolated_environ):
     assert "CLI_ENV_DISABLED" not in os.environ
 
 
-def test_env_file_does_not_overwrite_existing_environ(tmp_path, monkeypatch, isolated_environ):
+@pytest.mark.usefixtures("isolated_environ")
+def test_env_file_does_not_overwrite_existing_environ(tmp_path, monkeypatch):
     env = tmp_path / ".env"
     env.write_text("CLI_ENV_PRESET=from_file\n")
     monkeypatch.setenv("CLI_ENV_PRESET", "already_set")
@@ -316,7 +319,8 @@ def test_env_file_does_not_overwrite_existing_environ(tmp_path, monkeypatch, iso
     assert os.environ["CLI_ENV_PRESET"] == "already_set"
 
 
-def test_explicit_missing_env_file_errors(tmp_path, isolated_environ):
+@pytest.mark.usefixtures("isolated_environ")
+def test_explicit_missing_env_file_errors(tmp_path):
     missing = tmp_path / "nope.env"
     parser = build_parser()
     args = parser.parse_args(["run", "demo:app", "--env-file", str(missing)])
@@ -324,7 +328,8 @@ def test_explicit_missing_env_file_errors(tmp_path, isolated_environ):
         _apply_env_file(args)
 
 
-def test_auto_discover_missing_default_is_silent(tmp_path, monkeypatch, isolated_environ):
+@pytest.mark.usefixtures("isolated_environ")
+def test_auto_discover_missing_default_is_silent(tmp_path, monkeypatch):
     # CWD with no .env — auto-discovery must not raise.
     monkeypatch.chdir(tmp_path)
     parser = build_parser()
@@ -332,7 +337,8 @@ def test_auto_discover_missing_default_is_silent(tmp_path, monkeypatch, isolated
     _apply_env_file(args)  # no exception
 
 
-def test_auto_discover_unreadable_default_errors(tmp_path, monkeypatch, isolated_environ):
+@pytest.mark.usefixtures("isolated_environ")
+def test_auto_discover_unreadable_default_errors(tmp_path, monkeypatch):
     # An auto-discovered `.env` that exists but cannot be read (here: a
     # directory in its place) is a real failure, not a silent skip — booting
     # with missing config would mask broken environments.
@@ -918,16 +924,6 @@ def test_generate_rejects_dir_under_a_file(tmp_path):
         main(["generate", "model", "thing", "--dir", str(afile / "subdir")])
 
 
-def test_cli_version_flag_prints_and_exits(capsys):
-    parser = build_parser()
-    with pytest.raises(SystemExit) as exc:
-        parser.parse_args(["--version"])
-    assert exc.value.code == 0
-    captured = capsys.readouterr()
-    output = (captured.out + captured.err).strip()
-    assert output == f"veloce {__version__}"
-
-
 def test_cli_version_short_flag(capsys):
     parser = build_parser()
     with pytest.raises(SystemExit) as exc:
@@ -1049,7 +1045,8 @@ class TestTheEnvFileTestsDoNotLeak:
         _run_with_fixture()
         assert key not in os.environ, "the loader's write outlived the test"
 
-    def test_the_fixture_restores_a_key_it_overwrote(self, tmp_path, isolated_environ):
+    @pytest.mark.usefixtures("isolated_environ")
+    def test_the_fixture_restores_a_key_it_overwrote(self, tmp_path):
         import os
 
         key = "CLI_EXISTING_PROBE"

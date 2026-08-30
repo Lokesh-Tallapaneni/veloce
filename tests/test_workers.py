@@ -167,9 +167,20 @@ def _write_self_signed_cert(tmp_path):
     return str(cert_path), str(key_path)
 
 
-def test_build_ssl_context_loads_valid_cert_chain(tmp_path) -> None:
+@pytest.fixture(scope="session")
+def self_signed_cert(tmp_path_factory) -> tuple[str, str]:
+    """One throwaway chain for the five tests that just need a valid one.
+
+    Session-scoped because none of them mutates it, and a fresh RSA-2048 keygen
+    per test was most of what those tests spent their time on. Sync, so the
+    function-scoped fixture loop policy does not apply.
+    """
     pytest.importorskip("cryptography")
-    certfile, keyfile = _write_self_signed_cert(tmp_path)
+    return _write_self_signed_cert(tmp_path_factory.mktemp("tls"))
+
+
+def test_build_ssl_context_loads_valid_cert_chain(self_signed_cert) -> None:
+    certfile, keyfile = self_signed_cert
 
     context = build_ssl_context({"certfile": certfile, "keyfile": keyfile})
 
@@ -178,9 +189,8 @@ def test_build_ssl_context_loads_valid_cert_chain(tmp_path) -> None:
     assert context.verify_mode == ssl.CERT_NONE
 
 
-def test_build_ssl_context_honours_explicit_cert_reqs(tmp_path) -> None:
-    pytest.importorskip("cryptography")
-    certfile, keyfile = _write_self_signed_cert(tmp_path)
+def test_build_ssl_context_honours_explicit_cert_reqs(self_signed_cert) -> None:
+    certfile, keyfile = self_signed_cert
 
     context = build_ssl_context(
         {
@@ -415,10 +425,8 @@ def test_build_ssl_context_returns_none_when_tls_off() -> None:
     assert VeloceWorker._build_ssl_context(worker) is None
 
 
-def test_build_ssl_context_uses_default_factory_without_hook(tmp_path) -> None:
-    pytest.importorskip("cryptography")
-
-    certfile, keyfile = _write_self_signed_cert(tmp_path)
+def test_build_ssl_context_uses_default_factory_without_hook(self_signed_cert) -> None:
+    certfile, keyfile = self_signed_cert
     cfg = _CfgStub(
         is_ssl=True,
         ssl_options={"certfile": certfile, "keyfile": keyfile},
@@ -430,10 +438,8 @@ def test_build_ssl_context_uses_default_factory_without_hook(tmp_path) -> None:
     assert isinstance(context, ssl.SSLContext)
 
 
-def test_build_ssl_context_invokes_customization_hook(tmp_path) -> None:
-    pytest.importorskip("cryptography")
-
-    certfile, keyfile = _write_self_signed_cert(tmp_path)
+def test_build_ssl_context_invokes_customization_hook(self_signed_cert) -> None:
+    certfile, keyfile = self_signed_cert
     seen = {}
 
     def hook(config, default_ssl_context_factory):
@@ -457,10 +463,8 @@ def test_build_ssl_context_invokes_customization_hook(tmp_path) -> None:
     assert seen["config"] is cfg
 
 
-def test_build_ssl_context_rejects_non_context_from_hook(tmp_path) -> None:
-    pytest.importorskip("cryptography")
-
-    certfile, keyfile = _write_self_signed_cert(tmp_path)
+def test_build_ssl_context_rejects_non_context_from_hook(self_signed_cert) -> None:
+    certfile, keyfile = self_signed_cert
 
     def bad_hook(config, default_ssl_context_factory):
         return "not a context"

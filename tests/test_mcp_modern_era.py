@@ -11,6 +11,7 @@ from __future__ import annotations
 import orjson
 import pytest
 
+from tests._mcp import INVALID_PARAMS, UNSUPPORTED_PROTOCOL_VERSION
 from veloce import TestClient, Veloce
 from veloce.contrib.mcp.errors import ProtocolVersionError
 from veloce.contrib.mcp.server import (
@@ -136,7 +137,7 @@ async def test_an_unserved_version_is_rejected_recoverably(version: str):
         ],
     )
     error = out[0]["error"]
-    assert error["code"] == -32022
+    assert error["code"] == UNSUPPORTED_PROTOCOL_VERSION
     assert error["data"]["requested"] == version
     assert error["data"]["supported"] == list(SERVED_PROTOCOL_VERSIONS)
 
@@ -279,7 +280,7 @@ async def test_an_unknown_tool_stays_on_the_protocol_error_channel():
     """Unknown tool is a protocol error per the spec - the model cannot fix it
     by adjusting arguments, so it does not belong in-band."""
     out = await _call_tool(_app(), "nosuch", {})
-    assert out["error"]["code"] == -32602
+    assert out["error"]["code"] == INVALID_PARAMS
 
 
 async def test_the_validation_message_is_not_redacted_when_debug_is_off():

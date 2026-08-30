@@ -82,10 +82,13 @@ def test_several_offenders_are_all_named():
 
 @pytest.mark.parametrize("verb", ["get", "post", "put", "patch", "delete"])
 def test_every_verb_is_checked(verb):
+    async def handler(self, request: Request, q: str = Query(default="")) -> dict:
+        return {}
+
+    # Built with `type()` rather than `exec()` of a source string, so the verb
+    # method is ordinary code that ruff, mypy and grep can all see.
     with pytest.raises(TypeError, match="cannot resolve"):
-        method = f"    async def {verb}(self, request, q: str = Query(default='')): return {{}}"
-        namespace: dict = {"MethodView": MethodView, "Query": Query}
-        exec(f"class Bad(MethodView):\n{method}", namespace)
+        type("Bad", (MethodView,), {verb: handler})
 
 
 def test_the_refusal_happens_at_class_definition_not_at_request():

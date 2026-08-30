@@ -155,6 +155,29 @@ async def test_a_streamed_download_delivers_every_byte(files):
     assert stats["bytes"] == BIG
 
 
+async def test_a_streamed_download_still_advertises_its_length(files):
+    """Streaming must not silently turn a sized download into a chunked one."""
+    stats = await _drain(_download_app(files), "/big")
+    assert stats["headers"]["content-length"] == str(BIG)
+    assert "transfer-encoding" not in stats["headers"]
+
+
+async def test_streaming_closes_the_file(files):
+    """A leaked handle would keep the file locked and exhaust descriptors."""
+    response = await FileResponse.from_path(str(files / "big.bin"))
+    consumed = b"".join([chunk async for chunk in response._stream])
+    # The one content-equality assertion for a streamed body. Everything else
+    # here counts bytes rather than keeping them - that is the point of the
+    # module - but this test already holds the whole stream at this line.
+    assert consumed == b"x" * BIG
+    # On Windows an open handle blocks removal outright, which makes this a
+    # direct test rather than a proxy for one. Offloaded so the filesystem call
+    # does not run on the loop.
+    target = files / "big.bin"
+    await asyncio.to_thread(target.unlink)
+    assert not await asyncio.to_thread(target.exists)
+
+
 # ── StaticFiles streams ──────────────────────────────────────────────
 
 
@@ -201,7 +224,7 @@ async def test_a_small_file_is_not_streamed(files):
     """One ASGI message beats N below the threshold; the hop dominates."""
     response = await FileResponse.from_path(str(files / "small.bin"))
     assert response.is_streamed is False
-    assert len(response.body) == SMALL
+    assert response.body == b"y" * SMALL
 
 
 async def test_a_small_file_arrives_in_one_message(files):

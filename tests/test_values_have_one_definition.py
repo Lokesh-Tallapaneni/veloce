@@ -88,12 +88,6 @@ def test_the_attribute_and_the_document_agree():
         assert app.openapi()["openapi"] == app.openapi_version
 
 
-def test_the_version_is_not_written_twice_in_the_builder():
-    source = (SRC / "contrib" / "openapi.py").read_text(encoding="utf-8")
-    assert '"openapi": "3.1.0"' not in source
-    assert '"openapi": app.openapi_version' in source
-
-
 # ── drifted: the title default disagreed with itself ─────────────────
 
 

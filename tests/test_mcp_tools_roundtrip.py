@@ -11,7 +11,7 @@ import asyncio
 
 import orjson
 
-from tests._mcp import Pipe
+from tests._mcp import METHOD_NOT_FOUND, PARSE_ERROR, Pipe
 from tests._mcp_shared import (
     Item,
     _server,
@@ -163,7 +163,7 @@ def test_unknown_method_returns_method_not_found():
     pipe = Pipe(_server(app))
     pipe.feed({"jsonrpc": "2.0", "id": 9, "method": "does/not/exist", "params": {}})
     out = asyncio.run(pipe.run())
-    assert out[0]["error"]["code"] == -32601
+    assert out[0]["error"]["code"] == METHOD_NOT_FOUND
 
 
 def test_notification_yields_no_response():
@@ -180,7 +180,7 @@ def test_parse_error_on_bad_json():
     server = _server(app)
     transport = StdioTransport(server, None, None)  # type: ignore[arg-type]
     out = transport._decode(b"{not json")[1]
-    assert out["error"]["code"] == -32700
+    assert out["error"]["code"] == PARSE_ERROR
 
 
 def test_stdio_transport_satisfies_transport_contract():

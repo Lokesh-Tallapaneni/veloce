@@ -31,19 +31,11 @@ import pathlib
 
 import pytest
 
+from tests._mcp import initialize
 from veloce import EventSourceResponse, ServerSentEvent, Veloce
 from veloce.json_provider import DefaultJSONProvider
 
-INITIALIZE = {
-    "jsonrpc": "2.0",
-    "id": 0,
-    "method": "initialize",
-    "params": {
-        "protocolVersion": "2025-06-18",
-        "capabilities": {},
-        "clientInfo": {"name": "probe", "version": "1"},
-    },
-}
+INITIALIZE = initialize()
 
 
 class ShoutingProvider(DefaultJSONProvider):

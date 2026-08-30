@@ -29,6 +29,7 @@ from __future__ import annotations
 import pytest
 from pydantic import BaseModel, Field
 
+from tests._mcp import initialize
 from tests._mcp_source import attribute_chains, calls, tree
 from veloce import Cookie, Header, Query, Veloce
 from veloce.testclient import TestClient
@@ -40,16 +41,7 @@ class Filters(BaseModel):
     limit: int = Field(10, ge=1, le=100)
 
 
-INITIALIZE = {
-    "jsonrpc": "2.0",
-    "id": 0,
-    "method": "initialize",
-    "params": {
-        "protocolVersion": "2025-06-18",
-        "capabilities": {},
-        "clientInfo": {"name": "probe", "version": "1"},
-    },
-}
+INITIALIZE = initialize()
 
 
 def _schema_for(marker, annotation=int, name="value"):

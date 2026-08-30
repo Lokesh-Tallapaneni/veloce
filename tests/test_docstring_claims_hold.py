@@ -24,11 +24,11 @@ shapes, and `http_date`'s claim to cost 3 us on every response.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import dataclasses
 import inspect
 import pathlib
-import re
 
 import pytest
 
@@ -135,7 +135,19 @@ def test_reset_is_only_reachable_through_the_resolve_entry_points():
     source = (pathlib.Path(__file__).resolve().parents[1] / "src/veloce/dependency.py").read_text(
         encoding="utf-8"
     )
-    assert len(re.findall(r"self\.reset\(\)", source)) == 2
+    # Counted as calls rather than as text: a regex over the source also
+    # matches `self.reset()` written in a comment or a docstring, so it
+    # could be satisfied by prose while a real third call site was added.
+    calls = [
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "reset"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "self"
+    ]
+    assert len(calls) == 2
 
 
 # ── the two error-payload doors agree ────────────────────────────────
@@ -375,9 +387,21 @@ def test_the_registrations_are_records_rather_than_tuples():
         "meta",
         "version",
     }
-    assert len(MCPToolRegistration.__dataclass_fields__) == 11
-    assert len(MCPPromptRegistration.__dataclass_fields__) == 7
-    assert len(MCPCompleterRegistration.__dataclass_fields__) == 4
+    assert MCPPromptRegistration.__dataclass_fields__.keys() >= {
+        "handler",
+        "name",
+        "description",
+        "namespace",
+        "scopes",
+        "icons",
+        "meta",
+    }
+    assert MCPCompleterRegistration.__dataclass_fields__.keys() >= {
+        "kind",
+        "key",
+        "argument",
+        "completer",
+    }
 
 
 def test_a_registration_is_immutable():

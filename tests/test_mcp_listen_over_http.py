@@ -20,12 +20,13 @@ import json
 
 import pytest
 
+from tests._mcp import INVALID_PARAMS, MODERN_REVISION
 from veloce import Veloce
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.subscriptions import META_SUBSCRIPTION_ID
 from veloce.contrib.mcp.transports.http import register_http_transport
 
-MODERN = "2026-07-28"
+MODERN = MODERN_REVISION
 _META = {"io.modelcontextprotocol/protocolVersion": MODERN}
 
 
@@ -290,7 +291,7 @@ async def test_a_plain_json_post_cannot_open_a_stream():
     body = _listen({"toolsListChanged": True})
     async with _Post(app, body, accept=b"application/json") as stream:
         payload = await stream.whole_body()
-        assert payload["error"]["code"] == -32602
+        assert payload["error"]["code"] == INVALID_PARAMS
         assert "open stream" in payload["error"]["message"]
 
 

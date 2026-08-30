@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import orjson
 
+from tests._mcp import FORBIDDEN
 from tests._mcp_shared import (
     _auth,
     _call,
@@ -45,7 +46,7 @@ def test_scoped_tool_rejected_without_principal():
 
     # No principal set (unauthenticated): a scoped tool cannot be satisfied.
     out = _call(app, "wipe", {})
-    assert out["error"]["code"] == -32003
+    assert out["error"]["code"] == FORBIDDEN
     assert "insufficient_scope" in out["error"]["message"]
     assert out["error"]["data"]["requiredScopes"] == ["admin"]
 
@@ -59,7 +60,7 @@ def test_scoped_tool_rejected_with_insufficient_scope():
 
     set_principal(Principal(subject="u1", scopes=frozenset({"read"})))
     out = _call(app, "wipe", {})
-    assert out["error"]["code"] == -32003
+    assert out["error"]["code"] == FORBIDDEN
     assert "insufficient_scope" in out["error"]["message"]
 
 
@@ -91,7 +92,7 @@ def test_scoped_resource_forbidden_without_scope():
 
     set_principal(Principal(scopes=frozenset({"other"})))
     out = _read_resource(app, "secret://data")
-    assert out["error"]["code"] == -32003
+    assert out["error"]["code"] == FORBIDDEN
     assert "insufficient_scope" in out["error"]["message"]
 
 
@@ -104,7 +105,7 @@ def test_scoped_prompt_forbidden_without_scope():
 
     set_principal(Principal(scopes=frozenset()))
     out = _get_prompt(app, "secret")
-    assert out["error"]["code"] == -32003
+    assert out["error"]["code"] == FORBIDDEN
 
 
 def test_tool_reads_current_principal():
@@ -232,7 +233,7 @@ def test_http_auth_per_tool_scope_uses_token_scopes():
     )
     assert resp.status_code == 403
     assert "insufficient_scope" in resp.headers.get("www-authenticate", "")
-    assert orjson.loads(resp.body)["error"]["code"] == -32003
+    assert orjson.loads(resp.body)["error"]["code"] == FORBIDDEN
 
 
 def test_http_protected_resource_metadata_served():

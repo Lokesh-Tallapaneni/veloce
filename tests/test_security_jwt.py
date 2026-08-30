@@ -209,5 +209,6 @@ def test_alg_none_is_refused_even_when_allow_listed():
         return base64.urlsafe_b64encode(json.dumps(data).encode()).rstrip(b"=").decode()
 
     token = f"{b64({'alg': 'none', 'typ': 'JWT'})}.{b64({'sub': 'attacker'})}."
-    with pytest.raises(Exception, match="none"):
+    with pytest.raises(UnsupportedAlgorithmError) as excinfo:
         decode_jwt(token, "secret", algorithms=["none"])
+    assert "none" in str(excinfo.value)

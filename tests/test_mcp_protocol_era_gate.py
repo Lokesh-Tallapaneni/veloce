@@ -26,6 +26,7 @@ import pathlib
 
 import pytest
 
+from tests._mcp import HANDSHAKE_REVISION, METHOD_NOT_FOUND
 from veloce import MCPContext, Veloce
 from veloce.contrib.mcp.errors import HeaderMismatchError, ProtocolVersionError
 from veloce.contrib.mcp.server import (
@@ -34,7 +35,7 @@ from veloce.contrib.mcp.server import (
     is_modern_version,
 )
 
-HANDSHAKE_ERA = "2025-06-18"
+HANDSHAKE_ERA = HANDSHAKE_REVISION
 
 
 def _app() -> Veloce:
@@ -146,7 +147,7 @@ def test_a_modern_body_still_has_no_ping():
         _meta_call(MODERN_PROTOCOL_VERSION, "ping"),
         {"MCP-Protocol-Version": MODERN_PROTOCOL_VERSION, "Mcp-Method": "ping"},
     )
-    assert response.json()["error"]["code"] == -32601
+    assert response.json()["error"]["code"] == METHOD_NOT_FOUND
 
 
 def test_a_handshake_era_body_needs_no_standard_headers():

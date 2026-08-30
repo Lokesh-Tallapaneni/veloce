@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 
+from tests._mcp import METHOD_NOT_FOUND
 from veloce import MCPContext, Veloce
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.session import MCPSession
@@ -74,7 +75,7 @@ async def test_a_removed_method_is_not_found_for_a_modern_client(method: str):
         },
         harness.session,
     )
-    assert response["error"]["code"] == -32601
+    assert response["error"]["code"] == METHOD_NOT_FOUND
 
 
 @pytest.mark.parametrize("method", ["ping", "logging/setLevel"])

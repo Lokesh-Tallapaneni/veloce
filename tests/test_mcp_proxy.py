@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import pytest
 
+from tests._mcp import FORBIDDEN
 from veloce import Principal, Veloce
 from veloce.contrib.mcp.proxy import add_mcp_proxy
 from veloce.contrib.mcp.registry import build_registry
@@ -285,7 +286,7 @@ async def test_a_caller_without_the_scope_is_refused():
         },
         MCPSession(),
     )
-    assert response["error"]["code"] == -32003
+    assert response["error"]["code"] == FORBIDDEN
 
 
 async def test_a_proxied_tool_can_be_tagged_for_a_visibility_policy():

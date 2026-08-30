@@ -20,8 +20,10 @@ from __future__ import annotations
 
 import pytest
 
+from tests._response_accessors import DATE_ACCESSORS
 from tests._response_accessors import STRING_ACCESSORS as _ACCESSORS
 from veloce import Response
+from veloce.exceptions import PreconditionFailed
 
 _DATE = "Wed, 21 Oct 2015 07:28:00 GMT"
 
@@ -39,10 +41,11 @@ def test_an_accessor_reads_any_casing(attr, header, stored, expected, case):
     assert getattr(response, attr) == expected, spelling
 
 
+@pytest.mark.parametrize(("attr", "header"), DATE_ACCESSORS)
 @pytest.mark.parametrize("case", [0, 1, 2])
-def test_the_date_accessor_reads_any_casing(case):
-    response = Response(body=b"x", headers={_spellings("Date")[case]: _DATE})
-    assert response.date is not None
+def test_a_date_accessor_reads_any_casing(attr, header, case):
+    response = Response(body=b"x", headers={_spellings(header)[case]: _DATE})
+    assert getattr(response, attr) is not None
 
 
 @pytest.mark.parametrize("case", [0, 1, 2])
@@ -112,3 +115,63 @@ def test_add_vary_no_longer_orphans_a_third_spelling():
     stored = [(k, v) for k, v in response.headers.items() if k.lower() == "vary"]
     assert len(stored) == 1
     assert set(stored[0][1].split(", ")) == {"Cookie", "Accept-Encoding"}
+
+
+# ── the ETag readers, and the preconditions built on them ────────────
+#
+# `ETag` is not in `STRING_ACCESSORS`: it is read through `get_etag()` and
+# through the two precondition methods rather than through a plain property,
+# so its casing needs its own cases.
+
+
+class _Conditional:
+    """The precondition fields `make_conditional` / `check_preconditions` read.
+
+    A stub rather than a `Request`: these assert how the *response* finds its
+    own ETag. `tests/test_response_conditional.py` drives the same two methods
+    from a real request.
+    """
+
+    def __init__(self, if_none_match: tuple = (), if_match: tuple = ()) -> None:
+        self.if_none_match = if_none_match
+        self.if_match = if_match
+        self.if_modified_since = None
+
+
+def _tagged(spelling: str) -> Response:
+    """A response whose ETag was written under `spelling`."""
+    return Response(200, b"body", headers={spelling: '"abc"'})
+
+
+_ETAG_SPELLINGS = ["ETag", "etag", "ETAG", "Etag", "eTaG"]
+
+
+@pytest.mark.parametrize("spelling", _ETAG_SPELLINGS)
+def test_get_etag_reads_every_casing(spelling: str):
+    assert _tagged(spelling).get_etag() == ('"abc"', False)
+
+
+@pytest.mark.parametrize("spelling", _ETAG_SPELLINGS)
+def test_an_if_match_the_response_satisfies_is_not_refused(spelling: str):
+    """A spurious 412 is the lost-update guard rejecting a legitimate write."""
+    response = _tagged(spelling)
+    assert response.check_preconditions(_Conditional(if_match=('"abc"',))) is response
+
+
+@pytest.mark.parametrize("spelling", _ETAG_SPELLINGS)
+def test_an_if_match_the_response_fails_is_still_refused(spelling: str):
+    with pytest.raises(PreconditionFailed):
+        _tagged(spelling).check_preconditions(_Conditional(if_match=('"other"',)))
+
+
+@pytest.mark.parametrize("spelling", _ETAG_SPELLINGS)
+def test_a_conditional_get_matches_under_every_casing(spelling: str):
+    response = _tagged(spelling)
+    response.make_conditional(_Conditional(if_none_match=('"abc"',)))
+    assert response.status_code == 304
+
+
+@pytest.mark.parametrize("spelling", ["Vary", "vary", "VARY"])
+def test_add_vary_does_not_duplicate_across_casings(spelling: str):
+    response = Response(200, b"body", headers={spelling: "Accept"})
+    assert response.add_vary("Accept").count("Accept") == 1

@@ -267,3 +267,26 @@ def test_the_public_method_follows_silencing(silenced):
         return ""
 
     assert bool(app.response_contract_audit()) is not silenced
+
+
+def test_the_rendered_contradiction_names_the_path():
+    """The rendered line has to say which route disagrees, not just which models."""
+    app = _app()
+
+    @app.get("/x", response_model=Alpha)
+    async def x() -> Beta:
+        return Beta(b=1)
+
+    rendered = app.response_contract_audit()
+    assert any("disagree" in line and "/x" in line for line in rendered)
+
+
+def test_the_rendered_undocumented_finding_names_the_path():
+    app = _app()
+
+    @app.get("/free")
+    async def free():
+        return {"a": 1}
+
+    rendered = app.response_contract_audit()
+    assert any("publish no response schema" in line and "/free" in line for line in rendered)

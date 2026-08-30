@@ -15,13 +15,12 @@ from __future__ import annotations
 import orjson
 import pytest
 
+from tests._mcp import INVALID_PARAMS
 from veloce import MCPContext, Veloce
 from veloce.contrib.mcp.errors import InvalidParamsError
 from veloce.contrib.mcp.pagination import decode_cursor, encode_cursor, paginate
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.session import MCPSession
-
-_INVALID_PARAMS = -32602
 
 
 def _tool(index: int):
@@ -100,7 +99,7 @@ async def test_a_list_is_answered_in_full_by_default():
 async def test_a_cursor_is_refused_when_the_server_does_not_paginate():
     """No cursor was ever issued, so one presented is not this server's."""
     response = await _list(MCPServer(_app()), "tools/list", encode_cursor(0, "tool_0"))
-    assert response["error"]["code"] == _INVALID_PARAMS
+    assert response["error"]["code"] == INVALID_PARAMS
 
 
 @pytest.mark.parametrize("size", [0, -1])
@@ -277,7 +276,7 @@ def test_a_malformed_cursor_is_invalid_params(cursor: str):
 async def test_a_malformed_cursor_is_reported_over_the_wire():
     server = MCPServer(_app(tools=3), page_size=2)
     response = await _list(server, "tools/list", "not-a-cursor")
-    assert response["error"]["code"] == _INVALID_PARAMS
+    assert response["error"]["code"] == INVALID_PARAMS
 
 
 # ── The pager itself ─────────────────────────────────────────────────

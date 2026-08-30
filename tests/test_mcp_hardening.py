@@ -12,6 +12,7 @@ import asyncio
 import orjson
 import pytest
 
+from tests._mcp import INVALID_REQUEST
 from tests._mcp_shared import (
     _auth,
     _call,
@@ -168,7 +169,7 @@ def test_unsupported_protocol_version_header_is_400():
     # A present, unsupported version is rejected with a JSON-RPC error at 400.
     bad = client.post("/mcp", json=body, headers={"mcp-protocol-version": "1999-01-01"})
     assert bad.status_code == 400
-    assert orjson.loads(bad.body)["error"]["code"] == -32600
+    assert orjson.loads(bad.body)["error"]["code"] == INVALID_REQUEST
     # A supported version passes.
     ok = client.post("/mcp", json=body, headers={"mcp-protocol-version": "2025-06-18"})
     assert ok.status_code == 200
@@ -244,7 +245,7 @@ def test_missing_session_id_is_400():
     # A non-initialize request without the session header is rejected at 400.
     resp = app.test_client().post("/mcp", json=_mcp_call_body("add", {"a": 1, "b": 1}))
     assert resp.status_code == 400
-    assert orjson.loads(resp.body)["error"]["code"] == -32600
+    assert orjson.loads(resp.body)["error"]["code"] == INVALID_REQUEST
 
 
 def test_unknown_session_id_is_404():

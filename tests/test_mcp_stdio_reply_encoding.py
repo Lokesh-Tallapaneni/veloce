@@ -35,6 +35,8 @@ import sys
 
 import pytest
 
+from tests._mcp import INTERNAL_ERROR
+
 # `logging.basicConfig` is in the header because one case asserts the encoder
 # failure reaches stderr, and a handler has to exist for it to reach anything.
 _HEADER = """
@@ -208,7 +210,7 @@ def test_the_value_survives_in_a_nested_structure(wire):
 
 def test_a_refused_value_produces_an_error_not_silence(wire):
     """A `Secret` is refused on purpose; the client must still hear back."""
-    assert wire.reply("probe_secret")["error"]["code"] == -32603
+    assert wire.reply("probe_secret")["error"]["code"] == INTERNAL_ERROR
 
 
 def test_the_error_carries_the_requests_id(wire):
@@ -232,7 +234,7 @@ def test_the_server_keeps_serving_after_a_failed_reply(wire):
     `after` is called two ids past the refusal, so this is the same run rather
     than a second process arranged to look like one.
     """
-    assert wire.reply("probe_secret")["error"]["code"] == -32603
+    assert wire.reply("probe_secret")["error"]["code"] == INTERNAL_ERROR
     assert "still" in json.dumps(wire.reply("after"))
 
 

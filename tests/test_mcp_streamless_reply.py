@@ -22,6 +22,7 @@ import json
 
 import pytest
 
+from tests._mcp import initialize
 from veloce import Depends, Veloce
 from veloce._handler_plan import build_plan
 from veloce.contrib.mcp.context import MCPContext
@@ -29,16 +30,7 @@ from veloce.contrib.mcp.registry import MCPTool
 from veloce.contrib.mcp.toolsearch import _meta_tool
 from veloce.testclient import TestClient
 
-INITIALIZE = {
-    "jsonrpc": "2.0",
-    "id": 0,
-    "method": "initialize",
-    "params": {
-        "protocolVersion": "2025-06-18",
-        "capabilities": {},
-        "clientInfo": {"name": "probe", "version": "1"},
-    },
-}
+INITIALIZE = initialize()
 BOTH = "application/json, text/event-stream"
 
 

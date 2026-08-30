@@ -235,7 +235,7 @@ def test_a_prefixed_cookie_is_seeded_under_its_wire_name():
     assert client.get("/who").json() == {"user": "alice"}
 
 
-def test_a_stale_cookie_is_not_loaded_into_the_transaction():
+def test_a_stale_cookie_is_not_loaded_into_the_transaction(monkeypatch):
     """The behaviour the duplicated decode got wrong: the seam applies the same
     age ceiling a request does, so a cookie the app would refuse starts empty
     here rather than arriving pre-populated."""
@@ -251,12 +251,14 @@ def test_a_stale_cookie_is_not_loaded_into_the_transaction():
 
     client = TestClient(app)
     middleware.bind_secret_key(app.config)
+    # `monkeypatch`, not a hand-written try/finally: this rebinds an attribute
+    # on the *stdlib* `time` module, so anything escaping between the assignment
+    # and the restore leaves every later test reading a shifted clock. The
+    # sibling session modules use the fixture for the same reason.
     real = veloce.signing.time.time
-    veloce.signing.time.time = lambda: real() - 600
-    try:
+    with monkeypatch.context() as patched:
+        patched.setattr(veloce.signing.time, "time", lambda: real() - 600)
         stale = middleware.encode_cookie({"user": "alice"})
-    finally:
-        veloce.signing.time.time = real
     client._cookies[middleware.wire_cookie_name] = stale
 
     with client.session_transaction() as sess:

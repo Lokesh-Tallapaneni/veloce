@@ -54,11 +54,13 @@ def test_subclass_headers_pass_through():
     assert exc.headers["WWW-Authenticate"] == 'Bearer realm="api"'
 
 
-def test_subclasses_inherit_from_httpexception():
+@pytest.mark.parametrize("cls", [BadRequest, NotFound, Forbidden, InternalServerError])
+def test_subclasses_inherit_from_httpexception(cls):
     # The contract: every spec exception is a `HTTPException`.
-    for cls in (BadRequest, NotFound, Forbidden, InternalServerError):
-        assert issubclass(cls, HTTPException)
-    # `try: ... except HTTPException` catches every typed subclass.
+    assert issubclass(cls, HTTPException)
+
+
+def test_except_httpexception_catches_a_typed_subclass():
     try:
         raise NotFound()
     except HTTPException as exc:

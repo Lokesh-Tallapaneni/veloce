@@ -18,7 +18,7 @@ import urllib.parse
 
 import pytest
 
-from tests._mcp import SSEStream
+from tests._mcp import INVALID_REQUEST, PARSE_ERROR, SSEStream
 from veloce import AsyncTestClient, MCPContext, Veloce
 from veloce.contrib.mcp import MCPAuth
 from veloce.contrib.mcp.server import MCPServer
@@ -122,10 +122,7 @@ async def test_later_frames_do_not_repeat_the_hint():
         endpoint = (await stream.event())["data"]
         async with AsyncTestClient(app) as client:
             await client.post(endpoint, json=_call(1, "add", {"a": 1, "b": 2}))
-            frame = await stream.event()
-            while frame.get("event") != "message":
-                frame = await stream.event()
-            assert "retry" not in frame
+            assert "retry" not in await stream.message_frame()
 
 
 async def test_each_stream_gets_its_own_session():
@@ -208,9 +205,7 @@ async def test_a_progress_notification_precedes_the_response():
             )
         first = await stream.message()
         assert first["method"] == "notifications/progress"
-        while "id" not in (payload := await stream.message()):
-            continue
-        assert payload["id"] == 1
+        assert (await stream.response())["id"] == 1
 
 
 async def test_one_stream_does_not_receive_another_stream_answer():
@@ -260,7 +255,7 @@ async def _refuse(body: bytes) -> dict:
 async def test_a_body_that_is_not_a_json_rpc_object_is_refused():
     """There is no stream frame to carry an error for a message with no readable id."""
     error = await _refuse(b"not json")
-    assert error["code"] == -32700
+    assert error["code"] == PARSE_ERROR
 
 
 async def test_an_unreadable_body_is_a_parse_error():
@@ -269,12 +264,12 @@ async def test_an_unreadable_body_is_a_parse_error():
     This transport answered -32603 for both failures, so a client with per-code
     retry logic behaved differently purely by which wire it had connected over.
     """
-    assert (await _refuse(b'{"jsonrpc": '))["code"] == -32700
+    assert (await _refuse(b'{"jsonrpc": '))["code"] == PARSE_ERROR
 
 
 async def test_a_readable_body_of_the_wrong_shape_is_an_invalid_request():
     """-32600 says what was read is not a Request object. A batch array lands here."""
-    assert (await _refuse(b"[1,2,3]"))["code"] == -32600
+    assert (await _refuse(b"[1,2,3]"))["code"] == INVALID_REQUEST
 
 
 @pytest.mark.parametrize(

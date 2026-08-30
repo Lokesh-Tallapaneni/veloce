@@ -720,13 +720,10 @@ def test_strict_overrides_defaults_to_failing_startup():
 # by `strategy` ... overriding the RateLimitMiddleware default". That held only
 # when the middleware was built with `strategy=`. Built the other way -
 # `RateLimitMiddleware(max_requests=..., window_seconds=...)`, the default
-# shape - the tag was collected by nothing and dropped in silence:
-#
-#     app.add_middleware(RateLimitMiddleware(max_requests=1000, window_seconds=60))
-#
-#     @app.post("/login")
-#     @rate_limit(FixedWindow(limit=2, window=60))
-#     async def login(): ...      # -> 200, 200, 200, 200
+# shape - the tag was collected by nothing and dropped in silence, so a route
+# carrying a strict `@rate_limit` tag answered every request under the default
+# budget. `test_tag_is_honored_in_the_max_requests_mode` below is the executable
+# statement of that property.
 #
 # A strict limit on a sensitive route silently became no limit at all. The
 # constructor already refuses `backend=` and `overrides=` without `strategy=`,

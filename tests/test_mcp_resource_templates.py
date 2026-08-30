@@ -14,12 +14,11 @@ from __future__ import annotations
 import orjson
 import pytest
 
+from tests._mcp import RESOURCE_NOT_FOUND
 from veloce import Veloce
 from veloce.contrib.mcp.resources import _template_specificity, build_resource_registry
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.session import MCPSession
-
-_RESOURCE_NOT_FOUND = -32002
 
 
 def _app(uri: str, path: str = "/files/{path}") -> Veloce:
@@ -59,7 +58,7 @@ async def test_a_reserved_variable_also_matches_one_segment():
 async def test_a_simple_variable_still_matches_only_one_segment():
     """Simple expansion is one segment; a path is what `{+name}` is for."""
     response = await _read(_app("file://{path}"), "file://a/b/c.py")
-    assert response["error"]["code"] == _RESOURCE_NOT_FOUND
+    assert response["error"]["code"] == RESOURCE_NOT_FOUND
 
 
 async def test_a_simple_variable_matches_a_single_segment():

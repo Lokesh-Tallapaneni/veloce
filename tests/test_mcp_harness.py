@@ -12,6 +12,7 @@ import pytest
 
 from tests._mcp import (
     AUTHORIZATION_SERVER_URL,
+    METHOD_NOT_FOUND,
     RESOURCE_SERVER_URL,
     Pipe,
     SSEStream,
@@ -262,7 +263,7 @@ async def test_a_notification_has_no_response():
 async def test_an_unknown_method_is_method_not_found():
     """It goes through the dispatch map, which is the point."""
     error = await call_error(_server(_app()), "no/such/method")
-    assert error["code"] == -32601
+    assert error["code"] == METHOD_NOT_FOUND
 
 
 # ── the capability registry ──────────────────────────────────────────

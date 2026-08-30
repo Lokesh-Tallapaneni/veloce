@@ -28,13 +28,12 @@ class TestSendFromDirectory:
         makes the distinction observable.
         """
 
-        outside = tmp_path.parent / "outside-secret.txt"
-        outside.write_text("SECRET")
-        try:
-            with pytest.raises(Forbidden):
-                send_from_directory(str(tmp_path), "../outside-secret.txt")
-        finally:
-            outside.unlink()
+        served = tmp_path / "public"
+        served.mkdir()
+        (tmp_path / "outside-secret.txt").write_text("SECRET")
+
+        with pytest.raises(Forbidden):
+            send_from_directory(str(served), "../outside-secret.txt")
 
     def test_directory_traversal_is_refused_before_the_file_is_looked_up(self, tmp_path):
         """`Forbidden`, not `FileNotFoundError` - the guard runs first."""

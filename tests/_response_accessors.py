@@ -70,5 +70,24 @@ CLEARABLE: list[tuple[str, str, str, str]] = [
     )
 ]
 
-#: Ids for the clear-side parametrizations.
+#: Ids for the clear-side parametrizations. Shared by every projection below,
+#: which all preserve `CLEARABLE`'s row order.
 CLEARABLE_IDS: list[str] = [row[0] for row in CLEARABLE]
+
+# The clear-side tests do not all need all four columns, and a test taking a
+# column it never reads leaves the reader to work out which ones are
+# load-bearing. Each projection below is the exact tuple one test consumes.
+
+#: `(accessor,)` - for the tests that only touch the property.
+CLEARABLE_PROPS: list[str] = [attr for attr, _canonical, _value, _stored in CLEARABLE]
+
+#: `(accessor, canonical header, a value)` - the canonical-casing tests.
+CLEARABLE_CANONICAL: list[tuple[str, str, str]] = [
+    (attr, canonical, value) for attr, canonical, value, _stored in CLEARABLE
+]
+
+#: `(accessor, a value, a non-canonical spelling)` - the tests that write the
+#: header under a spelling the accessor did not choose.
+CLEARABLE_STORED: list[tuple[str, str, str]] = [
+    (attr, value, stored) for attr, _canonical, value, stored in CLEARABLE
+]

@@ -31,16 +31,15 @@ import json
 
 import pytest
 
+from tests._mcp import HANDSHAKE_REVISION
 from veloce import MCPContext, Veloce
-
-_MODERN = "2025-06-18"
 
 _INIT = {
     "jsonrpc": "2.0",
     "id": 1,
     "method": "initialize",
     "params": {
-        "protocolVersion": _MODERN,
+        "protocolVersion": HANDSHAKE_REVISION,
         "capabilities": {},
         "clientInfo": {"name": "probe", "version": "1"},
     },
@@ -109,7 +108,7 @@ class _Post:
                 (b"accept", b"text/event-stream"),
                 (b"content-type", b"application/json"),
                 (b"content-length", str(len(self._body)).encode()),
-                (b"mcp-protocol-version", _MODERN.encode()),
+                (b"mcp-protocol-version", HANDSHAKE_REVISION.encode()),
                 (b"mcp-method", json.loads(self._body)["method"].encode()),
             ],
             "client": ("127.0.0.1", 5555),

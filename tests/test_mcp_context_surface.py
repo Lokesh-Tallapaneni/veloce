@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests._mcp import await_tasks, call, call_error
+from tests._mcp import FORBIDDEN, await_tasks, call, call_error
 from veloce import Principal, Veloce
 from veloce.contrib.mcp.context import MCPContext, _in_task_var
 from veloce.contrib.mcp.server import MCPServer
@@ -223,7 +223,7 @@ async def test_reading_a_scoped_resource_still_enforces_its_scopes():
     # only escapes when the handler is called directly. That is the stronger
     # assertion - it pins the wire contract, not the internal type.
     error = await call_error(server, "tools/call", {"name": "leak", "arguments": {}})
-    assert error["code"] == -32003
+    assert error["code"] == FORBIDDEN
     assert "insufficient_scope" in error["message"]
     assert error["data"]["requiredScopes"] == ["vault"]
 

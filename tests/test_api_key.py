@@ -27,20 +27,20 @@ class TestSlotDiscipline:
         with pytest.raises(AttributeError):
             inst.arbitrary_attr = 1
 
-    def test_no_instance_dict(self):
-        for cls in (APIKeyHeader, APIKeyQuery, APIKeyCookie):
-            inst = cls(name="X")
-            assert not hasattr(inst, "__dict__"), f"{cls.__name__} leaked __dict__"
+    @pytest.mark.parametrize("cls", [APIKeyHeader, APIKeyQuery, APIKeyCookie])
+    def test_no_instance_dict(self, cls):
+        inst = cls(name="X")
+        assert not hasattr(inst, "__dict__")
 
-    def test_realm_and_challenge_slots_carry_no_dict(self):
+    @pytest.mark.parametrize("cls", [APIKeyHeader, APIKeyQuery, APIKeyCookie])
+    def test_realm_and_challenge_slots_carry_no_dict(self, cls):
         # The added `realm` / `_challenge` slots must not reintroduce a
         # __dict__ on any subclass.
-        for cls in (APIKeyHeader, APIKeyQuery, APIKeyCookie):
-            inst = cls(name="X", realm="admin")
-            assert inst.realm == "admin"
-            assert not hasattr(inst, "__dict__"), f"{cls.__name__} leaked __dict__"
-            with pytest.raises(AttributeError):
-                inst.arbitrary_attr = 1
+        inst = cls(name="X", realm="admin")
+        assert inst.realm == "admin"
+        assert not hasattr(inst, "__dict__")
+        with pytest.raises(AttributeError):
+            inst.arbitrary_attr = 1
 
 
 class TestConstruction:

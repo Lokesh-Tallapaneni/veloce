@@ -6,7 +6,6 @@ import pytest
 
 from veloce import Request, Response
 from veloce.app.asgi import _build_asgi_headers
-from veloce.exceptions import PreconditionFailed
 
 # ── cookies ──────────────────────────────────────────────────────────
 
@@ -205,76 +204,3 @@ def test_headers_stays_the_raw_unfolded_view():
     resp.headers["X-A"] = "1"
     resp.headers["x-a"] = "2"
     assert dict(resp.headers) == {"X-A": "1", "x-a": "2"}
-
-
-# ── One reader for a header, whatever casing wrote it ────────────────
-
-
-class _Conditional:
-    """The precondition fields `make_conditional` / `check_preconditions` read."""
-
-    def __init__(self, if_none_match: tuple = (), if_match: tuple = ()) -> None:
-        self.if_none_match = if_none_match
-        self.if_match = if_match
-        self.if_modified_since = None
-
-
-def _tagged(spelling: str) -> Response:
-    """A response whose ETag was written under `spelling`."""
-    return Response(200, b"body", headers={spelling: '"abc"'})
-
-
-SPELLINGS = ["ETag", "etag", "ETAG", "Etag", "eTaG"]
-
-
-@pytest.mark.parametrize("spelling", SPELLINGS)
-def test_get_etag_reads_every_casing(spelling: str):
-    """HTTP field names are case-insensitive (RFC 9110 section 5.1)."""
-    assert _tagged(spelling).get_etag() == ('"abc"', False)
-
-
-@pytest.mark.parametrize("spelling", SPELLINGS)
-def test_an_if_match_the_response_satisfies_is_not_refused(spelling: str):
-    """A spurious 412 is the lost-update guard rejecting a legitimate write."""
-    response = _tagged(spelling)
-    assert response.check_preconditions(_Conditional(if_match=('"abc"',))) is response
-
-
-@pytest.mark.parametrize("spelling", SPELLINGS)
-def test_an_if_match_the_response_fails_is_still_refused(spelling: str):
-
-    with pytest.raises(PreconditionFailed):
-        _tagged(spelling).check_preconditions(_Conditional(if_match=('"other"',)))
-
-
-@pytest.mark.parametrize("spelling", SPELLINGS)
-def test_a_conditional_get_matches_under_every_casing(spelling: str):
-    response = _tagged(spelling)
-    response.make_conditional(_Conditional(if_none_match=('"abc"',)))
-    assert response.status_code == 304
-
-
-@pytest.mark.parametrize("spelling", ["Last-Modified", "last-modified", "LAST-MODIFIED"])
-def test_last_modified_reads_every_casing(spelling: str):
-    response = Response(200, b"body", headers={spelling: "Wed, 21 Oct 2015 07:28:00 GMT"})
-    assert response.last_modified is not None
-
-
-@pytest.mark.parametrize("spelling", ["Expires", "expires", "EXPIRES"])
-def test_expires_reads_every_casing(spelling: str):
-    response = Response(200, b"body", headers={spelling: "Wed, 21 Oct 2015 07:28:00 GMT"})
-    assert response.expires is not None
-
-
-@pytest.mark.parametrize("spelling", ["Vary", "vary", "VARY"])
-def test_add_vary_merges_with_whatever_wrote_the_header(spelling: str):
-    response = Response(200, b"body", headers={spelling: "Accept"})
-    merged = response.add_vary("Accept-Encoding")
-    assert "Accept" in merged
-    assert "Accept-Encoding" in merged
-
-
-@pytest.mark.parametrize("spelling", ["Vary", "vary", "VARY"])
-def test_add_vary_does_not_duplicate_across_casings(spelling: str):
-    response = Response(200, b"body", headers={spelling: "Accept"})
-    assert response.add_vary("Accept").count("Accept") == 1

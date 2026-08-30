@@ -18,6 +18,7 @@ import json
 
 import pytest
 
+from tests._mcp import METHOD_NOT_FOUND
 from tests._mcp_source import dict_values_for_key, tree
 from veloce import Veloce
 from veloce.contrib.mcp.capabilities import Capability
@@ -81,7 +82,7 @@ async def test_a_handshake_client_is_still_offered_logging():
 async def test_the_method_is_still_refused_for_a_modern_client():
     """Withholding the advertisement must not change what the dispatcher does."""
     response = await _send("logging/setLevel", {"level": "info"}, modern=True)
-    assert response["error"]["code"] == -32601
+    assert response["error"]["code"] == METHOD_NOT_FOUND
 
 
 async def test_the_method_still_answers_a_handshake_client():

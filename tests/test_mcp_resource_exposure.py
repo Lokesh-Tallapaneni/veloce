@@ -13,7 +13,7 @@ import base64
 import orjson
 import pytest
 
-from tests._mcp import Pipe
+from tests._mcp import INVALID_PARAMS, METHOD_NOT_FOUND, RESOURCE_NOT_FOUND, Pipe
 from tests._mcp_shared import (
     PublicUser,
     _initialize,
@@ -131,7 +131,7 @@ def test_resource_read_unknown_uri_is_resource_not_found():
         return {}
 
     out = _read_resource(app, "config://does/not/exist")
-    assert out["error"]["code"] == -32002
+    assert out["error"]["code"] == RESOURCE_NOT_FOUND
 
 
 def test_resource_read_route_404_is_resource_not_found():
@@ -147,7 +147,7 @@ def test_resource_read_route_404_is_resource_not_found():
         raise HTTPException(status_code=404, detail="no such user")
 
     out = _read_resource(app, "users://7")
-    assert out["error"]["code"] == -32002
+    assert out["error"]["code"] == RESOURCE_NOT_FOUND
 
 
 def test_resource_read_template_coercion_failure_is_invalid_params():
@@ -164,7 +164,7 @@ def test_resource_read_template_coercion_failure_is_invalid_params():
 
     # `abc` cannot coerce to the `user_id: int` path parameter.
     out = _read_resource(app, "users://abc")
-    assert out["error"]["code"] == -32602
+    assert out["error"]["code"] == INVALID_PARAMS
 
 
 def test_resource_read_runs_route_dependency_guard():
@@ -348,7 +348,7 @@ def test_subscribe_rejects_missing_uri():
     pipe = Pipe(_server(_subscriptions_app()))
     pipe.feed({"jsonrpc": "2.0", "id": 1, "method": "resources/subscribe", "params": {}})
     out = asyncio.run(pipe.run())[0]
-    assert out["error"]["code"] == -32602
+    assert out["error"]["code"] == INVALID_PARAMS
 
 
 def test_subscribe_unknown_when_disabled():
@@ -374,7 +374,7 @@ def test_subscribe_unknown_when_disabled():
     )
     out = asyncio.run(pipe.run())[0]
     # Not advertised, so the method is unknown when the feature is off.
-    assert out["error"]["code"] == -32601
+    assert out["error"]["code"] == METHOD_NOT_FOUND
 
 
 def test_notify_is_inert_when_disabled():
@@ -407,7 +407,7 @@ def test_subscribe_on_stateless_request_is_invalid():
             }
         )
     )
-    assert out["error"]["code"] == -32602
+    assert out["error"]["code"] == INVALID_PARAMS
 
 
 def test_concurrent_streams_on_one_session_each_receive_updates():

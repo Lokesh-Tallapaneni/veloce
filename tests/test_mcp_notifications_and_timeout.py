@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 
-from tests._mcp import Pipe
+from tests._mcp import INTERNAL_ERROR, INVALID_PARAMS, Pipe
 from tests._mcp_shared import (
     _call,
     _drive_call,
@@ -121,7 +121,7 @@ def test_logging_set_level_rejects_invalid_level():
         {"jsonrpc": "2.0", "id": 1, "method": "logging/setLevel", "params": {"level": "verbose"}}
     )
     out = asyncio.run(pipe.run())
-    assert out[0]["error"]["code"] == -32602
+    assert out[0]["error"]["code"] == INVALID_PARAMS
 
 
 def test_logging_capability_advertised():
@@ -167,7 +167,7 @@ def test_resource_read_timeout_is_error():
         return {}
 
     out = _read_resource(app, "slow://data")
-    assert out["error"]["code"] == -32603
+    assert out["error"]["code"] == INTERNAL_ERROR
 
 
 def test_no_timeout_by_default_completes():

@@ -343,7 +343,11 @@ def test_cors_rejects_wildcard_regex_with_credentials(pattern):
     """R1 #58: a trivially-wildcard regex with credentials is the same
     security mistake as `allow_origins=["*"]` with credentials and must
     fail at construction with the same diagnostic."""
-    with pytest.raises(ValueError, match=r"allow_credentials=True"):
+    # Matched on the regex guard's own wording, not just "allow_credentials=True":
+    # `allow_headers` defaults to `["*"]`, so the separate wildcard-headers guard
+    # raises for ANY credentialed construction and a looser match passes with this
+    # guard removed entirely.
+    with pytest.raises(ValueError, match=r"wildcard allow_origin_regex"):
         CORSMiddleware(allow_origin_regex=pattern, allow_credentials=True)
 
 
@@ -557,13 +561,6 @@ def test_a_duplicate_contribution_is_not_repeated():
     with TestClient(app) as client:
         response = client.get("/", headers={"Origin": "https://good.test"})
     assert _exposed(response) == {"X-Board-Page"}
-
-
-@pytest.mark.parametrize("pattern", [".*", ".+", "^.*$"])
-def test_cors_wildcard_regex_with_credentials_rejected(pattern: str) -> None:
-    with pytest.raises(ValueError) as excinfo:
-        CORSMiddleware(allow_credentials=True, allow_origin_regex=pattern)
-    assert "allow_credentials" in str(excinfo.value)
 
 
 # ── the CORS usage example runs ───────────────────────────────

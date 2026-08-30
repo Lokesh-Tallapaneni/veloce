@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import logging
 
+from tests._sessions import seeded_session_response
 from tests.conftest import make_request
-from veloce import Request, Response, Session, SessionMiddleware, TestClient, Veloce
+from veloce import Request, Response, SessionMiddleware, TestClient, Veloce
 
 
 def _req() -> Request:
@@ -17,11 +18,7 @@ async def test_oversized_session_logs_and_drops_cookie(caplog):
     rather than raising — a raise re-enters the middleware via the error
     response and would surface as an unhandled ASGI exception."""
     mw = SessionMiddleware(secret_key="k" * 32)
-    request = _req()
-    session = Session({"blob": "x" * 8192})
-    session.modified = True
-    request.state["session"] = session
-    response = Response(200, b"ok")
+    request, response = seeded_session_response({"blob": "x" * 8192})
 
     with caplog.at_level(logging.WARNING, logger="veloce.sessions"):
         result = await mw.process_response(request, response)
@@ -39,11 +36,7 @@ async def test_oversized_session_honours_custom_limit(caplog):
     """A relaxed `max_cookie_size` should allow what the default would reject —
     no warning logged, cookie present."""
     mw = SessionMiddleware(secret_key="k" * 32, max_cookie_size=16_384)
-    request = _req()
-    session = Session({"blob": "x" * 8192})
-    session.modified = True
-    request.state["session"] = session
-    response = Response(200, b"ok")
+    request, response = seeded_session_response({"blob": "x" * 8192})
 
     with caplog.at_level(logging.WARNING, logger="veloce.sessions"):
         result = await mw.process_response(request, response)
@@ -55,11 +48,7 @@ async def test_oversized_session_honours_custom_limit(caplog):
 async def test_small_session_stays_under_default_limit():
     """A small payload still round-trips through Set-Cookie unchanged."""
     mw = SessionMiddleware(secret_key="k" * 32)
-    request = _req()
-    session = Session({"user": "alice"})
-    session.modified = True
-    request.state["session"] = session
-    response = Response(200, b"ok")
+    request, response = seeded_session_response({"user": "alice"})
 
     result = await mw.process_response(request, response)
     assert any(h[0].lower() == "set-cookie" for h in result.headers.items())

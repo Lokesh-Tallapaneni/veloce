@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+from tests._mcp import INVALID_PARAMS
 from tests._mcp_shared import (
     _get_prompt,
     _initialize,
@@ -99,7 +100,7 @@ def test_prompt_unknown_name_is_invalid_params():
         return "hi"
 
     out = _get_prompt(app, "nope")
-    assert out["error"]["code"] == -32602
+    assert out["error"]["code"] == INVALID_PARAMS
 
 
 def test_prompt_missing_required_argument_is_invalid_params():
@@ -110,7 +111,7 @@ def test_prompt_missing_required_argument_is_invalid_params():
         return f"Summarise {topic}."
 
     out = _get_prompt(app, "summarise", {})
-    assert out["error"]["code"] == -32602
+    assert out["error"]["code"] == INVALID_PARAMS
 
 
 def test_prompt_dependency_is_resolved():

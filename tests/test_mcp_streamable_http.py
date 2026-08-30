@@ -13,7 +13,14 @@ import contextlib
 import orjson
 import pytest
 
-from tests._mcp import Pipe
+from tests._mcp import (
+    INVALID_PARAMS,
+    INVALID_REQUEST,
+    METHOD_NOT_FOUND,
+    PARSE_ERROR,
+    RESOURCE_NOT_FOUND,
+    Pipe,
+)
 from tests._mcp_shared import (
     _drive_stream,
     _mcp_call_body,
@@ -100,7 +107,7 @@ def test_http_parse_error_is_400():
         "/mcp", content=b"{not json", headers={"content-type": "application/json"}
     )
     assert resp.status_code == 400
-    assert orjson.loads(resp.body)["error"]["code"] == -32700
+    assert orjson.loads(resp.body)["error"]["code"] == PARSE_ERROR
 
 
 def test_http_unknown_method_is_json_error():
@@ -115,7 +122,7 @@ def test_http_unknown_method_is_json_error():
         "/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "does/not/exist", "params": {}}
     )
     body = orjson.loads(resp.body)
-    assert body["error"]["code"] == -32601
+    assert body["error"]["code"] == METHOD_NOT_FOUND
 
 
 def test_http_resource_read_over_http():
@@ -387,7 +394,7 @@ def test_http_subscribe_rejected_on_stateless_request():
             "params": {"uri": "doc://main"},
         },
     )
-    assert orjson.loads(resp.body)["error"]["code"] == -32602
+    assert orjson.loads(resp.body)["error"]["code"] == INVALID_PARAMS
 
 
 def test_http_tasks_isolated_per_session():
@@ -437,14 +444,14 @@ def test_http_tasks_isolated_per_session():
         json={"jsonrpc": "2.0", "id": 4, "method": "tasks/get", "params": {"taskId": task_id}},
         headers={"mcp-session-id": sid_b},
     )
-    assert orjson.loads(got_b.body)["error"]["code"] == -32002
+    assert orjson.loads(got_b.body)["error"]["code"] == RESOURCE_NOT_FOUND
 
     cancel_b = client.post(
         "/mcp",
         json={"jsonrpc": "2.0", "id": 5, "method": "tasks/cancel", "params": {"taskId": task_id}},
         headers={"mcp-session-id": sid_b},
     )
-    assert orjson.loads(cancel_b.body)["error"]["code"] == -32002
+    assert orjson.loads(cancel_b.body)["error"]["code"] == RESOURCE_NOT_FOUND
 
     # Client A still sees and owns its task.
     listed_a = client.post(
@@ -540,7 +547,7 @@ def test_http_lifecycle_gating_enforced_with_sessions():
     early = client.post(
         "/mcp", json=_mcp_call_body("add", {"a": 1, "b": 2}), headers={"mcp-session-id": sid}
     )
-    assert orjson.loads(early.body)["error"]["code"] == -32600
+    assert orjson.loads(early.body)["error"]["code"] == INVALID_REQUEST
 
     # After the initialized ack, the same call succeeds.
     client.post(
@@ -653,7 +660,7 @@ async def test_task_ownership_survives_session_id_recycle():
         {"jsonrpc": "2.0", "id": 2, "method": "tasks/get", "params": {"taskId": task_id}},
         session_b,
     )
-    assert got["error"]["code"] == -32002
+    assert got["error"]["code"] == RESOURCE_NOT_FOUND
     listed = await server.handle_message(
         {"jsonrpc": "2.0", "id": 3, "method": "tasks/list", "params": {}},
         session_b,

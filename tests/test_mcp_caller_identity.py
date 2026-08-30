@@ -39,22 +39,14 @@ Without a carrier at all - a stdio server - there is nothing to inherit, so
 
 from __future__ import annotations
 
+from tests._mcp import initialize
 from veloce import Middleware, Request, Veloce, rate_limit
 from veloce.contrib.mcp.plan_bridge import _build_request
 from veloce.middleware.security import RateLimitMiddleware
 from veloce.ratelimit import FixedWindow
 from veloce.testclient import TestClient
 
-INITIALIZE = {
-    "jsonrpc": "2.0",
-    "id": 0,
-    "method": "initialize",
-    "params": {
-        "protocolVersion": "2025-06-18",
-        "capabilities": {},
-        "clientInfo": {"name": "probe", "version": "1"},
-    },
-}
+INITIALIZE = initialize()
 
 
 def _client(app: Veloce) -> TestClient:

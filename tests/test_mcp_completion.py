@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests._mcp import greeting_server
+from tests._mcp import INVALID_PARAMS, greeting_server
 from veloce import Veloce
 from veloce.contrib.mcp import CompletionResult, CompletionsCapability
 from veloce.contrib.mcp.completion import _MAX_CONTEXT_ARGS
@@ -203,7 +203,7 @@ async def test_malformed_request_is_invalid_params(params):
     out = await server.handle_message(
         {"jsonrpc": "2.0", "id": 1, "method": "completion/complete", "params": params}
     )
-    assert out["error"]["code"] == -32602
+    assert out["error"]["code"] == INVALID_PARAMS
 
 
 async def test_oversized_context_arguments_is_bounded():
@@ -221,7 +221,7 @@ async def test_oversized_context_arguments_is_bounded():
         "",
         context={"arguments": oversized},
     )
-    assert out["error"]["code"] == -32602
+    assert out["error"]["code"] == INVALID_PARAMS
 
     # A context at the cap is still accepted.
     at_cap = {str(i): "x" for i in range(_MAX_CONTEXT_ARGS)}

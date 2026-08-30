@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import base64
 
-from veloce import Request
+from veloce import Request, Veloce
+from veloce.testclient import TestClient
 
 
 def _req(authz: str | None = None) -> Request:
@@ -143,3 +144,26 @@ def test_auth_cached_identity():
     miss = _req()
     assert miss.auth is None
     assert miss.auth is miss.auth
+
+
+def test_auth_property_cached_across_repeat_access():
+    """The end-to-end counterpart of `test_auth_cached_identity`.
+
+    Caching also holds on a `Request` the ASGI path built, not only on
+    one this module builds by hand.
+    """
+    app = Veloce(openapi_url=None)
+    observed = {}
+
+    @app.get("/auth")
+    async def auth_route(request: Request):
+        a1 = request.auth
+        a2 = request.auth
+        observed["same"] = a1 is a2
+        observed["scheme"] = a1.type if a1 else None
+        return {"ok": True}
+
+    with TestClient(app) as client:
+        client.get("/auth", headers={"Authorization": "Bearer abc"})
+    assert observed["same"] is True
+    assert observed["scheme"] == "bearer"
