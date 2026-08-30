@@ -247,7 +247,12 @@ def shape_through_model(value: Any, model: Any) -> Any:
         # dump then carries the subclass's own fields - so a richer object
         # returned under a base-model contract leaks exactly the fields the
         # contract excludes. Going through a mapping is what drops them.
-        payload = value.model_dump() if is_pydantic_model(type(value)) else value
+        #
+        # `by_alias=True` because the dump is fed straight back to
+        # `model_validate`: a field declared `Field(alias=...)` is accepted only
+        # under its alias unless the model sets `populate_by_name`, so a dump by
+        # field name made the model fail to validate its own output.
+        payload = value.model_dump(by_alias=True) if is_pydantic_model(type(value)) else value
         return model.model_validate(payload).model_dump(mode="json")
     if is_msgspec_struct(model):
         # `adapter_for` is a Pydantic `TypeAdapter` and raises
