@@ -153,10 +153,31 @@ def test_no_second_copy_of_the_metadata_default(path, literal):
 # ── the status code has one definition ───────────────────────────────
 
 
+def _module_level_names(path) -> set[str]:
+    """Every name the module binds at module level, by assignment or by import."""
+    tree = ast.parse((SRC / path).read_text(encoding="utf-8"))
+    bound: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            bound |= {t.id for t in node.targets if isinstance(t, ast.Name)}
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            bound.add(node.target.id)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            bound |= {a.asname or a.name.split(".")[0] for a in node.names}
+    return bound
+
+
 def test_the_body_module_uses_the_canonical_status():
-    source = (SRC / "http" / "_body.py").read_text(encoding="utf-8")
-    assert "_HTTP_413_CONTENT_TOO_LARGE" not in source
-    assert "HTTP_413_CONTENT_TOO_LARGE" in source
+    """Against the bound names, not the source text.
+
+    `"_HTTP_413_CONTENT_TOO_LARGE" not in source` is a substring check over a
+    file that also contains the canonical name, so what it proves depends on
+    the two spellings not overlapping - which is a property of the strings
+    rather than of the code.
+    """
+    bound = _module_level_names("http/_body.py")
+    assert "_HTTP_413_CONTENT_TOO_LARGE" not in bound, "a private copy of the status is bound"
+    assert "HTTP_413_CONTENT_TOO_LARGE" in bound, "the canonical status is not imported"
 
 
 def test_the_payload_still_carries_413():
@@ -186,9 +207,15 @@ def test_the_status_module_imports_nothing():
 
 
 def test_the_body_module_uses_the_canonical_event_types():
-    source = (SRC / "http" / "_body.py").read_text(encoding="utf-8")
-    assert '_ASGI_HTTP_REQUEST = "http.request"' not in source
-    assert "ASGI_EVENT_HTTP_REQUEST" in source
+    """As above: a bound name, not a spelling of an assignment statement.
+
+    `'_ASGI_HTTP_REQUEST = "http.request"' not in source` pinned the assignment's
+    exact formatting, so any reflow of it - a different quote style, a line
+    break - satisfied the check while the copy remained.
+    """
+    bound = _module_level_names("http/_body.py")
+    assert "_ASGI_HTTP_REQUEST" not in bound, "a private copy of the event type is bound"
+    assert "ASGI_EVENT_HTTP_REQUEST" in bound, "the canonical event type is not imported"
 
 
 def test_the_event_types_still_match_the_wire():
