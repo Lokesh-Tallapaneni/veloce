@@ -1043,9 +1043,26 @@ class Veloce(
         effective_prefix = url_prefix if url_prefix is not None else blueprint.url_prefix
         bp_name = blueprint.name
         # Stash the blueprint under its registered name so `app.blueprints`
-        # and `app.iter_blueprints()` can return it later. Re-registration
-        # under the same name overwrites.
-        already_registered = bp_name in self._blueprints_map
+        # and `app.iter_blueprints()` can return it later.
+        #
+        # `already_registered` is identity, not name. The guard below exists for
+        # mounting *this* blueprint at a second prefix, where appending its hooks
+        # again would run each of them twice on one request. A different
+        # blueprint that happens to share the name is not that case, and reading
+        # it as one meant the newcomer's routes ran the incumbent's hooks: a
+        # guard registered on the second was silently absent, and the first's ran
+        # against routes it was never written for. Refused rather than resolved,
+        # because both blueprints' routes take the same `<name>.` endpoint
+        # prefix - `url_for` is ambiguous and the hook buckets collide, so one of
+        # the two has to lose whichever way it is decided.
+        existing = self._blueprints_map.get(bp_name)
+        if existing is not None and existing is not blueprint:
+            raise ValueError(
+                f"a different blueprint named {bp_name!r} is already registered: both would "
+                f"share the {bp_name!r} endpoint prefix, so their routes and hooks cannot be "
+                "told apart. Give one a different name."
+            )
+        already_registered = existing is not None
         self._blueprints_map[bp_name] = blueprint
 
         # Splice each route onto the app's tree under the combined prefix.

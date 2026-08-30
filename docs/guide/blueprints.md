@@ -239,8 +239,14 @@ for bp in app.iter_blueprints():
 ```
 
 The returned dictionary is a copy, so mutating it does not affect the
-application. Re-registering a blueprint under an existing name overwrites the
-previous entry in this map.
+application.
+
+The same blueprint may be registered more than once, to mount it at a second
+prefix; its entry here is unchanged and its hooks still run once per request. A
+*different* blueprint under a name already registered is refused with a
+`ValueError`: both would give their routes the same `<name>.` endpoint prefix, so
+`url_for` could not tell them apart and one blueprint's hooks would run on the
+other's routes.
 
 ## Sharing dependencies across a blueprint
 
