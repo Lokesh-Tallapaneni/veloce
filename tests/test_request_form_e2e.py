@@ -297,3 +297,45 @@ def test_app_handler_sees_multiple_form_values():
         headers={"content-type": "application/x-www-form-urlencoded"},
     )
     assert resp.json() == {"tags": ["a", "b", "c"]}
+
+
+# ── multipart DoS caps, through the framework boundary ───────────────
+#
+# Moved here from `test_request_max_content_length.py`, whose subject is the
+# `Request.max_content_length` accessor: these drive `TestClient`, so they
+# belong with the other end-to-end form tests rather than beside a four-test
+# accessor module or in `test_formparsers.py`, which calls the parser directly.
+
+
+def _multipart_body(boundary: str, parts: list[tuple[str, str]]) -> bytes:
+    """Build a minimal multipart body. parts = [(name, value), ...]."""
+    lines = []
+    for name, value in parts:
+        lines.append(f"--{boundary}")
+        lines.append(f'Content-Disposition: form-data; name="{name}"')
+        lines.append("")
+        lines.append(value)
+    lines.append(f"--{boundary}--")
+    lines.append("")
+    return "\r\n".join(lines).encode()
+
+
+def test_multipart_part_count_cap_from_app_config():
+    """The `MAX_FORM_PARTS` config key drives the per-app part cap that a
+    live request hits through `request.form()`."""
+    app = Veloce(debug=True, openapi_url=None)
+    app.config["MAX_FORM_PARTS"] = 2
+
+    @app.post("/u")
+    async def u(request: Request):
+        await request.form()
+        return {"ok": True}
+
+    boundary = "veloceboundary123"
+    body = _multipart_body(boundary, [("a", "1"), ("b", "2"), ("c", "3"), ("d", "4")])
+    resp = TestClient(app).post(
+        "/u",
+        content=body,
+        headers={"content-type": f"multipart/form-data; boundary={boundary}"},
+    )
+    assert resp.status_code == 413
