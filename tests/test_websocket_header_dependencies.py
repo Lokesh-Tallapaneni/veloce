@@ -17,7 +17,7 @@ import base64
 
 import pytest
 
-from veloce import Depends, Header, Veloce, WebSocket
+from veloce import Cookie, Depends, Header, Query, Veloce, WebSocket
 from veloce.security import APIKeyHeader, HTTPBasic, HTTPBearer
 from veloce.testclient import TestClient
 
@@ -122,3 +122,100 @@ def test_every_scheme_agrees_across_both_transports():
     with client.websocket_connect("/probe-ws", headers=header) as session:
         ws_value = session.receive_text()
     assert http_value == ws_value == "same-token"
+
+
+# ── list-typed markers ───────────────────────────────────────────────
+#
+# The scalar case above was fixed by `0fb2d81`, and the tests it added cover
+# only scalars - so the list-typed branch was left broken behind a suite that
+# looks like it covers the area. That branch reads `.getlist(...)`, which a
+# `Request`'s multi-dict headers and cookies have and a `WebSocket`'s plain
+# handshake dicts do not, so the handler never ran and the socket closed 1011.
+
+
+def test_a_list_typed_header_resolves_on_a_websocket_route():
+    """The regression: `AttributeError: 'dict' object has no attribute 'getlist'`."""
+    app = Veloce(openapi_url=None)
+
+    @app.websocket("/ws")
+    async def handler(ws: WebSocket, tags: list[str] = Header(default_factory=list)) -> None:
+        await ws.accept()
+        await ws.send_text(",".join(tags))
+        await ws.close()
+
+    with TestClient(app).websocket_connect("/ws", headers={"tags": "alpha"}) as session:
+        assert session.receive_text() == "alpha"
+
+
+def test_a_list_typed_header_falls_back_to_its_default():
+    """An absent header must reach the default, not raise."""
+    app = Veloce(openapi_url=None)
+
+    @app.websocket("/ws")
+    async def handler(ws: WebSocket, tags: list[str] = Header(default_factory=list)) -> None:
+        await ws.accept()
+        await ws.send_text(repr(tags))
+        await ws.close()
+
+    with TestClient(app).websocket_connect("/ws") as session:
+        assert session.receive_text() == "[]"
+
+
+def test_a_list_typed_cookie_resolves_on_a_websocket_route():
+    """`Cookie` takes the same branch, off the same plain dict."""
+    app = Veloce(openapi_url=None)
+
+    @app.websocket("/ws")
+    async def handler(ws: WebSocket, seen: list[str] = Cookie(default_factory=list)) -> None:
+        await ws.accept()
+        await ws.send_text(",".join(seen))
+        await ws.close()
+
+    client = TestClient(app)
+    with client.websocket_connect("/ws", headers={"Cookie": "seen=one"}) as session:
+        assert session.receive_text() == "one"
+
+
+def test_a_list_typed_query_param_still_resolves():
+    """The control: `query_params` is already a multi-dict on both transports."""
+    app = Veloce(openapi_url=None)
+
+    @app.websocket("/ws")
+    async def handler(ws: WebSocket, ids: list[str] = Query(default_factory=list)) -> None:
+        await ws.accept()
+        await ws.send_text(",".join(ids))
+        await ws.close()
+
+    with TestClient(app).websocket_connect("/ws?ids=a&ids=b") as session:
+        assert session.receive_text() == "a,b"
+
+
+def test_a_list_typed_header_still_resolves_over_http():
+    """The HTTP side of the same branch, so the fix cannot break the door it worked on.
+
+    A single value here rather than repeats: `TestClient` takes a header mapping,
+    which folds duplicates before they reach the app. Repeated headers over HTTP
+    are covered in `tests/test_header_list_marker.py`, which drives raw ASGI
+    header tuples to get more than one of the same name onto the wire.
+    """
+    app = Veloce(openapi_url=None)
+
+    @app.get("/probe")
+    async def probe(tags: list[str] = Header(default_factory=list)) -> dict:
+        return {"tags": tags}
+
+    assert TestClient(app).get("/probe", headers={"tags": "a"}).json()["tags"] == ["a"]
+
+
+def test_a_typed_list_header_is_coerced_on_a_websocket_route():
+    """Coercion runs on this branch too, so it must survive the read."""
+    app = Veloce(openapi_url=None)
+
+    @app.websocket("/ws")
+    async def handler(ws: WebSocket, nums: list[int] = Header(default_factory=list)) -> None:
+        await ws.accept()
+        await ws.send_text(repr(nums))
+        await ws.close()
+
+    with TestClient(app).websocket_connect("/ws", headers={"nums": "7"}) as session:
+        assert session.receive_text() == "[7]"

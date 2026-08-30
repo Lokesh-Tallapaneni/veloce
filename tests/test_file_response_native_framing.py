@@ -17,6 +17,7 @@ says about framing, the bytes on the wire must agree with it.
 
 from __future__ import annotations
 
+import asyncio
 import gzip
 
 import pytest
@@ -25,6 +26,7 @@ from tests._protocol import _FakeTransport
 from veloce import GZipMiddleware, Veloce
 from veloce.helpers import async_send_file
 from veloce.http.response import _INLINE_READ_MAX
+from veloce.serving.protocol import HttpProtocol
 
 #: Comfortably over the inline-read cutoff, so `from_path` streams it.
 BIG = b"veloce " * 40000
@@ -46,10 +48,6 @@ def _framing(emitted: bytes) -> tuple[int | None, bool, int]:
 
 async def _serve(tmp_path, *middleware) -> bytes:
     """Drive one GET for a large file through the native protocol."""
-    import asyncio
-
-    from veloce.serving.protocol import HttpProtocol
-
     path = tmp_path / "big.txt"
     path.write_bytes(BIG)
 
@@ -140,10 +138,6 @@ async def test_the_compressed_body_is_the_file(tmp_path):
 @pytest.mark.parametrize("compress", [False, True], ids=["plain", "gzip"])
 async def test_a_head_request_sends_no_body_either_way(tmp_path, compress):
     """The bodiless-status rule must survive the fix."""
-    import asyncio
-
-    from veloce.serving.protocol import HttpProtocol
-
     path = tmp_path / "big.txt"
     path.write_bytes(BIG)
     app = Veloce(openapi_url=None)

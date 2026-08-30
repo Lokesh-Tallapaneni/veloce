@@ -463,6 +463,24 @@ def _resolve_list_param(slot: Any, request: Request, path_params: dict[str, str]
     )
 
 
+def _every_value(source: Any, key: str) -> list[str]:
+    """Every value stored under `key`, from a multi-dict or a plain mapping.
+
+    A `Request` carries multi-value headers and cookies; a `WebSocket` carries
+    plain dicts built from the handshake, where a repeated field is already
+    folded. Reading `.getlist` unconditionally raised `AttributeError` on a
+    websocket route, so a `list`-typed `Header()` or `Cookie()` closed the
+    handshake 1011 before the handler ran. Only the list-typed marker branch
+    reaches this, so the scalar path is untouched.
+    """
+    getlist = getattr(source, "getlist", None)
+    if getlist is not None:
+        values: list[str] = getlist(key)
+        return values
+    value = source.get(key)
+    return [] if value is None else [value]
+
+
 class DependencyResolver:
     """Walks a `HandlerPlan` to produce kwargs for a handler.
 
@@ -1143,9 +1161,9 @@ class DependencyResolver:
             if mk == 5:  # MK_FORM
                 values = (await request.form()).getlist(lookup)
             elif mk == 2:  # MK_HEADER
-                values = request.headers.getlist(lookup.lower())
+                values = _every_value(request.headers, lookup.lower())
             elif mk == 3:  # MK_COOKIE
-                values = request.cookies.getlist(lookup)
+                values = _every_value(request.cookies, lookup)
             else:  # MK_QUERY
                 values = request.query_params.getlist(lookup)
             loc = MARKER_LOC[mk]

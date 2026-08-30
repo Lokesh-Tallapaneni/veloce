@@ -20,6 +20,7 @@ from pydantic import BaseModel
 
 from tests._openapi import document
 from veloce import Veloce
+from veloce.contrib._jsonschema import _is_model_type
 
 
 class ItemModel(BaseModel):
@@ -79,7 +80,5 @@ def test_the_excluded_field_is_gone_from_the_pydantic_schema():
 def test_both_backends_reach_the_same_gate():
     """The premise: if `_is_model_type` stopped admitting Structs, these would
     pass for a reason that has nothing to do with the fix."""
-    from veloce.contrib._jsonschema import _is_model_type
-
     assert _is_model_type(ItemModel)
     assert _is_model_type(ItemStruct)
