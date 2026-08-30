@@ -430,6 +430,7 @@ def test_routing_subpackage():
     true however the subpackage's `__all__` changed. Importing here is what puts
     the failure in the test that reports it.
     """
+    # Deferred deliberately: the import is what this test asserts.
     from veloce.routing import Query, Router
 
     assert Router is not None
@@ -438,6 +439,7 @@ def test_routing_subpackage():
 
 def test_http_subpackage():
     """As above: importing here is what the test asserts."""
+    # Deferred deliberately: the import is what this test asserts.
     from veloce.http import Request, UploadFile
 
     assert Request is not None
@@ -449,6 +451,7 @@ def test_middleware_subpackage():
 
     The comment saying so was already here, beside names bound at module top.
     """
+    # Deferred deliberately: the import is what this test asserts.
     from veloce.middleware import Middleware, SessionMiddleware
 
     assert Middleware is not None
@@ -457,6 +460,7 @@ def test_middleware_subpackage():
 
 def test_security_subpackage():
     """As above: importing here is what the test asserts."""
+    # Deferred deliberately: the import is what this test asserts.
     from veloce.security import HTTPBasic, OAuth2PasswordBearer
 
     assert HTTPBasic is not None

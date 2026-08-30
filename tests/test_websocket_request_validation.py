@@ -76,6 +76,7 @@ def test_request_validation_error_is_importable_from_package_root():
     module-top imports bind to the same object - so it held whatever the export
     did, and would have held with the name absent from `veloce.__all__`.
     """
+    # Deferred deliberately: the import is what this test asserts.
     from veloce import WebSocketRequestValidationError as Imported
 
     assert issubclass(Imported, Exception)
