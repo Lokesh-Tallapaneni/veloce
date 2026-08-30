@@ -24,6 +24,7 @@ from veloce._protocol_constants import (
     URL_SCHEME_HTTPS,
 )
 from veloce._version import resolve_version
+from veloce.app._host import AppHost
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.app.core import Veloce
@@ -67,18 +68,8 @@ def _resolve_listen_backlog() -> int:
     return max(_MIN_LISTEN_BACKLOG, min(limit, _MAX_LISTEN_BACKLOG))
 
 
-class ServingMixin:
+class ServingMixin(AppHost):
     """Run and gracefully stop the built-in development server."""
-
-    if TYPE_CHECKING:  # pragma: no cover
-        # Attributes / methods the host application (`Veloce`) provides.
-        config: Any
-        logger: Any
-        debug: bool
-        version: str
-        _run_lifecycle: Callable[..., Any]
-        _setup_openapi: Callable[..., Any]
-        _instrumentation: Any
 
     def _print_banner(self, host: str, port: int, tls: bool = False) -> None:
         """Print the development server's start-up banner.

@@ -13,6 +13,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from veloce.app._host import AppHost
 from veloce.principal import set_principal
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -76,18 +77,8 @@ class MCPCompleterRegistration:
     completer: Callable[..., Any]
 
 
-class MCPMixin:
+class MCPMixin(AppHost):
     """Register MCP tools, prompts, completers and hooks, and mount a server."""
-
-    if TYPE_CHECKING:  # pragma: no cover
-        # Attributes the host application (`Veloce`) provides.
-        _mcp_tools: Any
-        _mcp_prompts: Any
-        _mcp_completers: Any
-        _mcp_prebuilt_tools: Any
-        _mcp_before_call: Any
-        _mcp_after_call: Any
-        lifespan_context: Callable[..., Any]
 
     def _init_mcp_state(self) -> None:
         """Set up the registries `mcp_tool` / `mcp_prompt` / `mcp_completer` write into."""

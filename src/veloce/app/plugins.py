@@ -8,7 +8,9 @@ plugin reachable via `app.extensions`.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
+
+from veloce.app._host import AppHost
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.app.core import Veloce
@@ -32,12 +34,8 @@ class Plugin(Protocol):
     def install(self, app: Veloce) -> None: ...
 
 
-class PluginsMixin:
+class PluginsMixin(AppHost):
     """`Veloce.install()` - register an extension in one call."""
-
-    if TYPE_CHECKING:  # pragma: no cover
-        # Attribute the host application (Veloce) provides.
-        extensions: dict[str, Any]
 
     def install(self, plugin: Plugin) -> Plugin:
         """Install ``plugin`` and return it.

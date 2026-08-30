@@ -1395,7 +1395,10 @@ class Veloce(
         # down newest-first BEFORE the parent's own on_shutdown handlers, so a
         # child releasing work against a shared resource tears down while that
         # resource is still open (reverse of parent-then-children startup).
-        self._started_subapps: list[Veloce] = []
+        # Typed by the marker the start loop narrows on, which is also all the
+        # shutdown loop needs: a mounted app owns a Veloce lifecycle, or it is
+        # a foreign ASGI app that is skipped.
+        self._started_subapps: list[LifecycleMixin] = []
         # App-scoped background tasks spawned via `app.spawn(...)`. Named tasks
         # live in the dict (cancellable / retrievable by name); anonymous ones
         # in the set. Both hold strong references so the loop cannot GC an

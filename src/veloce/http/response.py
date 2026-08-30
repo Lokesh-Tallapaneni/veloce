@@ -9,7 +9,7 @@ import stat
 import warnings
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, MutableMapping
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, BinaryIO, Literal
+from typing import TYPE_CHECKING, Any, BinaryIO, Literal
 from urllib.parse import quote
 
 import orjson
@@ -1215,6 +1215,20 @@ class Response:
             return stream
         body = self.body
         return (body[i : i + size] for i in range(0, len(body), size))
+
+    if TYPE_CHECKING:  # pragma: no cover
+        # The counterpart to `is_streamed`, which the base already answers.
+        # `StreamingResponse`, `FileResponse` and `EventSourceResponse` define
+        # it; the built-in server reaches it only behind that guard, and cannot
+        # name those types because `serving/` must not import `sse`. Declared
+        # for the type only - no runtime method, so this is not an abstract base
+        # and a buffered response still has no `stream_to` to call by mistake.
+        async def stream_to(
+            self,
+            transport: Any,
+            drain: Callable[[], Awaitable[None]] | None = None,
+            keep_alive: bool = True,
+        ) -> None: ...
 
     def add_etag(self, weak: bool = False) -> str:
         """Compute and attach an ETag derived from the body.

@@ -9,19 +9,13 @@ is a small prefix scan over the registered mounts.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
+
+from veloce.app._host import AppHost
 
 
-class MountingMixin:
+class MountingMixin(AppHost):
     """Sub-app / ASGI / static mounting, mixed into `Veloce`."""
-
-    if TYPE_CHECKING:  # pragma: no cover
-        # Attributes / methods the host application (Veloce) provides.
-        _mounted_apps: Any
-        _asgi_mounts: Any
-        _mcp_mounts: Any
-        _static_handlers: Any
-        _register_feature_state: Any
 
     def _path_under_mount(self, path: str) -> bool:
         """Whether `path` is served by a mounted sub-application.

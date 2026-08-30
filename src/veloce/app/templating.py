@@ -7,19 +7,13 @@ environment and context-processor list, so they sit off the per-request path.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import Any
+
+from veloce.app._host import AppHost
 
 
-class TemplatingMixin:
+class TemplatingMixin(AppHost):
     """Register Jinja filters, globals, tests, and context processors."""
-
-    if TYPE_CHECKING:  # pragma: no cover
-        # Attributes the host application (`Veloce`) provides.
-        _template_filters: Any
-        _template_globals: Any
-        _template_tests: Any
-        _context_processors: Any
-        _assert_mutable: Callable[..., Any]
 
     def context_processor(self, func: Callable) -> Callable:
         """Register a template context processor.

@@ -17,7 +17,7 @@ import time
 import traceback
 import weakref
 from collections.abc import Callable, MutableMapping
-from typing import TYPE_CHECKING, Any, get_args, get_origin
+from typing import Any, get_args, get_origin
 
 import orjson
 from pydantic import BaseModel as _PydanticBaseModel
@@ -70,6 +70,7 @@ from veloce._protocol_constants import (
     TRACE_HEADER_TRACESTATE,
     build_trace_carrier,
 )
+from veloce.app._host import AppHost
 from veloce.blueprints import _endpoint_blueprint
 from veloce.debug import render_traceback_html
 from veloce.dependency import DependencyResolver, Depends
@@ -226,56 +227,12 @@ def _adapt_hook_kwargs(
     return kwargs
 
 
-class DispatchMixin:
+class DispatchMixin(AppHost):
     """The per-request HTTP dispatch pipeline, mixed into Veloce.
 
     Not slotted: the first-request latch assigns host state (`_setup_locked`,
     `_first_request_fired`) onto the composed `Veloce`, which carries a `__dict__`.
     """
-
-    if TYPE_CHECKING:  # pragma: no cover
-        # Attributes / methods the host application (Veloce) provides.
-        config: Any
-        logger: Any
-        debug: bool
-        match: Callable[..., Any]
-        make_default_options_response: Callable[..., Any]
-        _find_scoped_exception_handler: Callable[..., Any]
-        _find_scoped_status_handler: Callable[..., Any]
-        _instrumentation: Any
-        _middlewares: Any
-        log_exception: Callable[..., Any]
-        _handler_json_dumps: Any
-        _resolve_handler_json_dumps: Callable[..., Any]
-        _should_propagate_exceptions: Callable[..., Any]
-        _setup_locked: bool
-        _setup_lock_enabled: bool
-        _first_request_fired: bool
-        _first_request_lock: Any
-        _before_first_request_hooks: Any
-        _before_request_hooks: Any
-        _after_request_hooks: Any
-        _bp_before_hooks: Any
-        _bp_after_hooks: Any
-        _teardown_request_hooks: Any
-        _bp_teardown_hooks: Any
-        _teardown_appcontext_hooks: Any
-        _url_value_preprocessors: Any
-        _bp_url_value_preprocessors: Any
-        _ensure_pipeline: Callable[..., Any]
-        _setup_openapi: Callable[..., Any]
-        _openapi_setup: bool
-        spawn: Callable[..., Any]
-        _run_teardown_hooks: Callable[..., Any]
-        _select_teardown_request_hooks: Callable[..., Any]
-        get_allowed_methods: Callable[..., Any]
-        _dependency_overrides: Any
-        _override_subplans: Any
-        _instrumentation_excludes: Any
-        _mounted_apps: Any
-        _static_handlers: Any
-        _mw_version: Any
-        redirect_slashes: bool
 
     # ── Entry point and core dispatch ──────────────────────
 

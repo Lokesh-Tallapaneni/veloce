@@ -25,6 +25,7 @@ from veloce._protocol_constants import (
     LIFECYCLE_STARTUP,
 )
 from veloce._warnings import VeloceDeprecationWarning
+from veloce.app._host import AppHost
 from veloce.audit import AuditFailed
 from veloce.audit import run as audit_run
 
@@ -149,32 +150,8 @@ def _build_watchdog_attributor(app: Veloce) -> Callable[[FrameType], str | None]
     return attributor
 
 
-class LifecycleMixin:
+class LifecycleMixin(AppHost):
     """Request hooks and application lifespan, mixed into `Veloce`."""
-
-    if TYPE_CHECKING:  # pragma: no cover
-        # Attributes / methods the host application (Veloce) provides.
-        config: Any
-        logger: Any
-        _assert_mutable: Callable[..., Any]
-        _gen: int
-        _before_request_hooks: Any
-        _after_request_hooks: Any
-        _before_first_request_hooks: Any
-        _teardown_request_hooks: Any
-        _teardown_appcontext_hooks: Any
-        _bp_teardown_hooks: Any
-        _on_startup: Any
-        _on_shutdown: Any
-        _lifespan: Any
-        _extra_lifespans: Any
-        _lifespan_cm: Any
-        _lifespan_stack: Any
-        _started_subapps: Any
-        _mounted_apps: Any
-        debug: Any
-        _watchdog: Any
-        _drain_spawned_tasks: Callable[..., Any]
 
     # ── Before/After request hooks ────────────────────────
 

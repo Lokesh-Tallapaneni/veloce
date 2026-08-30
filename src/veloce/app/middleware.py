@@ -14,26 +14,14 @@ built-in middleware live in the separate `veloce.middleware` package.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
+from veloce.app._host import AppHost
 from veloce.middleware import BaseHTTPMiddleware, Middleware
 
 
-class MiddlewareMixin:
+class MiddlewareMixin(AppHost):
     """Middleware registration funnel, mixed into `Veloce`."""
-
-    if TYPE_CHECKING:  # pragma: no cover
-        # Attributes / methods the host application (Veloce) provides.
-        _assert_mutable: Callable[..., Any]
-        _register_feature_state: Any
-        _asgi_middleware: Any
-        _middlewares: Any
-        _middleware_records: Any
-        _middleware_seq: int
-        _mw_version: int
-        _any_priority: bool
-        _http_middleware_funcs: Any
-        _gen: int
 
     @property
     def middlewares(self) -> tuple[Middleware, ...]:

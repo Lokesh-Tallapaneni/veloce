@@ -11,7 +11,7 @@ error surface is one file and the core <-> errors import direction stays one-way
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import veloce.status as status
 from veloce._constants import (
@@ -25,6 +25,7 @@ from veloce._protocol_constants import (
     HTTP_METHOD_HEAD,
     HTTP_METHOD_OPTIONS,
 )
+from veloce.app._host import AppHost
 from veloce.exceptions import HTTPException, _error_handler_key_error, http_exception_payload
 from veloce.http.request import Request
 from veloce.http.response import (
@@ -38,23 +39,8 @@ from veloce.http.response import (
 _MISSING: Any = object()
 
 
-class ErrorsMixin:
+class ErrorsMixin(AppHost):
     """Exception-handler registration and dispatch, mixed into `Veloce`."""
-
-    if TYPE_CHECKING:  # pragma: no cover
-        # Attributes / methods the host application (Veloce) provides.
-        config: Any
-        debug: bool
-        logger: Any
-        _assert_mutable: Callable[..., Any]
-        _status_handlers: Any
-        _exception_handlers: Any
-        _exc_handler_cache: Any
-        _bp_exception_handlers: Any
-        _bp_status_handlers: Any
-        _call_exc_handler: Callable[..., Any]
-        _coerce_response: Callable[..., Any]
-        get_allowed_methods: Callable[..., Any]
 
     def register_error_handler(self, code_or_exception: int | type, func: Callable) -> None:
         """Register an error handler without a decorator.

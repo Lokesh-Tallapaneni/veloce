@@ -10,19 +10,13 @@ pays nothing for it.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
+
+from veloce.app._host import AppHost
 
 
-class OpenAPIMixin:
+class OpenAPIMixin(AppHost):
     """OpenAPI schema build and docs-route registration, mixed into `Veloce`."""
-
-    if TYPE_CHECKING:  # pragma: no cover
-        # Attributes the host application (Veloce) provides.
-        openapi_schema: Any
-        _openapi_setup: bool
-        _openapi_url: Any
-        _docs_url: Any
-        _redoc_url: Any
 
     def _setup_openapi(self) -> None:
         """Register OpenAPI/Swagger routes if enabled."""

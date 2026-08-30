@@ -62,6 +62,7 @@ from veloce._protocol_constants import (
     ROUTE_METHOD_WEBSOCKET,
     SET_COOKIE_JOINER,
 )
+from veloce.app._host import AppHost
 from veloce.dependency import DependencyResolver
 from veloce.exceptions import (
     RequestValidationError,
@@ -346,28 +347,8 @@ async def _refuse_websocket(
     await send({"type": ASGI_EVENT_WS_CLOSE, "code": status.WS_1008_POLICY_VIOLATION})
 
 
-class AsgiMixin:
+class AsgiMixin(AppHost):
     """The ASGI transport + response-emit layer, mixed into Veloce."""
-
-    if TYPE_CHECKING:  # pragma: no cover
-        # Attributes / methods the host application (Veloce) provides.
-        config: Any
-        logger: Any
-        match: Callable[..., Any]
-        handle_request: Callable[..., Any]
-        _body_too_large_response: Callable[..., Any]
-        _ensure_pipeline: Callable[..., Any]
-        _setup_openapi: Callable[..., Any]
-        _openapi_setup: bool
-        _match_asgi_mount: Callable[..., Any]
-        _path_under_mount: Callable[..., Any]
-        _run_lifecycle: Callable[..., Any]
-        _pipeline: Any
-        _gen: int
-        _asgi_stack: Any
-        _asgi_stack_gen: int
-        _override_subplans: Any
-        _dependency_overrides: Any
 
     async def _refuse_too_large(
         self,

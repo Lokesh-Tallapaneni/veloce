@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from veloce._protocol_constants import ROUTE_METHOD_WEBSOCKET, URL_SCHEME_HTTP
+from veloce.app._host import AppHost
 from veloce.blueprints import _endpoint_blueprint
 from veloce.exceptions import BuildError
 from veloce.helpers import g
@@ -25,34 +26,8 @@ if TYPE_CHECKING:  # pragma: no cover
     from collections.abc import Callable
 
 
-class IntrospectionMixin:
+class IntrospectionMixin(AppHost):
     """Read-only views over the route table, and the URL-building hooks."""
-
-    if TYPE_CHECKING:  # pragma: no cover
-        # Attributes / methods the host application (Veloce) provides.
-        config: Any
-        url_build_error_handlers: list[Callable[..., Any]]
-        _gen: int
-        _cached_view_functions: dict[str, Callable[..., Any]] | None
-        _assert_mutable: Callable[..., Any]
-        _collect_all_routes: Callable[..., Any]
-        _finalize_plans: Callable[..., Any]
-        _exception_handlers: Any
-        _status_handlers: Any
-        _bp_exception_handlers: Any
-        _bp_status_handlers: Any
-        _before_request_hooks: list[Callable[..., Any]]
-        _after_request_hooks: list[Callable[..., Any]]
-        _teardown_request_hooks: list[Callable[..., Any]]
-        _bp_before_hooks: dict[str, list[Callable[..., Any]]]
-        _bp_after_hooks: dict[str, list[Callable[..., Any]]]
-        _bp_teardown_hooks: dict[str, list[Callable[..., Any]]]
-        _blueprints_map: dict[str, Any]
-        _url_value_preprocessors: list[Callable[..., Any]]
-        _url_default_funcs: list[Callable[..., Any]]
-        _bp_url_value_preprocessors: dict[str, list[Callable[..., Any]]]
-        _bp_url_default_funcs: dict[str, list[Callable[..., Any]]]
-        _shell_context_processors: list[Callable[..., Any]]
 
     # ── Endpoint and hook introspection ────────────────────
 

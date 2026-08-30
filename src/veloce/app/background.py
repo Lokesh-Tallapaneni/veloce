@@ -12,18 +12,13 @@ import asyncio
 import inspect
 import time
 from collections.abc import Callable, Coroutine
-from typing import TYPE_CHECKING, Any
+from typing import Any
+
+from veloce.app._host import AppHost
 
 
-class BackgroundTasksMixin:
+class BackgroundTasksMixin(AppHost):
     """Spawn, name, supervise, and drain application background tasks."""
-
-    if TYPE_CHECKING:  # pragma: no cover
-        # Attributes the host application (`Veloce.__init__`) provides.
-        _spawned_named: Any
-        _spawned_anon: Any
-        config: Any
-        logger: Any
 
     def _log_background_task_error(self, task: asyncio.Task) -> None:
         """Done-callback for fire-and-forget background tasks.
