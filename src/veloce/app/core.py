@@ -16,9 +16,10 @@ from typing import TYPE_CHECKING, Annotated, Any
 
 from typing_extensions import Doc
 
-from veloce._internal import _readd_route, (
+from veloce._internal import (
     _UNRESOLVED_JSON_DUMPS,
     _coerce_bool,
+    _readd_route,
 )
 from veloce._pipeline import (
     PH_ASGI_WRAP,
