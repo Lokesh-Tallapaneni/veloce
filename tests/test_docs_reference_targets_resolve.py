@@ -20,6 +20,8 @@ import re
 
 import pytest
 
+import veloce
+
 DOCS = pathlib.Path(__file__).resolve().parents[1] / "docs"
 TARGET = re.compile(r"^:::\s+([A-Za-z_][\w.]*)\s*$", re.M)
 
@@ -65,3 +67,41 @@ def test_a_documented_symbol_still_exists(page: str, path: str):
             "and `mkdocs build --strict` will abort on this page"
         )
         target = getattr(target, attr)
+
+
+# ── and the other direction: every export is named by a page ─────────
+#
+# The reverse check above is the one that fails the docs build. This one is the
+# direction that ships silently: an export with no `:::` directive simply has
+# no reference page, and nothing notices. `GZipMiddleware`'s docstring linked to
+# `#veloce.CompressionMiddleware`, an anchor mkdocstrings never created because
+# no page named that symbol, so the link was dead on the published site.
+
+
+def _documented_names() -> set[str]:
+    """Every `veloce.X` named by a `:::` directive under `docs/reference/`."""
+    documented: set[str] = set()
+    for page in sorted((DOCS / "reference").rglob("*.md")):
+        documented |= {
+            match.group(1)
+            for match in re.finditer(
+                r"^::: veloce\.([A-Za-z_][A-Za-z0-9_]*)$",
+                page.read_text(encoding="utf-8"),
+                re.M,
+            )
+        }
+    return documented
+
+
+def test_the_directive_scan_reads_a_real_corpus():
+    """A scan of nothing would pass the check below on an empty docs tree."""
+    assert len(_documented_names()) > 200
+
+
+def test_every_top_level_export_has_a_reference_entry():
+    """An export with no `:::` directive has no page a reader can reach."""
+    undocumented = sorted(name for name in veloce.__all__ if name not in _documented_names())
+    assert not undocumented, (
+        "these are in `veloce.__all__` but no `docs/reference/` page names them, "
+        f"so they render nowhere and cannot be linked to: {undocumented}"
+    )
