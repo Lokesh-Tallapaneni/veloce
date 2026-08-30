@@ -14,8 +14,6 @@ Constraints — preserved by `compute_dep_waves`:
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 from tests._dep_rendezvous import rendezvous_pair
 from veloce import Depends, Security, Veloce
 from veloce._handler_plan import (
@@ -23,7 +21,6 @@ from veloce._handler_plan import (
     build_plan,
     compute_dep_waves,
 )
-from veloce.dependency import K_DEPENDS
 from veloce.testclient import TestClient
 
 
@@ -108,71 +105,65 @@ def test_yield_dependency_still_tears_down_in_order():
     assert events == ["enter", "plain", "handler", "exit"]
 
 
-async def test_the_wave_builder_excludes_a_security_dependency():
-    """A Security() slot is left out of the batch, not batched with its siblings."""
-    plain = SimpleNamespace(
-        kind=K_DEPENDS,
-        target_type=None,
-        dep_is_gen=False,
-        dep_is_async_gen=False,
-        use_cache=False,
-        dep_callable=lambda: None,
-        sub_plan=None,
-    )
-    sec = SimpleNamespace(
-        kind=K_DEPENDS,
-        target_type=["read"],  # scope list — Security() shape
-        dep_is_gen=False,
-        dep_is_async_gen=False,
-        use_cache=False,
-        dep_callable=lambda: None,
-        sub_plan=None,
-    )
-    # plain, plain, sec, plain - every plain slot batches, the Security() one
-    # is excluded entirely and stays inline so its scope push/pop is ordered.
-    assert compute_dep_waves([plain, plain, sec, plain]) == [[0, 1, 3]]
+def test_the_wave_builder_excludes_a_security_dependency():
+    """A Security() slot is left out of the batch, not batched with its siblings.
 
-
-async def test_group_end_helper_refuses_nested_security():
-    """An outer plain `Depends` whose sub_plan transitively contains
-    a Security() slot must not be parallelised — the shared
-    `_scope_stack` would otherwise be corrupted by interleaved
-    push/pop pairs across sibling tasks.
+    Driven through `build_plan` rather than `SimpleNamespace` stubs. The stubs
+    spelled out seven `_Slot` fields by hand, so a field added to the real slot -
+    or renamed - would leave this test asserting about a shape the wave builder
+    no longer receives, and `_slot_parallel_safe` reading a default where a real
+    slot carries a value.
     """
-    # An inner Security slot reachable through outer plain's sub_plan.
-    inner_sec = SimpleNamespace(
-        kind=K_DEPENDS,
-        target_type=["s1"],
-        dep_is_gen=False,
-        dep_is_async_gen=False,
-        use_cache=False,
-        dep_callable=lambda: None,
-        sub_plan=None,
+
+    def a():
+        return 1
+
+    def b():
+        return 2
+
+    def guard():
+        return "ok"
+
+    async def h(
+        p1: int = Depends(a),
+        p2: int = Depends(b),
+        s: str = Security(guard, scopes=["read"]),
+        p3: int = Depends(a),
+    ):
+        return p1
+
+    # The two plain slots before the Security() one batch together; the
+    # Security() slot is excluded entirely so its scope push/pop stays ordered,
+    # and the plain slot after it cannot join a batch that has already closed.
+    assert compute_dep_waves(build_plan(h).slots) == [[0, 1], [3]]
+
+
+def test_group_end_helper_refuses_nested_security():
+    """A plain `Depends` whose sub-plan transitively contains a Security() slot
+    must not be parallelised - the shared `_scope_stack` would otherwise be
+    corrupted by interleaved push/pop pairs across sibling tasks.
+
+    Also built from a real plan: the nesting is what makes this case
+    interesting, and a hand-built `sub_plan` is the part a stub gets wrong.
+    """
+
+    def inner_guard():
+        return "ok"
+
+    def outer(s: str = Security(inner_guard, scopes=["s1"])):
+        return s
+
+    def plain():
+        return 1
+
+    async def h(a: str = Depends(outer), b: int = Depends(plain)):
+        return a
+
+    outer_slot = build_plan(h).slots[0]
+    assert not _slot_parallel_safe(outer_slot, set()), (
+        "an outer plain Depends reaching a Security() through its sub-plan was "
+        "treated as parallel-safe"
     )
-    outer_with_nested_sec = SimpleNamespace(
-        kind=K_DEPENDS,
-        target_type=None,  # plain at the outer level...
-        dep_is_gen=False,
-        dep_is_async_gen=False,
-        use_cache=False,
-        dep_callable=lambda: None,
-        sub_plan=SimpleNamespace(slots=[inner_sec]),  # ...but nested!
-    )
-    plain = SimpleNamespace(
-        kind=K_DEPENDS,
-        target_type=None,
-        dep_is_gen=False,
-        dep_is_async_gen=False,
-        use_cache=False,
-        dep_callable=lambda: None,
-        sub_plan=None,
-    )
-    # The outer dep fails the safety check, so only one safe slot remains and
-    # no wave is built at all - the resolver runs both inline, in slot order.
-    assert compute_dep_waves([outer_with_nested_sec, plain]) == []
-    # The transitive-safe helper directly returns False, too.
-    assert _slot_parallel_safe(outer_with_nested_sec, set()) is False
-    assert _slot_parallel_safe(plain, set()) is True
 
 
 # ── Precomputed dependency waves (registration-time) ───────────────────
