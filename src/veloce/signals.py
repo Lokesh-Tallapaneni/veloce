@@ -374,6 +374,17 @@ class Signal:
             targets[slot] = (target, result)
         return targets
 
+    def receiver_count(self) -> int:
+        """How many receivers this signal holds, live or not yet pruned.
+
+        The counting counterpart to `has_receivers_for`, which answers the
+        *live* question and short-circuits. This counts what is stored, so a
+        weak reference whose target has been collected is still counted until
+        `send` prunes it - which is the distinction anyone debugging a leak, or
+        checking that pruning happened, actually needs.
+        """
+        return len(self._subs)
+
     def has_receivers_for(self, sender: Any = None) -> bool:
         """`True` if any connected receiver would fire for `sender`.
 

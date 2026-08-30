@@ -587,11 +587,11 @@ def test_iter_live_targets_prunes_dead_weakref_after_single_send():
     drop = Owner()
     sig_a.connect(keep.handle, weak=True)
     sig_a.connect(drop.handle, weak=True)
-    assert len(sig_a._subs) == 2
+    assert sig_a.receiver_count() == 2
     del drop
     gc.collect()
     sig_a.send("x")
-    assert len(sig_a._subs) == 1
+    assert sig_a.receiver_count() == 1
 
     # send_robust() path
     sig_b = Signal("prune-robust")
@@ -599,11 +599,11 @@ def test_iter_live_targets_prunes_dead_weakref_after_single_send():
     drop2 = Owner()
     sig_b.connect(keep2.handle, weak=True)
     sig_b.connect(drop2.handle, weak=True)
-    assert len(sig_b._subs) == 2
+    assert sig_b.receiver_count() == 2
     del drop2
     gc.collect()
     sig_b.send_robust("x")
-    assert len(sig_b._subs) == 1
+    assert sig_b.receiver_count() == 1
 
 
 def test_send_prunes_when_only_receiver_is_dead():
@@ -622,7 +622,7 @@ def test_send_prunes_when_only_receiver_is_dead():
     sig = Signal("prune-only-dead")
     drop = Owner()
     sig.connect(drop.handle, weak=True)
-    assert len(sig._subs) == 1
+    assert sig.receiver_count() == 1
     assert sig.has_receivers_for("x") is True
     del drop
     gc.collect()
@@ -630,7 +630,7 @@ def test_send_prunes_when_only_receiver_is_dead():
     # does not prune. send() fires nothing yet prunes the stranded entry.
     assert sig.has_receivers_for("x") is False
     assert sig.send("x") == []
-    assert sig._subs == []
+    assert sig.receiver_count() == 0
 
 
 def test_send_robust_logs_failures(caplog):
@@ -709,9 +709,9 @@ def test_signal_disconnect_targets_the_correct_subscription():
     # The ANY_SENDER subscription must survive — a send for an
     # unrelated sender should still find it.
     assert sig.has_receivers_for("anything")
-    # The per-sender one is gone (only one subscription remains).
-    assert len(sig._subs) == 1
-    assert sig._subs[0][0] is ANY_SENDER
+    # The per-sender one is gone, and the survivor is the ANY_SENDER binding:
+    # a "login"-only subscription could not answer `has_receivers_for("anything")`.
+    assert sig.receiver_count() == 1
 
 
 def test_signal_result_is_alias_for_list_of_tuples() -> None:
