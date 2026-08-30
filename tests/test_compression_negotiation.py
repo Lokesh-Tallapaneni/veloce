@@ -26,12 +26,15 @@ dynamic response path.
 
 from __future__ import annotations
 
+import ast
+import gzip
 import gzip as gzip_module
 import inspect
+import textwrap
 
 import pytest
 
-from veloce import CompressionMiddleware, GZipMiddleware, StreamingResponse, Veloce
+from veloce import CompressionMiddleware, GZipMiddleware, Response, StreamingResponse, Veloce
 from veloce.testclient import TestClient
 
 brotli = pytest.importorskip("brotli", reason="brotli is not installed")
@@ -46,8 +49,6 @@ def _app(middleware) -> Veloce:
 
     @app.get("/text")
     async def text():
-        from veloce import Response
-
         return Response(body=BODY, content_type="text/plain")
 
     @app.get("/stream")
@@ -260,8 +261,6 @@ def test_a_body_below_the_threshold_is_not_compressed(coding: str):
 
     @app.get("/small")
     async def small():
-        from veloce import Response
-
         return Response(body=b"tiny", content_type="text/plain")
 
     response = TestClient(app).get("/small", headers={"Accept-Encoding": coding})
@@ -275,8 +274,6 @@ def test_an_incompressible_type_is_left_alone(coding: str):
 
     @app.get("/img")
     async def img():
-        from veloce import Response
-
         return Response(body=BODY, content_type="image/png")
 
     response = TestClient(app).get("/img", headers={"Accept-Encoding": coding})
@@ -290,8 +287,6 @@ def test_an_already_encoded_body_is_not_re_encoded(coding: str):
 
     @app.get("/pre")
     async def pre():
-        from veloce import Response
-
         return Response(
             body=BODY, content_type="text/plain", headers={"Content-Encoding": "identity-ish"}
         )
@@ -314,8 +309,6 @@ def test_a_strong_etag_is_weakened(coding: str):
 
     @app.get("/tagged")
     async def tagged():
-        from veloce import Response
-
         return Response(body=BODY, content_type="text/plain", headers={"ETag": '"abc"'})
 
     response = TestClient(app).get("/tagged", headers={"Accept-Encoding": coding})
@@ -395,13 +388,26 @@ def test_compress_stream_carries_no_unused_parameter():
     """
     from veloce.middleware.compression import CompressionMiddleware
 
-    source = inspect.getsource(CompressionMiddleware._compress_stream)
-    body = source.split(":", 1)[1]
-    params = [p for p in inspect.signature(CompressionMiddleware._compress_stream).parameters][1:]
+    function = CompressionMiddleware._compress_stream
+
+    # Names the body actually loads. This split the source on the first colon,
+    # which for `_compress_stream(self, stream: Any, coding: str)` falls inside
+    # the signature - so every parameter matched its own annotation, or the
+    # docstring, and a never-read argument passed. Parsing keeps the annotations
+    # and the docstring out of it: a `str` constant contributes no `Name`.
+    definition = ast.parse(textwrap.dedent(inspect.getsource(function))).body[0]
+    read = {
+        node.id
+        for statement in definition.body
+        for node in ast.walk(statement)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+    }
+
+    params = [p for p in inspect.signature(function).parameters][1:]
     assert params
     assert "request" not in params
     for param in params:
-        assert param in body, f"{param} is never read"
+        assert param in read, f"{param} is never read"
 
 
 def test_streaming_compression_still_works():
@@ -416,8 +422,6 @@ def test_streaming_compression_still_works():
                 yield b"hello world "
 
         return StreamingResponse(gen(), content_type="text/plain")
-
-    import gzip
 
     response = TestClient(app).get("/s", headers={"Accept-Encoding": "gzip"})
     assert response.headers.get("Content-Encoding") == "gzip"
@@ -439,3 +443,129 @@ def test_a_refused_encoding_still_streams_plain():
     response = TestClient(app).get("/s", headers={"Accept-Encoding": "gzip;q=0"})
     assert response.headers.get("Content-Encoding") != "gzip"
     assert response.text == "plain"
+
+
+# ── gzip: an already-encoded body is not re-encoded ──────────────────
+#
+# Moved here from `test_route_metadata.py`, which is about route-level
+# OpenAPI metadata and held these only because the two landed in one batch.
+
+
+def _make_gzip_app() -> Veloce:
+    app = Veloce(debug=True, openapi_url=None)
+    app.add_middleware(GZipMiddleware(minimum_size=10))
+
+    @app.get("/plain")
+    async def plain():
+        return "x" * 2000
+
+    @app.get("/pre-encoded")
+    async def pre_encoded():
+        # A handler that returns a body that's already been compressed
+        # (and declares it via Content-Encoding) — middleware must NOT
+        # re-gzip it, or no client can decode the result.
+        # A *compressible* content type on purpose. With
+        # `application/octet-stream` the middleware skipped on type and never
+        # reached the Content-Encoding check at all.
+        body = b"x" * 2000
+        compressed = gzip.compress(body)
+        return Response(
+            body=compressed,
+            content_type="text/plain",
+            headers={"Content-Encoding": "gzip"},
+        )
+
+    @app.get("/identity-encoded")
+    async def identity_encoded():
+        # `Content-Encoding: identity` means "no encoding" — the middleware
+        # should treat this as if no encoding were declared and proceed.
+        return Response(
+            body=b"x" * 2000,
+            content_type="text/plain",
+            headers={"Content-Encoding": "identity"},
+        )
+
+    return app
+
+
+def test_gzip_compresses_when_no_existing_encoding():
+    client = TestClient(_make_gzip_app())
+    resp = client.get("/plain", headers={"accept-encoding": "gzip"})
+    assert resp.status_code == 200
+    # Body should be gzipped now.
+    assert resp.headers.get("content-encoding") == "gzip"
+    # Vary header carries Accept-Encoding so caches key correctly.
+    vary = resp.headers.get("vary", "").lower()
+    assert "accept-encoding" in vary
+
+
+def test_gzip_skips_already_encoded_response():
+    """A genuinely gzipped body reaches the client decodable in one pass.
+
+    The end-to-end half: `test_an_already_encoded_body_is_not_re_encoded` in
+    `test_compression_negotiation.py` isolates the Content-Encoding check with
+    a placeholder token, and a mutation deleting that check fails it. It cannot
+    fail here - a second gzip layer over real gzip output is *larger* than the
+    first, so the `clen < len(body)` guard declines it anyway. This asserts the
+    outcome a client depends on instead of claiming to pin the branch.
+    """
+    client = TestClient(_make_gzip_app())
+    resp = client.get("/pre-encoded", headers={"accept-encoding": "gzip"})
+    assert resp.status_code == 200
+    # Both halves of "did not add a second layer": the header still declares
+    # one encoding rather than `gzip, gzip`, and one decode returns the
+    # original. Decoding alone leaves a doubled header undetected, and a
+    # doubled header is what tells a client how many times to decode.
+    assert resp.headers.get("content-encoding") == "gzip"
+    assert gzip.decompress(resp.body) == b"x" * 2000
+
+
+def test_gzip_proceeds_when_existing_encoding_is_identity():
+    """`Content-Encoding: identity` is a no-op declaration; treat as no encoding."""
+    client = TestClient(_make_gzip_app())
+    resp = client.get("/identity-encoded", headers={"accept-encoding": "gzip"})
+    # Middleware should have replaced `identity` with `gzip`.
+    assert resp.headers.get("content-encoding") == "gzip"
+    assert gzip.decompress(resp.body) == b"x" * 2000
+
+
+def test_gzip_skipped_without_accept_encoding():
+    client = TestClient(_make_gzip_app())
+    resp = client.get("/plain")  # no accept-encoding
+    assert resp.status_code == 200
+    assert resp.headers.get("content-encoding") is None
+    assert resp.body == b"x" * 2000
+
+
+def test_gzip_skipped_below_minimum_size():
+    app = Veloce(debug=True, openapi_url=None)
+    app.add_middleware(GZipMiddleware(minimum_size=10_000))
+
+    @app.get("/tiny")
+    async def tiny():
+        return "x"
+
+    resp = TestClient(app).get("/tiny", headers={"accept-encoding": "gzip"})
+    # Not compressed, *and* delivered intact: a middleware that dropped the
+    # body below the threshold would satisfy the header assertion alone.
+    assert resp.headers.get("content-encoding") is None
+    assert resp.body == b"x"
+
+
+def test_gzip_vary_header_appended_not_replaced():
+    """If the response already had a Vary header, Accept-Encoding is appended."""
+    app = Veloce(debug=True, openapi_url=None)
+    app.add_middleware(GZipMiddleware(minimum_size=10))
+
+    @app.get("/x")
+    async def x():
+        return Response(
+            body=b"x" * 2000,
+            content_type="text/plain",
+            headers={"Vary": "Origin"},
+        )
+
+    resp = TestClient(app).get("/x", headers={"accept-encoding": "gzip"})
+    vary = resp.headers.get("vary", "")
+    assert "Origin" in vary
+    assert "Accept-Encoding" in vary

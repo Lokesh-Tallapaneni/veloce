@@ -28,7 +28,7 @@ from veloce import status
 from veloce._params import Body, Cookie, File, Form, Header, Path, Query
 from veloce._warnings import VeloceDeprecationWarning
 from veloce.app import Plugin, URLMap, URLRule, Veloce
-from veloce.audit import AuditContext, AuditFailed, Finding
+from veloce.audit import AuditContext, AuditFailed, Finding, Severity
 
 # Background tasks
 from veloce.background import BackgroundTask, BackgroundTasks
@@ -221,6 +221,7 @@ from veloce.ratelimit import (
     InMemoryRateLimitBackend,
     RateLimitBackend,
     RateLimitResult,
+    RateLimitState,
     RateLimitStrategy,
     SlidingWindow,
     TokenBucket,
@@ -280,6 +281,7 @@ from veloce.sessions import InMemorySessionStore, Session, SessionStore
 from veloce.signals import (
     Namespace,
     Signal,
+    SignalResult,
     appcontext_popped,
     appcontext_pushed,
     appcontext_tearing_down,
@@ -365,6 +367,7 @@ __all__ = [
     "RateLimitBackend",
     "InMemoryRateLimitBackend",
     "RateLimitResult",
+    "RateLimitState",
     "rate_limit",
     "HTTPSRedirectMiddleware",
     "SecurityHeadersMiddleware",
@@ -505,6 +508,7 @@ __all__ = [
     "AuditContext",
     "AuditFailed",
     "Finding",
+    "Severity",
     "abort",
     "after_this_request",
     "async_send_file",
@@ -552,6 +556,7 @@ __all__ = [
     "HealthPlugin",
     # Signals
     "Signal",
+    "SignalResult",
     "Namespace",
     "request_started",
     "request_finished",

@@ -21,6 +21,16 @@ def _modules() -> list[pathlib.Path]:
     return sorted(p for p in TESTS.rglob("test_*.py") if p.name != pathlib.Path(__file__).name)
 
 
+def _is_suppressed_import(line: str) -> bool:
+    """Whether `line` is an import carrying the suppression comment.
+
+    One definition, used by the corpus scan and by the guard that proves
+    the scan is not vacuous. Written twice, narrowing one left the other
+    reporting a live scanner that had stopped matching anything.
+    """
+    return line.startswith(("import ", "from ")) and SUPPRESSION in line
+
+
 def test_the_late_import_scan_reads_a_real_corpus():
     """A scan of nothing passes every check below it.
 
@@ -39,7 +49,7 @@ def test_every_late_import_sits_under_a_skip_guard() -> None:
     for path in _modules():
         lines = path.read_text(encoding="utf-8").split("\n")
         for number, line in enumerate(lines, start=1):
-            if not line.startswith(("import ", "from ")) or SUPPRESSION not in line:
+            if not _is_suppressed_import(line):
                 continue
             preceding = "\n".join(lines[: number - 1])
             if not any(guard in preceding for guard in GUARDS):
@@ -54,13 +64,9 @@ def test_every_late_import_sits_under_a_skip_guard() -> None:
 
 def test_the_scan_recognises_an_unguarded_late_import() -> None:
     """The check above passes trivially if the scan never matches anything."""
-    module = TESTS / "test_deferred_import_discipline.py"
     planted = ["x = 1", f"import json  {SUPPRESSION}"]
     offenders = [
-        number
-        for number, line in enumerate(planted, start=1)
-        if line.startswith(("import ", "from ")) and SUPPRESSION in line
+        number for number, line in enumerate(planted, start=1) if _is_suppressed_import(line)
     ]
     assert offenders == [2]
     assert not any(guard in planted[0] for guard in GUARDS)
-    assert module.exists()

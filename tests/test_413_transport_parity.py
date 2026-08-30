@@ -25,8 +25,8 @@ import asyncio
 import json
 import pathlib
 
-from tests._asgi_drive import body_of, drive, headers_of, status_of
-from tests._protocol import _FakeTransport
+from tests._asgi_drive import body_of, drive, headers_of, http_scope, status_of
+from tests._protocol import _FakeTransport, _run_until
 from veloce import Veloce
 from veloce.http._body import too_large_payload
 from veloce.serving.protocol import HttpProtocol
@@ -47,20 +47,11 @@ def _app() -> Veloce:
 
 
 def _scope(body: bytes) -> dict:
-    return {
-        "type": "http",
-        "asgi": {"version": "3.0"},
-        "http_version": "1.1",
-        "method": "POST",
-        "path": "/up",
-        "raw_path": b"/up",
-        "query_string": b"",
-        "headers": [(b"content-length", str(len(body)).encode())],
-        "client": ("127.0.0.1", 1),
-        "server": ("127.0.0.1", 80),
-        "scheme": "http",
-        "root_path": "",
-    }
+    return http_scope(
+        method="POST",
+        path="/up",
+        headers=[(b"content-length", str(len(body)).encode())],
+    )
 
 
 async def _drive_asgi(body: bytes, app: Veloce | None = None) -> tuple[int, dict, bytes]:
@@ -84,8 +75,7 @@ def _drive_native_raw(body: bytes) -> tuple[bytes, bool]:
         head = b"POST /up HTTP/1.1" + CRLF + b"Host: t" + CRLF
         head += b"Content-Length: " + str(len(body)).encode() + CRLF + CRLF
         proto.data_received(head + body)
-        for _ in range(4):
-            loop.run_until_complete(asyncio.sleep(0))
+        _run_until(loop, lambda: bool(transport.writes))
         return b"".join(transport.writes), transport.closed
     finally:
         loop.close()

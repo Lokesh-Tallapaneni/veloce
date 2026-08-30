@@ -65,6 +65,23 @@ def _app(server: MCPAuthorizationServer) -> Veloce:
     return app
 
 
+@pytest.fixture
+async def client():
+    """The module's standard client: a default authorization server, freshly built.
+
+    Twenty-eight tests opened `AsyncTestClient(_app(_server()))` verbatim, so a
+    change to how this module builds its client was twenty-eight edits and a
+    reader had to confirm all twenty-eight really were identical first.
+
+    Function-scoped deliberately: `TestClient.__init__` runs the app's startup
+    lifecycle, and these tests register dynamic OAuth clients into the server, so
+    a module-scoped client would share registration state across all of them and
+    change what they assert.
+    """
+    async with AsyncTestClient(_app(_server())) as instance:
+        yield instance
+
+
 async def _register(client, **body) -> dict:
     body.setdefault("redirect_uris", [REDIRECT])
     response = await client.post("/register", json=body)
@@ -117,12 +134,11 @@ def test_the_registration_endpoint_is_advertised_only_when_it_is_served():
     assert "registration_endpoint" not in _server(allow_dynamic_registration=False).metadata()
 
 
-async def test_the_metadata_is_served_at_the_well_known_path():
-    async with AsyncTestClient(_app(_server())) as client:
-        response = await client.get("/.well-known/oauth-authorization-server")
-        assert response.status_code == 200
-        assert json.loads(response.body)["issuer"] == ISSUER
-        assert response.headers["cache-control"] == "no-store"
+async def test_the_metadata_is_served_at_the_well_known_path(client):
+    response = await client.get("/.well-known/oauth-authorization-server")
+    assert response.status_code == 200
+    assert json.loads(response.body)["issuer"] == ISSUER
+    assert response.headers["cache-control"] == "no-store"
 
 
 # ── Construction refuses an unusable server ──────────────────────────
@@ -152,27 +168,24 @@ def test_a_non_positive_token_lifetime_is_refused(ttl: int):
 # ── Dynamic client registration ──────────────────────────────────────
 
 
-async def test_registration_issues_a_client_id():
-    async with AsyncTestClient(_app(_server())) as client:
-        record = await _register(client, client_name="probe")
-        assert record["client_id"]
-        assert record["redirect_uris"] == [REDIRECT]
-        assert record["client_name"] == "probe"
+async def test_registration_issues_a_client_id(client):
+    record = await _register(client, client_name="probe")
+    assert record["client_id"]
+    assert record["redirect_uris"] == [REDIRECT]
+    assert record["client_name"] == "probe"
 
 
-async def test_a_public_client_is_given_no_secret_to_leak():
+async def test_a_public_client_is_given_no_secret_to_leak(client):
     """PKCE is what proves it; a secret it cannot keep would be a liability."""
-    async with AsyncTestClient(_app(_server())) as client:
-        record = await _register(client)
-        assert "client_secret" not in record
-        assert record["token_endpoint_auth_method"] == "none"
+    record = await _register(client)
+    assert "client_secret" not in record
+    assert record["token_endpoint_auth_method"] == "none"
 
 
-async def test_a_confidential_client_is_given_a_secret_once():
-    async with AsyncTestClient(_app(_server())) as client:
-        record = await _register(client, token_endpoint_auth_method="client_secret_post")
-        assert record["client_secret"]
-        assert record["token_endpoint_auth_method"] == "client_secret_post"
+async def test_a_confidential_client_is_given_a_secret_once(client):
+    record = await _register(client, token_endpoint_auth_method="client_secret_post")
+    assert record["client_secret"]
+    assert record["token_endpoint_auth_method"] == "client_secret_post"
 
 
 async def test_only_the_secret_digest_is_kept():
@@ -186,46 +199,39 @@ async def test_only_the_secret_digest_is_kept():
 
 
 @pytest.mark.parametrize("uris", [None, [], "not-a-list", [123]])
-async def test_registration_requires_usable_redirect_uris(uris):
-    async with AsyncTestClient(_app(_server())) as client:
-        body = {} if uris is None else {"redirect_uris": uris}
-        response = await client.post("/register", json=body)
-        assert response.status_code == 400
-        assert json.loads(response.body)["error"] == "invalid_redirect_uri"
+async def test_registration_requires_usable_redirect_uris(uris, client):
+    body = {} if uris is None else {"redirect_uris": uris}
+    response = await client.post("/register", json=body)
+    assert response.status_code == 400
+    assert json.loads(response.body)["error"] == "invalid_redirect_uri"
 
 
-async def test_a_cleartext_internet_redirect_is_refused():
+async def test_a_cleartext_internet_redirect_is_refused(client):
     """A code sent back over http on the open internet is a code anyone can read."""
-    async with AsyncTestClient(_app(_server())) as client:
-        response = await client.post(
-            "/register", json={"redirect_uris": ["http://example.com/callback"]}
-        )
-        assert response.status_code == 400
+    response = await client.post(
+        "/register", json={"redirect_uris": ["http://example.com/callback"]}
+    )
+    assert response.status_code == 400
 
 
 @pytest.mark.parametrize(
     "uri", ["https://example.com/cb", "http://localhost:1234/cb", "com.example.app:/cb"]
 )
-async def test_a_usable_redirect_is_accepted(uri: str):
-    async with AsyncTestClient(_app(_server())) as client:
-        response = await client.post("/register", json={"redirect_uris": [uri]})
-        assert response.status_code == 201
+async def test_a_usable_redirect_is_accepted(uri: str, client):
+    response = await client.post("/register", json={"redirect_uris": [uri]})
+    assert response.status_code == 201
 
 
-async def test_registration_refuses_a_scope_the_server_does_not_issue():
-    async with AsyncTestClient(_app(_server())) as client:
-        response = await client.post(
-            "/register", json={"redirect_uris": [REDIRECT], "scope": "root"}
-        )
-        assert response.status_code == 400
+async def test_registration_refuses_a_scope_the_server_does_not_issue(client):
+    response = await client.post("/register", json={"redirect_uris": [REDIRECT], "scope": "root"})
+    assert response.status_code == 400
 
 
-async def test_registration_refuses_a_body_that_is_not_an_object():
-    async with AsyncTestClient(_app(_server())) as client:
-        response = await client.post(
-            "/register", content=b"[]", headers={"content-type": "application/json"}
-        )
-        assert response.status_code == 400
+async def test_registration_refuses_a_body_that_is_not_an_object(client):
+    response = await client.post(
+        "/register", content=b"[]", headers={"content-type": "application/json"}
+    )
+    assert response.status_code == 400
 
 
 async def test_registration_is_not_served_when_it_is_off():
@@ -237,79 +243,72 @@ async def test_registration_is_not_served_when_it_is_off():
 # ── Authorize ────────────────────────────────────────────────────────
 
 
-async def test_authorization_hands_back_a_code_and_the_state():
-    async with AsyncTestClient(_app(_server())) as client:
-        record = await _register(client)
-        _verifier, challenge = _pkce()
-        response = await client.get(
-            f"/authorize?{_authorize_query(record['client_id'], challenge)}",
-            follow_redirects=False,
-        )
-        assert response.status_code == 302
-        location = response.headers["location"]
-        assert location.startswith(REDIRECT)
-        assert _code_from(location)
-        assert urllib.parse.parse_qs(urllib.parse.urlparse(location).query)["state"] == ["xyz"]
+async def test_authorization_hands_back_a_code_and_the_state(client):
+    record = await _register(client)
+    _verifier, challenge = _pkce()
+    response = await client.get(
+        f"/authorize?{_authorize_query(record['client_id'], challenge)}",
+        follow_redirects=False,
+    )
+    assert response.status_code == 302
+    location = response.headers["location"]
+    assert location.startswith(REDIRECT)
+    assert _code_from(location)
+    assert urllib.parse.parse_qs(urllib.parse.urlparse(location).query)["state"] == ["xyz"]
 
 
-async def test_an_unknown_client_is_not_redirected_anywhere():
+async def test_an_unknown_client_is_not_redirected_anywhere(client):
     """Redirecting an error to an unverified URI would make this an open redirector."""
-    async with AsyncTestClient(_app(_server())) as client:
-        _verifier, challenge = _pkce()
-        response = await client.get(
-            f"/authorize?{_authorize_query('never-registered', challenge)}",
-            follow_redirects=False,
-        )
-        assert response.status_code == 400
-        assert json.loads(response.body)["error"] == "invalid_client"
+    _verifier, challenge = _pkce()
+    response = await client.get(
+        f"/authorize?{_authorize_query('never-registered', challenge)}",
+        follow_redirects=False,
+    )
+    assert response.status_code == 400
+    assert json.loads(response.body)["error"] == "invalid_client"
 
 
-async def test_an_unregistered_redirect_uri_is_not_redirected_to():
-    async with AsyncTestClient(_app(_server())) as client:
-        record = await _register(client)
-        _verifier, challenge = _pkce()
-        query = _authorize_query(
-            record["client_id"], challenge, redirect_uri="https://attacker.example/cb"
-        )
-        response = await client.get(f"/authorize?{query}", follow_redirects=False)
-        assert response.status_code == 400
-        assert "location" not in response.headers
+async def test_an_unregistered_redirect_uri_is_not_redirected_to(client):
+    record = await _register(client)
+    _verifier, challenge = _pkce()
+    query = _authorize_query(
+        record["client_id"], challenge, redirect_uri="https://attacker.example/cb"
+    )
+    response = await client.get(f"/authorize?{query}", follow_redirects=False)
+    assert response.status_code == 400
+    assert "location" not in response.headers
 
 
-async def test_a_request_without_pkce_is_refused():
-    async with AsyncTestClient(_app(_server())) as client:
-        record = await _register(client)
-        query = _authorize_query(record["client_id"], "unused", code_challenge=None)
-        response = await client.get(f"/authorize?{query}", follow_redirects=False)
-        assert _error_from(response.headers["location"]) == "invalid_request"
+async def test_a_request_without_pkce_is_refused(client):
+    record = await _register(client)
+    query = _authorize_query(record["client_id"], "unused", code_challenge=None)
+    response = await client.get(f"/authorize?{query}", follow_redirects=False)
+    assert _error_from(response.headers["location"]) == "invalid_request"
 
 
-async def test_plain_pkce_is_refused():
+async def test_plain_pkce_is_refused(client):
     """`plain` puts the verifier on the wire, which defeats the exchange."""
-    async with AsyncTestClient(_app(_server())) as client:
-        record = await _register(client)
-        _verifier, challenge = _pkce()
-        query = _authorize_query(record["client_id"], challenge, code_challenge_method="plain")
-        response = await client.get(f"/authorize?{query}", follow_redirects=False)
-        assert _error_from(response.headers["location"]) == "invalid_request"
+    record = await _register(client)
+    _verifier, challenge = _pkce()
+    query = _authorize_query(record["client_id"], challenge, code_challenge_method="plain")
+    response = await client.get(f"/authorize?{query}", follow_redirects=False)
+    assert _error_from(response.headers["location"]) == "invalid_request"
 
 
-async def test_an_implicit_grant_is_refused():
-    async with AsyncTestClient(_app(_server())) as client:
-        record = await _register(client)
-        _verifier, challenge = _pkce()
-        query = _authorize_query(record["client_id"], challenge, response_type="token")
-        response = await client.get(f"/authorize?{query}", follow_redirects=False)
-        assert _error_from(response.headers["location"]) == "unsupported_response_type"
+async def test_an_implicit_grant_is_refused(client):
+    record = await _register(client)
+    _verifier, challenge = _pkce()
+    query = _authorize_query(record["client_id"], challenge, response_type="token")
+    response = await client.get(f"/authorize?{query}", follow_redirects=False)
+    assert _error_from(response.headers["location"]) == "unsupported_response_type"
 
 
-async def test_a_scope_the_server_does_not_issue_is_refused():
-    async with AsyncTestClient(_app(_server())) as client:
-        record = await _register(client)
-        _verifier, challenge = _pkce()
-        query = _authorize_query(record["client_id"], challenge, scope="root")
-        response = await client.get(f"/authorize?{query}", follow_redirects=False)
-        assert _error_from(response.headers["location"]) == "invalid_scope"
+async def test_a_scope_the_server_does_not_issue_is_refused(client):
+    record = await _register(client)
+    _verifier, challenge = _pkce()
+    query = _authorize_query(record["client_id"], challenge, scope="root")
+    response = await client.get(f"/authorize?{query}", follow_redirects=False)
+    assert _error_from(response.headers["location"]) == "invalid_scope"
 
 
 async def test_a_refused_login_is_reported_as_access_denied():
@@ -382,52 +381,47 @@ async def _redeem(client, client_id: str, code: str, verifier: str, **overrides)
     return json.loads(response.body) | {"_status": response.status_code}
 
 
-async def test_a_code_is_exchanged_for_a_token():
-    async with AsyncTestClient(_app(_server())) as client:
-        client_id, code, verifier = await _authorized(client)
-        issued = await _redeem(client, client_id, code, verifier)
-        assert issued["_status"] == 200
-        assert issued["token_type"] == "Bearer"
-        assert issued["expires_in"] == 3600
-        assert issued["access_token"] and issued["refresh_token"]
-        assert issued["scope"] == "mcp:tools"
+async def test_a_code_is_exchanged_for_a_token(client):
+    client_id, code, verifier = await _authorized(client)
+    issued = await _redeem(client, client_id, code, verifier)
+    assert issued["_status"] == 200
+    assert issued["token_type"] == "Bearer"
+    assert issued["expires_in"] == 3600
+    assert issued["access_token"] and issued["refresh_token"]
+    assert issued["scope"] == "mcp:tools"
 
 
-async def test_a_code_cannot_be_redeemed_twice():
+async def test_a_code_cannot_be_redeemed_twice(client):
     """The classic replay: the code is taken, not read."""
-    async with AsyncTestClient(_app(_server())) as client:
-        client_id, code, verifier = await _authorized(client)
-        assert (await _redeem(client, client_id, code, verifier))["_status"] == 200
-        second = await _redeem(client, client_id, code, verifier)
-        assert second["_status"] == 400
-        assert second["error"] == "invalid_grant"
+    client_id, code, verifier = await _authorized(client)
+    assert (await _redeem(client, client_id, code, verifier))["_status"] == 200
+    second = await _redeem(client, client_id, code, verifier)
+    assert second["_status"] == 400
+    assert second["error"] == "invalid_grant"
 
 
-async def test_a_wrong_verifier_is_refused():
+async def test_a_wrong_verifier_is_refused(client):
     """What PKCE is for: the interceptor has the code but not the verifier."""
-    async with AsyncTestClient(_app(_server())) as client:
-        client_id, code, _verifier = await _authorized(client)
-        issued = await _redeem(client, client_id, code, secrets.token_urlsafe(48))
-        assert issued["_status"] == 400
-        assert issued["error"] == "invalid_grant"
+    client_id, code, _verifier = await _authorized(client)
+    issued = await _redeem(client, client_id, code, secrets.token_urlsafe(48))
+    assert issued["_status"] == 400
+    assert issued["error"] == "invalid_grant"
 
 
-async def test_a_mismatched_redirect_uri_is_refused():
-    async with AsyncTestClient(_app(_server())) as client:
-        client_id, code, verifier = await _authorized(client)
-        issued = await _redeem(
-            client, client_id, code, verifier, redirect_uri="https://elsewhere.example/cb"
-        )
-        assert issued["_status"] == 400
+async def test_a_mismatched_redirect_uri_is_refused(client):
+    client_id, code, verifier = await _authorized(client)
+    issued = await _redeem(
+        client, client_id, code, verifier, redirect_uri="https://elsewhere.example/cb"
+    )
+    assert issued["_status"] == 400
 
 
-async def test_a_code_issued_to_another_client_is_refused():
-    async with AsyncTestClient(_app(_server())) as client:
-        _client_id, code, verifier = await _authorized(client)
-        other = await _register(client)
-        issued = await _redeem(client, other["client_id"], code, verifier)
-        assert issued["_status"] == 400
-        assert issued["error"] == "invalid_grant"
+async def test_a_code_issued_to_another_client_is_refused(client):
+    _client_id, code, verifier = await _authorized(client)
+    other = await _register(client)
+    issued = await _redeem(client, other["client_id"], code, verifier)
+    assert issued["_status"] == 400
+    assert issued["error"] == "invalid_grant"
 
 
 async def test_an_expired_code_is_refused():
@@ -453,100 +447,93 @@ async def test_an_expired_code_is_refused():
         assert issued["error"] == "invalid_grant"
 
 
-async def test_an_unknown_code_is_refused():
-    async with AsyncTestClient(_app(_server())) as client:
-        record = await _register(client)
-        issued = await _redeem(client, record["client_id"], "never-issued", "whatever")
-        assert issued["_status"] == 400
+async def test_an_unknown_code_is_refused(client):
+    record = await _register(client)
+    issued = await _redeem(client, record["client_id"], "never-issued", "whatever")
+    assert issued["_status"] == 400
 
 
-async def test_a_confidential_client_must_present_its_secret():
-    async with AsyncTestClient(_app(_server())) as client:
-        record = await _register(client, token_endpoint_auth_method="client_secret_post")
-        verifier, challenge = _pkce()
-        response = await client.get(
-            f"/authorize?{_authorize_query(record['client_id'], challenge)}",
-            follow_redirects=False,
-        )
-        code = _code_from(response.headers["location"])
+async def test_a_confidential_client_must_present_its_secret(client):
+    record = await _register(client, token_endpoint_auth_method="client_secret_post")
+    verifier, challenge = _pkce()
+    response = await client.get(
+        f"/authorize?{_authorize_query(record['client_id'], challenge)}",
+        follow_redirects=False,
+    )
+    code = _code_from(response.headers["location"])
 
-        wrong = await _redeem(client, record["client_id"], code, verifier, client_secret="nope")
-        assert wrong["_status"] == 401
-        assert wrong["error"] == "invalid_client"
-
-
-async def test_a_confidential_client_with_its_secret_is_served():
-    async with AsyncTestClient(_app(_server())) as client:
-        record = await _register(client, token_endpoint_auth_method="client_secret_post")
-        verifier, challenge = _pkce()
-        response = await client.get(
-            f"/authorize?{_authorize_query(record['client_id'], challenge)}",
-            follow_redirects=False,
-        )
-        code = _code_from(response.headers["location"])
-        issued = await _redeem(
-            client, record["client_id"], code, verifier, client_secret=record["client_secret"]
-        )
-        assert issued["_status"] == 200
+    wrong = await _redeem(client, record["client_id"], code, verifier, client_secret="nope")
+    assert wrong["_status"] == 401
+    assert wrong["error"] == "invalid_client"
 
 
-async def test_an_unsupported_grant_type_is_refused():
-    async with AsyncTestClient(_app(_server())) as client:
-        response = await client.post("/token", data={"grant_type": "password"})
-        assert response.status_code == 400
-        assert json.loads(response.body)["error"] == "unsupported_grant_type"
+async def test_a_confidential_client_with_its_secret_is_served(client):
+    record = await _register(client, token_endpoint_auth_method="client_secret_post")
+    verifier, challenge = _pkce()
+    response = await client.get(
+        f"/authorize?{_authorize_query(record['client_id'], challenge)}",
+        follow_redirects=False,
+    )
+    code = _code_from(response.headers["location"])
+    issued = await _redeem(
+        client, record["client_id"], code, verifier, client_secret=record["client_secret"]
+    )
+    assert issued["_status"] == 200
+
+
+async def test_an_unsupported_grant_type_is_refused(client):
+    response = await client.post("/token", data={"grant_type": "password"})
+    assert response.status_code == 400
+    assert json.loads(response.body)["error"] == "unsupported_grant_type"
 
 
 # ── Token: refreshing ────────────────────────────────────────────────
 
 
-async def test_a_refresh_token_yields_a_new_pair():
-    async with AsyncTestClient(_app(_server())) as client:
-        client_id, code, verifier = await _authorized(client)
-        first = await _redeem(client, client_id, code, verifier)
-        response = await client.post(
-            "/token",
-            data={
-                "grant_type": "refresh_token",
-                "refresh_token": first["refresh_token"],
-                "client_id": client_id,
-            },
-        )
-        second = json.loads(response.body)
-        assert response.status_code == 200
-        assert second["access_token"] != first["access_token"]
-        assert second["refresh_token"] != first["refresh_token"]
-
-
-async def test_a_used_refresh_token_stops_working():
-    """Rotation: a stolen refresh token is useful only until the real client refreshes."""
-    async with AsyncTestClient(_app(_server())) as client:
-        client_id, code, verifier = await _authorized(client)
-        first = await _redeem(client, client_id, code, verifier)
-        form = {
+async def test_a_refresh_token_yields_a_new_pair(client):
+    client_id, code, verifier = await _authorized(client)
+    first = await _redeem(client, client_id, code, verifier)
+    response = await client.post(
+        "/token",
+        data={
             "grant_type": "refresh_token",
             "refresh_token": first["refresh_token"],
             "client_id": client_id,
-        }
-        assert (await client.post("/token", data=form)).status_code == 200
-        replayed = await client.post("/token", data=form)
-        assert replayed.status_code == 400
+        },
+    )
+    second = json.loads(response.body)
+    assert response.status_code == 200
+    assert second["access_token"] != first["access_token"]
+    assert second["refresh_token"] != first["refresh_token"]
 
 
-async def test_a_refresh_token_belonging_to_another_client_is_refused():
-    async with AsyncTestClient(_app(_server())) as client:
-        client_id, code, verifier = await _authorized(client)
-        first = await _redeem(client, client_id, code, verifier)
-        other = await _register(client)
-        response = await client.post(
-            "/token",
-            data={
-                "grant_type": "refresh_token",
-                "refresh_token": first["refresh_token"],
-                "client_id": other["client_id"],
-            },
-        )
-        assert response.status_code == 400
+async def test_a_used_refresh_token_stops_working(client):
+    """Rotation: a stolen refresh token is useful only until the real client refreshes."""
+    client_id, code, verifier = await _authorized(client)
+    first = await _redeem(client, client_id, code, verifier)
+    form = {
+        "grant_type": "refresh_token",
+        "refresh_token": first["refresh_token"],
+        "client_id": client_id,
+    }
+    assert (await client.post("/token", data=form)).status_code == 200
+    replayed = await client.post("/token", data=form)
+    assert replayed.status_code == 400
+
+
+async def test_a_refresh_token_belonging_to_another_client_is_refused(client):
+    client_id, code, verifier = await _authorized(client)
+    first = await _redeem(client, client_id, code, verifier)
+    other = await _register(client)
+    response = await client.post(
+        "/token",
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": first["refresh_token"],
+            "client_id": other["client_id"],
+        },
+    )
+    assert response.status_code == 400
 
 
 # ── Validating what was issued ───────────────────────────────────────

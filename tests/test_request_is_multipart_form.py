@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from tests.conftest import make_request
 from veloce import Request
 
 
@@ -11,7 +12,7 @@ def _req(ct: str = "", encoding: str = "") -> Request:
         headers["content-type"] = ct
     if encoding:
         headers["content-encoding"] = encoding
-    return Request(method="POST", path="/x", query_string="", headers=headers, body=b"")
+    return make_request(method="POST", path="/x", query_string="", headers=headers, body=b"")
 
 
 # ── is_multipart ─────────────────────────────────────────────────────
@@ -88,7 +89,7 @@ async def test_multipart_form_repeated_fields():
         boundary,
         [("tag", "a"), ("tag", "b"), ("name", "alice")],
     )
-    req = Request(
+    req = make_request(
         method="POST",
         path="/x",
         query_string="",

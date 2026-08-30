@@ -31,7 +31,7 @@ import json
 
 import pytest
 
-from tests._mcp import HANDSHAKE_REVISION
+from tests._mcp import HANDSHAKE_REVISION, asgi_scope, settled
 from veloce import MCPContext, Veloce
 
 _INIT = {
@@ -65,14 +65,19 @@ class _Post:
         self._app = app
         self._body = json.dumps(body).encode()
         self._disconnect = asyncio.Event()
+        # Set when the app sends `http.response.start`, so entering the context
+        # waits on the request actually being served rather than on a
+        # hand-counted number of loop turns - one extra `await` anywhere in the
+        # transport made that count insufficient, and it failed as an
+        # unexplained empty result somewhere later.
+        self._started = asyncio.Event()
         self.chunks: list[bytes] = []
         self.status: int | None = None
         self.task: asyncio.Task | None = None
 
     async def __aenter__(self) -> _Post:
         self.task = asyncio.ensure_future(self._run())
-        for _ in range(3):
-            await asyncio.sleep(0)
+        await asyncio.wait_for(self._started.wait(), 5.0)
         return self
 
     async def __aexit__(self, *exc: object) -> None:
@@ -89,19 +94,13 @@ class _Post:
             self.task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self.task
-        for _ in range(5):
-            await asyncio.sleep(0)
+        await settled()
 
     async def _run(self) -> None:
-        scope = {
-            "type": "http",
-            "asgi": {"version": "3.0"},
-            "http_version": "1.1",
-            "method": "POST",
-            "path": "/mcp",
-            "raw_path": b"/mcp",
-            "query_string": b"",
-            "headers": [
+        scope = asgi_scope(
+            "POST",
+            "/mcp",
+            [
                 # The header that selects the SSE branch at all. With
                 # `application/json` here the whole subject of this module is
                 # unreachable, which is what made the previous tests vacuous.
@@ -111,11 +110,7 @@ class _Post:
                 (b"mcp-protocol-version", HANDSHAKE_REVISION.encode()),
                 (b"mcp-method", json.loads(self._body)["method"].encode()),
             ],
-            "client": ("127.0.0.1", 5555),
-            "server": ("127.0.0.1", 8000),
-            "scheme": "http",
-            "root_path": "",
-        }
+        )
         sent = False
 
         async def receive() -> dict:
@@ -129,6 +124,7 @@ class _Post:
         async def send(message: dict) -> None:
             if message["type"] == "http.response.start":
                 self.status = message["status"]
+                self._started.set()
             elif message["type"] == "http.response.body":
                 self.chunks.append(message.get("body", b""))
 
@@ -174,11 +170,16 @@ def _app(finished: list[str], gate: asyncio.Event, steps: int = 20) -> Veloce:
 
 
 async def _initialise(app: Veloce) -> None:
-    """Complete the handshake over a plain JSON POST."""
+    """Complete the handshake, and fail here if it did not.
+
+    This tolerated `status is None` - the POST never reaching
+    `http.response.start` at all - so the precondition every test in the module
+    rests on could silently not hold, and the failure surfaced as an unrelated
+    assertion further on. Entering the context now waits for the status, so
+    there is one to assert.
+    """
     async with _Post(app, _INIT) as post:
-        for _ in range(6):
-            await asyncio.sleep(0)
-        assert post.status in (200, None)
+        assert post.status == 200, post.chunks
 
 
 async def _pump_until(post: _Post, needle: str, turns: int = 2000) -> str:

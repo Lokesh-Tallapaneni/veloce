@@ -72,7 +72,7 @@ def test_the_connection_outranks_a_forwarded_header():
 
 def test_a_request_with_no_transport_is_unchanged():
     """The ASGI path supplies a scope and never a transport."""
-    request = Request(
+    request = make_request(
         method="GET",
         path="/x",
         query_string="",
@@ -85,7 +85,7 @@ def test_a_request_with_no_transport_is_unchanged():
 
 def test_the_scope_still_wins_when_present():
     """ProxyFix writes the trusted scheme into the scope; that must hold."""
-    request = Request(
+    request = make_request(
         method="GET",
         path="/x",
         query_string="",

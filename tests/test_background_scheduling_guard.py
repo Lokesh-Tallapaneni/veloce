@@ -32,6 +32,7 @@ loop and settles a spawned task only sometimes, so it cannot witness one.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 
 import pytest
 
@@ -66,8 +67,21 @@ def _multipart(field: str, filename: str, payload: bytes) -> Request:
     )
 
 
-async def _settle() -> None:
-    await asyncio.sleep(0.05)
+async def _settle(ready: Callable[[], bool], *, turns: int = 200) -> None:
+    """Yield the event loop until `ready()` holds.
+
+    This was `await asyncio.sleep(0.05)` at ten call sites - half a second of
+    wall-clock per run standing in for a synchronisation each test can state
+    directly, and a fixed budget that says nothing about what it is waiting for.
+    A background task is spawned onto the loop, so yielding until the result the
+    test asserts on has appeared is both faster and independent of how many
+    ticks the spawn path happens to take. `turns` bounds it so a task that never
+    runs fails the caller's assertion instead of hanging.
+    """
+    for _ in range(turns):
+        if ready():
+            return
+        await asyncio.sleep(0)
 
 
 # ── nothing to schedule: the path being made cheaper ─────────────────
@@ -103,7 +117,7 @@ async def test_an_empty_injected_queue_still_reports_scheduled():
     request = _req()
     request._background_tasks = BackgroundTasks()
     assert app._schedule_background_tasks(request, Response(body=b"x")) is True
-    await _settle()
+    await _settle(lambda: not app._spawned_anon)
 
 
 # ── a response-attached task still runs ──────────────────────────────
@@ -118,7 +132,7 @@ async def test_an_attached_single_task_runs():
         return Response(body=b"ok", background=BackgroundTask(log.append, "ran"))
 
     await app.handle_request(_req())
-    await _settle()
+    await _settle(lambda: len(log) == 1)
     assert log == ["ran"]
 
 
@@ -135,7 +149,7 @@ async def test_an_attached_task_collection_runs_every_member():
         return Response(body=b"ok", background=tasks)
 
     await app.handle_request(_req())
-    await _settle()
+    await _settle(lambda: len(log) == 2)
     assert log == ["first", "second"]
 
 
@@ -152,7 +166,7 @@ async def test_an_async_attached_task_runs():
         return Response(body=b"ok", background=BackgroundTask(record))
 
     await app.handle_request(_req())
-    await _settle()
+    await _settle(lambda: len(log) == 1)
     assert log == ["async"]
 
 
@@ -169,7 +183,7 @@ async def test_an_injected_queue_runs():
         return {"ok": True}
 
     await app.handle_request(_req())
-    await _settle()
+    await _settle(lambda: len(log) == 1)
     assert log == ["injected"]
 
 
@@ -184,7 +198,7 @@ async def test_both_sources_run_together():
         return Response(body=b"ok", background=BackgroundTask(log.append, "attached"))
 
     await app.handle_request(_req())
-    await _settle()
+    await _settle(lambda: len(log) == 2)
     assert sorted(log) == ["attached", "injected"]
 
 
@@ -229,7 +243,7 @@ async def test_a_failing_background_task_does_not_break_the_response():
 
     response = await app.handle_request(_req())
     assert response.status_code == 200
-    await _settle()
+    await _settle(lambda: not app._spawned_anon)
 
 
 # ── the spool-release contract the return value drives ───────────────
@@ -252,7 +266,7 @@ async def test_an_upload_is_released_after_a_background_task_finishes():
 
     response = await app.handle_request(_multipart("f", "a.txt", b"hello"))
     assert response.status_code == 200
-    await _settle()
+    await _settle(lambda: len(seen) == 1)
     assert seen == [5]
 
 
@@ -299,7 +313,7 @@ async def test_a_mix_of_routes_keeps_each_response_independent():
     await app.handle_request(_req("/plain"))
     await app.handle_request(_req("/work"))
     await app.handle_request(_req("/plain"))
-    await _settle()
+    await _settle(lambda: len(log) == 1)
     assert log == ["worked"]
 
 
@@ -320,5 +334,5 @@ async def test_both_attachment_shapes_are_accepted(shape: str):
         return Response(body=b"ok", background=attached)
 
     await app.handle_request(_req())
-    await _settle()
+    await _settle(lambda: len(log) == 1)
     assert log == ["x"]

@@ -138,7 +138,12 @@ def test_every_named_symbol_in_the_feature_table_is_exported():
 
     table = README.read_text(encoding="utf-8")
     section = table.split("## Feature surface", 1)[1].split("\n\n", 3)[1]
-    for symbol in set(re.findall(r"`([A-Za-z_][A-Za-z0-9_]*)`", section)):
+    symbols = set(re.findall(r"`([A-Za-z_][A-Za-z0-9_]*)`", section))
+    # Reflowing the table so the second blank-line-delimited block is prose
+    # yields no backticked symbols, zero iterations and a permanently green
+    # test. Assert the scan found something before trusting it.
+    assert symbols, "the feature-table scan matched no backticked symbol"
+    for symbol in symbols:
         if symbol.islower() and symbol not in veloce.__all__:
             continue  # a CLI verb or a decorator spelled without its module
         assert symbol in veloce.__all__ or hasattr(veloce, symbol), symbol
@@ -230,6 +235,9 @@ def test_the_floors_quoted_in_the_docs_match_the_manifest():
     page = ROOT / "docs/deployment/versions.md"
     section = page.read_text(encoding="utf-8").split("## How Veloce pins its own", 1)[1]
     quoted = dict(_re.findall(r'"([a-z0-9-]+)>=([0-9.]+)"', section))
+    # Same hazard: if the page stops quoting versions in this style the
+    # loop below runs zero times and reports nothing.
+    assert quoted, "the versions page quoted no pinned dependency"
     declared = {
         spec.split(">=")[0].strip(): spec.split(">=")[1].split(";")[0].strip()
         for spec in _pyproject()["project"]["dependencies"]

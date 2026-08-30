@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import json
 
+from tests._loops import protocol_loop
 from veloce import Veloce
 from veloce.json_provider import DefaultJSONProvider
 from veloce.serving.protocol import HttpProtocol
@@ -99,6 +100,13 @@ async def _drive(app, scope: dict, body: bytes = b"") -> tuple[int, bytes]:
 
 
 def _native_413(app) -> bytes:
+    # Signalled by the transport on its first write. A fixed budget of
+    # `loop.run_until_complete(sleep(0))` ticks encoded how many awaits
+    # `HttpProtocol` currently takes before it writes the 413, so one extra
+    # `await` in the protocol turned this into `json.loads(b"")` - a failure
+    # that reads as a payload defect rather than as a stale budget.
+    written = asyncio.Event()
+
     class _Transport(asyncio.Transport):
         def __init__(self) -> None:
             super().__init__()
@@ -107,6 +115,7 @@ def _native_413(app) -> bytes:
 
         def write(self, data: bytes) -> None:
             self.writes.append(data)
+            written.set()
 
         def close(self) -> None:
             self.closed = True
@@ -117,19 +126,15 @@ def _native_413(app) -> bytes:
         def get_extra_info(self, name, default=None):
             return default
 
-    loop = asyncio.new_event_loop()
-    try:
+    with protocol_loop() as loop:
         proto = HttpProtocol(app, loop)
         transport = _Transport()
         proto.connection_made(transport)
         head = b"POST /up HTTP/1.1" + CRLF + b"Host: t" + CRLF
         head += b"Content-Length: 100" + CRLF + CRLF
         proto.data_received(head + b"x" * 100)
-        for _ in range(4):
-            loop.run_until_complete(asyncio.sleep(0))
+        loop.run_until_complete(asyncio.wait_for(written.wait(), 5.0))
         return b"".join(transport.writes).partition(CRLF + CRLF)[2]
-    finally:
-        loop.close()
 
 
 # ── the baseline: what the dialect already reached ───────────────────
@@ -190,15 +195,17 @@ def test_the_native_413_still_carries_its_payload():
 
 
 def test_both_transports_send_the_same_413_under_a_provider():
-    """The parity claim, retested with a dialect - the test that was missing."""
+    """The parity claim, retested with a dialect - the test that was missing.
+
+    Stays sync: `_native_413` drives a loop of its own, so running this test on
+    pytest-asyncio's loop would make that a nested `run_until_complete`. The
+    raw loop here goes through `protocol_loop()`, which drains before closing.
+    """
     app = _app()
-    loop = asyncio.new_event_loop()
-    try:
+    with protocol_loop() as loop:
         _status, asgi_body = loop.run_until_complete(
             _drive(app, _scope("/up", b"x" * 100, "POST"), b"x" * 100)
         )
-    finally:
-        loop.close()
     assert json.loads(asgi_body) == json.loads(_native_413(_app()))
 
 

@@ -47,33 +47,21 @@ class Item(BaseModel):
     description: str | None = None
 
 
-@pytest.fixture
-def app() -> Veloce:
-    app = Veloce(
-        title="E2E Test API",
-        version="1.0.0",
-        description="Smoke test",
-        openapi_url="/openapi.json",
-        redirect_slashes=True,
-    )
-
-    app.config["DB_URL"] = "sqlite:///:memory:"
-    app.secret_key = "test-secret"
-    app.state["items"] = {}
-
-    # Middleware
+def _install_middleware(app: Veloce) -> None:
+    """CORS, sessions, and the one header every response is expected to carry."""
     app.add_middleware(CORSMiddleware(allow_origins=["*"]))
     app.add_middleware(SessionMiddleware(secret_key="test-session-key"))
 
-    # HTTP middleware
     @app.middleware("http")
     async def add_server_header(request: Request, call_next):
         response = await call_next(request)
         response.headers["X-Server"] = "Veloce"
-        response._encoded = None
         return response
 
-    # Before/after hooks
+
+def _install_hooks(app: Veloce) -> None:
+    """The before / after / teardown trio the hook tests observe."""
+
     @app.before_request
     async def log_request(request: Request):
         g.request_path = request.path
@@ -81,18 +69,16 @@ def app() -> Veloce:
     @app.after_request
     async def add_version(request: Request, response: Response):
         response.headers["X-API-Version"] = "1.0.0"
-        response._encoded = None
         return response
 
-    # Teardown
     @app.teardown_request
     async def cleanup(exc):
         pass  # Just verify it runs without error
 
-    # Auth
-    bearer = HTTPBearer(auto_error=False)
 
-    # Routes
+def _install_crud_routes(app: Veloce) -> None:
+    """The item collection the CRUD flow walks, backed by `app.state`."""
+
     @app.get("/")
     async def index(request: Request):
         return {"message": "Welcome", "config_db": request.app.config["DB_URL"]}
@@ -127,6 +113,11 @@ def app() -> Veloce:
         del request.app.state["items"][item_id]
         return Response(status_code=204, body=b"")
 
+
+def _install_auth_and_session_routes(app: Veloce) -> None:
+    """The bearer-guarded route, the session counter, and the `g` reader."""
+    bearer = HTTPBearer(auto_error=False)
+
     @app.get("/protected")
     async def protected(token=Depends(bearer)):
         if token is None:
@@ -145,6 +136,10 @@ def app() -> Veloce:
     @app.get("/g-test")
     async def g_test(request: Request):
         return {"path": g.request_path}
+
+
+def _install_response_type_routes(app: Veloce) -> None:
+    """One route per response encoding the response-type tests cover."""
 
     @app.get("/html", response_class=HTMLResponse)
     async def html_page(request: Request):
@@ -167,7 +162,9 @@ def app() -> Veloce:
         data = {"date": datetime.date(2024, 1, 15), "items": {1, 2, 3}}
         return jsonable_encoder(data)
 
-    # Sub-router
+
+def _install_sub_router(app: Veloce) -> None:
+    """A prefixed `Router` included into the app, for the sub-router test."""
     api_v2 = Router(prefix="/api/v2", tags=["v2"])
 
     @api_v2.get("/ping")
@@ -176,6 +173,36 @@ def app() -> Veloce:
 
     app.include_router(api_v2)
 
+
+@pytest.fixture
+def app() -> Veloce:
+    """The composed smoke-test app: every installer below, in order.
+
+    Kept composed rather than split into opt-in fixtures because most of these
+    tests assert cross-cutting behaviour - `X-Server` and `X-API-Version` land
+    on ordinary CRUD responses - so a per-concern fixture would have to be
+    recomposed by nearly every test anyway. What was worth removing is the
+    130-line body: the registration now lives in named installers, so a failure
+    is read against the one that owns the route.
+    """
+    app = Veloce(
+        title="E2E Test API",
+        version="1.0.0",
+        description="Smoke test",
+        openapi_url="/openapi.json",
+        redirect_slashes=True,
+    )
+
+    app.config["DB_URL"] = "sqlite:///:memory:"
+    app.secret_key = "test-secret"
+    app.state["items"] = {}
+
+    _install_middleware(app)
+    _install_hooks(app)
+    _install_crud_routes(app)
+    _install_auth_and_session_routes(app)
+    _install_response_type_routes(app)
+    _install_sub_router(app)
     return app
 
 
@@ -243,31 +270,31 @@ def test_middleware_and_hooks(app):
     assert resp.json()["path"] == "/g-test"
 
 
-def test_response_types(app):
-    client = TestClient(app)
+# Five unrelated response encodings, one per test: bundled into one function
+# they short-circuited, so a commit breaking `make_response` and
+# `jsonable_encoder` reported as a single failure naming only the HTML route.
 
-    # HTML response
-    resp = client.get("/html")
-    assert b"<h1>Hello HTML</h1>" in resp.body
 
-    # Tuple response
-    resp = client.get("/tuple-response")
+def test_an_html_response_is_served(app):
+    assert b"<h1>Hello HTML</h1>" in TestClient(app).get("/html").body
+
+
+def test_a_tuple_return_carries_status_and_headers(app):
+    resp = TestClient(app).get("/tuple-response")
     assert resp.status_code == 201
     assert resp.headers.get("X-Custom") == "header"
 
-    # jsonify
-    resp = client.get("/jsonify")
-    data = resp.json()
-    assert data["framework"] == "veloce"
 
-    # make_response
-    resp = client.get("/make-response")
-    assert resp.text == "custom body"
+def test_jsonify_serialises_the_mapping(app):
+    assert TestClient(app).get("/jsonify").json()["framework"] == "veloce"
 
-    # jsonable_encoder
-    resp = client.get("/encoder")
-    data = resp.json()
-    assert "2024-01-15" in data["date"]
+
+def test_make_response_carries_the_body(app):
+    assert TestClient(app).get("/make-response").text == "custom body"
+
+
+def test_jsonable_encoder_renders_a_date(app):
+    assert "2024-01-15" in TestClient(app).get("/encoder").json()["date"]
 
 
 def test_subrouter(app):

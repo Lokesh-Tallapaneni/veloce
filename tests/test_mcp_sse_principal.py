@@ -26,7 +26,7 @@ from collections.abc import AsyncIterator
 
 import pytest
 
-from tests._mcp import SSEStream, auth
+from tests._mcp import SSEStream, asgi_scope, auth
 from tests._mcp_source import assigned_names, call_args, function, tree
 from veloce import AsyncTestClient, MCPContext, Veloce
 from veloce.contrib.mcp import MCPAuth
@@ -58,20 +58,15 @@ async def _post(app: Veloce, path: str, payload: dict, headers: list) -> int:
 
     parsed = urllib.parse.urlparse(path)
     await app(
-        {
-            "type": "http",
-            "asgi": {"version": "3.0"},
-            "http_version": "1.1",
-            "method": "POST",
-            "path": parsed.path,
-            "raw_path": parsed.path.encode(),
-            "query_string": parsed.query.encode(),
-            "headers": [*headers, (b"content-type", b"application/json")],
-            "client": ("127.0.0.1", 5556),
-            "server": ("127.0.0.1", 8000),
-            "scheme": "http",
-            "root_path": "",
-        },
+        asgi_scope(
+            "POST",
+            parsed.path,
+            [*headers, (b"content-type", b"application/json")],
+            query_string=parsed.query.encode(),
+            # A different port from the GET stream's, so the two halves of this
+            # transport are distinguishable connections.
+            client=("127.0.0.1", 5556),
+        ),
         receive,
         send,
     )

@@ -37,10 +37,17 @@ def test_an_unknown_extension_falls_back_to_octet_stream(path: str):
     assert guess_content_type(path) == MIME_OCTET_STREAM
 
 
-def test_it_defers_to_the_standard_library_for_everything_unpinned():
-    """The pinned web types are the only place this diverges from `mimetypes`."""
-    for path in ("c.png", "d.unknownext", "e", "f.txt", "g.pdf"):
-        assert guess_content_type(path) == (mimetypes.guess_type(path)[0] or MIME_OCTET_STREAM)
+@pytest.mark.parametrize("path", ["c.png", "f.txt", "g.pdf"])
+def test_it_defers_to_the_standard_library_for_an_unpinned_extension(path: str):
+    """The pinned web types are the only place this diverges from `mimetypes`.
+
+    Only extensions the registry knows: writing the expected value as
+    `mimetypes.guess_type(path)[0] or MIME_OCTET_STREAM` would copy the
+    fallback expression straight out of `guess_content_type`, so the test
+    would agree with the code by construction. The unknown-extension half
+    is `test_an_unknown_extension_falls_back_to_octet_stream` above.
+    """
+    assert guess_content_type(path) == mimetypes.guess_type(path)[0]
 
 
 def test_a_pinned_web_type_does_not_vary_by_host():

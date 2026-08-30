@@ -29,14 +29,23 @@ TESTS = pathlib.Path(__file__).resolve().parent
 #: Modules still constructing `Request(...)` without the shared factory. This is
 #: a ceiling, not a target: it is expected to fall as those are converted, and
 #: lowering it is the point. It must never be raised.
-DIRECT_CONSTRUCTION_CEILING = 63
+DIRECT_CONSTRUCTION_CEILING = 39
 
-#: Modules that still wrap the factory in a private forwarder. A second ceiling,
-#: for the same reason and with the same rule: it may fall, never rise. The
-#: ratchet above cannot see these - a forwarder calls `make_request`, not
-#: `Request` - so without this one the pattern it exists to drive out can grow
-#: unobserved.
-FACTORY_WRAPPER_CEILING = 69
+#: Modules that still wrap the factory in a private forwarder that adds nothing.
+#: A second ceiling, for the same reason and with the same rule: it may fall,
+#: never rise. The ratchet above cannot see these - a forwarder calls
+#: `make_request`, not `Request` - so without this one the pattern it exists to
+#: drive out can grow unobserved.
+#:
+#: "Adds nothing" is the whole rule. This counted every `_req` that mentioned
+#: `make_request`, which is 76 modules, 60 of them adapters that map an argument
+#: on the way through - `_req(content_type=...)` building the headers dict,
+#: `_req(scope_scheme=...)` building a scope override. An adapter removes
+#: duplication at its ten call sites; it is the pattern the migration was aiming
+#: for, and counting it as debt asked for the mapping to be inlined ten times
+#: over. What is actually forbidden is the layer that only forwards, and 16
+#: modules still have one, so the ceiling is 16 rather than 69.
+FACTORY_WRAPPER_CEILING = 16
 
 
 def _modules_constructing_request() -> list[str]:
@@ -51,6 +60,34 @@ def _modules_constructing_request() -> list[str]:
                 found.append(path.name)
                 break
     return found
+
+
+def _is_pure_forwarder(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """True when the function is one `return make_request(...)` and nothing else.
+
+    Every argument must be a literal or one of the function's own parameters
+    passed straight through. A body that computes anything - builds a dict from
+    a parameter, branches, mutates the request afterwards - is an adapter, and
+    is what the factory is for rather than a layer over it.
+    """
+    body = [
+        n for n in node.body if not (isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant))
+    ]
+    if len(body) != 1 or not isinstance(body[0], ast.Return):
+        return False
+    call = body[0].value
+    if not (
+        isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Name)
+        and call.func.id == "make_request"
+    ):
+        return False
+    parameters = {a.arg for a in node.args.args} | {a.arg for a in node.args.kwonlyargs}
+    passed = [keyword.value for keyword in call.keywords] + list(call.args)
+    return all(
+        isinstance(value, ast.Constant) or (isinstance(value, ast.Name) and value.id in parameters)
+        for value in passed
+    )
 
 
 def _modules_wrapping_the_factory() -> list[str]:
@@ -73,12 +110,7 @@ def _modules_wrapping_the_factory() -> list[str]:
                 continue
             if not node.name.startswith("_req") and not node.name.startswith("_request"):
                 continue
-            calls = {
-                call.func.id
-                for call in ast.walk(node)
-                if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
-            }
-            if "make_request" in calls:
+            if _is_pure_forwarder(node):
                 found.append(path.name)
                 break
     return found
@@ -190,5 +222,14 @@ def test_no_new_module_wraps_the_factory_in_a_forwarder():
 
 
 def test_the_wrapper_scan_reads_a_real_corpus():
-    """A scan of nothing would satisfy the ceiling above."""
-    assert len(WRAPPING) > 20
+    """A scan of nothing would satisfy the ceiling above.
+
+    The floor was 20, sized to a scan that counted every `_req` mentioning the
+    factory. Narrowing that to the forwarders which add nothing left 16, so the
+    count alone no longer separates a working scan from a nearly-broken one.
+    A named landmark does: `test_http_basic.py` has a pure forwarder, and a
+    predicate that stops recognising one fails here rather than silently
+    reporting an empty corpus as compliance.
+    """
+    assert "test_http_basic.py" in WRAPPING
+    assert len(WRAPPING) > 10

@@ -38,6 +38,7 @@ from veloce.contrib.mcp.server import (
     MODERN_PROTOCOL_VERSION,
     PRIOR_PROTOCOL_VERSION,
 )
+from veloce.contrib.mcp.session import MCPSession
 from veloce.contrib.mcp.transports.stdio import StdioTransport
 from veloce.principal import Principal
 
@@ -174,7 +175,66 @@ def accepts_any(token: str) -> Principal:
     return Principal(subject=token or "anonymous")
 
 
-class SSEStream:
+def asgi_scope(
+    method: str,
+    path: str,
+    headers: list[tuple[bytes, bytes]],
+    *,
+    query_string: bytes = b"",
+    client: tuple[str, int] = ("127.0.0.1", 5555),
+) -> dict[str, Any]:
+    """One ASGI HTTP scope, as four harnesses each built it.
+
+    The dict was written out independently here and in three test modules, so an
+    ASGI-scope change had to be applied four times. What actually varies between
+    them is the verb, the path, the headers - and, in one, a query string and a
+    second client port, which are keyword arguments rather than a fourth fork.
+    """
+    return {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": method,
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": query_string,
+        "headers": headers,
+        "client": client,
+        "server": ("127.0.0.1", 8000),
+        "scheme": "http",
+        "root_path": "",
+    }
+
+
+class SSEFrames:
+    """A chunk buffer and the SSE frame parser over it.
+
+    The parser was byte-identical in `SSEStream.event` and in the `frame` method
+    of `test_mcp_listen_over_http.py`'s `_Post`, so a framing fix landed in one
+    of them or in neither. A subclass feeds `_chunks` from its own `send`.
+    """
+
+    def __init__(self) -> None:
+        self._chunks: asyncio.Queue[bytes] = asyncio.Queue()
+        self._buffer = ""
+
+    async def event(self, timeout: float = 5.0) -> dict[str, str]:
+        """Return the next complete SSE frame as a field mapping."""
+        while True:
+            if "\n\n" in self._buffer:
+                raw, _, self._buffer = self._buffer.partition("\n\n")
+                fields = {}
+                for line in raw.splitlines():
+                    if line and ":" in line:
+                        key, _, value = line.partition(":")
+                        fields[key.strip()] = value.strip()
+                if fields:
+                    return fields
+                continue
+            self._buffer += (await asyncio.wait_for(self._chunks.get(), timeout)).decode()
+
+
+class SSEStream(SSEFrames):
     """An open `GET`, with its SSE frames readable one at a time.
 
     Two modules carried this class with the frame parser copied line for line,
@@ -195,11 +255,10 @@ class SSEStream:
         path: str = "/sse",
         headers: list | None = None,
     ) -> None:
+        super().__init__()
         self._app = app
         self._path = path
         self._headers = list(headers or []) + [(b"accept", b"text/event-stream")]
-        self._chunks: asyncio.Queue[bytes] = asyncio.Queue()
-        self._buffer = ""
         self.status: int | None = None
         self.task: asyncio.Task | None = None
 
@@ -214,20 +273,7 @@ class SSEStream:
                 await self.task
 
     async def _run(self) -> None:
-        scope = {
-            "type": "http",
-            "asgi": {"version": "3.0"},
-            "http_version": "1.1",
-            "method": "GET",
-            "path": self._path,
-            "raw_path": self._path.encode(),
-            "query_string": b"",
-            "headers": self._headers,
-            "client": ("127.0.0.1", 5555),
-            "server": ("127.0.0.1", 8000),
-            "scheme": "http",
-            "root_path": "",
-        }
+        scope = asgi_scope("GET", self._path, self._headers)
         first = True
 
         async def receive() -> dict:
@@ -247,21 +293,6 @@ class SSEStream:
                 await self._chunks.put(message.get("body", b""))
 
         await self._app(scope, receive, send)
-
-    async def event(self, timeout: float = 5.0) -> dict[str, str]:
-        """Return the next complete SSE frame as a field mapping."""
-        while True:
-            if "\n\n" in self._buffer:
-                raw, _, self._buffer = self._buffer.partition("\n\n")
-                fields = {}
-                for line in raw.splitlines():
-                    if line and ":" in line:
-                        key, _, value = line.partition(":")
-                        fields[key.strip()] = value.strip()
-                if fields:
-                    return fields
-                continue
-            self._buffer += (await asyncio.wait_for(self._chunks.get(), timeout)).decode()
 
     async def message_frame(self, timeout: float = 5.0) -> dict[str, str]:
         """Return the next `event: message` frame, as a field mapping.
@@ -310,13 +341,21 @@ class SSEStream:
         return self.status
 
     async def settled(self, turns: int = 50) -> None:
-        """Give a cancelled stream's cleanup a chance to run.
+        """Give a cancelled stream's cleanup a chance to run."""
+        await settled(turns)
 
-        Yields to the loop rather than sleeping a fixed interval: the generator
-        teardown a caller is waiting on is scheduled work, not elapsed time.
-        """
-        for _ in range(turns):
-            await asyncio.sleep(0)
+
+async def settled(turns: int = 50) -> None:
+    """Give a cancelled stream's cleanup a chance to run.
+
+    Yields to the loop rather than sleeping a fixed interval: the generator
+    teardown a caller is waiting on is scheduled work, not elapsed time. There
+    is no event to wait on - the teardown a caller wants is the transport's own
+    `finally`, which signals nothing - so this stays a bounded yield, named once
+    instead of written as a bare `range(3)` / `range(5)` in each harness.
+    """
+    for _ in range(turns):
+        await asyncio.sleep(0)
 
 
 async def await_tasks(server: MCPServer) -> None:
@@ -372,3 +411,23 @@ async def call_error(server: MCPServer, method: str, params: dict | None = None)
     assert envelope is not None, f"{method} returned no response"
     assert "error" in envelope, f"{method} unexpectedly succeeded: {envelope}"
     return envelope["error"]
+
+
+async def call_tool(app: Veloce, name: str, arguments: dict | None = None) -> dict:
+    """Run one `tools/call` against a server built from `app` and return its result.
+
+    Three modules carried this byte for byte. It is a second entry point rather
+    than a wrapper over `call`: it builds the server and binds an `MCPSession`,
+    where `call` takes an existing server and no session - and a tool that reads
+    session state behaves differently under the two.
+    """
+    response = await MCPServer(app).handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": name, "arguments": arguments or {}},
+        },
+        MCPSession(),
+    )
+    return response["result"]

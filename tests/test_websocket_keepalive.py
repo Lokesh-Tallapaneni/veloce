@@ -22,7 +22,13 @@ from veloce.websocket import WebSocket
 
 
 class _FakeTransport:
-    """Minimal asyncio.Transport stand-in for raw-mode WebSocket tests."""
+    """Minimal asyncio.Transport stand-in for raw-mode WebSocket tests.
+
+    Not `tests/_protocol.py`'s shared transport: this `writelines` records each
+    chunk separately, and the assertions here count writes to tell a heartbeat
+    frame from the close frame that follows it. The shared class inherits
+    `asyncio.Transport.writelines`, which joins them into one.
+    """
 
     def __init__(self) -> None:
         self.writes: list[bytes] = []

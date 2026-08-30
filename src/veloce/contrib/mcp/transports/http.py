@@ -63,20 +63,18 @@ import logging
 import secrets
 from collections.abc import Sequence
 from itertools import count
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 import veloce.status as status
-from veloce._internal import _bearer_token_from
 from veloce.contrib.mcp._helpers import encode_envelope, transport_route_name
 from veloce.contrib.mcp._posture import record_endpoint
-from veloce.contrib.mcp.auth import PROTECTED_RESOURCE_METADATA_PATH, MCPAuth
+from veloce.contrib.mcp.auth import MCPAuth
 from veloce.contrib.mcp.context import _transport_var
 from veloce.contrib.mcp.errors import (
     _JSONRPC_FORBIDDEN,
     _JSONRPC_INTERNAL_ERROR,
     HeaderMismatchError,
     MCPError,
-    OriginNotAllowedError,
     ProtocolVersionError,
     SessionNotFoundError,
     SessionRequiredError,
@@ -93,9 +91,16 @@ from veloce.contrib.mcp.server import (
     is_modern_version,
 )
 from veloce.contrib.mcp.session import MCPSession
+from veloce.contrib.mcp.transports._common import (
+    _SSE_RETRY_MS,
+    _authenticate,
+    _protocol_response,
+    _validate_origin,
+    register_metadata_route,
+)
 from veloce.contrib.mcp.transports.event_store import _EVENT_ID_SEP, SSEEventStore
 from veloce.contrib.mcp.transports.session_store import HttpSessionStore, SessionBackend
-from veloce.http.response import JSONResponse, Response
+from veloce.http.response import Response
 from veloce.principal import Principal, current_principal, set_principal
 from veloce.sse import EventSourceResponse, ServerSentEvent
 
@@ -109,12 +114,6 @@ _logger = logging.getLogger(__name__)
 # result and the client echoes it on every later request).
 _SESSION_ID_HEADER = "Mcp-Session-Id"
 
-# Reconnect hint (milliseconds) emitted as the SSE `retry` field before a stream
-# closes, so a disconnected client knows how long to wait before reconnecting
-# (MCP 2025-11-25 transport: "send an SSE event with a standard retry field
-# before closing").
-_SSE_RETRY_MS = 3000
-
 # Header a resuming client sends to name the last event it received, so the
 # server replays only what came after it (WHATWG SSE / MCP transport resumability).
 _LAST_EVENT_ID_HEADER = "Last-Event-ID"
@@ -124,7 +123,6 @@ _RAW_LAST_EVENT_ID = _LAST_EVENT_ID_HEADER.lower().encode("latin-1")
 # The lower-case wire key for the bearer credential, encoded once at import like
 # the one above. `_peek_header_key` compares it against the raw header tuples,
 # so reading the token never materialises the whole header mapping.
-_RAW_AUTHORIZATION = b"authorization"
 
 # Monotonic source of SSE event ids for the non-resumable priming event. The id
 # makes the stream's first frame addressable; when resumability is off the id is
@@ -142,21 +140,6 @@ _STREAM_END = object()
 
 
 # ── Response envelopes ────────────────────────────────────
-
-
-def _protocol_response(
-    payload: Any, *, status_code: int = status.HTTP_200_OK, headers: dict[str, str] | None = None
-) -> Response:
-    """Build a response carrying an MCP protocol document, encoded as protocol.
-
-    `JSONResponse` resolves the application's JSON provider, which is right for
-    application data and wrong for a JSON-RPC envelope - see `encode_envelope`.
-    """
-    response = JSONResponse._from_encoded(encode_envelope(payload))
-    response.status_code = status_code
-    if headers:
-        response.headers.update(headers)
-    return response
 
 
 # ── Route registration ────────────────────────────────────
@@ -258,34 +241,6 @@ def register_http_transport(
     record_endpoint(app, "http", path, auth, allowed_origins)
 
     register_metadata_route(app, auth, exclude_middleware)
-
-
-def register_metadata_route(
-    app: Any, auth: MCPAuth | None, exclude_middleware: Sequence[str] | None
-) -> None:
-    """Serve the RFC 9728 protected-resource metadata `_challenge` points at.
-
-    Every `401` either transport emits names this path in its `WWW-Authenticate`
-    header, so a client that follows the challenge - which is the whole point of
-    the header - must find something there. Registered by the HTTP transport
-    alone, an SSE mount answered its own challenge with a 404.
-
-    The path is fixed by the RFC, so two mounts on one app would collide; the
-    second is a no-op, since both would serve the same document.
-    """
-    if auth is None or app.match("GET", PROTECTED_RESOURCE_METADATA_PATH) is not None:
-        return
-
-    async def mcp_metadata(request: Request) -> Response:
-        return _protocol_response(auth.metadata())
-
-    app.add_route(
-        PROTECTED_RESOURCE_METADATA_PATH,
-        mcp_metadata,
-        methods=["GET"],
-        include_in_schema=False,
-        exclude_middleware=exclude_middleware,
-    )
 
 
 async def _handle_http(
@@ -463,20 +418,6 @@ def _handle_get(event_store: SSEEventStore | None, request: Request) -> Response
 # ── Admission control ─────────────────────────────────────
 
 
-def _validate_origin(request: Request, allowed_origins: frozenset[str] | None) -> None:
-    """Reject a present `Origin` outside the allowlist (DNS-rebinding defense).
-
-    A missing `Origin` (a non-browser client) is allowed; a browser-set `Origin`
-    not in `allowed_origins` raises `OriginNotAllowedError` (HTTP 403). Validation
-    is skipped entirely when no allowlist is configured.
-    """
-    if allowed_origins is None:
-        return
-    origin = request._peek_header_key(b"origin")
-    if origin is not None and origin not in allowed_origins:
-        raise OriginNotAllowedError("origin not allowed")
-
-
 def _validate_protocol_version(request: Request) -> None:
     """Reject an unsupported `MCP-Protocol-Version` header (HTTP 400).
 
@@ -648,50 +589,6 @@ def _forbidden(response: dict[str, Any], scopes: list[str]) -> Response:
         response,
         status_code=status.HTTP_403_FORBIDDEN,
         headers={"WWW-Authenticate": ", ".join(parts)},
-    )
-
-
-async def _authenticate(
-    auth: MCPAuth, request: Request
-) -> tuple[Principal | None, Response | None]:
-    """Validate the request's bearer token; return `(principal, challenge)`.
-
-    A missing or invalid token yields a `401` challenge; a valid token missing the
-    endpoint's required scopes yields a `403`. On success the challenge is `None`.
-    """
-    # The framework's own extractor, not a second parse: RFC 6750 Sec. 2.1 and
-    # RFC 7235 permit only SP/HTAB between scheme and token, and a bare `.strip()`
-    # also trimmed newlines and NBSP - so a token this door accepted was one the
-    # HTTP door rejected. The pure extraction rather than `security/`'s wrapper,
-    # which raises where this path owes the caller a challenge response.
-    token = _bearer_token_from(request._peek_header_key(_RAW_AUTHORIZATION) or "")
-    if not token:
-        return None, _challenge(auth, 401, "invalid_token")
-
-    try:
-        outcome = auth.verify(token)
-        if asyncio.iscoroutine(outcome):
-            outcome = await outcome
-        principal = cast("Principal | None", outcome)
-    except Exception:
-        _logger.exception("MCP token verification raised")
-        principal = None
-    if principal is None:
-        return None, _challenge(auth, 401, "invalid_token")
-
-    if auth.required_scopes and not principal.has_scopes(auth.required_scopes):
-        return None, _challenge(auth, 403, "insufficient_scope")
-    return principal, None
-
-
-def _challenge(auth: MCPAuth, status_code: int, error: str) -> Response:
-    """Build a `401`/`403` response with the RFC 6750 `WWW-Authenticate` challenge."""
-    parts = [f'Bearer error="{error}"', f'resource_metadata="{PROTECTED_RESOURCE_METADATA_PATH}"']
-    if error == "insufficient_scope" and auth.required_scopes:
-        parts.append(f'scope="{" ".join(sorted(auth.required_scopes))}"')
-    body = {"error": error}
-    return _protocol_response(
-        body, status_code=status_code, headers={"WWW-Authenticate": ", ".join(parts)}
     )
 
 

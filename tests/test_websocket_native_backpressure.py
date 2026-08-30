@@ -32,6 +32,9 @@ from veloce.serving.protocol import HttpProtocol
 class _FakeTransport(asyncio.Transport):
     """A full-duplex transport that records writes and models a write high mark.
 
+    Not `tests/_protocol.py`'s shared transport: this one drives `pause_writing`
+    and `resume_writing` on the protocol, which is the behaviour under test.
+
     `writelines` and `write` append to `outbound` so frames the handler produces
     are observable. To model a slow-reading peer, the transport invokes the
     protocol's `pause_writing` once the recorded data-frame count reaches

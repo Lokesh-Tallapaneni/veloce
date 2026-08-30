@@ -40,14 +40,10 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from veloce.contrib.mcp.session import MCPSession
+from veloce.contrib.mcp.transports._common import _SESSION_ID_ENTROPY_BYTES
 
 if TYPE_CHECKING:  # pragma: no cover
     from collections.abc import Callable
-
-# Bytes of entropy per session id. `secrets.token_urlsafe` yields URL-safe base64
-# (characters within the MCP-mandated visible-ASCII range 0x21-0x7E), so the id is
-# globally unique and cryptographically secure per the transport spec.
-_SESSION_ID_ENTROPY_BYTES = 24
 
 # Live sessions held per worker. Generous for any real deployment; the point is
 # that the count has a ceiling that does not depend on clients behaving.

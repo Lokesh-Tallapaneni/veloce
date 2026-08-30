@@ -139,44 +139,34 @@ def test_load_app_missing_attribute_raises(tmp_path, monkeypatch):
         _load_app("dummy_cli_app:app")
 
 
-def test_load_app_returns_attribute(tmp_path, monkeypatch):
-    module_path = tmp_path / "cli_demo_app.py"
-    module_path.write_text(
-        textwrap.dedent(
-            """
-            from veloce import Veloce
-            app = Veloce(openapi_url=None)
-            """
-        )
+def test_load_app_returns_attribute(app_module):
+    reference = app_module(
+        """
+        from veloce import Veloce
+        app = Veloce(openapi_url=None)
+        """,
+        "cli_demo_app",
     )
-    monkeypatch.syspath_prepend(str(tmp_path))
-    # Module may already be cached from a prior test — drop it.
-    sys.modules.pop("cli_demo_app", None)
-    obj = _load_app("cli_demo_app:app")
-    assert obj.title == "Veloce"
+    assert _load_app(reference).title == "Veloce"
 
 
-def test_routes_command_prints_table(tmp_path, monkeypatch, capsys):
-    module_path = tmp_path / "cli_routes_app.py"
-    module_path.write_text(
-        textwrap.dedent(
-            """
-            from veloce import Veloce
-            app = Veloce(openapi_url=None)
+def test_routes_command_prints_table(app_module, capsys):
+    reference = app_module(
+        """
+        from veloce import Veloce
+        app = Veloce(openapi_url=None)
 
-            @app.get("/hello", name="hello")
-            async def hello():
-                return {}
+        @app.get("/hello", name="hello")
+        async def hello():
+            return {}
 
-            @app.post("/items/{id:int}", name="create_item")
-            async def create(id: int):
-                return {}
-            """
-        )
+        @app.post("/items/{id:int}", name="create_item")
+        async def create(id: int):
+            return {}
+        """,
+        "cli_routes_app",
     )
-    monkeypatch.syspath_prepend(str(tmp_path))
-    sys.modules.pop("cli_routes_app", None)
-    rc = main(["routes", "cli_routes_app:app"])
+    rc = main(["routes", reference])
     assert rc == 0
     out = capsys.readouterr().out
     assert "METHOD" in out and "PATH" in out and "NAME" in out
@@ -184,12 +174,11 @@ def test_routes_command_prints_table(tmp_path, monkeypatch, capsys):
     assert "POST" in out and "/items/{id}" in out and "create_item" in out
 
 
-def test_routes_command_no_routes(tmp_path, monkeypatch, capsys):
-    module_path = tmp_path / "cli_empty_app.py"
-    module_path.write_text("from veloce import Veloce\napp = Veloce(openapi_url=None)\n")
-    monkeypatch.syspath_prepend(str(tmp_path))
-    sys.modules.pop("cli_empty_app", None)
-    rc = main(["routes", "cli_empty_app:app"])
+def test_routes_command_no_routes(app_module, capsys):
+    reference = app_module(
+        "from veloce import Veloce\napp = Veloce(openapi_url=None)\n", "cli_empty_app"
+    )
+    rc = main(["routes", reference])
     assert rc == 0
     out = capsys.readouterr().out
     assert "No routes registered" in out
@@ -198,19 +187,15 @@ def test_routes_command_no_routes(tmp_path, monkeypatch, capsys):
 # ── S7: `veloce check` security audit command ─────────────────────────
 
 
-def test_check_command_reports_issues(tmp_path, monkeypatch, capsys):
-    module_path = tmp_path / "cli_check_bad.py"
-    module_path.write_text(
-        textwrap.dedent(
-            """
-            from veloce import Veloce
-            app = Veloce(debug=True, openapi_url=None)
-            """
-        )
+def test_check_command_reports_issues(app_module, capsys):
+    reference = app_module(
+        """
+        from veloce import Veloce
+        app = Veloce(debug=True, openapi_url=None)
+        """,
+        "cli_check_bad",
     )
-    monkeypatch.syspath_prepend(str(tmp_path))
-    sys.modules.pop("cli_check_bad", None)
-    rc = main(["check", "cli_check_bad:app"])
+    rc = main(["check", reference])
     assert rc == 1
     out = capsys.readouterr().out
     # Each line carries its severity, so a reader can tell what blocks a deploy.
@@ -218,23 +203,19 @@ def test_check_command_reports_issues(tmp_path, monkeypatch, capsys):
     assert "[warning] DEBUG is enabled" in out
 
 
-def test_check_command_clean_app(tmp_path, monkeypatch, capsys):
-    module_path = tmp_path / "cli_check_good.py"
-    module_path.write_text(
-        textwrap.dedent(
-            """
-            from veloce import SecurityHeadersMiddleware, Veloce
-            app = Veloce(openapi_url=None)
-            app.config["SECRET_KEY"] = "a-real-secret"
-            app.add_middleware(SecurityHeadersMiddleware(
-                hsts_max_age=31536000, content_security_policy="default-src 'self'"
-            ))
-            """
-        )
+def test_check_command_clean_app(app_module, capsys):
+    reference = app_module(
+        """
+        from veloce import SecurityHeadersMiddleware, Veloce
+        app = Veloce(openapi_url=None)
+        app.config["SECRET_KEY"] = "a-real-secret"
+        app.add_middleware(SecurityHeadersMiddleware(
+            hsts_max_age=31536000, content_security_policy="default-src 'self'"
+        ))
+        """,
+        "cli_check_good",
     )
-    monkeypatch.syspath_prepend(str(tmp_path))
-    sys.modules.pop("cli_check_good", None)
-    rc = main(["check", "cli_check_good:app"])
+    rc = main(["check", reference])
     assert rc == 0
     out = capsys.readouterr().out
     assert "no issues" in out.lower()

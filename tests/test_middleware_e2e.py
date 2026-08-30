@@ -1,10 +1,11 @@
 """End-to-end middleware behaviour exercised through the real TestClient flow.
 
-Each test drives a `Veloce` app via `TestClient` so the request goes through
-the full ASGI pipeline (request middleware -> match -> handler -> response
-middleware). These are intentionally NOT unit tests of the middleware in
-isolation -- the value is in catching wiring regressions where a fix to the
-middleware itself doesn't surface end-to-end.
+Each test drives a `Veloce` app so the request goes through the full pipeline
+(request middleware -> match -> handler -> response middleware) - via
+`TestClient`, except `TestMiddlewareHTTPDecorator`, which calls
+`app.handle_request` directly. These are intentionally NOT unit tests of the
+middleware in isolation -- the value is in catching wiring regressions where a
+fix to the middleware itself doesn't surface end-to-end.
 """
 
 from __future__ import annotations
@@ -71,7 +72,7 @@ def _cors_app(**kwargs) -> Veloce:
     return app
 
 
-# ── 1-3: ProxyFix prefix selection ────────────────────────────────────────
+# ── ProxyFix prefix selection ─────────────────────────────────────────────
 
 
 def test_proxyfix_forwarded_prefix_sets_script_root():
@@ -107,7 +108,7 @@ def test_proxyfix_forwarded_wins_over_x_forwarded_prefix():
     assert resp.json()["script_root"] == "/api"
 
 
-# ── 4-5: CRLF rejection in proxy-supplied values ──────────────────────────
+# ── CRLF rejection in proxy-supplied values ───────────────────────────────
 #
 # The middleware raises `ValueError` at the injection point. With the default
 # (non-debug, non-propagating) app, the dispatcher converts the unhandled
@@ -147,7 +148,7 @@ def test_proxyfix_crlf_in_x_forwarded_host_rejected_cleanly():
     _assert_no_header_injection(resp)
 
 
-# ── 6: CORS bad regex -> ValueError at construction ───────────────────────
+# ── CORS bad regex -> ValueError at construction ──────────────────────────
 
 
 def test_cors_invalid_regex_raises_value_error():
@@ -156,7 +157,7 @@ def test_cors_invalid_regex_raises_value_error():
         CORSMiddleware(allow_origin_regex="[")
 
 
-# ── 7: CORS preflight with wildcard ───────────────────────────────────────
+# ── CORS preflight with wildcard ──────────────────────────────────────────
 
 
 def test_cors_preflight_wildcard_returns_expected_headers():
@@ -179,7 +180,7 @@ def test_cors_preflight_wildcard_returns_expected_headers():
     assert resp.headers["Access-Control-Allow-Headers"] == "X-Custom"
 
 
-# ── 8: Logging level preserved through end-to-end app construction ────────
+# ── Logging level preserved through end-to-end app construction ───────────
 
 
 def test_logging_middleware_preserves_preconfigured_level(access_logger_state):
@@ -209,7 +210,14 @@ def test_logging_middleware_preserves_preconfigured_level(access_logger_state):
 
 
 class TestMiddlewareHTTPDecorator:
-    """Test @app.middleware('http') with the call_next pattern."""
+    """`@app.middleware("http")` with the `call_next` pattern.
+
+    Grouped rather than left bare because these three share a subject the rest
+    of the module does not: the decorator form of middleware registration. They
+    also drive `app.handle_request` directly rather than `TestClient` - the
+    decorator wires into the same response chain, and the dispatch entry point
+    is not what is under test here.
+    """
 
     async def test_middleware_http_modifies_response(self):
         app = Veloce(openapi_url=None)
@@ -218,7 +226,6 @@ class TestMiddlewareHTTPDecorator:
         async def add_timing(request: Request, call_next):
             response = await call_next(request)
             response.headers["X-Process"] = "true"
-            response._encoded = None
             return response
 
         @app.get("/data")

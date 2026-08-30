@@ -19,6 +19,7 @@ and app-context lifecycle. Connect a receiver with
 [Signals guide](../guide/signals.md) for the payload each one carries.
 
 ::: veloce.Signal
+::: veloce.SignalResult
 ::: veloce.Namespace
 ::: veloce.request_started
 ::: veloce.request_finished

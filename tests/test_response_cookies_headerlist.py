@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import Request, Response
+from tests.conftest import make_request
+from veloce import Response
 from veloce.app.asgi import _build_asgi_headers
 
 # ── cookies ──────────────────────────────────────────────────────────
@@ -61,7 +62,7 @@ def test_response_cookies_match_request_cookies(value):
     resp = Response()
     resp.set_cookie("k", value)
     wire = resp.headers["Set-Cookie"].split(";", 1)[0]
-    req = Request(method="GET", path="/x", query_string="", headers={"cookie": wire}, body=b"")
+    req = make_request(method="GET", path="/x", query_string="", headers={"cookie": wire}, body=b"")
     assert resp.cookies["k"] == req.cookies["k"] == value
 
 

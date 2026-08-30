@@ -246,7 +246,7 @@ async def test_a_number_where_a_string_is_declared_is_refused():
     assert is_error is True
 
 
-async def test_the_refusal_names_the_argument_and_both_types():
+async def test_the_binding_refusal_names_the_argument_and_both_types():
     """A model can only correct what it is told; the message is the retry."""
     _is_error, text = await _call(MCPServer(_typed_app()), "probe", {"city": 5, "count": 1})
     assert "city" in text

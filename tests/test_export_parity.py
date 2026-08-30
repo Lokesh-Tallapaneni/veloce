@@ -121,6 +121,35 @@ UNEXPORTED: dict[str, str] = {
     "workers.VeloceWorker": "gunicorn worker, referenced by dotted path",
     "workers.build_protocol_factory": "gunicorn worker internals",
     "workers.build_ssl_context": "gunicorn worker internals",
+    # ── public type aliases and tuning constants ─────────────────
+    # Surfaced when the scan learned to see `Subscript`/`Name`/`BinOp` values.
+    # Three of the nineteen it found type an exported surface a user must be
+    # able to annotate against - `Severity` on `Finding.severity`,
+    # `RateLimitState` in `RateLimitStrategy.evaluate`, `SignalResult` from
+    # `Signal.send` - and are now exported. The rest are recorded here.
+    #
+    # Tuning defaults: buffer and chunk sizes, settable through `Config` or a
+    # keyword rather than by importing the constant.
+    "config.DEFAULT_WRITE_BUFFER_HIGH_WATER": "tuning default; set through Config, not by import",
+    "http.formparsers.DEFAULT_MAX_MULTIPART_PART_SIZE": "tuning default for the multipart parser",
+    "http.formparsers.MULTIPART_SPOOL_MAX_SIZE": "tuning default for the multipart parser",
+    "http.response.FILE_STREAM_CHUNK": "file-response read size; an implementation constant",
+    "serving.protocol.WRITE_BUFFER_HIGH_WATER": "raw-transport tuning; `app.run()` is the public entry point",
+    # Callback aliases whose owning object is itself unexported, so the alias
+    # is written as `veloce.health.ReadinessCheck` if it is written at all.
+    "health.ReadinessCheck": "callback alias for a health check; used as veloce.health.ReadinessCheck",
+    "routing.router.RouteHandler": "router-internal handler alias; RouteInfo/RouteMatch are equally internal",
+    "testclient.StreamBody": "accepted shape of TestClient's `stream=`; callers pass an iterable, not the alias",
+    # MCP integration internals, consistent with the other names from these
+    # modules above.
+    "contrib.mcp.auth.TokenVerifier": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.authorization.Authenticator": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.registry.ToolFilter": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.server.MethodHandler": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.subscriptions.Sink": "internal to the MCP integration; not part of its published surface",
+    # `exceptions.NotImplemented_` is the back-compat alias described above; it
+    # is a `Name` value, so the widened scan now reports it as a definition.
+    "exceptions.NotImplemented_": "back-compat alias for the exported ServerNotImplemented",
     # ── app/ mixins ──────────────────────────────────────────────
     # `Veloce` is composed of these; they are never constructed or imported
     # by application code, and `veloce.app` exports only `Veloce` itself.
@@ -178,7 +207,6 @@ UNEXPORTED: dict[str, str] = {
     "contrib.mcp.toolsearch.ToolStep": "internal to the MCP integration; not part of its published surface",
     "contrib.mcp.toolsearch.ToolSearch": "internal to the MCP integration; not part of its published surface",
     "contrib.mcp.transports.event_store.SSEEventStore": "internal to the MCP integration; not part of its published surface",
-    "contrib.mcp.transports.http.register_metadata_route": "internal to the MCP integration; not part of its published surface",
     "contrib.mcp.transports.session_store.HttpSessionStore": "internal to the MCP integration; not part of its published surface",
     # ── routing/converters concrete classes ──────────────────────
     # `veloce.routing` publishes the `Converter` base and `register_converter`;
@@ -201,7 +229,6 @@ UNEXPORTED: dict[str, str] = {
     "routing.converters.build_route_regex": "implementation behind the Converter base / register_converter seam",
     "routing.converters.path_param_schemas": "implementation behind the Converter base / register_converter seam",
     # ── remaining leaf internals ─────────────────────────────────
-    "contrib.openapi.SchemaRegistry": "internal accumulator for one schema build",
     "routing.router.MCPRouteOptions": "the record behind RouteInfo.mcp; read through its properties",
     "app.mcp.MCPToolRegistration": "one @app.mcp_tool registration, read at mount time",
     "app.mcp.MCPPromptRegistration": "one @app.mcp_prompt registration, read at mount time",
@@ -264,6 +291,15 @@ def _imported_names(tree: ast.Module) -> set[str]:
     return names
 
 
+#: What a module-level assignment must evaluate to for the name to count as a
+#: definition. A `Call` was the whole set, which made every public type alias
+#: structurally invisible: `Callable[...]`, `dict[str, float]` and
+#: `Literal["a", "b"]` are `Subscript` nodes, a re-export alias is a `Name`, and
+#: a union alias is a `BinOp`. Nineteen public aliases had therefore never been
+#: through the export-or-record decision this module exists to force.
+_DEFINING_VALUE = (ast.Call, ast.Subscript, ast.Name, ast.BinOp)
+
+
 def _defined_public_names(tree: ast.Module) -> list[str]:
     """Public classes, functions, and constructed module-level singletons.
 
@@ -275,11 +311,11 @@ def _defined_public_names(tree: ast.Module) -> list[str]:
     for node in tree.body:
         if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
             names.append(node.name)
-        elif isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+        elif isinstance(node, ast.Assign) and isinstance(node.value, _DEFINING_VALUE):
             names += [t.id for t in node.targets if isinstance(t, ast.Name)]
         elif (
             isinstance(node, ast.AnnAssign)
-            and isinstance(node.value, ast.Call)
+            and isinstance(node.value, _DEFINING_VALUE)
             and isinstance(node.target, ast.Name)
         ):
             names.append(node.target.id)

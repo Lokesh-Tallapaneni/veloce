@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from tests.conftest import make_request
 from veloce import Request
 
 
 def _req(content_type: str | None = None) -> Request:
     headers = {"content-type": content_type} if content_type else {}
-    return Request(method="POST", path="/", query_string="", headers=headers, body=b"")
+    return make_request(method="POST", path="/", query_string="", headers=headers, body=b"")
 
 
 # ── mimetype ──────────────────────────────────────────────────────────
@@ -21,7 +22,7 @@ def test_mimetype_strips_params():
     assert _req("application/json; charset=utf-8").mimetype == "application/json"
 
 
-def test_mimetype_lowercased():
+def test_request_mimetype_is_lowercased():
     """RFC 9110 §8.3: media type is case-insensitive."""
     assert _req("APPLICATION/JSON").mimetype == "application/json"
 
@@ -85,7 +86,7 @@ def test_mimetype_params_malformed_segment_skipped():
 
 
 def test_is_json_for_plain_application_json():
-    req = Request(
+    req = make_request(
         method="POST",
         path="/",
         query_string="",
@@ -97,7 +98,7 @@ def test_is_json_for_plain_application_json():
 
 def test_is_json_for_structured_suffix():
     """RFC 6839 §3.1: `application/vnd.api+json` is JSON-encoded."""
-    req = Request(
+    req = make_request(
         method="POST",
         path="/",
         query_string="",
@@ -106,7 +107,7 @@ def test_is_json_for_structured_suffix():
     )
     assert req.is_json is True
 
-    req2 = Request(
+    req2 = make_request(
         method="POST",
         path="/",
         query_string="",
@@ -117,7 +118,7 @@ def test_is_json_for_structured_suffix():
 
 
 def test_is_json_strips_charset_param():
-    req = Request(
+    req = make_request(
         method="POST",
         path="/",
         query_string="",
@@ -128,7 +129,7 @@ def test_is_json_strips_charset_param():
 
 
 def test_is_json_false_for_form_payloads():
-    req = Request(
+    req = make_request(
         method="POST",
         path="/",
         query_string="",
@@ -139,7 +140,7 @@ def test_is_json_false_for_form_payloads():
 
 
 def test_is_json_false_for_text_plain():
-    req = Request(
+    req = make_request(
         method="POST",
         path="/",
         query_string="",
@@ -150,5 +151,5 @@ def test_is_json_false_for_text_plain():
 
 
 def test_is_json_false_for_missing_content_type():
-    req = Request(method="GET", path="/", query_string="", headers={}, body=b"")
+    req = make_request(method="GET", path="/", query_string="", headers={}, body=b"")
     assert req.is_json is False

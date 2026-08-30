@@ -14,11 +14,11 @@ which is the property this file pins.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 
 import orjson
 import pytest
 
+from tests._mcp import await_tasks
 from veloce import Veloce
 from veloce.contrib.mcp._helpers import _notifier_var
 from veloce.contrib.mcp.server import MCPServer
@@ -109,12 +109,6 @@ def _task_app() -> tuple[Veloce, asyncio.Event]:
     return app, gate
 
 
-async def _settle(server: MCPServer) -> None:
-    for runner in [t.runner for t in server._tasks.tasks.values() if t.runner is not None]:
-        with contextlib.suppress(asyncio.CancelledError):
-            await runner
-
-
 async def test_a_modern_client_reads_the_same_duration_field_at_every_stage():
     """The defect: `ttlMs` on creation and polling, `ttl` on cancellation."""
     app, _gate = _task_app()
@@ -132,7 +126,7 @@ async def test_a_modern_client_reads_the_same_duration_field_at_every_stage():
     cancelled = await server.handle_message(
         _msg("tasks/cancel", {"taskId": task_id}, modern=True, mid=3), session
     )
-    await _settle(server)
+    await await_tasks(server)
 
     for stage, payload in (
         ("create", created["result"]["task"]),
@@ -155,7 +149,7 @@ async def test_a_handshake_client_reads_the_handshake_names_at_every_stage():
     cancelled = await server.handle_message(
         _msg("tasks/cancel", {"taskId": task_id}, modern=False, mid=3), session
     )
-    await _settle(server)
+    await await_tasks(server)
 
     for stage, payload in (("create", created["result"]["task"]), ("cancel", cancelled["result"])):
         assert "ttl" in payload, stage
@@ -179,7 +173,7 @@ async def test_a_status_notification_carries_the_callers_era():
             session,
         )
         gate.set()
-        await _settle(server)
+        await await_tasks(server)
     finally:
         _notifier_var.reset(token)
 

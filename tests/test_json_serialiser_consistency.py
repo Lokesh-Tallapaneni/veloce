@@ -71,11 +71,15 @@ def _app(**config) -> Veloce:
     async def as_subclass():
         return dict(_DATA)
 
+    @app.get("/response")
+    async def as_response():
+        return JSONResponse(dict(_DATA))
+
     return app
 
 
 #: Every way a handler can hand back a JSON object.
-_ROUTES = ["/dict", "/list", "/model", "/jsonify", "/tuple", "/subclass"]
+_ROUTES = ["/dict", "/list", "/model", "/jsonify", "/tuple", "/subclass", "/response"]
 
 
 # ── The default: nothing sorts ───────────────────────────────────────

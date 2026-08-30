@@ -10,6 +10,7 @@ other rather than raising.
 
 from __future__ import annotations
 
+from tests.conftest import make_request
 from veloce import Veloce
 from veloce.http.request import Request
 from veloce.middleware.security import RateLimitMiddleware
@@ -26,12 +27,12 @@ class _Transport:
 
 
 def _request(*, transport=None, scope=None, headers=None) -> Request:
-    return Request(
-        "GET",
-        "/",
-        "",
-        headers or [],
-        b"",
+    return make_request(
+        method="GET",
+        path="/",
+        query_string="",
+        headers=headers or [],
+        body=b"",
         transport=transport,
         scope=scope,
     )

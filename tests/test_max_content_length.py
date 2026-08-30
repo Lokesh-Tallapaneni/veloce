@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import asyncio
-
+from tests._asgi_drive import drive, http_scope, status_of
+from tests.conftest import make_request
 from veloce import Request, Veloce
 from veloce.testclient import TestClient
 
@@ -65,7 +65,7 @@ async def test_default_limit_rejects_oversized_declared_length():
     declared Content-Length cheaply (DoS protection is on by default)."""
 
     app = _app(max_size=None)  # no explicit config -> default 100 MiB
-    req = Request(
+    req = make_request(
         method="POST",
         path="/echo",
         query_string="",
@@ -86,7 +86,7 @@ async def test_declared_content_length_over_limit_rejected_cheaply():
 
     app = _app(max_size=100)
 
-    req = Request(
+    req = make_request(
         method="POST",
         path="/echo",
         query_string="",
@@ -101,7 +101,7 @@ async def test_actual_body_over_limit_rejected_even_without_content_length():
     """No Content-Length header but oversized body → still rejected."""
 
     app = _app(max_size=100)
-    req = Request(
+    req = make_request(
         method="POST",
         path="/echo",
         query_string="",
@@ -132,13 +132,8 @@ async def test_incremental_limit_rejects_chunked_body_mid_stream():
     async def send(message: dict) -> None:
         sent.append(message)
 
-    scope = {
-        "type": "http",
-        "method": "POST",
-        "path": "/echo",
-        "query_string": b"",
-        "headers": [],  # deliberately no content-length
-    }
+    # No content-length: the refusal has to come from the bytes received.
+    scope = http_scope(method="POST", path="/echo", headers=[])
     await app(scope, receive, send)
 
     start = next(m for m in sent if m["type"] == "http.response.start")
@@ -163,38 +158,13 @@ def _limited_app(limit: int) -> Veloce:
 
 async def _drive_without_content_length(app: Veloce, total: int, chunks: int) -> int:
     """POST `total` bytes in `chunks` messages, declaring no Content-Length."""
-    scope = {
-        "type": "http",
-        "asgi": {"version": "3.0"},
-        "http_version": "1.1",
-        "method": "POST",
-        "scheme": "http",
-        "path": "/u",
-        "raw_path": b"/u",
-        "query_string": b"",
-        "root_path": "",
-        "headers": [(b"host", b"testserver")],
-        "client": ("t", 1),
-        "server": ("t", 80),
-    }
     per = total // chunks
-    messages = iter(
-        [
-            {"type": "http.request", "body": b"x" * per, "more_body": index < chunks - 1}
-            for index in range(chunks)
-        ]
+    messages = await drive(
+        app,
+        http_scope(method="POST", path="/u", headers=[(b"host", b"testserver")]),
+        chunks=[b"x" * per] * chunks,
     )
-
-    async def receive():
-        return next(messages)
-
-    sent: list[dict] = []
-
-    async def send(message):
-        sent.append(message)
-
-    await app(scope, receive, send)
-    return sent[0]["status"]
+    return status_of(messages)
 
 
 def test_a_declared_over_limit_body_is_refused():
@@ -234,22 +204,18 @@ def test_a_mounted_sub_app_enforces_its_own_smaller_limit():
         assert client.post("/sub/u", content=b"x" * 200).status_code == 413
 
 
-def test_a_request_built_outside_a_transport_is_still_checked():
+async def test_a_request_built_outside_a_transport_is_still_checked():
     """`handle_request` is public; a caller reaching it directly gets the check."""
     app = _limited_app(50)
-
-    async def drive():
-        request = Request(
-            method="POST",
-            path="/u",
-            query_string="",
-            headers={"host": "testserver"},
-            body=b"x" * 200,
-            app=app,
-        )
-        return await app.handle_request(request)
-
-    assert asyncio.run(drive()).status_code == 413
+    request = make_request(
+        method="POST",
+        path="/u",
+        query_string="",
+        headers={"host": "testserver"},
+        body=b"x" * 200,
+        app=app,
+    )
+    assert (await app.handle_request(request)).status_code == 413
 
 
 # ── The declared-length scan compares the header as received ─────────
@@ -262,55 +228,31 @@ def test_a_request_built_outside_a_transport_is_still_checked():
 # builds a compliant scope and could not express the violation.
 
 
-def _drive(app, headers: list[tuple[bytes, bytes]], body: bytes) -> int:
+async def _drive(app, headers: list[tuple[bytes, bytes]], body: bytes) -> int:
     """Send one POST through the raw ASGI surface and return its status."""
-    status: list[int] = []
-
-    scope = {
-        "type": "http",
-        "asgi": {"version": "3.0"},
-        "http_version": "1.1",
-        "method": "POST",
-        "path": "/echo",
-        "raw_path": b"/echo",
-        "query_string": b"",
-        "headers": headers,
-        "client": ("127.0.0.1", 5555),
-        "server": ("127.0.0.1", 8000),
-        "scheme": "http",
-        "root_path": "",
-    }
-
-    async def receive():
-        return {"type": "http.request", "body": body, "more_body": False}
-
-    async def send(message):
-        if message["type"] == "http.response.start":
-            status.append(message["status"])
-
-    asyncio.run(app(scope, receive, send))
-    return status[0]
+    messages = await drive(app, http_scope(method="POST", path="/echo", headers=headers), body=body)
+    return status_of(messages)
 
 
-def test_a_compliant_declared_length_over_the_limit_is_refused():
+async def test_a_compliant_declared_length_over_the_limit_is_refused():
     app = _app(max_size=16)
     headers = [(b"host", b"testserver"), (b"content-length", b"999999")]
-    assert _drive(app, headers, b"x" * 999999) == 413
+    assert await _drive(app, headers, b"x" * 999999) == 413
 
 
-def test_an_oddly_cased_declared_length_still_has_its_body_refused():
+async def test_an_oddly_cased_declared_length_still_has_its_body_refused():
     """The early rejection is lost; the limit is not."""
     app = _app(max_size=16)
     headers = [(b"host", b"testserver"), (b"Content-Length", b"999999")]
-    assert _drive(app, headers, b"x" * 999999) == 413
+    assert await _drive(app, headers, b"x" * 999999) == 413
 
 
-def test_a_body_with_no_declared_length_at_all_is_still_refused():
+async def test_a_body_with_no_declared_length_at_all_is_still_refused():
     app = _app(max_size=16)
-    assert _drive(app, [(b"host", b"testserver")], b"x" * 999999) == 413
+    assert await _drive(app, [(b"host", b"testserver")], b"x" * 999999) == 413
 
 
-def test_an_oddly_cased_declared_length_within_the_limit_is_served():
+async def test_an_oddly_cased_declared_length_within_the_limit_is_served():
     app = _app(max_size=1024)
     headers = [(b"host", b"testserver"), (b"Content-Length", b"8")]
-    assert _drive(app, headers, b"x" * 8) == 200
+    assert await _drive(app, headers, b"x" * 8) == 200

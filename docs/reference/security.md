@@ -64,6 +64,7 @@ The structured form of `Veloce.security_audit()`. `veloce.audit.run(app)`
 returns `Finding` objects; startup refuses to serve on an `error`.
 
 ::: veloce.Finding
+::: veloce.Severity
 ::: veloce.AuditContext
 ::: veloce.AuditFailed
 

@@ -38,7 +38,7 @@ async def test_stream_small_body_is_one_chunk():
     assert chunks == [b"small"]
 
 
-async def test_stream_empty_body_yields_nothing():
+async def test_an_empty_body_streams_zero_chunks():
     chunks = [chunk async for chunk in _post(body=b"").stream()]
     assert chunks == []
 

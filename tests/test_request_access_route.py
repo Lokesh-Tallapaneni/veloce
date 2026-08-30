@@ -7,14 +7,14 @@ tests and a reader looking for these could not guess the file.
 
 from __future__ import annotations
 
-from veloce import Request
+from tests.conftest import make_request
 
 # ── Request.access_route ────────────────────────────────────────────
 
 
 def test_access_route_uses_x_forwarded_for():
     """Chain order: client -> proxies, then peer last."""
-    req = Request(
+    req = make_request(
         method="GET",
         path="/",
         query_string="",
@@ -26,7 +26,7 @@ def test_access_route_uses_x_forwarded_for():
 
 
 def test_access_route_falls_back_to_peer():
-    req = Request(
+    req = make_request(
         method="GET",
         path="/",
         query_string="",
@@ -38,5 +38,5 @@ def test_access_route_falls_back_to_peer():
 
 
 def test_access_route_empty_when_no_peer():
-    req = Request(method="GET", path="/", query_string="", headers={}, body=b"")
+    req = make_request(method="GET", path="/", query_string="", headers={}, body=b"")
     assert req.access_route == []

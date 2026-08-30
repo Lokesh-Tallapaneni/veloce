@@ -24,7 +24,7 @@ from __future__ import annotations
 import pytest
 
 from tests._mcp import auth
-from tests._mcp_source import calls, defines, tree
+from tests._mcp_source import calls, defines, transport_modules
 from veloce import Veloce
 from veloce.contrib.mcp.auth import PROTECTED_RESOURCE_METADATA_PATH, MCPAuth
 
@@ -204,12 +204,17 @@ def test_the_metadata_route_needs_no_token():
 def test_the_transports_share_one_registration():
     """Two copies is how the two came to differ.
 
-    Asserted against the parsed modules, so the argument names or a wrapped
-    call signature do not decide whether this passes - only which module
-    *defines* the function and which one *calls* it.
+    Asserted against the parsed modules, so the argument names or a wrapped call
+    signature do not decide whether this passes. Stated as "exactly one module
+    defines it, and both transports call it" rather than naming the owner: which
+    module holds a shared helper is a layout choice, and pinning `http.py` as
+    the owner failed this test the moment the helper moved to a sibling while
+    the property it names still held.
     """
-    http = tree("transports", "http.py")
-    sse = tree("transports", "sse.py")
-    assert defines(http, "register_metadata_route")
-    assert not defines(sse, "register_metadata_route")
-    assert calls(sse, "register_metadata_route")
+    modules = transport_modules()
+    definers = sorted(
+        name for name, module in modules.items() if defines(module, "register_metadata_route")
+    )
+    assert len(definers) == 1, f"register_metadata_route is defined in {definers}"
+    for name in ("http.py", "sse.py"):
+        assert calls(modules[name], "register_metadata_route"), name

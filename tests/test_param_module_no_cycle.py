@@ -35,6 +35,8 @@ it, every marker still binding end to end, and the import working in any order.
 
 from __future__ import annotations
 
+import ast
+import inspect
 import os
 import pathlib
 import subprocess
@@ -61,7 +63,7 @@ from veloce import (
     Veloce,
 )
 from veloce._params import ParamBase
-from veloce.routing import RouteInfo, RouteMatch, Router
+from veloce.routing import RouteInfo, RouteMatch
 from veloce.security.oauth2 import OAuth2PasswordRequestForm
 from veloce.testclient import TestClient
 
@@ -91,10 +93,14 @@ def _in_fresh_interpreter(code: str) -> subprocess.CompletedProcess:
 
 def test_the_router_imports_the_handler_plan_at_module_scope():
     """The defect: this had to be deferred into a method body."""
-    source = (SRC / "veloce/routing/router.py").read_text(encoding="utf-8")
-    body_start = source.index("class ")
-    header = source[:body_start]
-    assert "from veloce._handler_plan import" in header
+    tree = ast.parse((SRC / "veloce/routing/router.py").read_text(encoding="utf-8"))
+    # `Module.body` is exactly the module scope, so this cannot be satisfied
+    # by an import nested in a function or a class body - which is the
+    # deferral the cycle used to force.
+    assert any(
+        isinstance(node, ast.ImportFrom) and node.module == "veloce._handler_plan"
+        for node in tree.body
+    )
 
 
 def test_no_comment_still_claims_the_cycle():
@@ -104,10 +110,20 @@ def test_no_comment_still_claims_the_cycle():
 
 def test_the_marker_module_imports_nothing_from_veloce():
     """What makes it a safe leaf for anything to depend on."""
-    source = (SRC / "veloce/_params.py").read_text(encoding="utf-8")
-    offenders = [
-        line for line in source.splitlines() if line.startswith(("from veloce", "import veloce"))
-    ]
+    tree = ast.parse((SRC / "veloce/_params.py").read_text(encoding="utf-8"))
+    # Walked at every depth, not matched at column 0: a class-body import
+    # runs at import time just as a module-level one does, and a
+    # `startswith` scan cannot see it.
+    offenders = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("veloce"):
+            offenders.append(f"{node.lineno}: from {node.module} import ...")
+        elif isinstance(node, ast.Import):
+            offenders += [
+                f"{node.lineno}: import {alias.name}"
+                for alias in node.names
+                if alias.name == "veloce" or alias.name.startswith("veloce.")
+            ]
     assert offenders == []
 
 
@@ -211,8 +227,11 @@ def test_the_routing_package_still_re_exports_the_markers():
 
 
 def test_the_routing_package_still_exposes_the_router():
+    """The same objects the top-level package exports, not merely importable."""
 
-    assert all(isinstance(obj, type) for obj in (Router, RouteInfo, RouteMatch))
+    assert routing.Router is veloce.Router
+    assert routing.RouteInfo is RouteInfo
+    assert routing.RouteMatch is RouteMatch
 
 
 # ── every marker still binds, end to end ─────────────────────────────
@@ -371,4 +390,10 @@ def test_a_method_view_still_refuses_a_marker():
 def test_oauth2_still_builds_its_form_scheme():
     """`security/oauth2.py` imports `Form` from the same module."""
 
-    assert OAuth2PasswordRequestForm is not None
+    # Asserting the name is not None proves only that the import at the top
+    # of this module ran. What the leaf move has to keep working is that
+    # every parameter still carries a `Form` marker from `veloce._params`.
+    defaults = inspect.signature(OAuth2PasswordRequestForm.__init__).parameters
+    markers = [p.default for name, p in defaults.items() if name != "self"]
+    assert markers
+    assert all(isinstance(marker, leaf.Form) for marker in markers)

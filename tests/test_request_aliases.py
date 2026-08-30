@@ -6,11 +6,12 @@ shape the accessor promises.
 
 from __future__ import annotations
 
+from tests.conftest import make_request
 from veloce import Request
 
 
 def _req(headers: dict | None = None, state: dict | None = None) -> Request:
-    r = Request(
+    r = make_request(
         method="GET",
         path="/x",
         query_string="",

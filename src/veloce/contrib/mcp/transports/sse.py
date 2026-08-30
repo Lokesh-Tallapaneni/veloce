@@ -49,7 +49,8 @@ from veloce.contrib.mcp.errors import (
     parse_error,
 )
 from veloce.contrib.mcp.session import MCPSession
-from veloce.contrib.mcp.transports.http import (
+from veloce.contrib.mcp.transports._common import (
+    _SESSION_ID_ENTROPY_BYTES,
     _SSE_RETRY_MS,
     _authenticate,
     _protocol_response,
@@ -68,11 +69,6 @@ if TYPE_CHECKING:  # pragma: no cover
     from veloce.http.request import Request
 
 _logger = logging.getLogger(__name__)
-
-# Bytes of entropy in a session id. The id appears in the endpoint URL the client
-# is told to POST to, and it is the only thing tying a POST to the stream that
-# will answer it, so it is unguessable rather than sequential.
-_SESSION_ID_ENTROPY_BYTES = 24
 
 # The event naming the URL to POST to. The 2024-11-05 transport defines exactly
 # this name; a client waits for it before sending anything.

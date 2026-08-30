@@ -36,20 +36,33 @@ distinguish a full scan from a bounded one at all.
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 
 from veloce.contrib.mcp.transports.session_store import HttpSessionStore
 
-# ── eviction still evicts ────────────────────────────────────────────
+# ── eviction still evicts ───────────────────────────────────────
+
+
+def _age(store: HttpSessionStore, seconds: float) -> None:
+    """Push every live entry's last-touch back by `seconds`.
+
+    The sweep's deadline is `time.monotonic() - idle_ttl`, so ageing the entries
+    is exactly equivalent to waiting - and it cannot lose a race. Racing a real
+    `asyncio.sleep(0.02)` against a 0.05s TTL leaves a 30ms margin per iteration,
+    which one scheduling or GC pause exceeds; the module's own docstring rejects
+    wall-clock-dependent assertions for the cost half and then kept them here.
+    The store's fields are already this module's subject - `_live` is replaced
+    wholesale by `_CountingMap` below, and `_idle_ttl` is reassigned directly.
+    """
+    for entry in store._live.values():
+        entry.touched_at -= seconds
 
 
 async def test_an_idle_session_is_reclaimed():
     evicted = []
     store = HttpSessionStore(idle_ttl=0, on_evict=evicted.append)
     session_id, _session = await store.create()
-    await asyncio.sleep(0.02)
+    _age(store, 0.02)
     assert await store.resolve(session_id) is None
     assert len(evicted) == 1
 
@@ -65,7 +78,7 @@ async def test_resolving_refreshes_the_deadline():
     store = HttpSessionStore(idle_ttl=0.05)
     session_id, session = await store.create()
     for _ in range(4):
-        await asyncio.sleep(0.02)
+        _age(store, 0.02)
         assert await store.resolve(session_id) is session
 
 
@@ -74,7 +87,7 @@ async def test_only_the_idle_sessions_are_reclaimed():
     evicted = []
     store = HttpSessionStore(idle_ttl=0.05, on_evict=evicted.append)
     old = [(await store.create())[0] for _ in range(5)]
-    await asyncio.sleep(0.08)
+    _age(store, 0.08)
     fresh_id, fresh_session = await store.create()
     assert await store.resolve(fresh_id) is fresh_session
     assert len(evicted) == 5
@@ -89,7 +102,7 @@ async def test_a_touched_session_survives_while_its_older_siblings_go():
     first_id, first_session = await store.create()
     others = [(await store.create())[0] for _ in range(3)]
     for _ in range(4):
-        await asyncio.sleep(0.02)
+        _age(store, 0.02)
         await store.resolve(first_id)
     assert await store.resolve(first_id) is first_session
     assert len(evicted) == 3
@@ -106,7 +119,7 @@ async def test_the_eviction_callback_receives_the_session():
     evicted = []
     store = HttpSessionStore(idle_ttl=0, on_evict=evicted.append)
     _session_id, session = await store.create()
-    await asyncio.sleep(0.02)
+    _age(store, 0.02)
     await store.create()
     assert evicted == [session]
 
@@ -115,7 +128,7 @@ async def test_no_callback_is_fine():
     """`on_evict=None` is the default; eviction must not require one."""
     store = HttpSessionStore(idle_ttl=0)
     session_id, _session = await store.create()
-    await asyncio.sleep(0.02)
+    _age(store, 0.02)
     assert await store.resolve(session_id) is None
 
 
@@ -198,7 +211,7 @@ async def test_a_sweep_of_many_expired_sessions_reclaims_them_all():
     store = HttpSessionStore(idle_ttl=0.05, on_evict=evicted.append)
     for _ in range(200):
         await store.create()
-    await asyncio.sleep(0.08)
+    _age(store, 0.08)
     await store.create()
     assert len(evicted) == 200
 

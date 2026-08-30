@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import base64
 
+from tests.conftest import make_request
 from veloce import Request, Veloce
 from veloce.testclient import TestClient
 
 
 def _req(authz: str | None = None) -> Request:
     headers = {"authorization": authz} if authz else {}
-    return Request(method="GET", path="/", query_string="", headers=headers, body=b"")
+    return make_request(method="GET", path="/", query_string="", headers=headers, body=b"")
 
 
 # ── Basic ─────────────────────────────────────────────────────────────
@@ -57,7 +58,7 @@ def test_basic_invalid_base64_returns_type_only():
 # ── Bearer ────────────────────────────────────────────────────────────
 
 
-def test_bearer_extracts_token():
+def test_bearer_token_reaches_the_auth_property():
     auth = _req("Bearer abc.def.ghi").auth
     assert auth.type == "bearer"
     assert auth.token == "abc.def.ghi"
@@ -112,7 +113,7 @@ def test_no_header_returns_none():
     assert _req().auth is None
 
 
-def test_empty_header_returns_none():
+def test_an_empty_header_leaves_the_auth_property_none():
     assert _req("").auth is None
 
 

@@ -331,12 +331,16 @@ def test_a_body_model_is_not_treated_as_a_group():
     assert TestClient(app).post("/y", json={"a": 1}).json() == {"a": 1}
 
 
-class Inner(BaseModel):
+# Distinct from the `Inner` above, which `Outer` captures. Named apart
+# because rebinding the module-level name left `Outer.inner` resolvable
+# only by definition order - and this module uses PEP 563, so a later
+# `model_rebuild()` or a reordering would silently pick the other model.
+class NestedInner(BaseModel):
     v: int = 1
 
 
 class Nested(BaseModel):
-    inner: Inner = Field(default_factory=Inner)
+    inner: NestedInner = Field(default_factory=NestedInner)
 
 
 # ── a failed field walk is reported, not silently lax ────────────────

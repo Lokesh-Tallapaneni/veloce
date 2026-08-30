@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from veloce import Request, Response
+from tests.conftest import make_request
+from veloce import Response
 from veloce.http.response import StreamingResponse
 
 # ── Response.content_length ──────────────────────────────────────────
@@ -44,11 +45,11 @@ def test_calculate_content_length_writes_header():
 
 def test_request_environ_returns_scope():
     scope = {"type": "http", "method": "GET", "path": "/"}
-    req = Request(method="GET", path="/", query_string="", headers={}, body=b"", scope=scope)
+    req = make_request(method="GET", path="/", query_string="", headers={}, body=b"", scope=scope)
     # Same dict object — middleware can read everything through this alias.
     assert req.environ is scope
 
 
 def test_request_environ_empty_dict_when_no_scope():
-    req = Request(method="GET", path="/", query_string="", headers={}, body=b"")
+    req = make_request(method="GET", path="/", query_string="", headers={}, body=b"")
     assert req.environ == {}

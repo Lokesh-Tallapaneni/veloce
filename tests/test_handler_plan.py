@@ -19,6 +19,8 @@ from veloce._handler_plan import (
     K_QUERY_LIST,
     K_REQUEST,
     K_UPLOAD_FILE,
+    MK_HEADER,
+    MK_QUERY,
     build_plan,
     build_route_dep_plans,
 )
@@ -82,7 +84,7 @@ def test_plan_recognises_param_marker():
     plan = build_plan(h)
     slot = plan.slots[0]
     assert slot.kind == K_PARAM_MARKER
-    assert slot.marker_kind == 0  # MK_QUERY
+    assert slot.marker_kind == MK_QUERY
     assert slot.lookup_name == "search"
 
 
@@ -92,7 +94,7 @@ def test_plan_recognises_header_marker():
 
     slot = build_plan(h).slots[0]
     assert slot.kind == K_PARAM_MARKER
-    assert slot.marker_kind == 2  # MK_HEADER
+    assert slot.marker_kind == MK_HEADER
     assert slot.lookup_name == "X-Token"
 
 
@@ -238,7 +240,7 @@ async def test_dependency_overrides_still_work(app: Veloce):
     async def echo(v=Depends(real)):
         return {"v": v}
 
-    app._dependency_overrides[real] = fake
+    app.dependency_overrides[real] = fake
     resp = await app.handle_request(_make_request(path="/echo"))
     assert b'"fake"' in resp.body
 

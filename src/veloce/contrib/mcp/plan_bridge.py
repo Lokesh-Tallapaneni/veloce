@@ -41,13 +41,13 @@ from veloce._model_backend import (
     is_pydantic_model,
 )
 from veloce._route_contract import describe_slot
-from veloce.contrib.mcp.context import MCPContext
-from veloce.contrib.openapi import (
+from veloce.contrib._jsonschema import (
     _adapted_to_schema,
     _apply_marker_constraints,
     _pydantic_to_schema,
     _python_type_to_schema,
 )
+from veloce.contrib.mcp.context import MCPContext
 from veloce.dependency import DependencyResolver, SecurityScopes, _coerce_value
 from veloce.exceptions import RequestValidationError
 from veloce.http.datastructures import FormData, QueryParams

@@ -19,6 +19,18 @@ import pathlib
 
 MCP_ROOT = pathlib.Path(__file__).resolve().parents[1] / "src" / "veloce" / "contrib" / "mcp"
 
+# `parents[1]/"src"/"veloce"` is the repo layout, and it does not exist under a
+# non-editable install - where every scan below would then read an empty tree and
+# every guard built on one would pass having checked nothing. Resolved through the
+# imported package instead when the repo path is not there, and asserted non-empty
+# either way so a wrong root fails loudly at import rather than silently at rest.
+if not MCP_ROOT.is_dir():  # pragma: no cover - only on a non-editable install
+    import veloce.contrib.mcp
+
+    MCP_ROOT = pathlib.Path(veloce.contrib.mcp.__file__).parent
+
+assert len(list(MCP_ROOT.rglob("*.py"))) > 20, f"no MCP source found under {MCP_ROOT}"
+
 
 def tree(*parts: str) -> ast.Module:
     """The parsed module at `MCP_ROOT/parts`."""
@@ -200,3 +212,12 @@ def compared_constants(node: ast.AST, name: str) -> set[object]:
             if isinstance(comparator, ast.Constant):
                 found.add(comparator.value)
     return found
+
+
+def transport_modules() -> dict[str, ast.Module]:
+    """Every module in the transports package, parsed, keyed by file name."""
+    return {
+        path.name: ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for path in sorted((MCP_ROOT / "transports").glob("*.py"))
+        if path.name != "__init__.py"
+    }

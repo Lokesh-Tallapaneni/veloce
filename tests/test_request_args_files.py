@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from tests.conftest import make_request
 from veloce import FilesKeyError, Request
 from veloce.http.datastructures import FormData, UploadFile
 
@@ -23,7 +24,7 @@ def _req(
     app: object | None = None,
 ) -> Request:
     headers = {"content-type": content_type} if content_type else {}
-    return Request(
+    return make_request(
         method="GET",
         path="/",
         query_string=query,

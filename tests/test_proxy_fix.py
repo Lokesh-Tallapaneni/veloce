@@ -232,7 +232,10 @@ def test_proxy_fix_disabled_when_count_zero():
 
 def test_parse_forwarded_extracts_prefix_extension():
     """RFC 7239 §4 allows extension fields; `prefix=` is a de-facto convention."""
-    pf = ProxyFix(x_prefix=1)
+    # Depths are passed to the call only: giving them to the constructor as
+    # well let the two disagree while the test still passed, which is the
+    # pattern the section comment above records as removed.
+    pf = ProxyFix()
     p = pf._parse_forwarded(
         "for=client; prefix=/api",
         x_for=0,
@@ -370,7 +373,7 @@ def test_proxy_fix_chain_too_short_does_not_fabricate():
 
 
 def test_parse_forwarded_quoted_comma_does_not_fake_hop():
-    mw = ProxyFix(x_for=1, x_host=1)
+    mw = ProxyFix()
     result = mw._parse_forwarded(
         'for=192.0.2.1; host="a,b"', x_for=1, x_proto=0, x_host=1, x_prefix=0
     )
@@ -378,7 +381,7 @@ def test_parse_forwarded_quoted_comma_does_not_fake_hop():
 
 
 def test_parse_forwarded_quoted_comma_multi_hop():
-    mw = ProxyFix(x_for=1, x_host=1)
+    mw = ProxyFix()
     # Two real hops; the rightmost (trusted) carries a quoted comma in host.
     result = mw._parse_forwarded(
         'for=10.0.0.1, for=192.0.2.1; host="a,b"', x_for=1, x_proto=0, x_host=1, x_prefix=0

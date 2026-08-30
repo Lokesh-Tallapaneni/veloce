@@ -21,7 +21,7 @@ import pathlib
 
 import pytest
 
-from veloce import Request
+from tests.conftest import make_request
 
 TESTS = pathlib.Path(__file__).resolve().parent
 
@@ -54,7 +54,7 @@ def test_the_request_state_scan_reads_a_real_corpus():
 
 def test_the_property_returns_the_private_attribute_unchanged():
     """The premise. If these ever diverge, the swap below stops being safe."""
-    request = Request(method="GET", path="/", query_string="", headers={}, body=b"")
+    request = make_request(method="GET", path="/", query_string="", headers={}, body=b"")
     # `getattr` rather than `request._state`: the scan below would report this
     # module's own premise as an offence, and writing the private name here
     # only to exempt it would make the exemption the thing to get wrong.

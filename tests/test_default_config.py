@@ -96,27 +96,25 @@ def test_secret_key():
     assert app.secret_key == "super-secret"
 
 
-class TestConfigAndExtensions:
-    """Test config, secret_key, extensions."""
+async def test_config_accessible_from_request():
+    app = Veloce(openapi_url=None)
+    app.config["API_KEY"] = "secret123"
 
-    async def test_config_accessible_from_request(self):
-        app = Veloce(openapi_url=None)
-        app.config["API_KEY"] = "secret123"
+    @app.get("/config")
+    async def get_config(request: Request):
+        return {"key": request.app.config["API_KEY"]}
 
-        @app.get("/config")
-        async def get_config(request: Request):
-            return {"key": request.app.config["API_KEY"]}
+    resp = await app.handle_request(make_request(path="/config"))
+    assert orjson.loads(resp.body)["key"] == "secret123"
 
-        resp = await app.handle_request(make_request(path="/config"))
-        assert orjson.loads(resp.body)["key"] == "secret123"
 
-    async def test_secret_key_from_request(self):
-        app = Veloce(openapi_url=None)
-        app.secret_key = "super-secret"
+async def test_secret_key_from_request():
+    app = Veloce(openapi_url=None)
+    app.secret_key = "super-secret"
 
-        @app.get("/secret")
-        async def get_secret(request: Request):
-            return {"has_secret": request.app.secret_key is not None}
+    @app.get("/secret")
+    async def get_secret(request: Request):
+        return {"has_secret": request.app.secret_key is not None}
 
-        resp = await app.handle_request(make_request(path="/secret"))
-        assert orjson.loads(resp.body)["has_secret"] is True
+    resp = await app.handle_request(make_request(path="/secret"))
+    assert orjson.loads(resp.body)["has_secret"] is True

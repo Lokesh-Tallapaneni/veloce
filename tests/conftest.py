@@ -2,6 +2,7 @@
 
 import os
 import sys
+import textwrap
 
 import pytest
 from hypothesis import settings
@@ -184,3 +185,33 @@ def _no_task_outlives_its_loop():
         "they stay in that process-wide set for the rest of the session. Use "
         "`tests/_loops.py`'s `protocol_loop()` or `close_drained(loop)`."
     )
+
+
+@pytest.fixture
+def app_module(tmp_path, monkeypatch):
+    """Write an importable app module under `tmp_path`; return its `name:attr` reference.
+
+    The CLI tests need a real importable module because that is what `veloce run`
+    resolves. Nine of them wrote one by hand and popped the name from
+    `sys.modules` on the way *in* - defensively, because nothing removed it on
+    the way out. Each left a live `Veloce` cached under a name whose source file
+    had been deleted with the tmpdir, and a later test importing that name got
+    the stale object: `test_cli.py`'s dotenv path went unexercised for exactly
+    this reason.
+
+    This removes the entry on the way out, so the name is free for the next test
+    whether or not it remembers to pop it.
+    """
+    imported: list[str] = []
+
+    def write(source: str, name: str, attribute: str = "app") -> str:
+        (tmp_path / f"{name}.py").write_text(textwrap.dedent(source), encoding="utf-8")
+        monkeypatch.syspath_prepend(str(tmp_path))
+        sys.modules.pop(name, None)
+        imported.append(name)
+        return f"{name}:{attribute}"
+
+    yield write
+
+    for name in imported:
+        sys.modules.pop(name, None)

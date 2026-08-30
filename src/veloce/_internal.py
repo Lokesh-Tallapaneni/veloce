@@ -777,6 +777,30 @@ def _bearer_token_from(auth: str, scheme: str = AUTH_SCHEME_BEARER) -> str | Non
     return auth[prefix_len:].strip(" 	") or None
 
 
+# The JSON-Schema fragment this framework publishes for each scalar kind it can
+# describe. One home because two layers emit them into the *same* document:
+# `routing.converters` describes a path parameter (keyed by converter name) and
+# `contrib.openapi` an annotated one (keyed by Python type). Kept as two tables
+# they agreed only by hand, and a one-sided edit would have documented the same
+# type two ways inside one OpenAPI document.
+#
+# Every fragment is flat, so the shallow `dict(...)` copy both consumers already
+# take before mutating is enough to keep this table immutable in practice.
+_SCALAR_JSON_SCHEMAS: dict[str, dict[str, Any]] = {
+    "integer": {"type": "integer"},
+    "number": {"type": "number"},
+    "uuid": {"type": "string", "format": "uuid"},
+    "date": {"type": "string", "format": "date"},
+    "date-time": {"type": "string", "format": "date-time"},
+    "time": {"type": "string", "format": "time"},
+    # A filesystem path arrives as a string. `path` is not a registered JSON
+    # Schema format, but the keyword is an open annotation, so naming it tells a
+    # client what the string means rather than leaving it indistinguishable from
+    # free text.
+    "path": {"type": "string", "format": "path"},
+}
+
+
 def _readd_route(
     target: Router, full_path: str, methods: list[str], info: RouteInfo, endpoint: str
 ) -> None:

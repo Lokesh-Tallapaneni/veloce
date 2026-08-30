@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Veloce.instrumentation_hooks` returns the registered instrumentation hooks in run order, the read half `add_instrumentation` lacked. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `URLMap` is exported from `veloce` and is the public name of the class `Veloce.url_map` returns. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `WebSocketState` is exported from `veloce`; it is the declared return type of `WebSocket.application_state` and `.client_state`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `Severity` is exported from `veloce`; it is the declared type of `Finding.severity`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `RateLimitState` is exported from `veloce`; a `RateLimitStrategy` implementation names it in `evaluate`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `SignalResult` is exported from `veloce`; it is the declared return type of `Signal.send`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Changed
 

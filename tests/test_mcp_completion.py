@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests._mcp import INVALID_PARAMS, greeting_server
+from tests._mcp import INVALID_PARAMS, call, greeting_server
 from veloce import Veloce
 from veloce.contrib.mcp import CompletionResult, CompletionsCapability
 from veloce.contrib.mcp.completion import _MAX_CONTEXT_ARGS
@@ -26,21 +26,21 @@ async def _complete(server: MCPServer, ref: dict, name: str, value: str, **extra
 # -- Advertisement ----------------------------------------------------
 
 
-def test_completions_not_advertised_without_a_completer():
+async def test_completions_not_advertised_without_a_completer():
     """A server with no registered completer advertises no completions capability."""
     server = greeting_server()
-    assert "completions" not in server._initialize({})["capabilities"]
+    assert "completions" not in (await call(server, "initialize", {}))["capabilities"]
     assert "completion/complete" in server._methods
 
 
-def test_completions_advertised_when_a_completer_exists():
+async def test_completions_advertised_when_a_completer_exists():
     """Registering a completer surfaces the completions capability."""
 
     async def complete_name(value, context):
         return ["ada", "alan"]
 
     server = greeting_server(complete_name)
-    assert server._initialize({})["capabilities"]["completions"] == {}
+    assert (await call(server, "initialize", {}))["capabilities"]["completions"] == {}
 
 
 # -- completion/complete on a prompt ----------------------------------

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import orjson
 
+from tests.conftest import make_request
 from veloce import Request, Veloce
 
 
 def _req(scope: dict | None = None, state: dict | None = None) -> Request:
-    r = Request(
+    r = make_request(
         method="GET",
         path="/x",
         query_string="",
@@ -42,7 +43,7 @@ def test_script_root_proxy_fix_wins_over_scope():
 
 def test_root_path_none_scope_safe():
     """Missing/empty scope shouldn't raise."""
-    r = Request(method="GET", path="/", query_string="", headers={}, body=b"")
+    r = make_request(method="GET", path="/", query_string="", headers={}, body=b"")
     assert r.root_path == ""
     assert r.script_root == ""
 
@@ -60,7 +61,7 @@ async def test_mounted_veloce_subapp_sees_mount_prefix_as_root_path():
     app.mount("/gateway", sub)
 
     resp = await app.handle_request(
-        Request(method="GET", path="/gateway/whoami", query_string="", headers={}, body=b"")
+        make_request(method="GET", path="/gateway/whoami", query_string="", headers={}, body=b"")
     )
     assert orjson.loads(resp.body) == {"root_path": "/gateway", "script_root": "/gateway"}
 
@@ -79,7 +80,7 @@ async def test_mounted_subapp_slash_redirect_keeps_mount_prefix():
 
     # Request the slash-less variant; the sub-app redirects to the slash form.
     resp = await app.handle_request(
-        Request(method="GET", path="/sub/ping", query_string="", headers={}, body=b"")
+        make_request(method="GET", path="/sub/ping", query_string="", headers={}, body=b"")
     )
     assert resp.status_code == 307
     # Location must carry the mount prefix, not a bare "/ping/".
@@ -95,7 +96,7 @@ async def test_top_level_slash_redirect_unaffected():
         return {"ok": True}
 
     resp = await app.handle_request(
-        Request(method="GET", path="/items", query_string="", headers={}, body=b"")
+        make_request(method="GET", path="/items", query_string="", headers={}, body=b"")
     )
     assert resp.status_code == 307
     assert resp.headers["Location"] == "/items/"

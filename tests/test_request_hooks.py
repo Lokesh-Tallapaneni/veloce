@@ -47,7 +47,6 @@ async def test_after_request():
     @app.after_request
     async def add_header(request: Request, response: Response):
         response.headers["X-Custom"] = "added"
-        response._encoded = None
         return response
 
     @app.get("/data")

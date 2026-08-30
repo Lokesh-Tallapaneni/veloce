@@ -52,7 +52,7 @@ def test_host_url_aliases_url_root():
 
 
 def test_url_root_respects_https_via_x_forwarded_proto():
-    req = Request(
+    req = make_request(
         method="GET",
         path="/",
         query_string="",
@@ -63,7 +63,7 @@ def test_url_root_respects_https_via_x_forwarded_proto():
 
 
 def test_url_root_includes_port_when_non_default():
-    req = Request(
+    req = make_request(
         method="GET",
         path="/",
         query_string="",

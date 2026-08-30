@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests._mcp import FORBIDDEN
+from tests._mcp import FORBIDDEN, call_tool
 from veloce import Principal, Veloce
 from veloce.contrib.mcp.proxy import add_mcp_proxy
 from veloce.contrib.mcp.registry import build_registry
@@ -58,19 +58,6 @@ async def _gateway(namespace: str = "up", seen: list | None = None) -> Veloce:
     gateway = Veloce(title="Gateway", version="1.0.0", openapi_url=None)
     await add_mcp_proxy(gateway, namespace, _requester(server, seen))
     return gateway
-
-
-async def _call(app: Veloce, name: str, arguments: dict | None = None) -> dict:
-    response = await MCPServer(app).handle_message(
-        {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {"name": name, "arguments": arguments or {}},
-        },
-        MCPSession(),
-    )
-    return response["result"]
 
 
 # ── Discovery ────────────────────────────────────────────────────────
@@ -146,7 +133,9 @@ async def test_a_listing_entry_without_a_name_is_skipped():
 
 
 async def test_a_call_is_forwarded_and_its_answer_relayed():
-    assert (await _call(await _gateway(), "up_add", {"a": 2, "b": 3}))["content"][0]["text"] == "5"
+    assert (await call_tool(await _gateway(), "up_add", {"a": 2, "b": 3}))["content"][0][
+        "text"
+    ] == "5"
 
 
 async def test_the_upstream_is_asked_for_the_name_it_knows():
@@ -154,7 +143,7 @@ async def test_the_upstream_is_asked_for_the_name_it_knows():
     seen: list = []
     gateway = await _gateway(seen=seen)
     seen.clear()
-    await _call(gateway, "up_add", {"a": 1, "b": 1})
+    await call_tool(gateway, "up_add", {"a": 1, "b": 1})
     method, params = seen[0]
     assert method == "tools/call"
     assert params["name"] == "add"
@@ -163,12 +152,12 @@ async def test_the_upstream_is_asked_for_the_name_it_knows():
 
 async def test_an_upstream_failure_is_relayed_as_a_failure():
     """Re-shaping would bury the upstream's own `isError` inside a text block."""
-    result = await _call(await _gateway(), "up_boom")
+    result = await call_tool(await _gateway(), "up_boom")
     assert result["isError"] is True
 
 
 async def test_the_relayed_result_is_not_nested():
-    result = await _call(await _gateway(), "up_add", {"a": 2, "b": 2})
+    result = await call_tool(await _gateway(), "up_add", {"a": 2, "b": 2})
     assert result["content"][0]["text"] == "4"
     assert "content" not in result["content"][0]["text"]
 
@@ -223,7 +212,7 @@ async def test_a_local_tool_result_is_still_shaped_normally():
     async def looks_like_a_result() -> dict:
         return {"content": [{"type": "text", "text": "not a relay"}]}
 
-    result = await _call(gateway, "looks_like_a_result")
+    result = await call_tool(gateway, "looks_like_a_result")
     # Shaped, not relayed: the dict is serialised into the text block.
     assert result["content"][0]["text"].startswith("{")
 
@@ -258,7 +247,7 @@ async def test_a_call_without_meta_forwards_none():
     seen: list = []
     gateway = await _gateway(seen=seen)
     seen.clear()
-    await _call(gateway, "up_add", {"a": 1, "b": 1})
+    await call_tool(gateway, "up_add", {"a": 1, "b": 1})
     _method, params = seen[0]
     assert "_meta" not in params
 

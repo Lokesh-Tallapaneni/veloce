@@ -33,7 +33,7 @@ import uuid
 import warnings
 from typing import Any
 
-from veloce._internal import _require_methods
+from veloce._internal import _SCALAR_JSON_SCHEMAS, _require_methods
 
 # The module's one optional dependency: a C ISO-8601 parser that
 # `_parse_datetime` selects over the stdlib when it is installed. Declared here
@@ -928,14 +928,14 @@ def build_route_regex(path: str) -> re.Pattern[str]:
 # a raw-regex spec and any user-registered converter - is carried as a string,
 # which is what the segment is before coercion.
 _CONVERTER_JSON_TYPES: dict[str, dict[str, Any]] = {
-    "int": {"type": "integer"},
-    "float": {"type": "number"},
-    "decimal": {"type": "number"},
-    "uuid": {"type": "string", "format": "uuid"},
-    "date": {"type": "string", "format": "date"},
-    "datetime": {"type": "string", "format": "date-time"},
-    "time": {"type": "string", "format": "time"},
-    "path": {"type": "string", "format": "path"},
+    "int": _SCALAR_JSON_SCHEMAS["integer"],
+    "float": _SCALAR_JSON_SCHEMAS["number"],
+    "decimal": _SCALAR_JSON_SCHEMAS["number"],
+    "uuid": _SCALAR_JSON_SCHEMAS["uuid"],
+    "date": _SCALAR_JSON_SCHEMAS["date"],
+    "datetime": _SCALAR_JSON_SCHEMAS["date-time"],
+    "time": _SCALAR_JSON_SCHEMAS["time"],
+    "path": _SCALAR_JSON_SCHEMAS["path"],
 }
 
 

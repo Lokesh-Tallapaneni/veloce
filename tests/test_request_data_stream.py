@@ -80,7 +80,7 @@ async def test_stream_yields_whole_body_one_chunk():
     assert chunks == [b"chunk-of-data"]
 
 
-async def test_stream_empty_body_yields_nothing():
+async def test_stream_of_an_empty_body_yields_no_chunks():
     req = _req()
     chunks = [c async for c in req.stream()]
     assert chunks == []

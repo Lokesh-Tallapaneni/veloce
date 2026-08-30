@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import Request, Response
+from tests.conftest import make_request
+from veloce import Response
 
 
 def test_charset_default_utf8():
@@ -101,7 +102,7 @@ def test_charset_agrees_with_mimetype_params(content_type):
 )
 def test_charset_agrees_with_request_charset(content_type):
     """The two doors read one header the same way."""
-    req = Request(
+    req = make_request(
         method="GET", path="/x", query_string="", headers={"content-type": content_type}, body=b""
     )
     assert Response(content_type=content_type).charset == req.charset

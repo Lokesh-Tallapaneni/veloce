@@ -23,31 +23,11 @@ import logging
 
 import pytest
 
+from tests._protocol import _FakeTransport
 from veloce import Veloce, WebSocket, status
 from veloce._protocol_constants import ROUTE_METHOD_WEBSOCKET
 from veloce.exceptions import WebSocketException, WebSocketRequestValidationError
 from veloce.serving.protocol import HttpProtocol
-
-
-class _FakeTransport(asyncio.Transport):
-    """Minimal raw transport; the close handshake has somewhere to write."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.writes: list[bytes] = []
-        self.closed = False
-
-    def write(self, data: bytes) -> None:
-        self.writes.append(data)
-
-    def writelines(self, data) -> None:
-        self.writes.append(b"".join(bytes(chunk) for chunk in data))
-
-    def close(self) -> None:
-        self.closed = True
-
-    def is_closing(self) -> bool:
-        return self.closed
 
 
 def _native_ws() -> WebSocket:

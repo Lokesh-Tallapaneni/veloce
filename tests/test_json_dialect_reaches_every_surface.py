@@ -1,4 +1,4 @@
-"""One application, one JSON dialect, on every surface that sends JSON.
+"""The bare-mapping SSE branch, and the edges of the one-dialect rule.
 
 `JSON_SORT_KEYS` and a custom `json_provider_class` are app-wide settings, and
 `dumps_for`'s docstring says so: "Every surface that sends one - a response
@@ -9,6 +9,13 @@ Two did not. `JSONResponse.__init__` and the bare-Mapping branch of
 `EventSourceResponse` each called `orjson.dumps` directly, so the same
 application emitted two dialects - and `sse.py` did it in the same file where
 `ServerSentEvent.json` was doing it correctly.
+
+The *reach* of the rule across handler return shapes is swept by `_ROUTES` in
+`test_json_serialiser_consistency.py`, which parametrizes all seven of them
+including `/response`. What stays here is the bare-mapping SSE branch, which
+that table cannot express, and the edges of the rule: the `from_bytes` escape
+hatch, a provider that raises, a response built with no app to consult, and the
+lower-layer funnel.
 """
 
 from __future__ import annotations
@@ -17,9 +24,8 @@ import pytest
 
 from veloce import JSONResponse, Veloce
 from veloce._internal import dumps_current, dumps_for
-from veloce.helpers import jsonify
 from veloce.json_provider import DefaultJSONProvider, resolve_dumps
-from veloce.sse import EventSourceResponse, ServerSentEvent
+from veloce.sse import EventSourceResponse
 from veloce.testclient import TestClient
 
 UNSORTED = {"b": 1, "a": 2}
@@ -40,38 +46,7 @@ def _sorted_app() -> Veloce:
     return app
 
 
-# ── every surface honours JSON_SORT_KEYS ─────────────────────────────
-
-
-def test_a_handler_returning_a_dict_sorts():
-    app = _sorted_app()
-
-    @app.get("/x")
-    async def x():
-        return dict(UNSORTED)
-
-    assert TestClient(app).get("/x").text == '{"a":2,"b":1}'
-
-
-def test_jsonify_sorts():
-    app = _sorted_app()
-
-    @app.get("/x")
-    async def x():
-        return jsonify(dict(UNSORTED))
-
-    assert TestClient(app).get("/x").text == '{"a":2,"b":1}'
-
-
-def test_a_returned_JSONResponse_sorts():
-    """The defect: this one emitted the other dialect."""
-    app = _sorted_app()
-
-    @app.get("/x")
-    async def x():
-        return JSONResponse(dict(UNSORTED))
-
-    assert TestClient(app).get("/x").text == '{"a":2,"b":1}'
+# ── the bare-mapping SSE branch honours JSON_SORT_KEYS ───────────────
 
 
 def test_a_bare_mapping_yielded_to_sse_sorts():
@@ -88,63 +63,7 @@ def test_a_bare_mapping_yielded_to_sse_sorts():
     assert TestClient(app).get("/s").text.strip() == 'data: {"a":2,"b":1}'
 
 
-def test_an_explicit_server_sent_event_sorts():
-    """The surface that was already correct must stay correct."""
-    app = _sorted_app()
-
-    @app.get("/s")
-    async def s():
-        async def gen():
-            yield ServerSentEvent.json(dict(UNSORTED))
-
-        return EventSourceResponse(gen())
-
-    assert 'data: {"a":2,"b":1}' in TestClient(app).get("/s").text
-
-
-def test_every_surface_emits_the_same_bytes():
-    """The property, stated directly: one app, one dialect."""
-    app = _sorted_app()
-
-    @app.get("/dict")
-    async def as_dict():
-        return dict(UNSORTED)
-
-    @app.get("/response")
-    async def as_response():
-        return JSONResponse(dict(UNSORTED))
-
-    @app.get("/jsonify")
-    async def as_jsonify():
-        return jsonify(dict(UNSORTED))
-
-    client = TestClient(app)
-    bodies = {client.get(p).text for p in ("/dict", "/response", "/jsonify")}
-    assert len(bodies) == 1, bodies
-
-
-# ── a custom provider reaches the same surfaces ──────────────────────
-
-
-@pytest.mark.parametrize("path", ["/dict", "/response", "/jsonify"])
-def test_a_custom_provider_reaches_every_surface(path):
-    app = Veloce(openapi_url=None)
-    app.json_provider_class = ShoutingProvider
-    app.json = ShoutingProvider(app)
-
-    @app.get("/dict")
-    async def as_dict():
-        return {"n": 1}
-
-    @app.get("/response")
-    async def as_response():
-        return JSONResponse({"n": 1})
-
-    @app.get("/jsonify")
-    async def as_jsonify():
-        return jsonify({"n": 1})
-
-    assert "dialect" in TestClient(app).get(path).text
+# ── a custom provider reaches the bare-mapping branch ──────────────
 
 
 def test_a_custom_provider_reaches_a_bare_sse_mapping():

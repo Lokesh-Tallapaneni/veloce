@@ -35,9 +35,9 @@ def test_base_hooks_raise_not_implemented():
         bare.handlers()
 
 
-def test_subclass_without_slots_is_rejected():
+def test_a_capability_subclass_without_slots_is_rejected():
     """A subclass forgetting `__slots__` fails loudly at class creation."""
-    with pytest.raises(TypeError):
+    with pytest.raises(TypeError, match="must declare __slots__"):
 
         class Leaky(Capability):  # no __slots__
             pass

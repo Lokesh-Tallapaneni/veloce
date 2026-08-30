@@ -179,6 +179,60 @@ def test_an_error_response_also_carries_the_headers():
     assert TestClient(app).get("/missing").headers["X-Content-Type-Options"] == "nosniff"
 
 
+# ── the opt-in headers, end to end ───────────────────────────────────
+#
+# Moved here from `test_security_headers.py`, a second module for the same
+# middleware whose other tests restated the defaults and the handler-wins rule
+# already covered above. These are the cases that module alone had.
+
+
+def _configured_app(**mw_kwargs: object) -> Veloce:
+    app = Veloce(debug=True, openapi_url=None)
+    app.add_middleware(SecurityHeadersMiddleware(**mw_kwargs))
+
+    @app.get("/x")
+    async def x():
+        return {"ok": True}
+
+    return app
+
+
+def test_hsts_is_off_by_default():
+    assert "strict-transport-security" not in TestClient(_configured_app()).get("/x").headers
+
+
+def test_hsts_is_emitted_when_configured():
+    resp = TestClient(_configured_app(hsts_max_age=600)).get("/x")
+    hsts = resp.headers["strict-transport-security"]
+    assert "max-age=600" in hsts
+    # `includeSubDomains` is opt-in (off by default since a casual
+    # `hsts_max_age=...` on a multi-subdomain host shouldn't silently
+    # pin every subdomain). The flag flips back on when explicitly set.
+    assert "includeSubDomains" not in hsts
+
+
+def test_hsts_include_subdomains_when_opted_in():
+    resp = TestClient(_configured_app(hsts_max_age=600, hsts_include_subdomains=True)).get("/x")
+    assert "includeSubDomains" in resp.headers["strict-transport-security"]
+
+
+def test_hsts_preload_flag():
+    resp = TestClient(_configured_app(hsts_max_age=600, hsts_preload=True)).get("/x")
+    assert "preload" in resp.headers["strict-transport-security"]
+
+
+def test_csp_is_emitted_when_configured():
+    resp = TestClient(_configured_app(content_security_policy="default-src 'self'")).get("/x")
+    assert resp.headers["content-security-policy"] == "default-src 'self'"
+
+
+def test_frame_options_can_be_disabled():
+    resp = TestClient(_configured_app(frame_options=None)).get("/x")
+    assert "x-frame-options" not in resp.headers
+    # The other defaults still apply.
+    assert resp.headers["x-content-type-options"] == "nosniff"
+
+
 # ── the output is identical to what the scan produced ────────────────
 
 

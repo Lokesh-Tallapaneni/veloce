@@ -14,6 +14,7 @@ forgets fails here rather than being discovered as a silent behaviour change.
 from __future__ import annotations
 
 import ast
+import importlib
 import inspect
 import pathlib
 import re
@@ -25,7 +26,21 @@ from veloce import Blueprint, Request, Router, Veloce
 from veloce.routing.router import MCPRouteOptions, RouteInfo
 from veloce.testclient import TestClient
 
-_ROUTER_SRC = pathlib.Path(inspect.getfile(Router)).read_text(encoding="utf-8")
+#: The modules a route-copying function may live in. `_readd_route` moved from
+#: `router.py` to `_internal.py` when the blueprint and router copies were
+#: merged, and this guard - which read `router.py` alone - stopped finding it.
+#: A guard that only works while the code stays put is not a guard, so the
+#: source is now resolved per function rather than pinned to one file.
+_SEARCHED_MODULES = (Router.__module__, "veloce._internal")
+
+
+def _module_source(module_name: str) -> str:
+    return pathlib.Path(inspect.getfile(importlib.import_module(module_name))).read_text(
+        encoding="utf-8"
+    )
+
+
+_SOURCES = {name: _module_source(name) for name in _SEARCHED_MODULES}
 
 #: Fields that legitimately differ on a re-registered route. The first group is
 #: rewritten by the merge itself - the prefix changes the path and name, and the
@@ -80,11 +95,14 @@ def _function_source(function_name: str) -> str:
     that the copy under test never touches. That is precisely the failure it
     exists to prevent, occurring in the guard itself.
     """
-    tree = ast.parse(_ROUTER_SRC)
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == function_name:
-            return ast.get_source_segment(_ROUTER_SRC, node) or ""
-    raise AssertionError(f"{function_name} not found in router.py")
+    for source in _SOURCES.values():
+        for node in ast.walk(ast.parse(source)):
+            if (
+                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name == function_name
+            ):
+                return ast.get_source_segment(source, node) or ""
+    raise AssertionError(f"{function_name} not found in {', '.join(_SEARCHED_MODULES)}")
 
 
 def _forwarded_in(function_name: str) -> set[str]:

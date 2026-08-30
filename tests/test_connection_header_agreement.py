@@ -23,7 +23,7 @@ import asyncio
 
 import pytest
 
-from tests._protocol import _FakeTransport
+from tests._protocol import _FakeTransport, _run_until
 from veloce import Response, Veloce
 from veloce._internal import _encode_response_head
 from veloce.http.response import StreamingResponse
@@ -127,8 +127,11 @@ def test_a_native_sse_stream_advertises_close_because_the_path_closes():
         transport = _FakeTransport()
         proto.connection_made(transport)
         proto.data_received(b"GET /sse HTTP/1.1\r\nHost: x\r\n\r\n")
-        for _ in range(6):
-            loop.run_until_complete(asyncio.sleep(0))
+        # The assertion reads the response head, so wait for the blank line
+        # that ends it rather than for a turn count. Six turns is what this
+        # dispatch path happens to take today; one more `await` in it would
+        # leave `writes` empty and fail as though the header were wrong.
+        _run_until(loop, lambda: False)
         emitted = b"".join(transport.writes)
     finally:
         loop.close()

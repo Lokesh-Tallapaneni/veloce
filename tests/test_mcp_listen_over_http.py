@@ -20,7 +20,7 @@ import json
 
 import pytest
 
-from tests._mcp import INVALID_PARAMS, MODERN_REVISION
+from tests._mcp import INVALID_PARAMS, MODERN_REVISION, SSEFrames, asgi_scope
 from veloce import Veloce
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.subscriptions import META_SUBSCRIPTION_ID
@@ -67,8 +67,12 @@ def _listen(notifications: dict, request_id: int = 1) -> dict:
     }
 
 
-class _Post:
-    """An open streaming `POST`, with its SSE payloads readable one at a time."""
+class _Post(SSEFrames):
+    """An open streaming `POST`, with its SSE payloads readable one at a time.
+
+    The chunk buffer and the frame parser come from `SSEFrames`; both used to be
+    written out here, byte-identical to `SSEStream`'s copy.
+    """
 
     def __init__(
         self,
@@ -77,6 +81,7 @@ class _Post:
         accept: bytes = b"text/event-stream",
         name: bytes | None = None,
     ) -> None:
+        super().__init__()
         self._app = app
         self._body = json.dumps(body).encode()
         self._accept = accept
@@ -89,8 +94,6 @@ class _Post:
         ]
         if name is not None:
             self._standard.append((b"mcp-name", name))
-        self._chunks: asyncio.Queue[bytes] = asyncio.Queue()
-        self._buffer = ""
         self._disconnect = asyncio.Event()
         self.status: int | None = None
         self.task: asyncio.Task | None = None
@@ -120,25 +123,16 @@ class _Post:
             await asyncio.sleep(0)
 
     async def _run(self) -> None:
-        scope = {
-            "type": "http",
-            "asgi": {"version": "3.0"},
-            "http_version": "1.1",
-            "method": "POST",
-            "path": "/mcp",
-            "raw_path": b"/mcp",
-            "query_string": b"",
-            "headers": [
+        scope = asgi_scope(
+            "POST",
+            "/mcp",
+            [
                 (b"accept", self._accept),
                 (b"content-type", b"application/json"),
                 (b"content-length", str(len(self._body)).encode()),
                 *self._standard,
             ],
-            "client": ("127.0.0.1", 5555),
-            "server": ("127.0.0.1", 8000),
-            "scheme": "http",
-            "root_path": "",
-        }
+        )
         sent = False
 
         async def receive() -> dict:
@@ -157,24 +151,10 @@ class _Post:
 
         await self._app(scope, receive, send)
 
-    async def frame(self, timeout: float = 5.0) -> dict[str, str]:
-        while True:
-            if "\n\n" in self._buffer:
-                raw, _, self._buffer = self._buffer.partition("\n\n")
-                fields = {}
-                for line in raw.splitlines():
-                    if line and ":" in line:
-                        key, _, value = line.partition(":")
-                        fields[key.strip()] = value.strip()
-                if fields:
-                    return fields
-                continue
-            self._buffer += (await asyncio.wait_for(self._chunks.get(), timeout)).decode()
-
     async def message(self, timeout: float = 5.0) -> dict:
         """Return the next JSON-RPC payload carried on the stream."""
         while True:
-            frame = await self.frame(timeout)
+            frame = await self.event(timeout)
             data = frame.get("data")
             if data:
                 return json.loads(data)

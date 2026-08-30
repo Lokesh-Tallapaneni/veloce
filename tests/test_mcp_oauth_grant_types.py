@@ -195,7 +195,7 @@ def test_the_gate_runs_before_the_token_is_looked_up():
     "grants",
     [["password"], ["client_credentials"], ["authorization_code", "implicit"], ["urn:made:up"]],
 )
-def test_an_unsupported_grant_type_is_refused(grants):
+def test_an_unsupported_grant_type_is_refused_at_registration(grants):
     """Silently narrowing to what is implemented is the drop this replaces."""
     _store, client = _build()
     response = client.post("/register", json={"redirect_uris": [REDIRECT], "grant_types": grants})

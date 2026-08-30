@@ -315,11 +315,19 @@ def test_the_field_required_message_is_referenced():
 
 
 def test_the_sse_retry_hint_has_one_definition():
-    sse = (SRC / "contrib" / "mcp" / "transports" / "sse.py").read_text(encoding="utf-8")
-    http = (SRC / "contrib" / "mcp" / "transports" / "http.py").read_text(encoding="utf-8")
-    assert "_SSE_RETRY_MS = 3000" not in sse
-    assert "_SSE_RETRY_MS = 3000" in http
-    assert "_SSE_RETRY_MS" in sse
+    """One definition somewhere under `transports/`, referenced by both.
+
+    This named `http.py` as the home, so when the constant moved to the shared
+    `_common.py` - where a value both transports use belongs - the guard failed
+    on the improvement. What it is defending is that there is exactly one
+    definition and that both transports reach it, which is checked directly.
+    """
+    transports = SRC / "contrib" / "mcp" / "transports"
+    sources = {p.name: p.read_text(encoding="utf-8") for p in transports.glob("*.py")}
+    definitions = [name for name, text in sources.items() if "_SSE_RETRY_MS = " in text]
+    assert len(definitions) == 1, f"expected one definition, found {definitions}"
+    for consumer in ("sse.py", "http.py"):
+        assert "_SSE_RETRY_MS" in sources[consumer], f"{consumer} no longer uses the hint"
 
 
 def test_the_prior_protocol_revision_has_one_definition():

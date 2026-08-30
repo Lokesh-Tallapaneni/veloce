@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import builtins
 import enum
+import json
 import linecache
 
 from pydantic import BaseModel
@@ -282,7 +283,7 @@ async def test_trivial_route_classified_and_dispatches():
     assert (await app.handle_request(make_request(path="/with-request"))).status_code == 200
     param_resp = await app.handle_request(make_request(path="/with-param/5"))
     assert param_resp.status_code == 200
-    assert b'"n":5' in param_resp.body or b'"n": 5' in param_resp.body
+    assert json.loads(param_resp.body) == {"n": 5}
 
 
 async def test_route_with_dependency_is_not_trivial():

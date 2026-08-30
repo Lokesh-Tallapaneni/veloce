@@ -34,6 +34,7 @@ from typing import Annotated, Any, TypeVar
 
 from typing_extensions import Doc
 
+from veloce._internal import _readd_route
 from veloce.exceptions import _error_handler_key_error
 from veloce.routing.router import RouteInfo, Router
 

@@ -35,10 +35,6 @@ KNOWN_SHARED = {
         "test_body_limit_refusal_points.py",
         "test_max_content_length.py",
     },
-    "test_a_sync_hook_is_supported": {
-        "test_mcp_call_hooks.py",
-        "test_process_response_matches_dispatch.py",
-    },
     "test_a_value_that_is_not_a_boolean_is_refused": {
         "test_bool_query_coercion.py",
         "test_env_file_value_validation.py",
@@ -51,12 +47,7 @@ KNOWN_SHARED = {
         "test_content_type_guessing.py",
         "test_make_response_agreement.py",
     },
-    "test_an_unsupported_grant_type_is_refused": {
-        "test_mcp_authorization_server.py",
-        "test_mcp_oauth_grant_types.py",
-    },
     "test_async_hook_supported": {"test_before_first_request.py", "test_instrumentation.py"},
-    "test_bearer_extracts_token": {"test_datastructures.py", "test_request_auth.py"},
     "test_both_transports_agree_on_content_type": {
         "test_native_refusal_response_phase.py",
         "test_native_transport_parity.py",
@@ -78,11 +69,6 @@ KNOWN_SHARED = {
     "test_dump_cookie_basic": {"test_cookie_helpers.py", "test_cookies.py"},
     "test_dump_cookie_rejects_crlf_in_samesite": {"test_cookies.py", "test_http_e2e.py"},
     "test_empty_body": {"test_asgi_body_source.py", "test_request_get_data.py"},
-    "test_empty_header_returns_none": {"test_datastructures.py", "test_request_auth.py"},
-    "test_every_python_block_parses": {
-        "test_database_and_graphql_guides.py",
-        "test_mcp_guide_claims.py",
-    },
     "test_explicit_context_wins_over_processor": {
         "test_context_processor.py",
         "test_update_template_context.py",
@@ -104,17 +90,12 @@ KNOWN_SHARED = {
         "test_response_model_filtering.py",
     },
     "test_include_with_extra_prefix": {"test_hybrid_router.py", "test_router.py"},
-    "test_inline_disposition": {
-        "test_content_disposition.py",
-        "test_fileresponse_disposition_type.py",
-    },
     "test_install_hint_names_the_optional_extra": {
         "test_metrics.py",
         "test_otel.py",
         "test_workers.py",
     },
     "test_method_not_allowed": {"test_app.py", "test_router.py"},
-    "test_mimetype_lowercased": {"test_request_mimetype.py", "test_response_mimetype.py"},
     "test_multiple_params": {"test_response_mimetype_params.py", "test_router.py"},
     "test_nested": {"test_encoder_registry.py", "test_jsonable_encoder.py"},
     "test_no_limit_configured_serves_a_large_body": {
@@ -136,11 +117,6 @@ KNOWN_SHARED = {
         "test_datetime_converter_accelerator.py",
         "test_resolver_inlined_coercion.py",
     },
-    "test_stream_empty_body_yields_nothing": {
-        "test_request_data_stream.py",
-        "test_request_streaming.py",
-    },
-    "test_subclass_without_slots_is_rejected": {"test_mcp_capabilities.py", "test_mcp_content.py"},
     "test_swagger_ui": {"test_e2e_smoke.py", "test_openapi_customization.py"},
     "test_teardown_appcontext_not_fired_on_shutdown": {
         "test_async_safety.py",
@@ -149,10 +125,6 @@ KNOWN_SHARED = {
     "test_the_message_says_what_to_do_instead": {
         "test_default_response_class_contract.py",
         "test_methodview_marker_refusal.py",
-    },
-    "test_the_refusal_names_the_argument_and_both_types": {
-        "test_mcp_argument_contract.py",
-        "test_mcp_tool_transform.py",
     },
     "test_the_refusal_shows_the_value": {
         "test_app_metadata_and_prefix_scope.py",
