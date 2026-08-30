@@ -6,10 +6,10 @@ The two spellings of the same intent disagreed:
     make_response((resp, 403, {"X-Reason": "denied"}))  -> status 403, header set
 
 The early `if isinstance(body, Response): return body` returned before reaching
-anything that applies `status_code`, `headers` or `content_type`. So the Flask
-idiom the guide teaches - `return make_response(jsonify({"error": ...}), 403)` -
-answered HTTP 200, and a client branching on the status read a denial as a
-success.
+anything that applies `status_code`, `headers` or `content_type`. So the shape
+`docs/guide/helpers.md` teaches - `return make_response(jsonify({"error": ...}),
+403)` - answered HTTP 200, and a client branching on the status read a denial as
+a success.
 
 Before that early return existed the same call produced a garbage JSON body
 (the response object's `repr`), so it failed loudly. Adding the pass-through

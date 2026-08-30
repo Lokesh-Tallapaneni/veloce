@@ -13,8 +13,8 @@ for that one route: `before_request`, `after_request`, `teardown_request`,
 `url_value_preprocessor`, `url_defaults`. A guard on the blueprint silently did
 not run, per-route, with nothing reported.
 
-The name is refused at registration instead, as Flask refuses it, so the
-ambiguity cannot be constructed.
+The name is refused at registration instead, so the ambiguity cannot be
+constructed.
 """
 
 from __future__ import annotations
