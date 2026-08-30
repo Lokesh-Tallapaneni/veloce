@@ -1,4 +1,12 @@
-"""L7 — per-blueprint url_value_preprocessor + url_defaults."""
+"""Per-blueprint `url_value_preprocessor` and `url_defaults`.
+
+The blueprint-level slice. The app-level hooks are `test_url_processors.py`,
+which lists all four modules and what each owns; bucketing is
+`test_blueprint_url_processor_buckets.py` and introspection is
+`test_url_processor_inspect.py`.
+
+The docstring said `L7`, which resolves to nothing in the repository.
+"""
 
 from __future__ import annotations
 

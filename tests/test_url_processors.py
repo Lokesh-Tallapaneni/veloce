@@ -1,4 +1,16 @@
-"""url_value_preprocessor + url_defaults hook tests (R20+R21)."""
+"""App-level `url_value_preprocessor` and `url_defaults`.
+
+One of four modules over these hooks, each owning a slice:
+
+- this one, the app-level hooks and what they do to a request and to `url_for`;
+- `test_blueprint_url_processors.py`, the same hooks registered on a blueprint;
+- `test_blueprint_url_processor_buckets.py`, that a blueprint's processors cost
+  only the routes they apply to;
+- `test_url_processor_inspect.py`, the introspection views over both registries.
+
+The docstring said `(R20+R21)`, which named a tracker rather than the slice, so
+a reader adding a test had nothing to decide by.
+"""
 
 from __future__ import annotations
 
