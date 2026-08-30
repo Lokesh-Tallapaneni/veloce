@@ -674,7 +674,11 @@ class RateLimitMiddleware(Middleware):
         tagged = self._route_override(request)
         if tagged is not None:
             if self._backend is None:
-                self._backend = InMemoryRateLimitBackend()
+                # The operator's bound, not the constructor default: this arm
+                # dropped it, so a tagged route's keyspace grew to 100,000 while
+                # the sliding log beside it honoured the configured cap. The
+                # `strategy=` arm has always passed it.
+                self._backend = InMemoryRateLimitBackend(max_keys=log._max_keys)
             # Delegate rather than restate the evaluation: `_process_strategy`
             # resolves this same route to the same tag, scopes the key, and
             # refuses identically, so a tag means one thing in both modes.
