@@ -1,4 +1,13 @@
-"""Tests for veloce.http.cookies — parse_cookie / dump_cookie."""
+"""What `parse_cookie` and `dump_cookie` refuse, and why.
+
+The validation half of the pair: CRLF, LF and NUL in a key, path, domain or
+value; non-token and reserved names; and that `Response.set_cookie` propagates
+the same refusals rather than validating separately.
+
+What they *render and parse* when the input is valid is
+`tests/test_cookie_helpers.py`. Both modules named `parse_cookie` and
+`dump_cookie` in their docstrings and neither said which half it held.
+"""
 
 from __future__ import annotations
 

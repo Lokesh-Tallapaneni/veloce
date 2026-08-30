@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from veloce import Veloce
 
 
@@ -56,8 +58,6 @@ def test_ensure_sync_propagates_exception():
         raise RuntimeError("nope")
 
     wrapped = app.ensure_sync(boom)
-    import pytest
-
     with pytest.raises(RuntimeError, match="nope"):
         wrapped()
 
