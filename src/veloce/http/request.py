@@ -582,8 +582,8 @@ class Request:
     def charset(self) -> str:
         """Request body charset, decoded from `Content-Type`.
 
-        Defaults to `utf-8` when no charset is declared (the modern
-        default; the also moved off ISO-8859-1).
+        Defaults to `utf-8` when no charset is declared, which is what the
+        HTTP specifications settled on after moving off ISO-8859-1.
         """
         return self.mimetype_params.get("charset", "utf-8")
 
@@ -1223,10 +1223,10 @@ class Request:
         """Access to the session dict.
 
         `SessionMiddleware` writes the parsed session into `_state["session"]`
-        during `process_request`. This property surfaces it under the
-        a convenience accessor. Raises `RuntimeError` when the middleware hasn't
-        run - keeps "I forgot to add SessionMiddleware" from showing up
-        as a confusing silent empty-dict.
+        during `process_request`; this property is the accessor for it. Raises
+        `RuntimeError` when the middleware has not run - which keeps "I forgot
+        to add SessionMiddleware" from showing up as a confusing silent
+        empty-dict.
         """
         if "session" not in self._state:
             raise RuntimeError(

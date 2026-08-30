@@ -123,6 +123,8 @@ class View:
     decorators: ClassVar[list[Callable]] = []
     init_every_request: ClassVar[bool] = True
 
+    #: The method a subclass must supply, checked at definition rather than left
+    #: to fail at call time - a view that never dispatches serves nothing, and
     #: the failure would otherwise be a `NotImplementedError` on the first
     #: request to the route it was registered for.
     _required = ("dispatch_request",)
@@ -182,8 +184,6 @@ class View:
             return [m.upper() for m in cls.methods]
         return [HTTP_METHOD_GET]
 
-    #: The method a subclass must supply, checked at definition rather than left
-    #: to fail at call time - a view that never dispatches serves nothing, and
     async def dispatch_request(self, *args: Any, **kwargs: Any) -> Any:
         """Handle the request - subclasses must override."""
         raise NotImplementedError(f"{type(self).__name__} must implement dispatch_request()")

@@ -54,9 +54,8 @@ class Session(dict[str, Any]):
     def permanent(self) -> bool:
         """Whether the session cookie should use the longer lifetime.
 
-        backed by the reserved `_permanent` key, so the
-        flag persists in the cookie across requests and toggling it
-        counts as a session mutation.
+        Backed by the reserved `_permanent` key, so the flag persists in the
+        cookie across requests and toggling it counts as a session mutation.
         """
         return bool(self.get("_permanent", False))
 

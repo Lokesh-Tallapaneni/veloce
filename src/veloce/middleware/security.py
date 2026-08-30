@@ -1,9 +1,13 @@
-"""Security-related middleware — trusted hosts, rate limiting, HTTPS redirect.
+"""Security-related middleware — the six hardening layers and their helper.
 
-Covers Host validation (RFC 9110 Sec. 7.2), HTTPS upgrade via 308 redirect
-(RFC 9110 Sec. 15.4.9), rate-limit headers (draft-ietf-httpapi-ratelimit-headers),
-WebSocket origin checks against CSWSH (RFC 6455 Sec. 4.1, Sec. 4.2.2), and common
-hardening response headers.
+`CSPMiddleware` emits a Content Security Policy and, with `csp_nonce()`, a
+per-request nonce a template can put on an inline script.
+`TrustedHostMiddleware` validates Host (RFC 9110 Sec. 7.2),
+`RateLimitMiddleware` emits rate-limit headers
+(draft-ietf-httpapi-ratelimit-headers), `HTTPSRedirectMiddleware` upgrades with
+a 308 (RFC 9110 Sec. 15.4.9), `SecurityHeadersMiddleware` sets the common
+hardening response headers, and `WebSocketOriginMiddleware` checks Origin
+against CSWSH (RFC 6455 Sec. 4.1, Sec. 4.2.2).
 """
 
 from __future__ import annotations

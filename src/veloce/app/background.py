@@ -21,13 +21,13 @@ class BackgroundTasksMixin(AppHost):
     """Spawn, name, supervise, and drain application background tasks."""
 
     def _log_background_task_error(self, task: asyncio.Task) -> None:
-        """Done-callback for fire-and-forget background tasks.
+        """Report a finished task's failure, called from `_spawned_task_done`.
 
         Pulls the exception off the future (silencing
         `Task exception was never retrieved` warnings) and logs it via
-        `self.logger` so failures are observable instead of silently
-        dropped. Never re-raises - the caller has already returned the
-        response and there is nowhere meaningful for the error to go.
+        `self.logger` so failures are observable instead of silently dropped.
+        Never re-raises: nothing awaits a spawned task, so there is no caller to
+        raise into.
         """
         if task.cancelled():
             return

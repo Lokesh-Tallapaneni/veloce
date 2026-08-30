@@ -37,8 +37,14 @@ share. Semantics:
   fully unquoted are stripped of surrounding whitespace, matching the
   Digest walker's `value[j:end].strip()` step.
 
-The helper is module-internal (leading underscore on the module name);
-no public re-export.
+Three narrower helpers sit beside it, sharing the same quoted-string rules:
+`parse_media_type_params` walks a media-type parameter list (the portion of a
+`Content-Type` after the bare type), `split_outside_quotes` splits on a
+delimiter that a quoted string may contain, and `unquote_value` trims
+whitespace and one surrounding pair of double quotes.
+
+Everything here is module-internal (leading underscore on the module name); no
+public re-export.
 """
 
 from __future__ import annotations

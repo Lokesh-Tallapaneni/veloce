@@ -88,9 +88,11 @@ class FeatureSpec:
 class CompiledPipeline:
     """Frozen per-app compile output: one fused slot per phase plus route flags.
 
-    Each phase slot is `None` (no enabled feature), a bare callable / artifact
-    (one feature), or a tuple (several). The three `has_*` booleans precompute
-    the route-resolution mount/static scans so route matching can gate on a flag
+    Each HTTP phase slot holds the built chain as a tuple, or `None` when no
+    enabled feature contributes to that phase. `asgi_wrap` is the exception: it
+    may hold several specs' lists, so it is typed `object` and normalised by
+    `flatten_asgi_wrap`. The three `has_*` booleans precompute the
+    route-resolution mount/static scans so route matching can gate on a flag
     instead of probing the live lists.
     """
 
