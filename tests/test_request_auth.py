@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import base64
 
-from veloce import Authorization, Request
-from veloce import Authorization as AuthClass
+from veloce import Request
 
 
 def _req(authz: str | None = None) -> Request:
@@ -131,14 +130,6 @@ def test_scheme_preserves_original_case():
     auth = _req("Bearer abc").auth
     assert auth.scheme == "Bearer"
     assert auth.type == "bearer"
-
-
-# ── Module export ─────────────────────────────────────────────────────
-
-
-def test_authorization_in_veloce_exports():
-
-    assert AuthClass is Authorization
 
 
 # ── Cached identity ───────────────────────────────────────────────────

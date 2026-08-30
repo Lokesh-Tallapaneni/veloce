@@ -14,9 +14,9 @@ Constraints — preserved by `parallel_group_end`:
 
 from __future__ import annotations
 
-import asyncio
 from types import SimpleNamespace
 
+from tests._dep_rendezvous import rendezvous_pair
 from veloce import Depends, Security, Veloce
 from veloce._handler_plan import (
     _slot_parallel_safe,
@@ -26,36 +26,6 @@ from veloce._handler_plan import (
 )
 from veloce.dependency import K_DEPENDS
 from veloce.testclient import TestClient
-
-
-def _rendezvous_pair():
-    """Two dependencies that can only both finish if they run concurrently.
-
-    Each records its arrival and then waits until the other has arrived too. A
-    sequential resolver runs the first to completion before starting the second,
-    so the first would wait for a sibling that has not begun - and the request
-    would fail on the bounded wait rather than passing.
-
-    `asyncio.Barrier` says this in one line but landed in 3.11; this project
-    supports 3.10.
-    """
-    arrived: list[str] = []
-    both_here = asyncio.Event()
-
-    async def _arrive(name: str) -> str:
-        arrived.append(name)
-        if len(arrived) == 2:
-            both_here.set()
-        await asyncio.wait_for(both_here.wait(), timeout=5.0)
-        return name
-
-    async def slow_a() -> str:
-        return await _arrive("a")
-
-    async def slow_b() -> str:
-        return await _arrive("b")
-
-    return slow_a, slow_b, arrived, both_here
 
 
 def test_independent_async_siblings_run_in_parallel():
@@ -72,7 +42,7 @@ def test_independent_async_siblings_run_in_parallel():
     request succeeding at all: sequential resolution cannot get past it.
     """
     app = Veloce(openapi_url=None)
-    slow_a, slow_b, arrived, both_here = _rendezvous_pair()
+    slow_a, slow_b, arrived, both_here = rendezvous_pair()
 
     @app.get("/parallel")
     async def handler(a: str = Depends(slow_a), b: str = Depends(slow_b)) -> dict:

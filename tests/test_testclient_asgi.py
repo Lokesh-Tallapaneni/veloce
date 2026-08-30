@@ -78,14 +78,15 @@ def test_client_constructs_full_asgi_scope():
     client = TestClient(app)
     client.get("/probe?x=1&y=2", headers={"X-Custom": "val"})
 
-    # Note: Veloce currently doesn't surface the scope onto Request.scope
-    # under the ASGI path — `Request` is built in __call__ but `scope` isn't
-    # passed through. This is a known gap (M1 territory). We assert the
-    # request succeeded and trust the round-trip; deeper scope-shape
-    # assertions land with the M1 refactor.
-    # If a future change does propagate scope, this will start picking it up.
-    if "scope" in captured and captured["scope"]:
-        assert captured["scope"]["type"] == "http"
+    scope = captured["scope"]
+    assert scope, "the ASGI scope did not reach the handler"
+    assert scope["type"] == "http"
+    assert scope["asgi"]["version"] == "3.0"
+    assert scope["method"] == "GET"
+    assert scope["path"] == "/probe"
+    assert scope["query_string"] == b"x=1&y=2"
+    # ASGI 3.0 carries headers as lower-cased raw byte pairs, not a mapping.
+    assert (b"x-custom", b"val") in scope["headers"]
 
 
 def test_client_extracts_multiple_set_cookies():

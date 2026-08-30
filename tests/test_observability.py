@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import json
 import logging
+from collections.abc import Callable, Iterator
 
 import pytest
 
 from veloce import Veloce
 from veloce.http.response import StreamingResponse
 from veloce.observability import instrument_access_log, log_requests_as_json
+
+_MakeLogger = Callable[..., tuple[logging.Logger, "_Capture"]]
 
 
 class _Capture(logging.Handler):
@@ -22,16 +26,20 @@ class _Capture(logging.Handler):
         self.records.append(record)
 
 
-@pytest.fixture
-def make_logger(request):
-    """Build a capture logger, and put the global registry back afterwards.
+@contextlib.contextmanager
+def _captured_loggers() -> Iterator[_MakeLogger]:
+    """Yield a capture-logger factory, putting the global registry back on exit.
 
     `logging.getLogger(name)` returns a process-global object, and this clears
-    its handlers, sets its level and disables propagation. Without teardown a
+    its handlers, sets its level and disables propagation. Without the restore a
     later test asserting on log output through the same name silently sees
     nothing - the failure mode is a passing test, not a noisy one.
+
+    Written as a context manager rather than inline in the fixture so a test can
+    drive the restore and assert on it, which is not possible from inside a test
+    the fixture is still holding open.
     """
-    restore: list[tuple[logging.Logger, list, int, bool]] = []
+    restore: list[tuple[logging.Logger, list[logging.Handler], int, bool]] = []
 
     def _make(name: str, level: int = logging.INFO) -> tuple[logging.Logger, _Capture]:
         logger = logging.getLogger(name)
@@ -43,12 +51,20 @@ def make_logger(request):
         logger.propagate = False
         return logger, cap
 
-    yield _make
+    try:
+        yield _make
+    finally:
+        for logger, handlers, level, propagate in reversed(restore):
+            logger.handlers[:] = handlers
+            logger.setLevel(level)
+            logger.propagate = propagate
 
-    for logger, handlers, level, propagate in reversed(restore):
-        logger.handlers[:] = handlers
-        logger.setLevel(level)
-        logger.propagate = propagate
+
+@pytest.fixture
+def make_logger() -> Iterator[_MakeLogger]:
+    """Build a capture logger, and put the global registry back afterwards."""
+    with _captured_loggers() as factory:
+        yield factory
 
 
 def _app() -> Veloce:
@@ -203,13 +219,12 @@ def test_access_log_hook_returned(make_logger):
     assert app._instrumentation[-1] is hook
 
 
-def test_the_logger_fixture_restores_the_global_registry(make_logger):
-    """The global logging registry is put back, so a later test still sees output.
+def test_the_logger_capture_restores_the_global_registry():
+    """The registry is put back, so a later test still sees its own output.
 
-    `logging.getLogger(name)` returns a process-global object, and the fixture
-    clears its handlers, sets its level and turns propagation off. Without
-    teardown the next test asserting on the same logger silently captures
-    nothing - and a passing test is a worse failure mode than a noisy one.
+    Driven directly rather than through the `make_logger` fixture: a test the
+    fixture is holding open cannot observe that fixture's teardown, which is why
+    the assertion this replaces could not fail.
     """
     name = "test.obs.restoration"
     original = logging.getLogger(name)
@@ -217,26 +232,34 @@ def test_the_logger_fixture_restores_the_global_registry(make_logger):
     original.addHandler(sentinel)
     original.setLevel(logging.CRITICAL)
     original.propagate = True
+    try:
+        with _captured_loggers() as make_logger:
+            logger, _cap = make_logger(name)
+            assert logger is original
+            assert sentinel not in logger.handlers, "the capture did not take over"
+            assert logger.level == logging.INFO
+            assert logger.propagate is False
 
-    logger, _cap = make_logger(name)
-    assert logger is original
-    assert sentinel not in logger.handlers, "the fixture did not take over"
-    assert logger.propagate is False
-
-    # The fixture's teardown has not run yet, so prove restoration by invoking
-    # it the way pytest will: through a nested request for the same name.
-    # (The end-state assertion lives in the finaliser check below.)
-    original.removeHandler(sentinel)
+        assert original.handlers == [sentinel], "handlers were not put back"
+        assert original.level == logging.CRITICAL, "the level was not put back"
+        assert original.propagate is True, "propagation was not put back"
+    finally:
+        original.removeHandler(sentinel)
+        original.setLevel(logging.NOTSET)
 
 
-def test_a_later_test_still_sees_its_own_logger():
-    """Runs after the fixture teardown above; the registry must be usable."""
-    logger = logging.getLogger("test.obs.restoration")
+def test_a_restored_logger_still_emits():
+    """The point of restoring: output through the same name is not swallowed."""
+    name = "test.obs.restoration.emits"
     captured = _Capture()
+    with _captured_loggers() as make_logger:
+        make_logger(name)
+    logger = logging.getLogger(name)
     logger.addHandler(captured)
     logger.setLevel(logging.INFO)
     try:
         logger.info("visible")
-        assert [r.getMessage() for r in captured.records] == ["visible"]
+        assert [record.getMessage() for record in captured.records] == ["visible"]
     finally:
         logger.removeHandler(captured)
+        logger.setLevel(logging.NOTSET)
