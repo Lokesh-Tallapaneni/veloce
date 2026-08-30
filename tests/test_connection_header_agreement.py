@@ -23,30 +23,12 @@ import asyncio
 
 import pytest
 
+from tests._protocol import _FakeTransport
 from veloce import Response, Veloce
 from veloce._internal import _encode_response_head
 from veloce.http.response import StreamingResponse
 from veloce.serving.protocol import HttpProtocol
 from veloce.sse import EventSourceResponse, ServerSentEvent
-
-
-class _FakeTransport(asyncio.Transport):
-    def __init__(self) -> None:
-        super().__init__()
-        self.writes: list[bytes] = []
-        self.closed = False
-
-    def write(self, data: bytes) -> None:
-        self.writes.append(data)
-
-    def close(self) -> None:
-        self.closed = True
-
-    def is_closing(self) -> bool:
-        return self.closed
-
-    def get_extra_info(self, name, default=None):
-        return default
 
 
 def _app() -> Veloce:

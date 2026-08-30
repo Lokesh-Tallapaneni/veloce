@@ -36,6 +36,15 @@ class _FakeTransport(asyncio.Transport):
     def is_closing(self) -> bool:
         return self.closed
 
+    def get_extra_info(self, name: str, default: object = None) -> object:
+        """Return `default` for every key, as an unconnected transport would.
+
+        Six modules forked this class for want of this one method. The two that
+        answer a key for real - a `peername`, or a recording variant - keep
+        their own, because answering differently is the thing they test.
+        """
+        return default
+
     def pause_reading(self) -> None:
         self.reading_paused = True
         self.pause_reading_calls += 1

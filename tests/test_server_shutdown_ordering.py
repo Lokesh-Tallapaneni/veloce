@@ -17,35 +17,11 @@ from __future__ import annotations
 import asyncio
 import inspect
 
+from tests._protocol import _FakeTransport
 from veloce import Veloce
 from veloce.app.serving import ServingMixin
 from veloce.serving.protocol import HttpProtocol
 from veloce.workers import VeloceWorker
-
-
-class _FakeTransport(asyncio.Transport):
-    def __init__(self) -> None:
-        super().__init__()
-        self.writes: list[bytes] = []
-        self.closed = False
-
-    def write(self, data: bytes) -> None:
-        self.writes.append(data)
-
-    def close(self) -> None:
-        self.closed = True
-
-    def is_closing(self) -> bool:
-        return self.closed
-
-    def get_extra_info(self, name: str, default: object = None) -> object:
-        return default
-
-    def pause_reading(self) -> None:
-        return None
-
-    def resume_reading(self) -> None:
-        return None
 
 
 def _code_only(source: str) -> str:

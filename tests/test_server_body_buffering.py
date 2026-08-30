@@ -19,36 +19,10 @@ from __future__ import annotations
 import asyncio
 import json
 
+from tests._protocol import _FakeTransport
 from veloce import Veloce, request
 from veloce.serving.protocol import HttpProtocol
 from veloce.testclient import AsyncTestClient
-
-
-class _FakeTransport(asyncio.Transport):
-    """Collect what the protocol writes, without a socket."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.writes: list[bytes] = []
-        self.closed = False
-
-    def write(self, data: bytes) -> None:
-        self.writes.append(data)
-
-    def close(self) -> None:
-        self.closed = True
-
-    def is_closing(self) -> bool:
-        return self.closed
-
-    def get_extra_info(self, name: str, default: object = None) -> object:
-        return default
-
-    def pause_reading(self) -> None:
-        return None
-
-    def resume_reading(self) -> None:
-        return None
 
 
 async def _serve(app: Veloce, *chunks: bytes) -> str:

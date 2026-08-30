@@ -26,6 +26,7 @@ import json
 import pathlib
 
 from tests._asgi_drive import body_of, drive, headers_of, status_of
+from tests._protocol import _FakeTransport
 from veloce import Veloce
 from veloce.http._body import too_large_payload
 from veloce.serving.protocol import HttpProtocol
@@ -66,27 +67,6 @@ async def _drive_asgi(body: bytes, app: Veloce | None = None) -> tuple[int, dict
     """Send one POST through the ASGI entry point."""
     messages = await drive(app or _app(), _scope(body), body=body)
     return status_of(messages), headers_of(messages), body_of(messages)
-
-
-class _FakeTransport(asyncio.Transport):
-    """Captures what the native protocol writes, as the rest of the suite does."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.writes: list[bytes] = []
-        self.closed = False
-
-    def write(self, data: bytes) -> None:
-        self.writes.append(data)
-
-    def close(self) -> None:
-        self.closed = True
-
-    def is_closing(self) -> bool:
-        return self.closed
-
-    def get_extra_info(self, name, default=None):
-        return default
 
 
 def _drive_native_raw(body: bytes) -> tuple[bytes, bool]:

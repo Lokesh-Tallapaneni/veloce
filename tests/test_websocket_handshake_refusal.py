@@ -23,6 +23,7 @@ import asyncio
 
 import pytest
 
+from tests._protocol import _FakeTransport
 from veloce import Veloce
 from veloce.middleware.security import WebSocketOriginMiddleware
 from veloce.serving.protocol import HttpProtocol
@@ -122,25 +123,6 @@ def test_an_allowed_origin_on_a_known_path_still_connects():
 
 
 # ── The built-in server gates in the same order ──────────────────────
-
-
-class _FakeTransport(asyncio.Transport):
-    def __init__(self) -> None:
-        super().__init__()
-        self.writes: list[bytes] = []
-        self.closed = False
-
-    def write(self, data: bytes) -> None:
-        self.writes.append(data)
-
-    def close(self) -> None:
-        self.closed = True
-
-    def is_closing(self) -> bool:
-        return self.closed
-
-    def get_extra_info(self, name, default=None):
-        return default
 
 
 def _native(path: str, origin: str | None) -> bytes:

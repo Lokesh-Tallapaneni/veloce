@@ -12,23 +12,10 @@ import struct
 import pytest
 
 from tests._native_ws import delivered, nothing_delivered
+from tests._protocol import _FakeTransport
 from tests._ws_frames import client_frame as _client_frame
 from veloce.exceptions import WebSocketDisconnect
 from veloce.websocket import WebSocket
-
-
-class _FakeTransport:
-    """Minimal asyncio.Transport stand-in for WebSocket tests."""
-
-    def __init__(self) -> None:
-        self.writes: list[bytes] = []
-        self.closed = False
-
-    def write(self, data: bytes) -> None:
-        self.writes.append(data)
-
-    def close(self) -> None:
-        self.closed = True
 
 
 def _make_ws() -> tuple[WebSocket, _FakeTransport]:
