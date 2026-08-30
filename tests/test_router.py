@@ -40,6 +40,9 @@ def router():
     return r
 
 
+# ── Matching: static paths and method lookup ───────────────────────
+
+
 def test_match_root(router):
     match = router.match("GET", "/")
     assert match is not None
@@ -108,6 +111,9 @@ class TestStaticRouteFastMap:
         assert r.match("GET", "/ts") is None
 
 
+# ── Path parameters ────────────────────────────────────────────────
+
+
 def test_single_param(router):
     match = router.match("GET", "/users/42")
     assert match is not None
@@ -124,6 +130,9 @@ def test_wildcard_match(router):
     match = router.match("GET", "/files/path/to/file.txt")
     assert match is not None
     assert match.path_params["_wildcard"] == "path/to/file.txt"
+
+
+# ── Composing routers ──────────────────────────────────────────────
 
 
 def test_include_router():
@@ -152,7 +161,9 @@ def test_include_with_extra_prefix():
     assert match is not None
 
 
-def test_all_methods():
+@pytest.mark.parametrize("method", ["GET", "POST", "PUT", "PATCH", "DELETE"])
+def test_each_method_shortcut_registers_a_matchable_route(method):
+    """Parametrized, not looped: a failure names the verb that stopped matching."""
     r = Router()
 
     @r.get("/test")
@@ -170,8 +181,10 @@ def test_all_methods():
     @r.delete("/test")
     async def delete_handler(request): ...
 
-    for method in ["GET", "POST", "PUT", "PATCH", "DELETE"]:
-        assert r.match(method, "/test") is not None
+    assert r.match(method, "/test") is not None
+
+
+# ── The regex fallback ─────────────────────────────────────────────
 
 
 def test_greedy_with_trailing_segment_uses_regex_fallback():
@@ -222,8 +235,6 @@ def test_include_router_rejects_greedy_with_trailing_segments():
 
 
 # ── Duplicate path-parameter detection ───────────────────────────────
-
-
 def test_duplicate_param_on_tree_path_raises():
     r = Router()
 
@@ -259,7 +270,7 @@ def test_distinct_params_still_register():
     r.add_route("/{only}", handler, ["GET"])
 
 
-# ── a duplicate route name is reported ───────────────────────────
+# ── Duplicate route names warn ─────────────────────────────────────
 #
 # Moved here from `test_unswept_scope_findings.py`, a module named for the audit
 # batch that produced it rather than for the source it covers.
