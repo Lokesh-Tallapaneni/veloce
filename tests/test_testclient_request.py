@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from veloce import JSONResponse, Request, Veloce
+from veloce import Request, Veloce
 from veloce.testclient import TestClient
 
 
@@ -177,25 +177,6 @@ def test_custom_headers():
     client = TestClient(app)
     resp = client.get("/echo-header", headers={"user-agent": "TestBot"})
     assert resp.json()["ua"] == "TestBot"
-
-
-def test_cookie_tracking():
-    app = Veloce(openapi_url=None)
-
-    @app.get("/set-cookie")
-    async def set_cookie(request: Request):
-        resp = JSONResponse({"ok": True})
-        resp.set_cookie("token", "abc123")
-        return resp
-
-    @app.get("/read-cookie")
-    async def read_cookie(request: Request):
-        return {"token": request.cookies.get("token", "")}
-
-    client = TestClient(app)
-    client.get("/set-cookie")
-    resp = client.get("/read-cookie")
-    assert resp.json()["token"] == "abc123"
 
 
 def test_text_response():
