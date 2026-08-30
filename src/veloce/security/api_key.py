@@ -8,7 +8,12 @@ from typing_extensions import Doc
 
 from veloce._constants import HEADER_WWW_AUTHENTICATE
 from veloce.http.request import Request
-from veloce.security._utils import _extract_api_key, _quote_header_value, _validate_realm
+from veloce.security._utils import (
+    _extract_api_key,
+    _quote_header_value,
+    _refuse_missing_api_key,
+    _validate_realm,
+)
 from veloce.security.base import SecurityScheme
 
 # RFC 9110 Sec. 11.6.1 - the auth-scheme token for the API-key 401 challenge.
@@ -99,6 +104,16 @@ class APIKeyHeader(_APIKeyBase):
     __slots__ = ()
     _source_attr = "headers"
     _openapi_in = "header"
+
+    def __call__(self, request: Request) -> str | None:
+        # Read through the connection's own single-header accessor rather than
+        # its header collection. On a WebSocket route that collection is a
+        # plain lowercase-keyed dict, so a canonically-cased `name` such as
+        # `X-API-Key` missed it and every key looked absent; the accessor is
+        # case-insensitive on both transports, and on the HTTP one it answers
+        # without building the whole mapping.
+        key = request._peek_header(self.name)
+        return _refuse_missing_api_key(key, self.auto_error, self._challenge)
 
 
 class APIKeyQuery(_APIKeyBase):

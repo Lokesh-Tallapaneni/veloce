@@ -671,18 +671,22 @@ class RangeSpec:
 _MimeKey = tuple[str, str, frozenset[tuple[str, str]], int]
 
 
-@functools.lru_cache(maxsize=512)
-def _parse_mime_key(value: str) -> _MimeKey:
-    """Decompose a media range into a cached, comparison-ready `_MimeKey`.
+@functools.lru_cache(maxsize=128)
+def _lookup_mime_key(value: str) -> _MimeKey:
+    """`_parse_mime_key` for a media range the caller names, memoized.
 
-    Memoized because the hot callers ask the same question every request:
-    `quality("application/json")` and friends pass a literal the server owns,
-    and re-parsing it per call was measured as three parses on a single MCP
-    request. The result is a tuple of immutables, so one parse is safe to
-    share. Bounded rather than unbounded: the media ranges a client sends are
-    parsed through here too, and an unbounded map keyed on remote input grows
-    without limit.
+    `quality("application/json")` and its siblings ask about a literal the
+    application owns, and re-parsing it per call was measured as three parses
+    on a single MCP request. Deliberately NOT used for the ranges parsed out of
+    an `Accept` header: those come from the client, and a process-lifetime map
+    keyed on remote input lets a caller sending a few hundred distinct ranges
+    evict the handful this cache exists to hold.
     """
+    return _parse_mime_key(value)
+
+
+def _parse_mime_key(value: str) -> _MimeKey:
+    """Decompose a media range into a comparison-ready `_MimeKey`."""
     head, _, rest = value.partition(";")
     head = head.strip().lower()
     type_, slash, subtype = head.partition("/")
@@ -807,7 +811,7 @@ class AcceptHeader:
         rejected or not mentioned (callers usually special-case this).
         """
         if self._mime:
-            return self._mime_best(_parse_mime_key(value))[0]
+            return self._mime_best(_lookup_mime_key(value))[0]
         folded = value.lower()
         best = 0.0
         for opt, q, _okey in self._options:
@@ -914,7 +918,7 @@ class AcceptHeader:
         """
         if not self._mime:
             return (self.quality_explicit(value), 0)
-        return self._mime_best(_parse_mime_key(value))
+        return self._mime_best(_lookup_mime_key(value))
 
     def _mime_best(self, vkey: _MimeKey) -> tuple[float, int]:
         """Return `(quality, specificity)` for `vkey` across this header's ranges.

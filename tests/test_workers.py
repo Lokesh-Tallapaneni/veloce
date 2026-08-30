@@ -375,7 +375,11 @@ async def test_serve_closes_partial_listeners_when_a_later_bind_fails() -> None:
     stub = _ServeStub(sockets, fail_after=1)
 
     class _Loop:
-        async def create_server(self, factory, sock, ssl):
+        async def create_server(self, factory, sock, backlog, ssl):
+            # `backlog` is positionally required here on purpose: asyncio
+            # re-`listen()`s the socket gunicorn already bound, so omitting it
+            # silently replaced the configured depth with asyncio's default.
+            assert backlog >= 512, backlog
             if len(stub.created) >= stub._fail_after:
                 raise OSError("address already in use")
             server = _FakeServer()

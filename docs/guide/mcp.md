@@ -1537,6 +1537,11 @@ prompts. The client `POST`s one JSON-RPC message to the route and gets one reply
     `resumable=True`, or when the client did not offer `application/json` at all.
     A tool that can do none of those answers with one message, and gets a single
     JSON response even from a client that offered both types.
+
+    The two shapes report an authorization failure differently: a streamed reply
+    carries an insufficient-scope error in band on a committed `200`, while a
+    JSON reply can still use the status line and answers `403` with an RFC 6750
+    scope challenge. A client that handles step-up auth should read both.
 - A notification (a message with no `id`) is answered with `202 Accepted` and no body.
 - A `GET` on the endpoint is answered `405 Method Not Allowed` (the transport keeps
   no standalone server-to-client stream).

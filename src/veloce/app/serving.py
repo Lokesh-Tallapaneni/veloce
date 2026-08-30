@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import signal
 import socket
 import ssl
@@ -33,11 +34,8 @@ if TYPE_CHECKING:  # pragma: no cover
 _MIN_LISTEN_BACKLOG = 512
 _MAX_LISTEN_BACKLOG = 4096
 
-# Resolved once, on the first `run()`, and reused. Reading it at import would
-# make every application pay a syscall for a server most never start.
-_listen_backlog: int | None = None
 
-
+@functools.lru_cache(maxsize=1)
 def _resolve_listen_backlog() -> int:
     """Depth to request for the built-in server's accept queue.
 
@@ -51,10 +49,12 @@ def _resolve_listen_backlog() -> int:
 
     Ask the machine what it allows and stay inside it, bounded so a host with
     a tiny or unreadable limit still gets a usable queue.
+
+    Memoized: this is a `procfs` read on the path that creates the listening
+    socket, before any connection exists, and the answer cannot change while
+    the process runs. Reading it at import instead would make every application
+    pay the syscall for a server most never start.
     """
-    global _listen_backlog
-    if _listen_backlog is not None:
-        return _listen_backlog
     try:
         with open("/proc/sys/net/core/somaxconn", "rb") as fh:
             limit = int(fh.read())
@@ -64,8 +64,7 @@ def _resolve_listen_backlog() -> int:
         # cannot honour - which is what it does to any request, including one
         # this file could have read.
         limit = _MAX_LISTEN_BACKLOG
-    _listen_backlog = max(_MIN_LISTEN_BACKLOG, min(limit, _MAX_LISTEN_BACKLOG))
-    return _listen_backlog
+    return max(_MIN_LISTEN_BACKLOG, min(limit, _MAX_LISTEN_BACKLOG))
 
 
 class ServingMixin:

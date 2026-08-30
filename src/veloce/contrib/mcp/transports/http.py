@@ -498,7 +498,7 @@ def _decode_standard_name(raw: str) -> str:
 
 def _require_header(request: Request, name: str) -> str:
     """Return a required standard header, rejecting the request when it is absent."""
-    value: str | None = request._peek_header_key(name.encode("latin-1"))
+    value: str | None = request._peek_header_key(name.lower().encode("latin-1"))
     if value is None:
         raise HeaderMismatchError(f"{name} is required on this protocol revision")
     return value
@@ -515,12 +515,22 @@ def _needs_stream(server: Any, message: dict[str, Any], event_store: Any) -> boo
 
     A `tools/call` produces extra messages only when the handler can reach the
     `MCPContext` (progress, logging, sampling, elicitation), which the registry
-    settles per tool at registration. Everything else keeps the stream: another
+    settles per tool at registration.
+
+    A handler reaching the connection WITHOUT binding an `MCPContext` - through
+    `MCPServer.send_to_current_connection` - is not visible to that walk; such a
+    tool should be registered with `dispatches_tools=True`. Everything else keeps the stream: another
     method, a tool that can reach the context, a client that asked for progress,
     or a server configured for resumability, whose replay needs the event ids
     only the stream carries.
     """
     if event_store is not None:
+        return True
+    if getattr(server, "_connections", None) is not None:
+        # Subscriptions are enabled, and `GET` on this endpoint only serves a
+        # resumption - so an open POST stream is a subscribed client's delivery
+        # window for `notifications/resources/updated`. Closing that window to
+        # save the framing would cost the client updates it asked for.
         return True
     if message.get("method") != "tools/call":
         return True

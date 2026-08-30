@@ -64,7 +64,20 @@ def _extract_api_key(
     for no header); passing it straight through to `HTTPException` keeps
     the missing-key path a single branch with no per-request header build.
     """
-    key = source.get(name)
+    return _refuse_missing_api_key(source.get(name), auto_error, challenge)
+
+
+def _refuse_missing_api_key(
+    key: str | None,
+    auto_error: bool = True,
+    challenge: dict[str, str] | None = None,
+) -> str | None:
+    """Return an extracted API key, or refuse an absent or blank one.
+
+    Split from the lookup so a caller that already holds the value - one
+    reading a single header off the connection rather than indexing a
+    collection - applies the same rule instead of a second copy of it.
+    """
     # `isspace()` tests for an all-whitespace key without allocating the
     # stripped copy `.strip()` would build on every (success-path) request;
     # `not key` already covers the empty/None case.

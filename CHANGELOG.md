@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - A `tools/call` over the HTTP transport is answered as JSON when the tool cannot send a second message, instead of always framing an SSE stream. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- An insufficient-scope `tools/call` on a tool answered as JSON returns `403` with a scope challenge, where a streamed one carries the error in band. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - The built-in server's accept queue follows the machine's `somaxconn` rather than asyncio's default of 100. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Security

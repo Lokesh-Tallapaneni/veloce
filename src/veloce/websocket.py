@@ -635,6 +635,24 @@ class WebSocket:
 
     # ── Introspecting the handshake ───────────────────────────
 
+    def _peek_header(self, name: str) -> str | None:
+        """Read one handshake header, as `Request` does.
+
+        The dependency resolver passes a `WebSocket` wherever an HTTP resolve
+        passes a `Request`, so anything reading a header off "the connection" -
+        a `Header()` parameter, `HTTPBearer`, `HTTPBasic`, `HTTPDigest` - lands
+        here on a WebSocket route and must find the same two methods.
+
+        `Request` has to scan raw ASGI tuples to avoid building its header
+        mapping; this side is already a decoded, lowercase-keyed dict, so both
+        forms are a plain lookup.
+        """
+        return self.headers.get(name.lower())
+
+    def _peek_header_key(self, key: bytes) -> str | None:
+        """`_peek_header` for a caller holding the lowercase key as bytes."""
+        return self.headers.get(key.decode("latin-1"))
+
     @property
     def query_params(self) -> Any:
         """Parsed query string of the WebSocket handshake URL.

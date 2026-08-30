@@ -64,6 +64,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from veloce._protocol_constants import LIFECYCLE_SHUTDOWN, LIFECYCLE_STARTUP
+from veloce.app.serving import _resolve_listen_backlog
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.app import Veloce
@@ -469,7 +470,17 @@ class VeloceWorker(_GunicornWorker):
         servers: list[asyncio.AbstractServer] = []
         try:
             for gsock in self.sockets:
-                servers.append(await loop.create_server(factory, sock=gsock.sock, ssl=ssl_context))
+                # `create_server` re-`listen()`s the socket it is handed, so
+                # omitting `backlog` here silently replaced the depth gunicorn
+                # configured with asyncio's default of 100.
+                servers.append(
+                    await loop.create_server(
+                        factory,
+                        sock=gsock.sock,
+                        backlog=_resolve_listen_backlog(),
+                        ssl=ssl_context,
+                    )
+                )
         except BaseException:
             for server in servers:
                 server.close()
