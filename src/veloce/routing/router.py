@@ -199,6 +199,13 @@ def _check_duplicate_params(full_path: str) -> None:
         seen.add(ph.name)
 
 
+# Static and wildcard nodes carry no parameter, so their converter is never
+# consulted. A shared instance keeps the slot non-optional - the same choice
+# `param_name` makes with `""` - because a `| None` here reaches the match loop,
+# where narrowing it would cost a check per param child per request.
+_NO_CONVERTER = StringConverter()
+
+
 def _converter_sort_key(node: RadixNode) -> int:
     """Order competing parameter segments, most restrictive first.
 
@@ -210,10 +217,7 @@ def _converter_sort_key(node: RadixNode) -> int:
 
     Runs once per `add_route` at startup, never on the per-request match path.
     """
-    converter = node.converter
-    # A parameter child always carries one; the fallback keeps the ordering
-    # defined rather than raising during registration if one ever does not.
-    return _Converter.specificity if converter is None else converter.specificity
+    return node.converter.specificity
 
 
 # ── Radix tree structures ──────────────────────────────────
@@ -270,9 +274,9 @@ class RadixNode:
         # When True, the slashed and unslashed forms both match without
         # redirect - set by `strict_slashes=False` on `add_route`.
         self.tolerant_slash = False
-        # Converter applied at match time. `None` for static and wildcard nodes;
-        # always set on param nodes (defaulting to StringConverter).
-        self.converter: _Converter | None = None
+        # Converter applied at match time. `add_route` sets it on every param
+        # node; static and wildcard nodes keep the placeholder and never read it.
+        self.converter: _Converter = _NO_CONVERTER
 
 
 @dataclass(frozen=True, slots=True)
@@ -1804,12 +1808,6 @@ class Router:
         single_param = len(param_children) == 1
         for child in param_children:
             converter = child.converter
-            if converter is None:
-                # `add_route` always populates this slot; a bare param child
-                # with no converter is a routing-tree corruption, not a
-                # client error. Loud failure beats a `'NoneType' is not
-                # callable` two frames deeper.
-                raise RuntimeError(f"radix-tree param child {child.param_name!r} has no converter")
             # Bind the param name once so the assignment branch and the gated
             # rollback below share a single attribute load.
             pname = child.param_name

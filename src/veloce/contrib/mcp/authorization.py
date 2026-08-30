@@ -371,8 +371,7 @@ class MCPAuthorizationServer:
         performed without knowing which server this is, and silently accepting
         another server's token is the failure the parameter exists to prevent.
         """
-        expected = resource
-        if expected is None:
+        if resource is None:
             warnings.warn(
                 "MCPAuthorizationServer.verifier() was built without resource=, so "
                 "audience binding (RFC 8707) is not enforced and a token minted for "
@@ -381,7 +380,7 @@ class MCPAuthorizationServer:
                 stacklevel=2,
             )
 
-        async def verify(token: str, resource: str | None = None) -> Principal | None:
+        async def verify(token: str) -> Principal | None:
             record = await self.store.get_token(_digest(token))
             if record is None:
                 return None
@@ -391,7 +390,7 @@ class MCPAuthorizationServer:
             # An audience-bound token names the server it was minted for; one that
             # names a different server is not ours to accept. A token carrying no
             # resource was never bound and is left to the scope check.
-            if expected is not None and record.resource is not None and record.resource != expected:
+            if resource is not None and record.resource is not None and record.resource != resource:
                 return None
             return Principal(
                 subject=record.subject,

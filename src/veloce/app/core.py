@@ -56,7 +56,7 @@ from veloce.app.templating import TemplatingMixin
 from veloce.app.testing import TestingMixin
 from veloce.app.urls import _URLMap
 from veloce.audit import run as audit_run
-from veloce.blueprints import _endpoint_blueprint, _resolve_scoped_chain
+from veloce.blueprints import Blueprint, _endpoint_blueprint, _resolve_scoped_chain
 from veloce.exceptions import (
     SetupError,
 )
@@ -77,8 +77,6 @@ if TYPE_CHECKING:  # pragma: no cover
 @functools.lru_cache(maxsize=1)
 def _constructor_parameter_names() -> frozenset[str]:
     """Every real `Veloce()` parameter name, read once."""
-    import inspect
-
     return frozenset(
         name
         for name, parameter in inspect.signature(Veloce.__init__).parameters.items()
@@ -96,8 +94,8 @@ def _warn_on_misspelled_parameters(extra: dict[str, Any]) -> None:
     title with no error, no warning and no log line.
 
     Only reached when `extra` is non-empty, so an app that passes none pays
-    nothing - neither the imports nor the signature read, which is why both are
-    deferred. The parameter names are read once and cached: introspecting a
+    nothing - neither `difflib`, which is why it is imported here, nor the
+    signature read. The parameter names are read once and cached: introspecting a
     35-parameter `Annotated` signature costs ~140us, and an app using `**extra`
     legitimately would otherwise pay that on every construction.
     """
@@ -663,7 +661,6 @@ class Veloce(
         when both are given.
         """
         self._assert_mutable()
-        from veloce.blueprints import Blueprint
 
         effective = url_prefix if url_prefix is not None else (prefix or None)
         if isinstance(router, Blueprint):
@@ -1177,7 +1174,6 @@ class Veloce(
         prefixes - the blueprint itself stays unmodified.
         """
         self._assert_mutable()
-        from veloce.blueprints import Blueprint
 
         if not isinstance(blueprint, Blueprint):
             raise TypeError(
@@ -1673,7 +1669,6 @@ class Veloce(
         # `app.webhooks` - an APIRouter whose routes are pure
         # documentation: registered for the OpenAPI 3.1 `webhooks`
         # section, never dispatched.
-        from veloce.blueprints import Blueprint
 
         self.webhooks = Blueprint("webhooks")
         # JSON provider - the. Class attribute is overridable;

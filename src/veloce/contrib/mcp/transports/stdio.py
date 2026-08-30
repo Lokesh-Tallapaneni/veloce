@@ -51,9 +51,6 @@ if TYPE_CHECKING:  # pragma: no cover
 
 _logger = logging.getLogger(__name__)
 
-# JSON-RPC 2.0 Sec. 5.1 parse error - returned for a line that is not valid
-# JSON. The id is null because the request could not be read.
-
 # Prefix for server-issued request ids so a server->client request never collides
 # with a client-issued id (the client owns its own id space; the server owns this).
 _SERVER_ID_PREFIX = "srv-"
