@@ -7,6 +7,7 @@ from pathlib import Path
 import jinja2
 import pytest
 
+from tests._templating import templates_at
 from veloce import Veloce
 from veloce.contrib.templating import Jinja2Templates, render_template
 from veloce.testclient import TestClient
@@ -55,7 +56,7 @@ def test_single_string_unchanged(tmp_path: Path):
 def test_render_module_helper_accepts_list(tmp_path: Path):
     (tmp_path / "y.html").write_text("Y-HELPER")
     app = Veloce(debug=True, openapi_url=None)
-    app._templates = Jinja2Templates(directory=str(tmp_path))
+    templates_at(app, str(tmp_path))
 
     @app.get("/")
     async def index():

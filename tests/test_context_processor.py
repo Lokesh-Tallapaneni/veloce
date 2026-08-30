@@ -1,4 +1,11 @@
-"""@app.context_processor invoked by templating (TP6)."""
+"""@app.context_processor invoked by templating (TP6).
+
+One test reads `app._context_processors` to check registration; the rest assert
+through a render, which is what a user observes. The private read is white-box
+by intent - `middlewares` (app/middleware.py) is the only introspection property
+in `app/`, and mirroring it for this would add public surface no user has asked
+for.
+"""
 
 from __future__ import annotations
 

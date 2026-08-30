@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from tests._templating import install_templates, templates_at
 from veloce import StreamingResponse, Veloce
 from veloce.contrib.templating import (
     Jinja2Templates,
@@ -35,7 +36,7 @@ def test_render_template_string_inside_app_uses_app_templates(tmp_path):
     (tmp_path / "ignored.html").write_text("ignored")
     app = Veloce(openapi_url=None)
     templates = Jinja2Templates(directory=str(tmp_path))
-    app._templates = templates
+    install_templates(app, templates)
 
     with app.app_context():
         out = render_template_string("X={{ x }}", x=7)
@@ -59,7 +60,7 @@ def test_render_template_without_templates_attr_raises():
 def test_render_template_renders_named_file(tmp_path):
     (tmp_path / "hello.html").write_text("Hi {{ name }}!")
     app = Veloce(openapi_url=None)
-    app._templates = Jinja2Templates(directory=str(tmp_path))
+    templates_at(app, str(tmp_path))
 
     with app.app_context():
         assert render_template("hello.html", name="alice") == "Hi alice!"
@@ -90,7 +91,7 @@ def test_stream_template_without_templates_attr_raises():
 def test_stream_template_streams_named_file(tmp_path):
     (tmp_path / "items.html").write_text("{% for i in items %}<li>{{ i }}</li>{% endfor %}")
     app = Veloce(openapi_url=None)
-    app._templates = Jinja2Templates(directory=str(tmp_path))
+    templates_at(app, str(tmp_path))
 
     with app.app_context():
         out = "".join(stream_template("items.html", items=["a", "b"]))
@@ -102,7 +103,7 @@ def test_stream_template_wraps_in_streaming_response(tmp_path):
 
     (tmp_path / "page.html").write_text("Hello {{ who }}")
     app = Veloce(openapi_url=None)
-    app._templates = Jinja2Templates(directory=str(tmp_path))
+    templates_at(app, str(tmp_path))
 
     with app.app_context():
         resp = StreamingResponse(stream_template("page.html", who="world"))
@@ -125,7 +126,7 @@ def test_stream_template_resolves_context_when_consumed_after_request(tmp_path):
     )
 
     app = Veloce(openapi_url=None)
-    app._templates = Jinja2Templates(directory=str(tmp_path))
+    templates_at(app, str(tmp_path))
 
     @app.get("/", name="home")
     async def home(request):

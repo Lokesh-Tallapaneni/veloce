@@ -3,6 +3,10 @@
 Higher priority runs earlier in the request phase and correspondingly later in
 the response phase; equal priorities keep registration order. With no priority
 set the chain is the plain registration order it has always been.
+
+`app._any_priority` is read directly, as a white-box check that the flag which
+gates the sort is actually set; the ordering itself is asserted through public
+behaviour. There is no public seam for the flag and none is warranted.
 """
 
 from __future__ import annotations

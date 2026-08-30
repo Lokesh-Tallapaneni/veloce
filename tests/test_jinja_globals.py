@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from tests._templating import install_templates
 from veloce import Veloce, g
 from veloce.contrib.templating import Jinja2Templates
 
@@ -14,7 +15,7 @@ def test_url_for_available_in_template(tmp_path):
         return {}
 
     templates = Jinja2Templates(directory=str(tmp_path))
-    app._templates = templates
+    install_templates(app, templates)
 
     with app.app_context():
         out = templates.render_string(
@@ -27,7 +28,7 @@ def test_url_for_available_in_template(tmp_path):
 def test_g_available_in_template(tmp_path):
     app = Veloce(openapi_url=None)
     templates = Jinja2Templates(directory=str(tmp_path))
-    app._templates = templates
+    install_templates(app, templates)
 
     with app.app_context():
         # Set something on g, render a template that reads it.
@@ -40,7 +41,7 @@ def test_g_available_in_template(tmp_path):
 def test_current_app_attribute_in_template(tmp_path):
     app = Veloce(title="MyApp", openapi_url=None)
     templates = Jinja2Templates(directory=str(tmp_path))
-    app._templates = templates
+    install_templates(app, templates)
 
     with app.app_context():
         out = templates.render_string("{{ current_app.title }}", {})
@@ -55,7 +56,7 @@ def test_get_flashed_messages_available_in_template(tmp_path):
     """
     app = Veloce(openapi_url=None)
     templates = Jinja2Templates(directory=str(tmp_path))
-    app._templates = templates
+    install_templates(app, templates)
 
     with app.app_context():
         out = templates.render_string(

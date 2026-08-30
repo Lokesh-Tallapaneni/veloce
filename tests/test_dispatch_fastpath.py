@@ -6,6 +6,14 @@ assert it engages where expected, disengages where it must, and stays behavior-
 identical to the full path for the cases the bench prototype never exercised:
 one-shot `after_this_request` callbacks, response-attached background tasks,
 custom exception handlers, generic 500s, and HEAD body stripping.
+
+Engagement is read off `app._ensure_pipeline().is_bare` and
+`match.route_info.is_fast_eligible`, which are private. That is deliberate: the
+fast path is an internal optimisation with no user-facing question behind it -
+"is this app still on the fast path" is not something an application asks - so
+adding a public introspection surface for a test to read would be public API on
+speculation. The reads here are white-box by intent, and a rename inside
+`app/dispatch.py` or `_pipeline.py` is expected to update them.
 """
 
 from __future__ import annotations
