@@ -22,6 +22,7 @@ import decimal
 
 from tests.conftest import make_request
 from veloce import Veloce
+from veloce.routing import converters
 from veloce.routing.converters import DecimalConverter, FloatConverter
 
 
@@ -86,8 +87,6 @@ def test_every_specificity_is_distinct():
     catch-alls and neither is more restrictive - so the check is that nothing
     *else* ties.
     """
-    from veloce.routing import converters
-
     values: dict[int, list[str]] = {}
     for name in dir(converters):
         obj = getattr(converters, name)

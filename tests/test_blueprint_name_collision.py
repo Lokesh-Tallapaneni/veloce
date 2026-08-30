@@ -51,7 +51,7 @@ def test_two_blueprints_sharing_a_name_are_refused():
         app.register_blueprint(_bp("shared", "/b", ran))
 
 
-def test_the_refusal_says_what_to_do():
+def test_the_blueprint_refusal_says_what_to_do():
     """A message a reader can act on without opening the framework."""
     ran: list[str] = []
     app = Veloce(openapi_url=None)

@@ -74,6 +74,12 @@ UNEXPORTED: dict[str, str] = {
     # top-level namespace would read as the server (`Veloce.run`); the audit is
     # called as `veloce.audit.run(app)`, which says what it runs.
     "audit.run": "public as veloce.audit.run; a top-level `run` would collide with Veloce.run",
+    # `http/response.py` — one rule the three emit paths share (`Response.encode`
+    # and both ASGI branches), which each used to recompute and disagree about for
+    # a 304. Not underscore-prefixed because `app/asgi.py` imports it across a
+    # subpackage boundary, which guardrails L173 forbids for a private name; not
+    # exported because it describes an emit-time detail no user chooses.
+    "http.response.advertised_length": "shared by the three emit paths; internal to the transport, not a user-facing name",
     # `cli.py` — console-script entry points, reached through `[project.scripts]`
     # by dotted string, never imported by application code.
     "cli.build_parser": "console-script entry point, referenced by dotted path",

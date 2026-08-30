@@ -38,7 +38,7 @@ def test_headers_passed_beside_a_response_are_applied():
     assert resp.headers["X-Reason"] == "denied"
 
 
-def test_the_two_spellings_agree():
+def test_the_direct_and_tuple_spellings_agree():
     """Stated as one assertion, because the defect was the two disagreeing."""
     direct = make_response(Response(body=b"no"), 403, {"X-Reason": "denied"})
     tupled = make_response((Response(body=b"no"), 403, {"X-Reason": "denied"}))
