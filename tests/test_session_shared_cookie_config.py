@@ -47,19 +47,6 @@ def test_both_default_a_shared_setting_the_same_way(setting):
     assert getattr(first, setting) == _SHARED_COOKIE_DEFAULTS[setting]
 
 
-# ── The config overlay ───────────────────────────────────────────────
-
-
-_CONFIG = {
-    "SESSION_COOKIE_NAME": "from_config",
-    "APPLICATION_ROOT": "/mounted",
-    "SESSION_COOKIE_HTTPONLY": False,
-    "SESSION_COOKIE_SECURE": True,
-    "SESSION_COOKIE_SAMESITE": "strict",
-    "SECRET_KEY": "k",
-}
-
-
 # ── The settings only one of them takes ──────────────────────────────
 
 
