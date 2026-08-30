@@ -703,6 +703,11 @@ def _require_methods(cls: type, base: type, names: tuple[str, ...]) -> None:
     Raised at subclass definition, so a forgotten method is an `import`-time
     `TypeError` naming what is missing rather than a `NotImplementedError` on a
     live request. Runs once per subclass; nothing per request consults it.
+
+    An intermediate class that deliberately leaves a method to its own subclasses
+    marks it `@abc.abstractmethod`: `__abstractmethods__` is exempt above, and
+    the refusal message says so, because a reader who hits it is otherwise told
+    only what is missing and not that the pattern is supported.
     """
     missing = [
         name
@@ -712,7 +717,9 @@ def _require_methods(cls: type, base: type, names: tuple[str, ...]) -> None:
     ]
     if missing:
         raise TypeError(
-            f"{cls.__name__} does not implement {base.__name__}: {', '.join(missing)} missing"
+            f"{cls.__name__} does not implement {base.__name__}: {', '.join(missing)} missing. "
+            "For an intermediate class that concrete subclasses complete, mark the method "
+            "`@abc.abstractmethod` - `__abstractmethods__` is exempt from this check."
         )
 
 

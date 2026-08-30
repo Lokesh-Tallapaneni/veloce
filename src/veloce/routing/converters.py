@@ -246,8 +246,10 @@ class FloatConverter(Converter):
     """
 
     __slots__ = ("_min", "_max", "_signed")
-    #: Digits with a required fractional part.
-    specificity = 41
+    #: Digits with a required fractional part - a strict subset of what
+    #: `decimal` accepts, so it is the more restrictive of the two and is
+    #: tried first.
+    specificity = 40
 
     def __init__(
         self,
@@ -484,8 +486,9 @@ class DecimalConverter(Converter):
     """Matches a decimal literal; coerces to decimal.Decimal."""
 
     __slots__ = ()
-    #: Digits with an optional fractional part.
-    specificity = 40
+    #: Digits with an optional fractional part, so it accepts everything
+    #: `float` does and more; the looser of the pair sorts after it.
+    specificity = 41
 
     def match(self, value: str) -> tuple[bool, Any]:
         """Accept a decimal-literal segment; coerce to `decimal.Decimal`."""
