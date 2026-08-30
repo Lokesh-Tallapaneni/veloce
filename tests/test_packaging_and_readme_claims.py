@@ -33,10 +33,15 @@ import importlib.metadata as metadata
 import importlib.util
 import pathlib
 import re
+import sys
 import warnings
 
 import pytest
-import tomllib
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # `tomllib` is stdlib from 3.11; `tomli` is what it was upstreamed from.
+    import tomli as tomllib
 
 import veloce
 from veloce import Veloce

@@ -774,8 +774,16 @@ def _decode_basic_credentials(payload: str) -> tuple[str, str] | None:
     exactly the edges that are easy to miss: the colon-less case, and this
     whitespace.
     """
+    stripped = payload.strip()
+    # RFC 4648 Sec. 4 pads to a multiple of four, so any other length is not
+    # base64. Checked here rather than left to `validate=True`, which only began
+    # rejecting excess padding in CPython 3.12: without this, `YTpi=` decodes to
+    # `a:b` on 3.11 and raises on 3.12, so one interpreter reports credentials
+    # for a header the other refuses with a 401.
+    if len(stripped) % 4:
+        return None
     try:
-        decoded = base64.b64decode(payload.strip(), validate=True).decode("utf-8")
+        decoded = base64.b64decode(stripped, validate=True).decode("utf-8")
     except (binascii.Error, ValueError, UnicodeDecodeError):
         return None
     userid, separator, password = decoded.partition(":")

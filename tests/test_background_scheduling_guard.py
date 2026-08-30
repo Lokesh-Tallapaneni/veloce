@@ -75,11 +75,20 @@ async def _settle(ready: Callable[[], bool], *, turns: int = 200) -> None:
     test asserts on has appeared is both faster and independent of how many
     ticks the spawn path happens to take. `turns` bounds it so a task that never
     runs fails the caller's assertion instead of hanging.
+
+    The later turns yield real time. A *sync* background callable runs on a
+    thread-pool worker, and `sleep(0)` yields to the event loop without
+    consuming any wall-clock - so a pure-yield spin can burn its whole budget in
+    microseconds while the worker has not been scheduled once. That is a flake
+    that only appears under load (it was reported from a CI leg running under
+    coverage, as `assert ['first', 'second'] == ['first', 'second']` - the two
+    lists equal by the time the failure was rendered). The first turns stay
+    zero-cost for work already on the loop.
     """
-    for _ in range(turns):
+    for turn in range(turns):
         if ready():
             return
-        await asyncio.sleep(0)
+        await asyncio.sleep(0 if turn < 10 else 0.001)
 
 
 # ── nothing to schedule: the path being made cheaper ─────────────────

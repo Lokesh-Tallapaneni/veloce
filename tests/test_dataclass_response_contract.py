@@ -34,10 +34,17 @@ alternation is one.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TypedDict
 
 import pytest
 from pydantic import BaseModel, ValidationError
+
+# `typing_extensions`, not `typing`: below Python 3.12 Pydantic refuses a
+# `typing.TypedDict` outright - only the backport records the required/optional
+# keys it needs - so `_typeddict_is_adaptable` correctly answers False for one
+# there and the contract degrades to none. Declaring the shape the way the
+# framework supports it keeps these tests about the contract rather than about
+# which interpreter is running.
+from typing_extensions import TypedDict
 
 from veloce import JSONResponse, Veloce
 from veloce._model_backend import (
