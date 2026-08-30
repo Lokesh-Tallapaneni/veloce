@@ -1604,7 +1604,18 @@ class DispatchMixin(AppHost):
                 return response_class.from_bytes(dumps(result))
             if isinstance(result, (str, bytes)):
                 return response_class(result)
-            raise TypeError(self._response_class_mismatch(response_class, result))
+            # Try, then translate. This refusal was raised *before* attempting,
+            # which also turned away a user-defined serialiser that renders the
+            # value perfectly well - those answered 200 and then 500, told to
+            # declare `response_class=JSONResponse` on a route whose whole point
+            # was not to. A class that genuinely cannot render structured data
+            # still fails, and still says so: the clear message stands in front
+            # of the `AttributeError: 'dict' object has no attribute 'encode'`
+            # it replaced, chained rather than discarded.
+            try:
+                return response_class(result)
+            except (AttributeError, TypeError) as exc:
+                raise TypeError(self._response_class_mismatch(response_class, result)) from exc
         if isinstance(result, (dict, list)):
             return self._json_from_handler(result)
         if isinstance(result, str):
