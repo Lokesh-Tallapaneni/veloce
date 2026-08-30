@@ -110,12 +110,24 @@ async def test_a_token_for_this_server_is_accepted():
     assert principal.subject == "u1"
 
 
-async def test_an_unbound_token_is_still_accepted():
-    """A token that named no resource was never audience-bound."""
+async def test_an_unbound_token_is_refused_too():
+    """This pinned the opposite, on a reading that undid the guarantee above.
+
+    "A token that named no resource was never audience-bound" describes the
+    token accurately and does not follow from it. `resource` is optional at
+    `/authorize` (RFC 8707 Sec. 2), so a client that omits it receives a token
+    every resource server sharing this authorization server accepts - which is
+    the replay this module's own first guarantee says the parameter prevents,
+    reached by asking for *less* than the binding requires.
+
+    A verifier configured with `resource=` has been told an audience is
+    required, and a credential carrying none does not satisfy it. A verifier
+    built without `resource=` enforces no binding and is unchanged; it already
+    warns that it cannot.
+    """
     server, store = _server()
     await _mint(store, "tok", None)
-    principal = await server.verifier(resource=A_RESOURCE)("tok")
-    assert principal is not None
+    assert await server.verifier(resource=A_RESOURCE)("tok") is None
 
 
 async def test_the_audience_reaches_the_principal_claims():
