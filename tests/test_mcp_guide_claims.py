@@ -4,22 +4,10 @@ The page is 2,400 lines and had only ever been sampled. Sweeping it in full foun
 one framework bug, one security-relevant example, and six blocks that could not
 run.
 
-**The framework bug: two mounts collided on route names.** `mount_mcp` registered
-its transport routes without a name, so each took its handler's function name —
-fixed however many times the transport was mounted. The guide documents mounting
-the SSE transport twice:
-
-    app.mount_mcp(transport="sse")
-    app.mount_mcp(transport="sse", path="/agent/sse", message_path="/agent/messages")
-
-which left the first mount unreachable by name, `url_for("open_stream")` silently
-resolving to the second. Both transports were affected (`mcp_endpoint` for HTTP,
-`open_stream` / `receive_message` for SSE). The metadata route already guarded
-against a double mount; the endpoints did not. The route-naming behaviour itself
-is asserted in `test_mcp_mount_route_names.py`.
-
-Found by the duplicate-name warning added in the same review, firing on the
-project's own documentation the first time it ran.
+**The framework bug** the sweep found - two `mount_mcp` calls colliding on route
+names - is asserted in `test_mcp_mount_route_names.py`, which owns that
+behaviour and records it in full. It is named here only because this sweep is
+what found it.
 
 **The security-relevant example.** The "issuing the tokens yourself" section built
 its verifier with `authorization.verifier()` while passing

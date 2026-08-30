@@ -102,6 +102,20 @@ async def _initialise(app: Veloce) -> None:
         assert post.status == 200, post.chunks
 
 
+async def _until(ready, *, turns: int = 600) -> None:
+    """Yield the loop until `ready()` holds.
+
+    Four sites polled the same way with four different budgets - 200, 400, 200,
+    600 - none of which said what it was sized for. The condition is what each
+    was waiting on; the budget only has to be large enough not to expire, so
+    there is one, and it is the largest that was in use.
+    """
+    for _ in range(turns):
+        if ready():
+            return
+        await asyncio.sleep(0)
+
+
 async def _pump_until(post: PostStream, needle: str, turns: int = 2000) -> str:
     """Give the loop turns until `needle` appears in the stream, then return it.
 
@@ -129,10 +143,7 @@ async def test_the_call_still_completes_after_the_client_drops():
     async with PostStream(app, _CALL, revision=HANDSHAKE_REVISION) as post:
         await post.hang_up()
         gate.set()
-        for _ in range(200):
-            if finished:
-                break
-            await asyncio.sleep(0)
+        await _until(lambda: bool(finished))
 
     assert finished == ["done"]
 
@@ -146,10 +157,7 @@ async def test_the_call_completes_even_though_nothing_reads_the_stream():
     async with PostStream(app, _CALL, revision=HANDSHAKE_REVISION) as post:
         await post.hang_up()
         gate.set()
-        for _ in range(400):
-            if finished:
-                break
-            await asyncio.sleep(0)
+        await _until(lambda: bool(finished))
 
     assert finished == ["done"]
 
@@ -173,10 +181,7 @@ async def test_notifications_are_not_queued_after_the_client_drops(monkeypatch):
         await post.hang_up()
         recorder.install(monkeypatch)
         gate.set()
-        for _ in range(200):
-            if finished:
-                break
-            await asyncio.sleep(0)
+        await _until(lambda: bool(finished))
 
     assert finished == ["done"]
     assert recorder.puts == 0, (
@@ -197,10 +202,7 @@ async def test_more_notifications_after_teardown_still_queue_nothing(monkeypatch
         await post.hang_up()
         recorder.install(monkeypatch)
         gate.set()
-        for _ in range(600):
-            if finished:
-                break
-            await asyncio.sleep(0)
+        await _until(lambda: bool(finished))
 
     assert finished == ["done"]
     assert recorder.puts == 0
