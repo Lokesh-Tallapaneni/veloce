@@ -1,4 +1,4 @@
-"""url_path_for alias on Router (R15)."""
+"""url_path_for alias on Router."""
 
 from __future__ import annotations
 

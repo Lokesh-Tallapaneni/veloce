@@ -1,4 +1,4 @@
-"""add_url_rule endpoint-only stubs (R10)."""
+"""add_url_rule endpoint-only stubs."""
 
 from __future__ import annotations
 

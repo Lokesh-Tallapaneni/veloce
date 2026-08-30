@@ -1,4 +1,4 @@
-"""CORS spec-compliance tests (M4)."""
+"""CORS spec-compliance tests."""
 
 from __future__ import annotations
 

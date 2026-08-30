@@ -1,4 +1,4 @@
-"""Yield-style dependencies with teardown (D4)."""
+"""Yield-style dependencies with teardown."""
 
 from __future__ import annotations
 

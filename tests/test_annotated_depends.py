@@ -1,4 +1,4 @@
-"""PEP 593 `Annotated[T, Depends(...)]` support (D11).
+"""PEP 593 `Annotated[T, Depends(...)]` support.
 
 NOTE: this test file deliberately does NOT use
 `from __future__ import annotations`. PEP 593 metadata that carries

@@ -1,4 +1,4 @@
-"""TP8 — url_for / g / current_app available as Jinja globals."""
+"""url_for / g / current_app available as Jinja globals."""
 
 from __future__ import annotations
 

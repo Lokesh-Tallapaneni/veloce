@@ -1,4 +1,4 @@
-"""SecurityScopes injection tests (D6)."""
+"""SecurityScopes injection tests."""
 
 from __future__ import annotations
 

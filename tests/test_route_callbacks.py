@@ -1,4 +1,4 @@
-"""Route-level callbacks → OpenAPI emission (R27)."""
+"""Route-level callbacks → OpenAPI emission."""
 
 from __future__ import annotations
 

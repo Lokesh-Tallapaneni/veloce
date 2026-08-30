@@ -1,4 +1,4 @@
-"""GZipMiddleware include_types / exclude_types filtering (M11)."""
+"""GZipMiddleware include_types / exclude_types filtering."""
 
 from __future__ import annotations
 

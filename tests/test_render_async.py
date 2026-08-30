@@ -1,4 +1,4 @@
-"""Jinja2Templates.render_async — async template rendering (TP9)."""
+"""Jinja2Templates.render_async — async template rendering."""
 
 from __future__ import annotations
 

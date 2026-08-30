@@ -1,4 +1,4 @@
-"""R6 — router-level `responses=` merge into each route's OpenAPI."""
+"""router-level `responses=` merge into each route's OpenAPI."""
 
 from __future__ import annotations
 

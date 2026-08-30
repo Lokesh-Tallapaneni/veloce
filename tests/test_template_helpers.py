@@ -1,4 +1,4 @@
-"""Jinja filter/global/test decorator tests (TP5)."""
+"""Jinja filter/global/test decorator tests."""
 
 from __future__ import annotations
 

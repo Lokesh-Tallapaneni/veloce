@@ -1,4 +1,4 @@
-"""Route `defaults={...}` — the routing-rule defaults (R19)."""
+"""Route `defaults={...}` — the routing-rule defaults."""
 
 from __future__ import annotations
 

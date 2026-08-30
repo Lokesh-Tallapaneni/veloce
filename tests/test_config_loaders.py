@@ -1,4 +1,4 @@
-"""`app.config` loaders (CF1/CF2/CF5/CF4/CF6/CF7)."""
+"""`app.config` loaders."""
 
 from __future__ import annotations
 

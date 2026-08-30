@@ -1,4 +1,4 @@
-"""Tests for route-level OpenAPI metadata (R26)."""
+"""Tests for route-level OpenAPI metadata."""
 
 from __future__ import annotations
 

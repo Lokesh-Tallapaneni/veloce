@@ -1,4 +1,4 @@
-"""@app.context_processor invoked by templating (TP6).
+"""@app.context_processor invoked by templating.
 
 One test reads `app._context_processors` to check registration; the rest assert
 through a render, which is what a user observes. The private read is white-box

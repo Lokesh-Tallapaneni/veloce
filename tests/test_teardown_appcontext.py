@@ -1,4 +1,4 @@
-"""teardown_appcontext fires per request (L4)."""
+"""teardown_appcontext fires per request."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""SessionMiddleware — timestamped signing and secret rotation (M8)."""
+"""SessionMiddleware — timestamped signing and secret rotation."""
 
 from __future__ import annotations
 

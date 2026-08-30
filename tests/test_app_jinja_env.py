@@ -1,4 +1,4 @@
-"""app.jinja_env shared Jinja Environment (TP4)."""
+"""app.jinja_env shared Jinja Environment."""
 
 from __future__ import annotations
 

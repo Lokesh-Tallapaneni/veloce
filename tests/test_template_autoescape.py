@@ -1,4 +1,4 @@
-"""Default Jinja autoescape covers HTML-shaped extensions (TP3 polish)."""
+"""Default Jinja autoescape covers HTML-shaped extensions."""
 
 from __future__ import annotations
 

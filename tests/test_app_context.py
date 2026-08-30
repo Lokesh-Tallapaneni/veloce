@@ -1,4 +1,4 @@
-"""app.app_context() and app.test_request_context() (D12)."""
+"""app.app_context() and app.test_request_context()."""
 
 from __future__ import annotations
 

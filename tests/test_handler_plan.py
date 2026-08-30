@@ -1,4 +1,4 @@
-"""Tests for the pre-built handler plan (D15)."""
+"""Tests for the pre-built handler plan."""
 
 from __future__ import annotations
 

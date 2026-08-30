@@ -1,4 +1,4 @@
-"""ProxyFix middleware tests (M10)."""
+"""ProxyFix middleware tests."""
 
 from __future__ import annotations
 

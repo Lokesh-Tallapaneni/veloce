@@ -1,4 +1,4 @@
-"""BaseHTTPMiddleware tests (M9)."""
+"""BaseHTTPMiddleware tests."""
 
 from __future__ import annotations
 

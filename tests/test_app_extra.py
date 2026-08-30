@@ -1,4 +1,4 @@
-"""Veloce(**extra) constructor passthrough — app.extra (CF12)."""
+"""Veloce(**extra) constructor passthrough — app.extra."""
 
 from __future__ import annotations
 

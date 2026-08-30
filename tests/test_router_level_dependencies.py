@@ -1,4 +1,4 @@
-"""R5 — router-level `dependencies=` apply to every route."""
+"""router-level `dependencies=` apply to every route."""
 
 from __future__ import annotations
 

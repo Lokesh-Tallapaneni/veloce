@@ -1,4 +1,4 @@
-"""R4 — nested Blueprint support."""
+"""Nested Blueprint support."""
 
 from __future__ import annotations
 

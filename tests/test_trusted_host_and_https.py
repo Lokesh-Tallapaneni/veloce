@@ -1,4 +1,4 @@
-"""TrustedHost wildcards + HTTPSRedirect scope.scheme + 308 (M6, M7)."""
+"""TrustedHost wildcards + HTTPSRedirect scope.scheme + 308."""
 
 from __future__ import annotations
 

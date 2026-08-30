@@ -1,4 +1,4 @@
-"""Path-converter tests (R12)."""
+"""Path-converter tests."""
 
 from __future__ import annotations
 

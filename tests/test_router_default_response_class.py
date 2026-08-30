@@ -1,4 +1,4 @@
-"""Router.default_response_class (D10)."""
+"""Router.default_response_class."""
 
 from __future__ import annotations
 
