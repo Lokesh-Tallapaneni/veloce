@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Annotated, Any
 
 from typing_extensions import Doc
 
-from veloce._internal import (
+from veloce._internal import _readd_route, (
     _UNRESOLVED_JSON_DUMPS,
     _coerce_bool,
 )
@@ -60,7 +60,7 @@ from veloce.exceptions import (
 from veloce.helpers import Aborter, send_from_directory, send_from_directory_async
 from veloce.http.datastructures import State
 from veloce.http.request import Request
-from veloce.routing.router import Router, _readd_route
+from veloce.routing.router import Router
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.icons import Icon

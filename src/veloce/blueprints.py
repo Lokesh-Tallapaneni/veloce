@@ -35,7 +35,7 @@ from typing import Annotated, Any, TypeVar
 from typing_extensions import Doc
 
 from veloce.exceptions import _error_handler_key_error
-from veloce.routing.router import RouteInfo, Router, _readd_route
+from veloce.routing.router import RouteInfo, Router
 
 #: The key a scoped handler table is indexed by - an exception class for
 #: `_exception_handlers`, a status code for `_status_handlers`. Both flow

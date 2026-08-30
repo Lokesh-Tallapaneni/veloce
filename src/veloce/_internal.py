@@ -44,9 +44,12 @@ import weakref
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from email.header import Header
 from http import HTTPStatus
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import orjson
+
+if TYPE_CHECKING:  # pragma: no cover
+    from veloce.routing.router import RouteInfo, Router
 
 from veloce._constants import (
     HEADER_CONNECTION,
@@ -772,3 +775,68 @@ def _bearer_token_from(auth: str, scheme: str = AUTH_SCHEME_BEARER) -> str | Non
     if auth[:prefix_len].lower() != prefix_lower:
         return None
     return auth[prefix_len:].strip(" 	") or None
+
+
+def _readd_route(
+    target: Router, full_path: str, methods: list[str], info: RouteInfo, endpoint: str
+) -> None:
+    """Re-register `info` onto `target` under `full_path`/`endpoint`.
+
+    Single source of truth for the `RouteInfo`-to-`add_route` field mapping
+    shared by blueprint splicing (`Veloce.register_blueprint`) and nested
+    blueprint composition (`Blueprint.register_blueprint`). Keeping the kwarg
+    block in one place means a new `RouteInfo` field is forwarded on every
+    re-registration path, not silently dropped on one of them.
+
+    Here rather than in `routing/router.py` because both callers - `app/core.py`
+    and `blueprints.py` - sit outside `routing/`, and importing an
+    underscore-prefixed name across a subpackage boundary is what this module
+    exists to avoid.
+    """
+    target.add_route(
+        path=full_path,
+        handler=info.handler,
+        methods=methods,
+        strict_slashes=info.strict_slashes,
+        dependencies=info.dependencies,
+        response_model=info.response_model,
+        tags=info.tags,
+        summary=info.summary,
+        name=endpoint,
+        description=info.description,
+        deprecated=info.deprecated,
+        response_description=info.response_description,
+        status_code=info.status_code,
+        response_class=info.response_class,
+        response_model_include=info.response_model_include,
+        response_model_exclude=info.response_model_exclude,
+        response_model_exclude_unset=info.response_model_exclude_unset,
+        response_model_exclude_defaults=info.response_model_exclude_defaults,
+        response_model_by_alias=info.response_model_by_alias,
+        response_model_exclude_none=info.response_model_exclude_none,
+        include_in_schema=info.include_in_schema,
+        responses=info.responses,
+        operation_id=info.operation_id,
+        openapi_extra=info.openapi_extra,
+        defaults=info.defaults,
+        callbacks=info.callbacks,
+        subdomain=info.subdomain,
+        host=info.host,
+        expose_as_mcp_tool=info.expose_as_mcp_tool,
+        mcp_description=info.mcp_description,
+        expose_as_mcp_resource=info.expose_as_mcp_resource,
+        mcp_resource_uri=info.mcp_resource_uri,
+        mcp_resource_mime_type=info.mcp_resource_mime_type,
+        mcp_resource_size=info.mcp_resource_size,
+        mcp_resource_annotations=info.mcp_resource_annotations,
+        mcp_meta=info.mcp_meta,
+        stream=info.stream,
+        mcp_scopes=list(info.mcp_scopes) if info.mcp_scopes else None,
+        mcp_icons=info.mcp_icons,
+        mcp_task_support=info.mcp_task_support,
+        exclude_middleware=(
+            [*info.excluded_middleware[0], *info.excluded_middleware[1]]
+            if info.excluded_middleware
+            else None
+        ),
+    )

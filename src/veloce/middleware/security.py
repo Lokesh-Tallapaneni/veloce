@@ -71,7 +71,7 @@ _logger = logging.getLogger(__name__)
 _RL_STATE_KEY = "rate_limit_state"
 
 # request.state slot holding the per-request CSP nonce (materialized lazily).
-CSP_NONCE_STATE_KEY = "csp_nonce"
+_CSP_NONCE_STATE_KEY = "csp_nonce"
 
 
 # ── Content Security Policy ───────────────────────────────
@@ -87,14 +87,14 @@ def csp_nonce(request: Request | None = None) -> str | None:
         request = _current_request_var.get()
         if request is None:
             return None
-    cached = request._state.get(CSP_NONCE_STATE_KEY)
+    cached = request._state.get(_CSP_NONCE_STATE_KEY)
     if cached is None:
         return None
     if isinstance(cached, str):
         return cached
     # A factory closure was stored: materialize, cache, return.
     value = cached()
-    request._state[CSP_NONCE_STATE_KEY] = value
+    request._state[_CSP_NONCE_STATE_KEY] = value
     return value
 
 
@@ -178,7 +178,7 @@ class CSPMiddleware(Middleware):
         if self._needs_nonce:
             # Store a one-shot factory; csp_nonce() materializes on first read
             # so a request that never embeds a nonce pays only the store.
-            request._state[CSP_NONCE_STATE_KEY] = lambda: secrets.token_urlsafe(16)
+            request._state[_CSP_NONCE_STATE_KEY] = lambda: secrets.token_urlsafe(16)
         return None
 
     async def process_response(self, request: Request, response: Response) -> Response:
