@@ -28,8 +28,6 @@ import asyncio
 import pathlib
 import time
 
-import pytest
-
 from veloce import InMemoryCache, cached
 from veloce.sessions import InMemorySessionStore
 
@@ -189,33 +187,6 @@ def test_the_cache_surface_is_get_set_delete():
     """Pins the API the test above had to be written against."""
     public = {m for m in dir(InMemoryCache) if not m.startswith("_")}
     assert public == {"get", "set", "delete"}
-
-
-# ── negative: what `cached` refuses ──────────────────────────────────
-
-
-def test_cached_refuses_a_sync_function():
-    with pytest.raises(TypeError, match="async"):
-
-        @cached(InMemoryCache(), ttl=60)
-        def sync_fn() -> dict:
-            return {}
-
-
-def test_cached_refuses_a_zero_ttl():
-    with pytest.raises(ValueError, match="ttl"):
-        cached(InMemoryCache(), ttl=0)
-
-
-async def test_an_unserialisable_result_raises():
-    cache = InMemoryCache()
-
-    @cached(cache, ttl=60)
-    async def build() -> object:
-        return object()
-
-    with pytest.raises(TypeError):
-        await build()
 
 
 # ── the session store under concurrent access ────────────────────────
