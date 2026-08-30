@@ -18,7 +18,7 @@ import urllib.parse
 
 import pytest
 
-from tests._mcp import INVALID_REQUEST, PARSE_ERROR, SSEStream
+from tests._mcp import INVALID_REQUEST, PARSE_ERROR, SSEStream, live_tasks, task_runners
 from veloce import AsyncTestClient, MCPContext, Veloce
 from veloce.contrib.mcp import MCPAuth
 from veloce.contrib.mcp.server import MCPServer
@@ -447,11 +447,11 @@ async def test_a_closed_stream_reclaims_its_unsettled_tasks():
                 },
             )
         await stream.message()
-        assert len(server._tasks.tasks) == 1, "the task should exist while the stream is open"
+        assert len(live_tasks(server)) == 1, "the task should exist while the stream is open"
 
     # Let the generator's cleanup run now the stream is cancelled.
     await stream.settled()
-    assert server._tasks.tasks == {}, "the task outlived the stream that owned it"
+    assert live_tasks(server) == {}, "the task outlived the stream that owned it"
 
 
 async def test_a_closed_stream_leaves_no_running_runner():
@@ -470,7 +470,7 @@ async def test_a_closed_stream_leaves_no_running_runner():
                 },
             )
         await stream.message()
-        runners = [t.runner for t in server._tasks.tasks.values() if t.runner is not None]
+        runners = task_runners(server)
         assert runners and not all(r.done() for r in runners)
 
     await stream.settled()

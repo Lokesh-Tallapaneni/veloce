@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests._mcp import INVALID_PARAMS
+from tests._mcp import INVALID_PARAMS, live_tasks
 from veloce import Veloce
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.session import MCPSession
@@ -103,7 +103,7 @@ async def test_the_refusal_registers_no_task():
         },
         MCPSession(persistent=False),
     )
-    assert server._tasks.tasks == {}
+    assert live_tasks(server) == {}
 
 
 async def test_a_persistent_session_still_creates_the_task():

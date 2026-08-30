@@ -43,7 +43,9 @@ optional extra.
 
 from __future__ import annotations
 
+import builtins
 import datetime
+from unittest import mock
 
 import pytest
 
@@ -100,8 +102,29 @@ def test_ciso8601_is_used_when_installed():
 
 
 def test_the_parser_is_chosen_once_rather_than_per_request():
-    """A per-call import or probe would spend the gain it was added for."""
-    assert callable(converters._parse_datetime)
+    """A per-call import or probe would spend the gain it was added for.
+
+    This asserted `callable(converters._parse_datetime)`, which holds for either
+    parser and equally for one that re-probes for `ciso8601` on every call - the
+    regression the test is named after. The choice is made once, at module level
+    in `converters.py`, so a conversion must import nothing at all.
+    """
+    chosen = converters._parse_datetime
+    imported: list[str] = []
+    real_import = builtins.__import__
+
+    def recording_import(name, *args, **kwargs):
+        imported.append(name)
+        return real_import(name, *args, **kwargs)
+
+    converter = converters.DateTimeConverter()
+    with mock.patch.object(builtins, "__import__", recording_import):
+        for value in ("2026-08-26T12:30:00", "2026-08-26T12:30:00Z"):
+            for _ in range(3):
+                assert converter.match(value)[0] is True
+
+    assert imported == [], f"converting imported {imported}"
+    assert converters._parse_datetime is chosen
 
 
 def test_the_prefilter_captures_the_offset():

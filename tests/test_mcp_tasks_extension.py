@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests._mcp import METHOD_NOT_FOUND, await_tasks
+from tests._mcp import METHOD_NOT_FOUND, await_tasks, task_by_id
 from veloce import Veloce
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.session import MCPSession
@@ -209,7 +209,7 @@ async def test_tasks_update_records_the_responses_on_the_task():
         MODERN_WITH_TASKS,
         session,
     )
-    task = server._tasks.get(task_id)
+    task = task_by_id(server, task_id)
     assert task.input_responses["who"] == {"action": "accept"}
 
 

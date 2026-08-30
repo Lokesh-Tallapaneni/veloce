@@ -345,6 +345,132 @@ class SSEStream(SSEFrames):
         await settled(turns)
 
 
+class PostStream(SSEFrames):
+    """An open streaming `POST` whose client can be dropped mid-call.
+
+    Two modules carried this as a private `_Post`. The scope build and the
+    `receive`/`send` pair were the same in both, and one of them had already
+    grown a second copy of the SSE frame parser before `SSEFrames` took it over.
+
+    Use it as an async context manager; entering waits for the app to send
+    `http.response.start`, so a test is synchronised on the request being served
+    rather than on a hand-counted number of loop turns::
+
+        async with PostStream(app, INIT) as post:
+            assert post.status == 200
+            assert (await post.message())["result"]
+
+    `event()` and `message()` read the stream one frame at a time; `chunks`
+    keeps every body chunk as it arrived, for a test that asserts on the whole
+    stream after `hang_up()` rather than on its framing.
+    """
+
+    def __init__(
+        self,
+        app: Any,
+        body: dict,
+        *,
+        path: str = "/mcp",
+        accept: bytes = b"text/event-stream",
+        name: bytes | None = None,
+        revision: str | None = None,
+    ) -> None:
+        super().__init__()
+        self._app = app
+        self._path = path
+        self._body = json.dumps(body).encode()
+        self._accept = accept
+        # A modern client states its revision and its method in headers as well
+        # as in the body, and the two have to agree, so they are derived here
+        # rather than written out per call.
+        self._standard = [
+            (b"mcp-protocol-version", (revision or MODERN_REVISION).encode()),
+            (b"mcp-method", body["method"].encode()),
+        ]
+        if name is not None:
+            self._standard.append((b"mcp-name", name))
+        self._disconnect = asyncio.Event()
+        self._started = asyncio.Event()
+        self.chunks: list[bytes] = []
+        self.status: int | None = None
+        self.task: asyncio.Task | None = None
+
+    async def __aenter__(self) -> PostStream:
+        self.task = asyncio.ensure_future(self._run())
+        await asyncio.wait_for(self._started.wait(), 5.0)
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        self._disconnect.set()
+        if self.task is not None:
+            self.task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.task
+
+    async def hang_up(self) -> None:
+        """Drop the client end the way a closed browser tab would.
+
+        A dropped connection reaches the app as cancellation of the task serving
+        it, which tears the SSE generator down; the request task then has to be
+        given a turn to notice and release what it held.
+        """
+        self._disconnect.set()
+        if self.task is not None:
+            self.task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.task
+        await settled()
+
+    async def _run(self) -> None:
+        scope = asgi_scope(
+            "POST",
+            self._path,
+            [
+                (b"accept", self._accept),
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(self._body)).encode()),
+                *self._standard,
+            ],
+        )
+        sent = False
+
+        async def receive() -> dict:
+            nonlocal sent
+            if not sent:
+                sent = True
+                return {"type": "http.request", "body": self._body, "more_body": False}
+            await self._disconnect.wait()
+            return {"type": "http.disconnect"}
+
+        async def send(message: dict) -> None:
+            if message["type"] == "http.response.start":
+                self.status = message["status"]
+                self._started.set()
+            elif message["type"] == "http.response.body":
+                chunk = message.get("body", b"")
+                self.chunks.append(chunk)
+                await self._chunks.put(chunk)
+
+        try:
+            await self._app(scope, receive, send)
+        finally:
+            # A refused request that never starts must not hang `__aenter__`.
+            self._started.set()
+
+    async def message(self, timeout: float = 5.0) -> dict:
+        """Return the next JSON-RPC payload carried on the stream."""
+        while True:
+            frame = await self.event(timeout)
+            data = frame.get("data")
+            if data:
+                return json.loads(data)
+
+    async def whole_body(self, timeout: float = 5.0) -> dict:
+        """Return a non-streaming response's single JSON body."""
+        await asyncio.wait_for(asyncio.shield(self.task), timeout)
+        return json.loads(b"".join(self.chunks))
+
+
 async def settled(turns: int = 50) -> None:
     """Give a cancelled stream's cleanup a chance to run.
 
@@ -431,3 +557,25 @@ async def call_tool(app: Veloce, name: str, arguments: dict | None = None) -> di
         MCPSession(),
     )
     return response["result"]
+
+
+def live_tasks(server: MCPServer) -> dict:
+    """The server's live task records, keyed by task id.
+
+    `MCPServer` exposes no public way to observe a task's settlement, so four
+    modules reached into `server._tasks.tasks` at eight sites and all eight
+    broke together on a rename of either name. The walk is defined here instead;
+    adding the seam to the shipped API for a test's benefit is public surface on
+    speculation, which is what this avoids.
+    """
+    return server._tasks.tasks
+
+
+def task_by_id(server: MCPServer, task_id: str):
+    """The server's record for one task id, or `None`."""
+    return server._tasks.get(task_id)
+
+
+def task_runners(server: MCPServer) -> list:
+    """Every live task's runner, for a test awaiting settlement."""
+    return [task.runner for task in live_tasks(server).values() if task.runner is not None]

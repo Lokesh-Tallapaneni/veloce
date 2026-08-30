@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from tests._mcp import INVALID_PARAMS, RESOURCE_NOT_FOUND, await_tasks, call
+from tests._mcp import INVALID_PARAMS, RESOURCE_NOT_FOUND, await_tasks, call, live_tasks
 from veloce import Veloce
 from veloce.contrib.mcp import MCPTask, TaskRegistry, TasksCapability
 from veloce.contrib.mcp.server import MCPServer, _notifier_var
@@ -106,7 +106,7 @@ def test_task_augmented_call_returns_create_task_result():
     resp = asyncio.run(run())
     result = resp["result"]
     task = result["task"]
-    assert task["taskId"] in server._tasks.tasks
+    assert task["taskId"] in live_tasks(server)
     assert task["status"] == STATUS_WORKING
     assert result["_meta"]["io.modelcontextprotocol/model-immediate-response"] is True
 

@@ -8,7 +8,7 @@ import logging
 import pytest
 
 from tests.conftest import make_request
-from veloce import Response
+from veloce import Response, Veloce
 from veloce._constants import HEADER_X_REQUEST_ID
 from veloce.http.request import Request
 from veloce.middleware.logging import LoggingMiddleware, RequestIDMiddleware
@@ -225,19 +225,34 @@ async def test_request_id_generated_when_header_empty():
 
 
 async def test_logging_middleware_does_not_leak_on_handler_exception(caplog):
-    """A handler that raises must not leave state behind in the
-    middleware. The fix moves the start-time onto `request._state`,
-    whose lifetime ends with the request — so even on a raise, nothing
-    leaks at the middleware level."""
-    mw = LoggingMiddleware()
-    req = Request(method="GET", path="/x", query_string="", headers={}, body=b"")
-    await mw.process_request(req)
+    """A handler that raises must not leave state behind on the middleware.
 
-    # The middleware no longer carries a per-request dict at all. The
-    # start time lives on the request itself, which is GC-able once the
-    # request goes out of scope.
-    assert not hasattr(mw, "_request_times")
-    assert "__veloce_logging_start" in req.state
+    The start time lives on `request._state`, whose lifetime ends with the
+    request, so even on a raise nothing accumulates at the middleware level.
+
+    This never raised - it called `process_request` and stopped - so the path
+    the name promises went untested, and `process_response`, where the key is
+    popped, was never reached. `assert not hasattr(mw, "_request_times")` named
+    only the attribute the original bug used, so a reimplementation holding a
+    per-request dict under any other name passed unchanged. It now drives three
+    failing requests end to end and compares the middleware's whole instance
+    dict, which no rename gets past.
+    """
+    mw = LoggingMiddleware()
+    app = Veloce(openapi_url=None)
+    app.add_middleware(mw)
+
+    @app.get("/boom")
+    async def boom():
+        raise RuntimeError("handler failed")
+
+    with caplog.at_level(logging.INFO):
+        before = dict(vars(mw))
+        for _ in range(3):
+            response = await app.handle_request(make_request(path="/boom"))
+            assert response.status_code == 500
+
+        assert vars(mw) == before
 
 
 async def test_logging_middleware_durations_are_per_request():

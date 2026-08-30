@@ -18,6 +18,7 @@ from collections.abc import Callable
 
 import orjson
 
+from tests._mcp import live_tasks
 from veloce import Veloce
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.transports.stdio import StdioTransport
@@ -108,7 +109,7 @@ async def test_a_never_settling_task_is_reclaimed_on_eof():
             },
         ]
     )
-    assert server._tasks.tasks == {}, "a task outlived the connection that created it"
+    assert live_tasks(server) == {}, "a task outlived the connection that created it"
 
 
 async def test_the_runner_is_cancelled_not_merely_dropped():
@@ -137,7 +138,7 @@ async def test_the_runner_is_cancelled_not_merely_dropped():
             break
         await asyncio.sleep(0)
     assert all(runner.cancelled() for runner in running)
-    assert server._tasks.tasks == {}
+    assert live_tasks(server) == {}
 
 
 async def test_a_connection_with_no_tasks_closes_cleanly():
@@ -162,7 +163,7 @@ async def test_a_connection_with_no_tasks_closes_cleanly():
     assert 2 in replies, f"the call was never answered: {list(replies)}"
     assert "error" not in replies[2], replies[2]
     assert "ok" in orjson.dumps(replies[2]["result"]).decode()
-    assert server._tasks.tasks == {}
+    assert live_tasks(server) == {}
 
 
 async def test_the_connection_sink_is_still_unregistered():

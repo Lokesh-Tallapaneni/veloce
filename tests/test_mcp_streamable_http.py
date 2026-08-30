@@ -20,6 +20,8 @@ from tests._mcp import (
     PARSE_ERROR,
     RESOURCE_NOT_FOUND,
     Pipe,
+    live_tasks,
+    task_by_id,
 )
 from tests._mcp_shared import (
     _drive_stream,
@@ -613,14 +615,14 @@ async def test_evict_session_reclaims_never_settling_task():
     )
     task_id = created["result"]["task"]["taskId"]
     await asyncio.wait_for(started.wait(), timeout=1)
-    task = server._tasks.get(task_id)
+    task = task_by_id(server, task_id)
     assert task is not None and not task.is_terminal()
     runner = task.runner
 
     # Evicting the session reclaims its task: the runner is cancelled and the
     # task is dropped from the store, so a stuck handler cannot pin memory.
     server.evict_session(session)
-    assert server._tasks.get(task_id) is None
+    assert task_by_id(server, task_id) is None
     with pytest.raises(asyncio.CancelledError):
         await runner
     assert runner.cancelled()
@@ -728,11 +730,11 @@ async def test_stdio_task_augmented_tool_can_sample():
                     )
             await asyncio.sleep(0)
             return b""
-        for pending in list(server._tasks.tasks.values()):
+        for pending in list(live_tasks(server).values()):
             if pending.runner is not None:
                 with contextlib.suppress(Exception):
                     await pending.runner
-        captured.extend(server._tasks.tasks.values())
+        captured.extend(live_tasks(server).values())
         return None
 
     pipe.transport._read_line = _answer_then_eof

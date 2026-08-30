@@ -26,12 +26,10 @@ the SSE generator down.
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import json
 
 import pytest
 
-from tests._mcp import HANDSHAKE_REVISION, asgi_scope, settled
+from tests._mcp import HANDSHAKE_REVISION, PostStream
 from veloce import MCPContext, Veloce
 
 _INIT = {
@@ -51,84 +49,6 @@ _CALL = {
     "method": "tools/call",
     "params": {"name": "chatty", "arguments": {}},
 }
-
-
-class _Post:
-    """An open streaming `POST` whose client can be dropped mid-call.
-
-    A dropped connection reaches the app as cancellation of the task serving it,
-    which is what tears the SSE generator down - the condition this module is
-    about. Modelled on the harness in `test_mcp_listen_over_http.py`.
-    """
-
-    def __init__(self, app: Veloce, body: dict) -> None:
-        self._app = app
-        self._body = json.dumps(body).encode()
-        self._disconnect = asyncio.Event()
-        # Set when the app sends `http.response.start`, so entering the context
-        # waits on the request actually being served rather than on a
-        # hand-counted number of loop turns - one extra `await` anywhere in the
-        # transport made that count insufficient, and it failed as an
-        # unexplained empty result somewhere later.
-        self._started = asyncio.Event()
-        self.chunks: list[bytes] = []
-        self.status: int | None = None
-        self.task: asyncio.Task | None = None
-
-    async def __aenter__(self) -> _Post:
-        self.task = asyncio.ensure_future(self._run())
-        await asyncio.wait_for(self._started.wait(), 5.0)
-        return self
-
-    async def __aexit__(self, *exc: object) -> None:
-        self._disconnect.set()
-        if self.task is not None:
-            self.task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self.task
-
-    async def hang_up(self) -> None:
-        """Drop the client end the way a closed browser tab would."""
-        self._disconnect.set()
-        if self.task is not None:
-            self.task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self.task
-        await settled()
-
-    async def _run(self) -> None:
-        scope = asgi_scope(
-            "POST",
-            "/mcp",
-            [
-                # The header that selects the SSE branch at all. With
-                # `application/json` here the whole subject of this module is
-                # unreachable, which is what made the previous tests vacuous.
-                (b"accept", b"text/event-stream"),
-                (b"content-type", b"application/json"),
-                (b"content-length", str(len(self._body)).encode()),
-                (b"mcp-protocol-version", HANDSHAKE_REVISION.encode()),
-                (b"mcp-method", json.loads(self._body)["method"].encode()),
-            ],
-        )
-        sent = False
-
-        async def receive() -> dict:
-            nonlocal sent
-            if not sent:
-                sent = True
-                return {"type": "http.request", "body": self._body, "more_body": False}
-            await self._disconnect.wait()
-            return {"type": "http.disconnect"}
-
-        async def send(message: dict) -> None:
-            if message["type"] == "http.response.start":
-                self.status = message["status"]
-                self._started.set()
-            elif message["type"] == "http.response.body":
-                self.chunks.append(message.get("body", b""))
-
-        await self._app(scope, receive, send)
 
 
 class _Recorder:
@@ -178,11 +98,11 @@ async def _initialise(app: Veloce) -> None:
     assertion further on. Entering the context now waits for the status, so
     there is one to assert.
     """
-    async with _Post(app, _INIT) as post:
+    async with PostStream(app, _INIT, revision=HANDSHAKE_REVISION) as post:
         assert post.status == 200, post.chunks
 
 
-async def _pump_until(post: _Post, needle: str, turns: int = 2000) -> str:
+async def _pump_until(post: PostStream, needle: str, turns: int = 2000) -> str:
     """Give the loop turns until `needle` appears in the stream, then return it.
 
     Waiting on `post.chunks` being non-empty is not enough: the stream opens with
@@ -206,7 +126,7 @@ async def test_the_call_still_completes_after_the_client_drops():
     app = _app(finished, gate)
     await _initialise(app)
 
-    async with _Post(app, _CALL) as post:
+    async with PostStream(app, _CALL, revision=HANDSHAKE_REVISION) as post:
         await post.hang_up()
         gate.set()
         for _ in range(200):
@@ -223,7 +143,7 @@ async def test_the_call_completes_even_though_nothing_reads_the_stream():
     app = _app(finished, gate, steps=50)
     await _initialise(app)
 
-    async with _Post(app, _CALL) as post:
+    async with PostStream(app, _CALL, revision=HANDSHAKE_REVISION) as post:
         await post.hang_up()
         gate.set()
         for _ in range(400):
@@ -249,7 +169,7 @@ async def test_notifications_are_not_queued_after_the_client_drops(monkeypatch):
     await _initialise(app)
 
     recorder = _Recorder()
-    async with _Post(app, _CALL) as post:
+    async with PostStream(app, _CALL, revision=HANDSHAKE_REVISION) as post:
         await post.hang_up()
         recorder.install(monkeypatch)
         gate.set()
@@ -273,7 +193,7 @@ async def test_more_notifications_after_teardown_still_queue_nothing(monkeypatch
     await _initialise(app)
 
     recorder = _Recorder()
-    async with _Post(app, _CALL) as post:
+    async with PostStream(app, _CALL, revision=HANDSHAKE_REVISION) as post:
         await post.hang_up()
         recorder.install(monkeypatch)
         gate.set()
@@ -298,7 +218,7 @@ async def test_the_response_still_reaches_a_client_that_stayed():
     app = _app(finished, gate, steps=3)
     await _initialise(app)
 
-    async with _Post(app, _CALL) as post:
+    async with PostStream(app, _CALL, revision=HANDSHAKE_REVISION) as post:
         gate.set()
         payload = await _pump_until(post, "ok")
 
@@ -313,7 +233,7 @@ async def test_a_client_that_stayed_receives_the_notifications():
     app = _app(finished, gate, steps=3)
     await _initialise(app)
 
-    async with _Post(app, _CALL) as post:
+    async with PostStream(app, _CALL, revision=HANDSHAKE_REVISION) as post:
         gate.set()
         payload = await _pump_until(post, "step 0")
 
@@ -331,7 +251,7 @@ async def test_the_stream_uses_the_sse_content_type():
     app = _app(finished, gate, steps=1)
     await _initialise(app)
 
-    async with _Post(app, _CALL) as post:
+    async with PostStream(app, _CALL, revision=HANDSHAKE_REVISION) as post:
         gate.set()
         payload = await _pump_until(post, "data:")
 
@@ -345,7 +265,7 @@ async def test_the_tool_result_is_delivered_whatever_the_chattiness(steps):
     app = _app(finished, gate, steps=steps)
     await _initialise(app)
 
-    async with _Post(app, _CALL) as post:
+    async with PostStream(app, _CALL, revision=HANDSHAKE_REVISION) as post:
         gate.set()
         payload = await _pump_until(post, "ok")
 

@@ -15,12 +15,10 @@ test client's whole-response reader cannot observe it.
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import json
 
 import pytest
 
-from tests._mcp import INVALID_PARAMS, MODERN_REVISION, SSEFrames, asgi_scope
+from tests._mcp import INVALID_PARAMS, MODERN_REVISION, PostStream
 from veloce import Veloce
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.subscriptions import META_SUBSCRIPTION_ID
@@ -67,114 +65,13 @@ def _listen(notifications: dict, request_id: int = 1) -> dict:
     }
 
 
-class _Post(SSEFrames):
-    """An open streaming `POST`, with its SSE payloads readable one at a time.
-
-    The chunk buffer and the frame parser come from `SSEFrames`; both used to be
-    written out here, byte-identical to `SSEStream`'s copy.
-    """
-
-    def __init__(
-        self,
-        app: Veloce,
-        body: dict,
-        accept: bytes = b"text/event-stream",
-        name: bytes | None = None,
-    ) -> None:
-        super().__init__()
-        self._app = app
-        self._body = json.dumps(body).encode()
-        self._accept = accept
-        # A modern client states its revision and its method in headers as well
-        # as in the body, and the two have to agree, so they are derived here
-        # rather than written out per call.
-        self._standard = [
-            (b"mcp-protocol-version", MODERN.encode()),
-            (b"mcp-method", body["method"].encode()),
-        ]
-        if name is not None:
-            self._standard.append((b"mcp-name", name))
-        self._disconnect = asyncio.Event()
-        self.status: int | None = None
-        self.task: asyncio.Task | None = None
-
-    async def __aenter__(self) -> _Post:
-        self.task = asyncio.ensure_future(self._run())
-        return self
-
-    async def __aexit__(self, *exc: object) -> None:
-        self._disconnect.set()
-        if self.task is not None:
-            self.task.cancel()
-
-    async def hang_up(self) -> None:
-        """Drop the client end the way a closed browser tab would.
-
-        A dropped connection reaches the app as cancellation of the task serving
-        it, which tears the SSE generator down; the request task then has to be
-        given a turn to notice and release what it held.
-        """
-        self._disconnect.set()
-        if self.task is not None:
-            self.task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self.task
-        for _ in range(3):
-            await asyncio.sleep(0)
-
-    async def _run(self) -> None:
-        scope = asgi_scope(
-            "POST",
-            "/mcp",
-            [
-                (b"accept", self._accept),
-                (b"content-type", b"application/json"),
-                (b"content-length", str(len(self._body)).encode()),
-                *self._standard,
-            ],
-        )
-        sent = False
-
-        async def receive() -> dict:
-            nonlocal sent
-            if not sent:
-                sent = True
-                return {"type": "http.request", "body": self._body, "more_body": False}
-            await self._disconnect.wait()
-            return {"type": "http.disconnect"}
-
-        async def send(message: dict) -> None:
-            if message["type"] == "http.response.start":
-                self.status = message["status"]
-            elif message["type"] == "http.response.body":
-                await self._chunks.put(message.get("body", b""))
-
-        await self._app(scope, receive, send)
-
-    async def message(self, timeout: float = 5.0) -> dict:
-        """Return the next JSON-RPC payload carried on the stream."""
-        while True:
-            frame = await self.event(timeout)
-            data = frame.get("data")
-            if data:
-                return json.loads(data)
-
-    async def whole_body(self, timeout: float = 5.0) -> dict:
-        """Return a non-streaming response's single JSON body."""
-        await asyncio.wait_for(asyncio.shield(self.task), timeout)
-        body = b""
-        while not self._chunks.empty():
-            body += self._chunks.get_nowait()
-        return json.loads(body)
-
-
 # ── The stream opens at all ──────────────────────────────────────────
 
 
 async def test_a_listen_is_acknowledged_on_the_default_deployment():
     """The defect: this was refused as needing a stateful connection."""
     app, _ = _app()
-    async with _Post(app, _listen({"toolsListChanged": True})) as stream:
+    async with PostStream(app, _listen({"toolsListChanged": True})) as stream:
         ack = await stream.message()
         assert ack["method"] == "notifications/subscriptions/acknowledged"
         assert ack["params"]["_meta"][META_SUBSCRIPTION_ID] == 1
@@ -184,7 +81,7 @@ async def test_a_listen_is_acknowledged_on_the_default_deployment():
 async def test_the_acknowledgement_reports_only_what_is_honoured():
     """An unknown topic is dropped rather than echoed back as agreed."""
     app, _ = _app()
-    async with _Post(app, _listen({"toolsListChanged": True, "nonsense": True})) as stream:
+    async with PostStream(app, _listen({"toolsListChanged": True, "nonsense": True})) as stream:
         ack = await stream.message()
         assert ack["params"]["notifications"] == {"toolsListChanged": True}
 
@@ -195,7 +92,7 @@ async def test_the_acknowledgement_reports_only_what_is_honoured():
 async def test_the_stream_survives_its_acknowledgement_and_delivers():
     """The second half: the runner used to end the stream on the deferral."""
     app, server = _app()
-    async with _Post(app, _listen({"toolsListChanged": True})) as stream:
+    async with PostStream(app, _listen({"toolsListChanged": True})) as stream:
         await stream.message()  # the acknowledgement
         await server.notify_tools_list_changed()
         pushed = await stream.message()
@@ -206,7 +103,7 @@ async def test_the_stream_survives_its_acknowledgement_and_delivers():
 async def test_the_stream_keeps_delivering_more_than_once():
     """A subscription is long-lived, not a one-shot."""
     app, server = _app()
-    async with _Post(app, _listen({"toolsListChanged": True})) as stream:
+    async with PostStream(app, _listen({"toolsListChanged": True})) as stream:
         await stream.message()
         for _ in range(3):
             await server.notify_tools_list_changed()
@@ -217,7 +114,7 @@ async def test_a_resource_update_reaches_a_uri_subscriber():
     """The other half of the filter: a named resource, not a topic."""
     app, server = _app()
     body = _listen({"resourceSubscriptions": ["res://one"]}, request_id=4)
-    async with _Post(app, body) as stream:
+    async with PostStream(app, body) as stream:
         await stream.message()
         await server.notify_resource_updated("res://one")
         pushed = await stream.message()
@@ -228,7 +125,7 @@ async def test_a_resource_update_reaches_a_uri_subscriber():
 async def test_an_unrequested_topic_is_not_delivered():
     """Holding the stream open must not widen what it agreed to receive."""
     app, server = _app()
-    async with _Post(app, _listen({"toolsListChanged": True})) as stream:
+    async with PostStream(app, _listen({"toolsListChanged": True})) as stream:
         await stream.message()
         await server.notify_prompts_list_changed()
         await server.notify_tools_list_changed()
@@ -243,7 +140,7 @@ async def test_an_unrequested_topic_is_not_delivered():
 async def test_the_connection_is_released_when_the_client_hangs_up():
     """A vanished client must not leave its registration behind."""
     app, server = _app()
-    async with _Post(app, _listen({"toolsListChanged": True})) as stream:
+    async with PostStream(app, _listen({"toolsListChanged": True})) as stream:
         await stream.message()
         assert server._connections is not None
         assert server._connections._sinks
@@ -254,7 +151,7 @@ async def test_the_connection_is_released_when_the_client_hangs_up():
 async def test_a_hung_up_stream_receives_nothing_further():
     """The fan-out must not walk a connection whose transport is gone."""
     app, server = _app()
-    async with _Post(app, _listen({"toolsListChanged": True})) as stream:
+    async with PostStream(app, _listen({"toolsListChanged": True})) as stream:
         await stream.message()
         await stream.hang_up()
         await server.notify_tools_list_changed()
@@ -269,7 +166,7 @@ async def test_a_plain_json_post_cannot_open_a_stream():
     """Without `Accept: text/event-stream` there is no stream to deliver on."""
     app, _ = _app()
     body = _listen({"toolsListChanged": True})
-    async with _Post(app, body, accept=b"application/json") as stream:
+    async with PostStream(app, body, accept=b"application/json") as stream:
         payload = await stream.whole_body()
         assert payload["error"]["code"] == INVALID_PARAMS
         assert "open stream" in payload["error"]["message"]
@@ -284,7 +181,7 @@ async def test_an_ordinary_call_still_ends_its_stream():
         "method": "tools/call",
         "params": {"name": "a_tool", "_meta": _META},
     }
-    async with _Post(app, body, name=b"a_tool") as stream:
+    async with PostStream(app, body, name=b"a_tool") as stream:
         reply = await stream.message()
         assert reply["id"] == 3
         # The stream ends on its own rather than hanging: the task completes

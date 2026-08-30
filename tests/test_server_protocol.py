@@ -29,6 +29,8 @@ from veloce.serving.protocol import (
     HttpProtocol,
 )
 
+# ── Request timers ─────────────────────────────────────────────────
+
 
 def test_request_timer_arms_on_first_data():
     """The slowloris guard arms once a request's bytes begin arriving, and
@@ -70,6 +72,9 @@ def test_request_timeout_emits_408_and_closes():
         close_drained(loop)
 
 
+# ── Oversize request-line and header limits ────────────────────────
+
+
 def test_oversized_url_emits_414_and_closes():
     """A request-line URL longer than MAX_URL_SIZE is rejected with 414."""
     loop = asyncio.new_event_loop()
@@ -82,7 +87,9 @@ def test_oversized_url_emits_414_and_closes():
         proto.data_received(b"GET " + long_path + b" HTTP/1.1\r\nHost: x\r\n\r\n")
 
         emitted = b"".join(transport.writes)
-        assert b"414" in emitted
+        # `startswith` rather than `in`: the status must be the status line, not
+        # a substring anywhere in the response.
+        assert emitted.startswith(b"HTTP/1.1 414 "), emitted[:64]
         assert b"URI Too Long" in emitted
         assert b"Connection: close" in emitted
         assert b"Content-Length: 0" in emitted
@@ -104,7 +111,7 @@ def test_oversized_single_header_emits_431_and_closes():
         proto.data_received(b"GET / HTTP/1.1\r\nHost: x\r\nX-Huge: " + big_value + b"\r\n\r\n")
 
         emitted = b"".join(transport.writes)
-        assert b"431" in emitted
+        assert emitted.startswith(b"HTTP/1.1 431 "), emitted[:64]
         assert b"Request Header Fields Too Large" in emitted
         assert b"Connection: close" in emitted
         assert transport.closed is True
@@ -130,7 +137,7 @@ def test_cumulative_headers_exceeds_total_cap_emits_431():
         proto.data_received(b"GET / HTTP/1.1\r\nHost: x\r\n" + headers + b"\r\n")
 
         emitted = b"".join(transport.writes)
-        assert b"431" in emitted
+        assert emitted.startswith(b"HTTP/1.1 431 "), emitted[:64]
         assert transport.closed is True
         assert proto._header_bytes_total <= MAX_TOTAL_HEADERS_SIZE
     finally:
@@ -193,6 +200,9 @@ def test_connection_lost_cancels_request_timer():
         assert proto._request_timer is None
     finally:
         close_drained(loop)
+
+
+# ── Pipelining and request order ───────────────────────────────────
 
 
 def test_pipelined_responses_preserve_request_order():
@@ -385,6 +395,9 @@ def test_split_packet_followup_does_not_double_arm_timers():
         close_drained(loop)
 
 
+# ── Keep-alive and connection close ────────────────────────────────
+
+
 def test_single_request_dispatches_and_keeps_alive():
     """A single request is served and, being keep-alive, leaves the connection
     open with the server loop finished and the queue drained."""
@@ -542,6 +555,9 @@ def test_connection_lost_mid_pipeline_cancels_server_loop():
         assert server_loop.done()
     finally:
         close_drained(loop)
+
+
+# ── Streaming bodies and draining ──────────────────────────────────
 
 
 def test_streaming_handler_receives_chunks_as_fed():
@@ -734,6 +750,9 @@ def test_connection_lost_unblocks_a_drain_awaiting_eof():
         close_drained(loop)
 
 
+# ── Body size limits ───────────────────────────────────────────────
+
+
 def test_oversized_streamed_body_rejected_413_mid_stream():
     """An over-limit body is refused 413 once the streamed running total
     crosses MAX_CONTENT_LENGTH — before the whole body is read — and the
@@ -840,6 +859,9 @@ def test_slowloris_timer_arms_across_body_window():
                 loop.run_until_complete(server_loop)
     finally:
         close_drained(loop)
+
+
+# ── Backpressure: pause and resume ─────────────────────────────────
 
 
 def test_slow_consumer_triggers_pause_then_resume_across_reads():
@@ -1255,6 +1277,9 @@ def _reset_connection_counter() -> None:
         HttpProtocol._active_connections = 0
 
 
+# ── The connection cap ─────────────────────────────────────────────
+
+
 def test_connection_limit_emits_503():
     """When the cap is reached, additional connections receive 503 and close."""
     _reset_connection_counter()
@@ -1320,6 +1345,9 @@ def test_connection_limit_releases_on_disconnect():
         proto2.connection_lost(None)
         _reset_connection_counter()
         close_drained(loop)
+
+
+# ── The serve loop's exit ──────────────────────────────────────────
 
 
 def test_serve_loop_stops_at_boundary_when_keep_serving_false():
@@ -1437,6 +1465,9 @@ def test_connection_count_is_thread_safe():
                 p.connection_lost(None)
         _reset_connection_counter()
         close_drained(loop)
+
+
+# ── Expect: 100-continue ───────────────────────────────────────────
 
 
 def test_expect_100_continue_emits_interim_before_response():
@@ -1559,6 +1590,9 @@ def test_expect_100_continue_over_limit_yields_413_not_interim():
         close_drained(loop)
 
 
+# ── Timeouts from config ───────────────────────────────────────────
+
+
 def test_request_timeout_honours_config_override():
     """`REQUEST_TIMEOUT` in app.config shortens the slowloris read budget so a
     half-sent request is dropped with 408 sooner than the 30s default."""
@@ -1619,67 +1653,3 @@ def test_timeout_defaults_unchanged():
     defaults = Config.default_config()
     assert defaults["KEEP_ALIVE_TIMEOUT"] == 75
     assert defaults["REQUEST_TIMEOUT"] == 30
-
-
-# ── Oversize request-line and header limits ──────────────────────────
-#
-# Moved here from `test_app_protocol_signals_e2e.py`, a module named for a fix
-# batch rather than a subject. `_FakeTransport` already lives in this module.
-
-
-def test_protocol_oversize_url_emits_414():
-    loop = asyncio.new_event_loop()
-    try:
-        proto = HttpProtocol(Veloce(openapi_url=None), loop)
-        transport = _FakeTransport()
-        proto.connection_made(transport)
-
-        long_path = b"/" + (b"a" * (16 * 1024))  # 16 KiB
-        assert len(long_path) > MAX_URL_SIZE
-        proto.data_received(b"GET " + long_path + b" HTTP/1.1\r\nHost: x\r\n\r\n")
-
-        emitted = b"".join(transport.writes)
-        assert emitted.startswith(b"HTTP/1.1 414 "), emitted[:64]
-        assert transport.closed is True
-    finally:
-        close_drained(loop)
-
-
-def test_protocol_oversize_single_header_emits_431():
-    loop = asyncio.new_event_loop()
-    try:
-        proto = HttpProtocol(Veloce(openapi_url=None), loop)
-        transport = _FakeTransport()
-        proto.connection_made(transport)
-
-        big_value = b"v" * (MAX_HEADER_SIZE + 256)  # > 8 KB
-        proto.data_received(b"GET / HTTP/1.1\r\nHost: x\r\nX-Huge: " + big_value + b"\r\n\r\n")
-
-        emitted = b"".join(transport.writes)
-        assert emitted.startswith(b"HTTP/1.1 431 "), emitted[:64]
-        assert transport.closed is True
-    finally:
-        close_drained(loop)
-
-
-def test_protocol_cumulative_headers_emit_431():
-    loop = asyncio.new_event_loop()
-    try:
-        proto = HttpProtocol(Veloce(openapi_url=None), loop)
-        transport = _FakeTransport()
-        proto.connection_made(transport)
-
-        # Each header ~1 KB; need > MAX_TOTAL_HEADERS_SIZE (64 KB) cumulative.
-        per_header = b"v" * 1024
-        chunks = [b"GET / HTTP/1.1\r\nHost: x\r\n"]
-        n_headers = (MAX_TOTAL_HEADERS_SIZE // 1024) + 8
-        for i in range(n_headers):
-            chunks.append(b"X-Pad-%d: " % i + per_header + b"\r\n")
-        chunks.append(b"\r\n")
-        proto.data_received(b"".join(chunks))
-
-        emitted = b"".join(transport.writes)
-        assert emitted.startswith(b"HTTP/1.1 431 "), emitted[:64]
-        assert transport.closed is True
-    finally:
-        close_drained(loop)
