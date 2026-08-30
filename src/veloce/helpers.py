@@ -564,9 +564,27 @@ def jsonify(*args: Any, **kwargs: Any) -> JSONResponse:
 # ── make_response() ───────────────────────────────────────
 
 
+def _apply_to_response(
+    response: Response, status_code: int | None, headers: dict[str, str] | None
+) -> Response:
+    """Overlay an explicit status and headers onto an existing response.
+
+    Shared by the two spellings that reach `make_response` carrying a `Response`
+    - `make_response(resp, 403)` and `make_response((resp, 403))` - which
+    otherwise applied the overlay on one path and not the other, so the same
+    intent answered 403 or 200 depending on how it was written.
+    """
+    if status_code is not None:
+        response.status_code = status_code
+    if headers:
+        response.headers.update(headers)
+    response._encoded = None
+    return response
+
+
 def make_response(
     body: Any = b"",
-    status_code: int = HTTP_200_OK,
+    status_code: int | None = None,
     headers: dict[str, str] | None = None,
     content_type: str | None = None,
 ) -> Response:
@@ -579,11 +597,18 @@ def make_response(
     one value cannot answer differently depending on which entry point a caller
     reached for.
 
+    An omitted `status_code` means 200 for a plain body, and leaves an existing
+    `Response`'s own status alone - `make_response(resp)` is a pass-through, while
+    `make_response(resp, 403)` sets 403. That is why the default is `None` rather
+    than `200`: the two cases are distinguishable only if "unsupplied" has its own
+    value.
+
     Usage::
 
         resp = make_response("Hello", 200)
         resp = make_response({"data": True}, 201)
         resp = make_response((b"raw", 201))
+        resp = make_response(jsonify({"error": "forbidden"}), 403)
     """
     if isinstance(body, tuple):
         unpacked = _unpack_response_tuple(body)
@@ -596,17 +621,16 @@ def make_response(
             # A `Response` inside the tuple takes the tuple's status and headers,
             # the way dispatch applies them to a handler's `return resp, 404`.
             if isinstance(inner, Response):
-                inner.status_code = status_code
-                if headers:
-                    inner.headers.update(headers)
-                inner._encoded = None
-                return inner
+                return _apply_to_response(inner, status_code, headers)
             return make_response(inner, status_code, headers, content_type)
-    # A `Response` passes through untouched. Without this it fell to the JSON
-    # branch below and was encoded via its `__str__`, so the body became the
-    # object's repr - `b'"<veloce.http.response.Response object at 0x...>"'`.
+    # A `Response` is returned as itself, carrying any status and headers passed
+    # beside it. Without this branch it fell to the JSON one below and was encoded
+    # via its `__str__`, so the body became the object's repr -
+    # `b'"<veloce.http.response.Response object at 0x...>"'`.
     if isinstance(body, Response):
-        return body
+        return _apply_to_response(body, status_code, headers)
+    if status_code is None:
+        status_code = HTTP_200_OK
     if isinstance(body, (dict, list)):
         return JSONResponse(body, status_code=status_code, headers=headers)
     if isinstance(body, (str, bytes)):

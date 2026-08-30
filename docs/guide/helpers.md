@@ -245,9 +245,19 @@ async def created():
     return make_response({"id": 1}, 201)
 ```
 
-The signature is `make_response(body=b"", status_code=200, headers=None,
+The signature is `make_response(body=b"", status_code=None, headers=None,
 content_type=None)`. A Pydantic model (anything with `model_dump`) is
 serialised to JSON.
+
+An omitted `status_code` means `200` for a plain body, and leaves an existing
+`Response` alone: `make_response(resp)` passes it straight through, while
+`make_response(resp, 403)` sets the status on it.
+
+```python
+@app.get("/forbidden")
+async def forbidden():
+    return make_response(jsonify({"error": "forbidden"}), 403)
+```
 
 A tuple body is unpacked as `(body, status)`, `(body, headers)` or
 `(body, status, headers)` - the same shapes a handler may return, read from the
