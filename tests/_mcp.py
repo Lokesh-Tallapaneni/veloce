@@ -232,6 +232,18 @@ class SSEStream:
             await asyncio.sleep(0)
 
 
+async def await_tasks(server: MCPServer) -> None:
+    """Await every still-running task runner so the caller sees settled state.
+
+    The deterministic alternative to polling `tasks/get` behind a bounded sleep
+    loop: it finishes as soon as the runners do, and it cannot exhaust its
+    budget on a loaded machine and assert on a status that is merely late.
+    """
+    for runner in [t.runner for t in server._tasks.tasks.values() if t.runner is not None]:
+        with contextlib.suppress(asyncio.CancelledError):
+            await runner
+
+
 async def call(server: MCPServer, method: str, params: dict | None = None, *, id: int = 1) -> Any:
     """Dispatch one request through `handle_message` and return its `result`.
 

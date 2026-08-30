@@ -8,11 +8,9 @@ here rather than left to review.
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 
-from tests._mcp import call, call_error
+from tests._mcp import await_tasks, call, call_error
 from veloce import Principal, Veloce
 from veloce.contrib.mcp.context import MCPContext, _in_task_var
 from veloce.contrib.mcp.server import MCPServer
@@ -350,7 +348,8 @@ async def test_a_task_reports_its_handle_and_the_call_that_created_it():
         )
         return {"ok": True}
 
-    response = await MCPServer(app).handle_message(
+    server = MCPServer(app)
+    response = await server.handle_message(
         {
             "jsonrpc": "2.0",
             "id": 7,
@@ -359,10 +358,7 @@ async def test_a_task_reports_its_handle_and_the_call_that_created_it():
         },
         MCPSession(),
     )
-    for _ in range(100):
-        await asyncio.sleep(0.01)
-        if seen:
-            break
+    await await_tasks(server)
 
     handle = response["result"]["task"]["taskId"]
     assert seen["task_id"] == handle

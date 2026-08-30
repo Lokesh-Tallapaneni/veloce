@@ -9,10 +9,9 @@ revision keeps everything it had.
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 
+from tests._mcp import await_tasks
 from veloce import Veloce
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.session import MCPSession
@@ -174,11 +173,8 @@ async def test_a_completed_task_carries_its_result_when_polled():
     session = MCPSession()
     created = await _create(server, MODERN_WITH_TASKS, session)
     task_id = created["result"]["task"]["taskId"]
-    for _ in range(50):
-        await asyncio.sleep(0.01)
-        polled = await _send(server, "tasks/get", {"taskId": task_id}, MODERN_WITH_TASKS, session)
-        if polled["result"]["status"] == "completed":
-            break
+    await await_tasks(server)
+    polled = await _send(server, "tasks/get", {"taskId": task_id}, MODERN_WITH_TASKS, session)
     assert polled["result"]["status"] == "completed"
     assert "42" in str(polled["result"]["result"])
 

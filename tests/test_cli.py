@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 import textwrap
 
@@ -769,6 +770,37 @@ def test_builtin_command_names_introspection():
 
 
 # -- new / generate scaffolding ------------------------------------
+
+
+def _argument_help(command: str, dest: str) -> str:
+    """The help text `build_parser` gives `command`'s `dest` argument."""
+    sub = build_parser()._subparsers._group_actions[0]  # type: ignore[union-attr]
+    for action in sub.choices[command]._actions:
+        if action.dest == dest:
+            return action.help or ""
+    raise AssertionError(f"{command!r} has no {dest!r} argument")
+
+
+def _names_advertised(help_text: str) -> set[str]:
+    """The names a `... : a, b, or c (default: a).` help string lists."""
+    listing = help_text.split(":", 1)[1].split("(", 1)[0]
+    return {part.strip() for part in re.split(r",|\bor\b|\.", listing) if part.strip()}
+
+
+def test_new_template_help_matches_the_template_registry():
+    # The `--template` help names the templates in prose while
+    # `PROJECT_TEMPLATES` is what `veloce new` actually accepts. Nothing else
+    # ties the two together, so a template added to (or dropped from) the
+    # registry would otherwise leave the CLI advertising a stale list.
+    from veloce._scaffold import PROJECT_TEMPLATE_NAMES
+
+    assert _names_advertised(_argument_help("new", "template")) == set(PROJECT_TEMPLATE_NAMES)
+
+
+def test_generate_kind_help_matches_the_generator_registry():
+    from veloce._scaffold import GENERATOR_KINDS
+
+    assert _names_advertised(_argument_help("generate", "kind")) == set(GENERATOR_KINDS)
 
 
 def test_new_minimal_creates_project(tmp_path):

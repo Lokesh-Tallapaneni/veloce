@@ -73,6 +73,38 @@ def test_abort_with_detail():
     assert exc_info.value.detail == "Forbidden"
 
 
+def test_abort_honours_the_bound_apps_custom_mapping():
+    """`app.aborter(404)` is documented as equivalent to `abort(404)`.
+
+    The defect: `abort()` re-implemented the lookup without the mapping, so an
+    app that registered a custom class for a code got it from `app.aborter`
+    and silently did not get it from the `abort()` every example teaches.
+    """
+
+    class MyNotFound(NotFound):
+        pass
+
+    app = Veloce(openapi_url=None)
+    app.aborter = Aborter(extra_mapping={404: MyNotFound})
+    with app.app_context(), pytest.raises(MyNotFound) as exc:
+        abort(404)
+    assert exc.value.detail == "Not Found"
+
+
+def test_abort_outside_an_app_context_uses_the_default_lookup():
+    with pytest.raises(NotFound) as exc:
+        abort(404)
+    assert type(exc.value) is NotFound
+
+
+def test_abort_under_an_app_without_a_mapping_is_unchanged():
+    app = Veloce(openapi_url=None)
+    with app.app_context(), pytest.raises(NotFound) as exc:
+        abort(404, headers={"X-Reason": "gone"})
+    assert type(exc.value) is NotFound
+    assert exc.value.headers == {"X-Reason": "gone"}
+
+
 async def test_abort_in_handler():
     app = Veloce(openapi_url=None)
 

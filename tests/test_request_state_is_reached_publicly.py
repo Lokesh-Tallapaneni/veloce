@@ -40,6 +40,16 @@ def _private_state_accesses(path: pathlib.Path) -> list[int]:
     ]
 
 
+def test_the_scan_reads_a_real_corpus():
+    """A scan of nothing passes every check below it.
+
+    The glob is non-recursive and hard-codes the flat layout, so moving the
+    test tree into subdirectories would leave this module green while reading
+    no files at all.
+    """
+    assert len(_modules()) > 100, "the module glob matched almost nothing"
+
+
 def test_the_property_returns_the_private_attribute_unchanged():
     """The premise. If these ever diverge, the swap below stops being safe."""
     request = Request(method="GET", path="/", query_string="", headers={}, body=b"")

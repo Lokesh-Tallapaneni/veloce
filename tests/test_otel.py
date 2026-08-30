@@ -419,20 +419,25 @@ def test_span_end_time_is_not_shifted_by_a_slow_earlier_hook() -> None:
     app = _app()
 
     # A slow instrumentation hook registered BEFORE the OTel bridge: it runs
-    # first and sleeps, which would shift a now()-anchored span end forward.
+    # first, so a now()-anchored span end would land after it.
+    entered: list[int] = []
+
     def _slow_hook(metrics):
-        time.sleep(0.05)
+        entered.append(time.time_ns())
+        time.sleep(0.01)
 
     app.add_instrumentation(_slow_hook)
     instrument_with_otel(app, tracer_provider=provider)
 
-    before = time.time_ns()
     app.test_client().get("/items/3")
     spans = exporter.get_finished_spans()
     assert len(spans) == 1
-    # The span must end at/near dispatch completion (before the 50ms sleep),
-    # not ~50ms later. Allow generous slack but well under the 50ms skew.
-    assert spans[0].end_time - before < 30_000_000  # < 30ms in ns
+    assert entered, "the slow hook never ran"
+    # Relational, not a budget: the span ended before the hook chain started,
+    # so it is anchored to dispatch completion. A wall-clock ceiling here fails
+    # on a loaded runner for reasons unrelated to the code, which is the class
+    # of test this project keeps behind the `perf` marker.
+    assert spans[0].end_time <= entered[0]
 
 
 def test_head_to_streaming_endpoint_is_traced() -> None:

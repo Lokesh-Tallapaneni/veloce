@@ -38,6 +38,17 @@ def _sites() -> list[tuple[str, int, str]]:
 SITES = _sites()
 
 
+def test_the_scan_reads_a_real_corpus():
+    """A scan of nothing passes every check below it.
+
+    The glob is non-recursive and hard-codes the flat layout, so moving the
+    test tree into subdirectories would leave this module green while reading
+    no files at all.
+    """
+    scanned = [p for p in sorted(TESTS.glob("test_*.py")) if p.name != pathlib.Path(__file__).name]
+    assert len(scanned) > 100, "the module glob matched almost nothing"
+
+
 @pytest.mark.parametrize(
     ("module", "line", "text"),
     SITES,
