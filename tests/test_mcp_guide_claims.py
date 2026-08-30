@@ -44,6 +44,7 @@ import re
 import pytest
 
 import veloce
+from tests._markdown import blocks
 from tests._mcp import UNSUPPORTED_PROTOCOL_VERSION, initialize
 from veloce import Principal, Veloce
 from veloce.config import Config
@@ -139,24 +140,9 @@ def test_the_documented_version_list_matches_the_server():
 # ── every block on the page stays runnable ───────────────────────────
 
 
-def _blocks() -> list[tuple[int, str, str]]:
-    lines = GUIDE.read_text(encoding="utf-8").splitlines()
-    out, cur, lang, start = [], None, None, 0
-    for i, line in enumerate(lines, 1):
-        if line.startswith("```") and cur is None:
-            lang = line[3:].strip() or "text"
-            cur, start = [], i
-        elif line.startswith("```") and cur is not None:
-            out.append((start, lang, "\n".join(cur)))
-            cur = None
-        elif cur is not None:
-            cur.append(line)
-    return out
-
-
 def test_the_fence_scanner_finds_the_guide_blocks():
-    """Every check below is a loop over `_blocks()`, so an empty scan is silence."""
-    found = _blocks()
+    """Every check below is a loop over `blocks(GUIDE)`, so an empty scan is silence."""
+    found = blocks(GUIDE)
     assert len(found) > 10, f"the guide's fence scanner returned {len(found)} blocks"
     assert any(lang == "python" for _line, lang, _code in found)
     assert any(lang == "json" for _line, lang, _code in found)
@@ -172,7 +158,7 @@ def test_the_fence_scanner_finds_the_guide_blocks():
 def test_every_json_block_is_json():
     """One was comment-annotated pseudo-JSON tagged `json`."""
     checked = 0
-    for line_no, lang, code in _blocks():
+    for line_no, lang, code in blocks(GUIDE):
         if lang == "json":
             json.loads(code)
             checked += 1
@@ -190,7 +176,7 @@ def test_no_python_block_leaves_a_name_undefined():
     blocking = ("app.run(", "serve_stdio", "uvicorn.run", "while True", "asyncio.run(")
     checked = 0
     skipped: list[str] = []
-    for line_no, lang, code in _blocks():
+    for line_no, lang, code in blocks(GUIDE):
         if lang != "python" or any(b in code for b in blocking):
             continue
         namespace = {n: getattr(veloce, n) for n in veloce.__all__}

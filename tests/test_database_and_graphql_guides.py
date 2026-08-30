@@ -33,6 +33,7 @@ import pathlib
 
 import pytest
 
+from tests._markdown import blocks
 from veloce import Veloce
 from veloce.testclient import TestClient
 
@@ -272,24 +273,9 @@ def test_the_tuple_return_form_the_page_uses():
 # ── both pages stay runnable ─────────────────────────────────────────
 
 
-def _blocks(page: pathlib.Path) -> list[tuple[int, str, str]]:
-    lines = page.read_text(encoding="utf-8").splitlines()
-    out, cur, lang, start = [], None, None, 0
-    for i, line in enumerate(lines, 1):
-        if line.startswith("```") and cur is None:
-            lang = line[3:].strip() or "text"
-            cur, start = [], i
-        elif line.startswith("```") and cur is not None:
-            out.append((start, lang, "\n".join(cur)))
-            cur = None
-        elif cur is not None:
-            cur.append(line)
-    return out
-
-
 @pytest.mark.parametrize("page", [GUIDE, HOWTO], ids=["databases", "graphql"])
 def test_every_python_block_parses(page):
-    for line_no, lang, code in _blocks(page):
+    for line_no, lang, code in blocks(page):
         if lang == "python":
             compile(code, f"{page.name}:{line_no}", "exec")
 
@@ -303,7 +289,7 @@ def test_the_page_runs_cumulatively(page):
     namespace = {n: getattr(veloce, n) for n in veloce.__all__}
     namespace["app"] = Veloce(title="Guide", version="1.0.0", openapi_url=None)
     namespace["__name__"] = "__main__"
-    for line_no, lang, code in _blocks(page):
+    for line_no, lang, code in blocks(page):
         if lang != "python" or any(b in code for b in blocking):
             continue
         try:
