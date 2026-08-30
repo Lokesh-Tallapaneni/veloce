@@ -261,7 +261,7 @@ async def forbidden():
 
 A tuple body is unpacked as `(body, status)`, `(body, headers)` or
 `(body, status, headers)` - the same shapes a handler may return, read from the
-same table as [`Veloce.make_response`](../reference/app.md#veloce.Veloce.make_response)
+same table as [`Veloce.make_response`](../reference/application.md#veloce.Veloce.make_response)
 and the dispatcher. A tuple of any other length is not a response tuple and is
 serialised as data.
 

@@ -191,9 +191,18 @@ def test_span_is_backdated_to_the_measured_request_window() -> None:
     assert span.end_time is not None
     assert span.end_time >= span.start_time
 
-    # The whole window falls inside the bracket we measured around the request.
-    assert before <= span.start_time
-    assert span.end_time <= after
+    # The whole window falls inside the bracket we measured around the request,
+    # to within the wall clock's own resolution. `start_time` is derived by
+    # subtracting a `perf_counter` duration from a `time.time_ns()` end, so the
+    # comparison mixes two clocks: on Windows `time` ticks every 15.625ms while
+    # `perf_counter` resolves to 0.1us, and the finer measurement can place
+    # `start_time` a few hundred microseconds before a `time_ns()` reading taken
+    # just beforehand. The slack is the platform's own limit - it is ~1ns on
+    # Linux, so this stays exact where the clock allows it - and the assertion
+    # still catches a span backdated to a genuinely wrong time.
+    slack_ns = int(time.get_clock_info("time").resolution * 1_000_000_000)
+    assert before - slack_ns <= span.start_time
+    assert span.end_time <= after + slack_ns
 
     # The exported window matches the duration_ms attribute (within 1ms of
     # rounding), proving the backdate is derived from the measured duration.
