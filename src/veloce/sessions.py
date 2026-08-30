@@ -226,6 +226,11 @@ class InMemorySessionStore(SessionStore):
     Fine for a single-process app and for tests. It does not share state
     across workers, so a multi-worker deployment needs a shared backend
     (e.g. Redis) implementing the `SessionStore` interface.
+
+    Sized, iterable and containment-testable, so it is falsy when it holds no
+    live session - as any empty collection is. Test `store is not None` to ask
+    whether a store is configured; `if store:` asks whether it currently holds
+    anything, which at process start it does not.
     """
 
     __slots__ = ("_entries", "_sweep_threshold", "_sweep_probability")

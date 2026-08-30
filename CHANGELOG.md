@@ -94,7 +94,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `SessionMiddleware.encode_cookie()` / `.decode_cookie()` sign and verify a session cookie outside a request. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
-- `InMemorySessionStore` supports `len()`, `in`, iteration, `expires_at()` and `clear()`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `InMemorySessionStore` supports `in`, iteration, `expires_at()` and `clear()`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
 
 - `app.iter_routes()` returns each route as `(method, path, RouteInfo)`; `app.routes` remains the six-field summary. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
@@ -202,6 +203,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Config.from_mapping` raises `TypeError` for a non-uppercase keyword argument instead of dropping it. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - Route registration no longer computes a dependency-grouping map that nothing read. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - An MCP server-to-client request is refused when the client advertised the capability as `false`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `InMemorySessionStore` supports `len()`, so an empty store is now falsy; test `store is not None` to mean a store is configured. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `jsonable_encoder` applies `include` as a key whitelist at every depth; list a nesting key or its branch is dropped. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Removed
