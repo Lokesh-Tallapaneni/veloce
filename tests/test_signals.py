@@ -792,3 +792,61 @@ def test_send_robust_rejects_async_receiver(recwarn):
         if issubclass(w.category, RuntimeWarning) and "never awaited" in str(w.message)
     ]
     assert not unawaited, [str(w.message) for w in unawaited]
+
+
+# ── a signal keeps its documentation ─────────────────────────────────
+#
+# `Namespace.signal(name, doc=...)` discarded `doc`. It is a Blinker-compat
+# parameter, so code being ported passes it and got nothing back.
+
+
+def test_a_signal_records_its_doc():
+    """The defect: `doc` was discarded."""
+    assert Namespace().signal("probe", doc="what it is for").doc == "what it is for"
+
+
+def test_a_signal_without_a_doc_has_none():
+    assert Namespace().signal("probe").doc is None
+
+
+def test_a_bare_signal_has_none():
+    assert Signal("probe").doc is None
+
+
+def test_a_signal_constructed_directly_can_carry_one():
+    assert Signal("probe", "why").doc == "why"
+
+
+def test_the_same_name_returns_the_same_instance():
+    """Memoisation is the existing contract and must not change."""
+    namespace = Namespace()
+    first = namespace.signal("probe", doc="first")
+    assert namespace.signal("probe") is first
+
+
+def test_the_first_doc_wins():
+    """A later call must not rewrite a signal other code already holds."""
+    namespace = Namespace()
+    namespace.signal("probe", doc="first")
+    assert namespace.signal("probe", doc="second").doc == "first"
+
+
+def test_a_signal_still_sends():
+    """The negative: adding a slot must not disturb delivery."""
+    namespace = Namespace()
+    signal = namespace.signal("probe", doc="d")
+    seen = []
+
+    def receiver(sender, **kw):
+        seen.append(kw.get("value"))
+
+    # Held in a local: `connect` keeps a weak reference by default, so a lambda
+    # with no other referent is collected before `send` runs.
+    signal.connect(receiver)
+    signal.send(None, value=7)
+    assert seen == [7]
+
+
+def test_two_names_are_two_signals():
+    namespace = Namespace()
+    assert namespace.signal("a", doc="x") is not namespace.signal("b", doc="y")

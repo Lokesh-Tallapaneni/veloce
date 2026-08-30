@@ -20,22 +20,10 @@ from __future__ import annotations
 
 import pytest
 
+from tests._response_accessors import STRING_ACCESSORS as _ACCESSORS
 from veloce import Response
 
 _DATE = "Wed, 21 Oct 2015 07:28:00 GMT"
-
-#: `(accessor, canonical header, stored value, expected read)`.
-_ACCESSORS = [
-    ("www_authenticate", "WWW-Authenticate", 'Bearer realm="api"', 'Bearer realm="api"'),
-    ("content_encoding", "Content-Encoding", "gzip", "gzip"),
-    ("content_language", "Content-Language", "en", "en"),
-    ("accept_ranges", "Accept-Ranges", "bytes", "bytes"),
-    ("content_range", "Content-Range", "bytes 0-1/2", "bytes 0-1/2"),
-    ("location", "Location", "/next", "/next"),
-    ("content_location", "Content-Location", "/here", "/here"),
-    ("age", "Age", "12", 12),
-    ("retry_after", "Retry-After", "30", 30),
-]
 
 
 def _spellings(name: str) -> list[str]:

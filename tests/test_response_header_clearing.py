@@ -26,29 +26,15 @@ from __future__ import annotations
 
 import pytest
 
+from tests._response_accessors import CLEARABLE, CLEARABLE_IDS
 from veloce import Veloce
 from veloce.http.response import Response
 from veloce.testclient import TestClient
 
-#: `(property, canonical header, a value, a non-canonical spelling)`.
-PROPERTIES = [
-    ("date", "Date", "Wed, 21 Oct 2015 07:28:00 GMT", "date"),
-    ("location", "Location", "/old", "location"),
-    ("www_authenticate", "WWW-Authenticate", 'Basic realm="x"', "www-authenticate"),
-    ("age", "Age", "5", "age"),
-    ("retry_after", "Retry-After", "120", "retry-after"),
-    ("content_encoding", "Content-Encoding", "gzip", "CONTENT-ENCODING"),
-    ("content_language", "Content-Language", "en", "content-language"),
-    ("accept_ranges", "Accept-Ranges", "bytes", "Accept-ranges"),
-    ("content_location", "Content-Location", "/a", "content-location"),
-]
-IDS = [p[0] for p in PROPERTIES]
-
-
 # ── clearing works under a non-canonical casing ──────────────────────
 
 
-@pytest.mark.parametrize(("prop", "canonical", "value", "stored"), PROPERTIES, ids=IDS)
+@pytest.mark.parametrize(("prop", "canonical", "value", "stored"), CLEARABLE, ids=CLEARABLE_IDS)
 def test_clearing_removes_the_header(prop, canonical, value, stored):
     """The defect: the header survived and the getter kept returning it."""
     response = Response(body=b"x", headers={stored: value})
@@ -58,7 +44,7 @@ def test_clearing_removes_the_header(prop, canonical, value, stored):
     assert not [k for k in response.headers if k.lower() == canonical.lower()]
 
 
-@pytest.mark.parametrize(("prop", "canonical", "value", "stored"), PROPERTIES, ids=IDS)
+@pytest.mark.parametrize(("prop", "canonical", "value", "stored"), CLEARABLE, ids=CLEARABLE_IDS)
 def test_clearing_works_under_the_canonical_casing_too(prop, canonical, value, stored):
     """The case that already worked must keep working."""
     response = Response(body=b"x", headers={canonical: value})
@@ -67,21 +53,21 @@ def test_clearing_works_under_the_canonical_casing_too(prop, canonical, value, s
     assert canonical not in response.headers
 
 
-@pytest.mark.parametrize(("prop", "canonical", "value", "stored"), PROPERTIES, ids=IDS)
+@pytest.mark.parametrize(("prop", "canonical", "value", "stored"), CLEARABLE, ids=CLEARABLE_IDS)
 def test_clearing_an_absent_header_is_a_no_op(prop, canonical, value, stored):
     response = Response(body=b"x", headers={"X-Other": "keep"})
     setattr(response, prop, None)
     assert response.headers == {"X-Other": "keep"}
 
 
-@pytest.mark.parametrize(("prop", "canonical", "value", "stored"), PROPERTIES, ids=IDS)
+@pytest.mark.parametrize(("prop", "canonical", "value", "stored"), CLEARABLE, ids=CLEARABLE_IDS)
 def test_clearing_removes_only_the_named_header(prop, canonical, value, stored):
     response = Response(body=b"x", headers={stored: value, "X-Other": "keep"})
     setattr(response, prop, None)
     assert response.headers.get("X-Other") == "keep"
 
 
-@pytest.mark.parametrize(("prop", "canonical", "value", "stored"), PROPERTIES, ids=IDS)
+@pytest.mark.parametrize(("prop", "canonical", "value", "stored"), CLEARABLE, ids=CLEARABLE_IDS)
 def test_setting_a_value_over_a_non_canonical_casing_still_reads_back(
     prop, canonical, value, stored
 ):

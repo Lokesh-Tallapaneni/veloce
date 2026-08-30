@@ -53,6 +53,48 @@ def test_signed_in_session_resolves_a_principal():
     assert client.get("/me").json() == {"subject": "ada", "scopes": ["items:read"]}
 
 
+def test_a_custom_session_key_resolves_a_principal():
+    """The defect: `login_session` wrote the module constants unconditionally.
+
+    A `SessionAuth` built with a custom key then read a slot the login had
+    never written, so every request 401d (or resolved anonymous) even though
+    the user had just signed in.
+    """
+    app = _app()
+    auth = SessionAuth(subject_key="uid", scopes_key="perms")
+
+    @app.post("/login")
+    async def login(request):
+        login_session(request, "ada", scopes={"items:read"}, subject_key="uid", scopes_key="perms")
+        return {"ok": True}
+
+    @app.get("/me")
+    async def me(principal=Depends(auth)):
+        return {"subject": principal.subject, "scopes": sorted(principal.scopes)}
+
+    client = TestClient(app)
+    client.post("/login")
+    assert client.get("/me").json() == {"subject": "ada", "scopes": ["items:read"]}
+
+
+def test_a_custom_session_key_is_the_slot_written():
+    """Stated on the session itself, so the pair above cannot pass by both
+    sides agreeing on the wrong slot."""
+    app = _app()
+    stored: dict[str, object] = {}
+
+    @app.post("/login")
+    async def login(request):
+        login_session(request, "ada", scopes={"items:read"}, subject_key="uid", scopes_key="perms")
+        stored.update(request.session)
+        return {"ok": True}
+
+    TestClient(app).post("/login")
+    assert stored["uid"] == "ada"
+    assert stored["perms"] == ["items:read"]
+    assert "_auth_subject" not in stored
+
+
 def test_the_principal_is_published_for_the_rest_of_the_request():
     """A guard reading `current_principal()` - the same shape the MCP door
     uses - must see the session user, not an anonymous caller."""

@@ -15,6 +15,13 @@ from veloce.config import Config
 # ── _is_uppercase_key ─────────────────────────────────────────────────
 
 
+def _config() -> Config:
+    """A config carrying the framework defaults, as an app would build it."""
+    config = Config()
+    config.update(Config.default_config())
+    return config
+
+
 def test_uppercase_key_predicate():
     assert Config._is_uppercase_key("DEBUG")
     assert Config._is_uppercase_key("X_API_KEY")
@@ -379,3 +386,56 @@ def test_app_config_loaders_chain():
     app.config.from_object(_Settings)
     assert app.config["DEBUG"] is True  # from_object overrode
     assert app.config["DB_URL"] == "postgres://x"
+
+
+# ── from_mapping keyword arguments reach the config ──────────────────
+#
+# `Config.from_mapping(debug=True)` stored nothing and returned `True`, so the
+# caller could not tell that `DEBUG` had been left at its default. A `mapping`
+# is different: a settings dict legitimately carries entries that are not
+# config keys, so those are still filtered quietly.
+
+
+def test_the_message_shows_the_uppercase_form():
+    with pytest.raises(TypeError, match="DEBUG"):
+        _config().from_mapping(debug=True)
+
+
+def test_several_bad_keywords_are_all_named():
+    with pytest.raises(TypeError, match="alpha, beta"):
+        _config().from_mapping(beta=1, alpha=2)
+
+
+def test_an_uppercase_keyword_is_stored():
+    """The negative: refusing everything would pass the tests above vacuously."""
+    config = _config()
+    assert config.from_mapping(TESTING=True) is True
+    assert config["TESTING"] is True
+
+
+def test_a_mapping_still_filters_quietly():
+    """A settings dict may legitimately carry entries that are not config."""
+    config = _config()
+    config.from_mapping({"DEBUG": True, "debug": False, "note": "x"})
+    assert config["DEBUG"] is True
+    assert "note" not in config
+    assert "debug" not in config
+
+
+def test_a_mapping_and_keywords_combine():
+    config = _config()
+    config.from_mapping({"DEBUG": True}, TESTING=True)
+    assert config["DEBUG"] is True
+    assert config["TESTING"] is True
+
+
+def test_a_bad_keyword_is_refused_before_anything_is_stored():
+    """A partial application would be worse than either outcome."""
+    config = _config()
+    with pytest.raises(TypeError):
+        config.from_mapping({"DEBUG": True}, testing=True)
+    assert config["DEBUG"] is False
+
+
+def test_no_arguments_is_still_fine():
+    assert _config().from_mapping() is True
