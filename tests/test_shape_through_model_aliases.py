@@ -14,7 +14,7 @@ shaper serves `dispatch.py`'s list-of-model elements and the MCP task runner.
 from __future__ import annotations
 
 import pytest
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from veloce._model_backend import shape_through_model
 
@@ -83,5 +83,5 @@ def test_an_aliased_subclass_loses_them_too():
 
 def test_a_value_that_does_not_conform_still_raises():
     """The shaper's other job: refusing what the contract does not admit."""
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError, match="itemId"):
         shape_through_model({"wrong": "shape"}, Aliased)

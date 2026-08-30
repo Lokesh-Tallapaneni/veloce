@@ -24,6 +24,7 @@ import logging
 import pathlib
 import types
 import uuid
+import weakref
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal, Union, get_args, get_origin
 
@@ -701,9 +702,20 @@ _SEQUENCE_ORIGINS = (list, collections.abc.Sequence, tuple, set, frozenset, coll
 
 
 #: Derived models built for a route's `response_model_include` /
-#: `response_model_exclude`, keyed by `(model, include, exclude)` so two routes
-#: filtering a model the same way share one component rather than emitting two.
-_FILTERED_MODELS: dict[tuple[int, frozenset[str] | None, frozenset[str] | None], Any] = {}
+#: `response_model_exclude`, so two routes filtering a model the same way share
+#: one component rather than emitting two.
+#:
+#: Keyed by the model itself, held weakly, with the filter as the inner key. An
+#: earlier version keyed on `id(model)` and held no reference: CPython recycles
+#: the address of a collected model, so a model built afterwards could land on
+#: the same id and be served the earlier model's derived class - a route
+#: documented as returning fields it has never heard of. The weak key removes
+#: that and the unbounded growth together, since the entry goes when the model
+#: does.
+_FilterKey = tuple[frozenset[str] | None, frozenset[str] | None]
+_FILTERED_MODELS: weakref.WeakKeyDictionary[Any, dict[_FilterKey, Any]] = (
+    weakref.WeakKeyDictionary()
+)
 
 
 #: Longest joined field list to spell out in a derived component's name.
@@ -711,7 +723,7 @@ _FILTERED_NAME_LIMIT = 48
 
 
 def _filtered_struct(
-    model: Any, include: set[str] | None, exclude: set[str] | None, key: Any
+    model: Any, include: set[str] | None, exclude: set[str] | None, key: _FilterKey
 ) -> Any:
     """The `msgspec.Struct` half of `_filtered_response_model`.
 
@@ -738,7 +750,7 @@ def _filtered_struct(
         f"{model.__name__}_{suffix}",
         [(name, annotations.get(name, Any)) for name in surviving],
     )
-    _FILTERED_MODELS[key] = derived
+    _FILTERED_MODELS.setdefault(model, {})[key] = derived
     return derived
 
 
@@ -765,14 +777,15 @@ def _filtered_response_model(model: Any, include: set[str] | None, exclude: set[
     """
     if not include and not exclude:
         return model
-    key = (
-        id(model),
+    key: _FilterKey = (
         frozenset(include) if include else None,
         frozenset(exclude) if exclude else None,
     )
-    cached = _FILTERED_MODELS.get(key)
-    if cached is not None:
-        return cached
+    derived_for_model = _FILTERED_MODELS.get(model)
+    if derived_for_model is not None:
+        cached = derived_for_model.get(key)
+        if cached is not None:
+            return cached
     # `_is_model_type` - the gate that reaches here - admits a `msgspec.Struct`
     # as well as a Pydantic model, and only the latter has `model_fields`. A
     # single Struct route carrying a filter raised `AttributeError` here and
@@ -801,7 +814,7 @@ def _filtered_response_model(model: Any, include: set[str] | None, exclude: set[
     if len(suffix) > _FILTERED_NAME_LIMIT:
         suffix = hashlib.blake2b(suffix.encode(), digest_size=6).hexdigest()
     derived = create_model(f"{model.__name__}_{suffix}", **fields)
-    _FILTERED_MODELS[key] = derived
+    _FILTERED_MODELS.setdefault(model, {})[key] = derived
     return derived
 
 
