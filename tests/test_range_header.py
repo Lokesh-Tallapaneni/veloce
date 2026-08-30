@@ -1,4 +1,4 @@
-"""Request.range parsing tests (Q28)."""
+"""Request.range parsing tests."""
 
 from __future__ import annotations
 

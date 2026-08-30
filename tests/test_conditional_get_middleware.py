@@ -77,16 +77,20 @@ def test_auto_etag_false_still_forwards_handler_etag():
     assert not r1.headers["ETag"].startswith("W/"), "it was weakened on the way through"
     r2 = client.get("/", headers={"If-None-Match": '"abc"'})
     assert r2.status_code == 304
-    # No synthesis on a plain body.
-    app2 = Veloce(openapi_url=None)
-    app2.add_middleware(ConditionalGetMiddleware(auto_etag=False))
 
-    @app2.get("/plain")
+
+def test_auto_etag_false_synthesises_no_etag_for_a_plain_body():
+    """The other half of `auto_etag=False`: nothing is invented for a body that
+    arrived without an ETag of its own."""
+    app = Veloce(openapi_url=None)
+    app.add_middleware(ConditionalGetMiddleware(auto_etag=False))
+
+    @app.get("/plain")
     async def plain(request):
         return Response(body=b"y")
 
-    r3 = TestClient(app2).get("/plain")
-    assert not (r3.headers.get("ETag") or r3.headers.get("etag"))
+    r = TestClient(app).get("/plain")
+    assert not (r.headers.get("ETag") or r.headers.get("etag"))
 
 
 def test_mixedcase_no_store_skips_synthesis():

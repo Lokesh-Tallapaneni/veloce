@@ -247,11 +247,15 @@ def test_the_default_cap_still_refuses_an_oversized_multipart_body():
     assert _form_client().post("/f", content=body, headers=headers).status_code == 413
 
 
-def test_an_explicit_cap_is_still_enforced_for_both():
-    for build in (_urlencoded, _multipart):
-        body, headers = build(20)
-        response = _form_client(MAX_FORM_PARTS=5).post("/f", content=body, headers=headers)
-        assert response.status_code == 413
+@pytest.mark.parametrize(
+    "build",
+    [pytest.param(_urlencoded, id="urlencoded"), pytest.param(_multipart, id="multipart")],
+)
+def test_an_explicit_cap_is_still_enforced_for_both(build):
+    """Parametrized rather than looped so the report says *which* encoding disagreed."""
+    body, headers = build(20)
+    response = _form_client(MAX_FORM_PARTS=5).post("/f", content=body, headers=headers)
+    assert response.status_code == 413
 
 
 # ── urlencoded form parsing preserves duplicates ───────────────

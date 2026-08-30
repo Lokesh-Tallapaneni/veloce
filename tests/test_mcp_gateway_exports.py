@@ -9,10 +9,12 @@ by hand means the check covers the next addition too.
 from __future__ import annotations
 
 import importlib
+import pathlib
 
 import pytest
 
 from veloce.contrib import mcp
+from veloce.contrib.mcp import capabilities
 
 ALL = sorted(mcp.__all__)
 
@@ -125,8 +127,6 @@ def test_the_gateway_object_is_the_leaf_object(name: str) -> None:
 
 def test_every_shipped_capability_is_on_one_gateway() -> None:
     """Neither gateway used to show the whole set; the parent now does."""
-    from veloce.contrib.mcp import capabilities
-
     for name in capabilities.__all__:
         assert name in mcp.__all__, (
             f"{name} is published by veloce.contrib.mcp.capabilities but not by "
@@ -148,8 +148,6 @@ def test_every_published_name_appears_in_the_docs() -> None:
     the package - which is how `Capability` came to be exported as a
     subclassable base with nothing telling a reader what to subclass.
     """
-    import pathlib
-
     docs_root = pathlib.Path(__file__).resolve().parents[1] / "docs"
     if not docs_root.is_dir():
         pytest.skip("docs/ is not present in this checkout")

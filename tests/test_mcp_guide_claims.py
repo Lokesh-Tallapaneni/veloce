@@ -43,8 +43,13 @@ import re
 
 import pytest
 
+import veloce
 from tests._mcp import UNSUPPORTED_PROTOCOL_VERSION, initialize
-from veloce import Veloce
+from veloce import Principal, Veloce
+from veloce.config import Config
+from veloce.contrib.mcp import MCPAuth, MCPAuthorizationServer
+from veloce.contrib.mcp.context import MCPContext
+from veloce.contrib.mcp.server import SERVED_PROTOCOL_VERSIONS
 from veloce.testclient import TestClient
 
 GUIDE = pathlib.Path(__file__).resolve().parents[1] / "docs/guide/mcp.md"
@@ -130,9 +135,6 @@ def test_the_auth_example_passes_resource_to_the_verifier():
 
 def test_building_that_example_emits_no_warning(recwarn):
     """A reader copying it must not inherit a switched-off security check."""
-    from veloce import Principal
-    from veloce.contrib.mcp import MCPAuth, MCPAuthorizationServer
-
     server = MCPAuthorizationServer(
         issuer="https://api.example.com",
         authenticate=lambda request: Principal(subject="u", scopes={"mcp:tools"}),
@@ -184,8 +186,6 @@ def test_the_page_distinguishes_the_two_paths():
 
 
 def test_the_documented_version_list_matches_the_server():
-    from veloce.contrib.mcp.server import SERVED_PROTOCOL_VERSIONS
-
     text = GUIDE.read_text(encoding="utf-8")
     documented = re.search(r'"supportedVersions": \[([^\]]+)\]', text)
     assert documented is not None
@@ -247,8 +247,6 @@ def test_no_python_block_leaves_a_name_undefined():
     needing an uninstalled optional dependency silently abandoned every block
     after it. A missing dependency is now recorded and the loop continues.
     """
-    import veloce
-
     blocking = ("app.run(", "serve_stdio", "uvicorn.run", "while True", "asyncio.run(")
     checked = 0
     skipped: list[str] = []
@@ -271,16 +269,12 @@ def test_no_python_block_leaves_a_name_undefined():
 
 
 def test_every_named_config_key_exists():
-    from veloce.config import Config
-
     defaults = Config.default_config()
     for key in set(re.findall(r"\b(MCP_[A-Z_]+)\b", GUIDE.read_text(encoding="utf-8"))):
         assert key in defaults, key
 
 
 def test_every_named_context_method_exists():
-    from veloce.contrib.mcp.context import MCPContext
-
     for name in set(re.findall(r"`ctx\.([a-z_]+)", GUIDE.read_text(encoding="utf-8"))):
         assert hasattr(MCPContext, name), name
 

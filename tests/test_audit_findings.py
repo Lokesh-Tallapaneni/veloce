@@ -120,13 +120,7 @@ def test_silencing_one_finding_leaves_the_others():
 
 def test_a_route_reading_check_is_skipped_before_startup():
     """`veloce check` imports the app; a startup-registered route is not there."""
-    app = Veloce(openapi_url=None)
-    app.config["SECRET_KEY"] = "k"
-    app.add_middleware(
-        SecurityHeadersMiddleware(
-            hsts_max_age=31536000, content_security_policy="default-src 'self'"
-        )
-    )
+    app = _app()
 
     @app.on_startup
     async def late():
@@ -162,13 +156,7 @@ def test_the_context_reports_the_phase():
 
 
 def test_a_route_reading_check_runs_once_the_table_is_final():
-    app = Veloce(openapi_url=None)
-    app.config["SECRET_KEY"] = "k"
-    app.add_middleware(
-        SecurityHeadersMiddleware(
-            hsts_max_age=31536000, content_security_policy="default-src 'self'"
-        )
-    )
+    app = _app()
 
     @app.get("/real")
     async def real():
@@ -243,13 +231,7 @@ def test_the_headers_middleware_reports_what_it_is_not_sending():
 
 
 def test_a_configured_header_is_not_reported():
-    app = Veloce(openapi_url=None)
-    app.config["SECRET_KEY"] = "k"
-    app.add_middleware(
-        SecurityHeadersMiddleware(
-            hsts_max_age=31536000, content_security_policy="default-src 'self'"
-        )
-    )
+    app = _app()
     assert run(app) == []
 
 
@@ -270,11 +252,6 @@ def test_security_audit_flags_insecure_app():
 
 
 def test_security_audit_clean_after_hardening():
-    secured = Veloce(openapi_url=None)
+    secured = _app()
     secured.config["SECRET_KEY"] = "a-real-secret"
-    secured.add_middleware(
-        SecurityHeadersMiddleware(
-            hsts_max_age=31536000, content_security_policy="default-src 'self'"
-        )
-    )
     assert secured.security_audit() == []

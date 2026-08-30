@@ -29,13 +29,13 @@ from __future__ import annotations
 
 import json
 import os
-import pathlib
 import subprocess
 import sys
 
 import pytest
 
 from tests._mcp import INTERNAL_ERROR
+from tests._mcp_source import call_args, tree
 
 # `logging.basicConfig` is in the header because one case asserts the encoder
 # failure reaches stderr, and a handler has to exist for it to reach anything.
@@ -277,14 +277,9 @@ def test_the_stdio_writer_uses_the_shared_envelope_encoder():
     It now shares `encode_envelope` with the HTTP and SSE transports, so all
     three frame the protocol identically.
     """
-    source = (
-        pathlib.Path(__file__).resolve().parents[1]
-        / "src"
-        / "veloce"
-        / "contrib"
-        / "mcp"
-        / "transports"
-        / "stdio.py"
-    ).read_text(encoding="utf-8")
-    assert "encode_envelope(payload)" in source
-    assert "orjson.dumps(payload)" not in source
+    module = tree("transports", "stdio.py")
+    assert ("payload",) in call_args(module, "encode_envelope")
+    # The negative half is what a text match could not carry: `"orjson.dumps(
+    # payload)" not in source` passes on any rename or reflow that keeps the
+    # call out of that one spelling, so it guarded nothing.
+    assert ("payload",) not in call_args(module, "dumps")

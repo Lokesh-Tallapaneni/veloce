@@ -11,24 +11,6 @@ class CustomError(Exception):
     pass
 
 
-def test_add_exception_handler_by_class():
-    app = Veloce()
-
-    async def handle(request, exc):
-        return JSONResponse({"caught": str(exc)}, status_code=418)
-
-    app.add_exception_handler(CustomError, handle)
-
-    @app.get("/boom")
-    async def boom():
-        raise CustomError("kaboom")
-
-    with TestClient(app) as client:
-        resp = client.get("/boom")
-        assert resp.status_code == 418
-        assert resp.json() == {"caught": "kaboom"}
-
-
 def test_add_exception_handler_by_status_code():
     app = Veloce()
 
@@ -104,11 +86,7 @@ def test_decorator_and_imperative_equivalent():
     """Both forms produce the same behaviour, asserted by running it - the old
     version compared table membership, which two different handlers would also
     satisfy."""
-    responses = []
-    for app in (Veloce(openapi_url=None), Veloce(openapi_url=None)):
-        responses.append(app)
-
-    app_dec, app_imp = responses
+    app_dec, app_imp = Veloce(openapi_url=None), Veloce(openapi_url=None)
 
     @app_dec.exception_handler(CustomError)
     async def _h(request, exc):
@@ -119,9 +97,9 @@ def test_decorator_and_imperative_equivalent():
 
     app_imp.add_exception_handler(CustomError, h)
 
-    for app in (app_dec, app_imp):
+    for target in (app_dec, app_imp):
 
-        @app.get("/boom")
+        @target.get("/boom")
         async def boom(request: Request):
             raise CustomError("x")
 

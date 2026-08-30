@@ -27,11 +27,11 @@ in the app's dialect, is the whole rule.
 from __future__ import annotations
 
 import json
-import pathlib
 
 import pytest
 
 from tests._mcp import initialize
+from tests._mcp_source import calls, tree
 from veloce import EventSourceResponse, ServerSentEvent, Veloce
 from veloce.json_provider import DefaultJSONProvider
 
@@ -178,9 +178,8 @@ def test_an_error_reply_agrees_across_accept_values():
 
 def test_all_three_transports_share_one_encoder():
     """stdio was already right; the other two now call the same function."""
-    root = pathlib.Path(__file__).resolve().parents[1] / "src" / "veloce" / "contrib" / "mcp"
-    for path in ("transports/http.py", "transports/sse.py", "transports/stdio.py"):
-        assert "encode_envelope" in (root / path).read_text(encoding="utf-8"), path
+    for name in ("http.py", "sse.py", "stdio.py"):
+        assert calls(tree("transports", name), "encode_envelope"), name
 
 
 # ── the reply is still correct ───────────────────────────────────────

@@ -237,9 +237,8 @@ def test_app_arms_and_disarms_the_watchdog_when_configured():
     app.config["EVENT_LOOP_WATCHDOG"] = True
 
     async def drive():
-        await app._run_lifecycle("startup")
-        armed = app._watchdog is not None
-        await app._run_lifecycle("shutdown")
+        async with app.lifespan_context():
+            armed = app._watchdog is not None
         return armed, app._watchdog
 
     armed, after_shutdown = asyncio.run(drive())
@@ -252,9 +251,8 @@ def test_app_accepts_watchdog_tuning_options():
     app.config["EVENT_LOOP_WATCHDOG"] = {"interval": 0.02, "stall_threshold": 0.3}
 
     async def drive():
-        await app._run_lifecycle("startup")
-        wd = app._watchdog
-        await app._run_lifecycle("shutdown")
+        async with app.lifespan_context():
+            wd = app._watchdog
         return wd
 
     wd = asyncio.run(drive())
@@ -266,7 +264,7 @@ def test_app_does_not_arm_the_watchdog_by_default():
     app = Veloce(debug=True, openapi_url=None)
 
     async def drive():
-        await app._run_lifecycle("startup")
-        return app._watchdog
+        async with app.lifespan_context():
+            return app._watchdog
 
     assert asyncio.run(drive()) is None

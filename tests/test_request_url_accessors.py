@@ -16,7 +16,7 @@ def _req(path: str = "/", query: str = "", host: str = "example.com") -> Request
     )
 
 
-# ── Q14: full_path ────────────────────────────────────────────────────
+# ── full_path ─────────────────────────────────────────────────────────
 
 
 def test_full_path_with_query_string():
@@ -31,7 +31,7 @@ def test_full_path_always_contains_question_mark_even_when_empty():
     assert req.full_path == "/users?"
 
 
-# ── Q15: url_root + host_url ──────────────────────────────────────────
+# ── url_root + host_url ───────────────────────────────────────────────
 
 
 def test_url_root_no_path_or_query():

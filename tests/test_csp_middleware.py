@@ -75,9 +75,6 @@ def test_report_only_independence():
 
     r = TestClient(app).get("/")
     assert r.headers.get("Content-Security-Policy-Report-Only") == "default-src 'self'"
-    assert "Content-Security-Policy" not in r.headers or r.headers.get(
-        "Content-Security-Policy"
-    ) == r.headers.get("Content-Security-Policy-Report-Only")
     # Enforce header must be absent.
     assert not any(k.lower() == "content-security-policy" for k in r.headers)
 
@@ -174,19 +171,27 @@ def test_a_non_string_policy_is_a_type_error():
         CSPMiddleware(policy=123)  # type: ignore[arg-type]
 
 
-def test_nonce_disabled_with_placeholder_rejected():
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"policy": "script-src 'self' {nonce}"},
+        # A directive mapping whose 'nonce' source normalizes to {nonce}.
+        {"policy": {"script-src": ["'self'", "'nonce'"]}},
+        {"report_only_policy": "script-src {nonce}"},
+    ],
+    ids=["string-policy", "directive-mapping", "report-only"],
+)
+def test_nonce_disabled_with_placeholder_rejected(kwargs):
     # A template still referencing a nonce while nonce generation is off would
     # render 'nonce-None' (a real but wrong nonce to browsers). Construction
-    # must fail fast instead of emitting the misleading header.
+    # must fail fast instead of emitting the misleading header. Parametrized so
+    # the first rejected shape failing does not hide the other two.
     with pytest.raises(ValueError):
-        CSPMiddleware(policy="script-src 'self' {nonce}", nonce=False)
-    # Same guard for a directive mapping whose 'nonce' source normalizes to
-    # {nonce}, and for a report-only template.
-    with pytest.raises(ValueError):
-        CSPMiddleware(policy={"script-src": ["'self'", "'nonce'"]}, nonce=False)
-    with pytest.raises(ValueError):
-        CSPMiddleware(report_only_policy="script-src {nonce}", nonce=False)
-    # A nonce-free policy with nonce=False is fine.
+        CSPMiddleware(nonce=False, **kwargs)
+
+
+def test_a_nonce_free_policy_with_nonce_disabled_is_accepted():
+    """The control: the guard must not reject a policy with no placeholder."""
     CSPMiddleware(policy="default-src 'self'", nonce=False)
 
 

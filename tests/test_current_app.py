@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 
 from veloce import Request, Veloce, current_app
-from veloce import current_app as ca
 from veloce.testclient import TestClient
 
 
@@ -67,19 +66,6 @@ async def test_current_app_bound_inside_handler():
     assert seen["my_key"] == "value-from-config"
 
 
-def test_current_app_via_testclient():
-    """End-to-end check that current_app works through the ASGI dispatch."""
-    app = Veloce(debug=True, openapi_url=None)
-
-    @app.get("/who")
-    async def who():
-        return {"title": current_app.title}
-
-    resp = TestClient(app).get("/who")
-    assert resp.status_code == 200
-    assert resp.json() == {"title": app.title}
-
-
 def test_two_apps_bind_independently():
     """Each app's request binds its own context — interleaved usage must
     see the right app each time."""
@@ -105,13 +91,8 @@ def test_current_app_repr():
     assert "current_app" in r
 
 
-def test_current_app_in_veloce_exports():
-    """`from veloce import current_app` works."""
-
-    assert ca is current_app
-
-
-def test_current_app_proxy_resolves_in_request_context():
+def test_current_app_resolves_through_a_testclient_request():
+    """End-to-end: the proxy resolves during ASGI dispatch, not just directly."""
     app = Veloce(openapi_url=None)
     app.config["SENTINEL"] = "I-resolved"
     observed = {}
@@ -124,8 +105,3 @@ def test_current_app_proxy_resolves_in_request_context():
     with TestClient(app) as client:
         client.get("/cfg")
     assert observed["sentinel"] == "I-resolved"
-
-
-def test_current_app_proxy_outside_request_raises():
-    with pytest.raises(RuntimeError):
-        _ = current_app.config

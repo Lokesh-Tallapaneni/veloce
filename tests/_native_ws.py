@@ -118,6 +118,16 @@ def delivered(websocket: WebSocket) -> list[Any]:
             return out
 
 
+def buffered_bytes(websocket: WebSocket) -> int:
+    """How many raw bytes the frame parser is still holding un-consumed.
+
+    `_recv_buffer` is the frame-assembly buffer, and by the reasoning above it
+    should not become public framework API - but a parser fuzz test has to be
+    able to say "nothing was parked here", so the poke is named once.
+    """
+    return len(websocket._recv_buffer)
+
+
 def nothing_delivered(websocket: WebSocket) -> bool:
     """Whether nothing has been buffered for `receive_*` yet."""
     return websocket._receive_queue.empty()

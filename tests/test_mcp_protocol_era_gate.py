@@ -22,11 +22,10 @@ place either end asks.
 
 from __future__ import annotations
 
-import pathlib
-
 import pytest
 
 from tests._mcp import HANDSHAKE_REVISION, METHOD_NOT_FOUND
+from tests._mcp_source import assigned_call_names, calls, defines, tree
 from veloce import MCPContext, Veloce
 from veloce.contrib.mcp.errors import HeaderMismatchError, ProtocolVersionError
 from veloce.contrib.mcp.server import (
@@ -97,30 +96,20 @@ def test_a_later_revision_is_modern_too():
 
 def test_the_transport_no_longer_defines_its_own():
     """Two definitions is what let the two ends disagree."""
-    source = (
-        pathlib.Path(__file__).resolve().parents[1]
-        / "src"
-        / "veloce"
-        / "contrib"
-        / "mcp"
-        / "transports"
-        / "http.py"
-    ).read_text(encoding="utf-8")
-    assert "def _is_modern_version" not in source
-    assert "is_modern_version" in source
+    transport = tree("transports", "http.py")
+    assert not defines(transport, "_is_modern_version")
+    assert calls(transport, "is_modern_version")
 
 
 def test_the_core_no_longer_gates_on_presence():
-    source = (
-        pathlib.Path(__file__).resolve().parents[1]
-        / "src"
-        / "veloce"
-        / "contrib"
-        / "mcp"
-        / "server.py"
-    ).read_text(encoding="utf-8")
-    assert "is_modern = requested_version is not None" not in source
-    assert "is_modern = is_modern_version(requested_version)" in source
+    """`is_modern` is computed by the shared predicate, not by a presence test.
+
+    Asserted against the parsed module rather than the text of the assignment:
+    the source form pinned the spelling of a local variable, so renaming
+    `requested_version` or letting `ruff format` reflow the line failed a green
+    suite while the invariant held.
+    """
+    assert assigned_call_names(tree("server.py"), "is_modern") == {"is_modern_version"}
 
 
 # ── the divergence, end to end ───────────────────────────────────────

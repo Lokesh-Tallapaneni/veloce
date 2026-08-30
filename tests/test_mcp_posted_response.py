@@ -12,15 +12,13 @@ every response-shaped POST was misread as garbage.
 
 from __future__ import annotations
 
-import inspect
-
 import pytest
 
 from tests._mcp import INVALID_REQUEST
+from tests._mcp_source import calls, membership_tests, tree
 from veloce import TestClient, Veloce
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.session import MCPSession
-from veloce.contrib.mcp.transports import stdio
 
 
 def _client() -> TestClient:
@@ -135,6 +133,9 @@ async def test_the_dispatcher_returns_nothing_for_a_response():
 
 async def test_stdio_still_resolves_a_reply_before_dispatch():
     """stdio owns pending requests, so it must keep intercepting replies itself."""
-    source = inspect.getsource(stdio)
-    assert '"method" not in message' in source
-    assert "_resolve_reply" in source
+    # Against the parsed module, not its text: `"method" not in message` is one
+    # `ruff format` reflow away from failing a green suite, and the same
+    # condition restated with different spacing walked straight past it.
+    module = tree("transports", "stdio.py")
+    assert "message" in membership_tests(module, "method", negated=True)
+    assert calls(module, "_resolve_reply")

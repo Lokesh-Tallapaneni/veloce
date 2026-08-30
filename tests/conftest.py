@@ -6,7 +6,10 @@ import sys
 import pytest
 from hypothesis import settings
 
-from veloce import Request
+from veloce import Request, g, set_principal, unregister_converter
+from veloce.routing import converters
+from veloce.serving.protocol import HttpProtocol
+from veloce.websocket import WebSocket
 
 # Hypothesis profiles for the parser fuzz suite. The default keeps the
 # per-example count modest so the fuzz tests run inside the normal `pytest`
@@ -29,8 +32,6 @@ def _clear_graceful_drain_latch():
     serving a single request and failing. Clearing it is one global assignment.
     """
     yield
-    from veloce.serving.protocol import HttpProtocol
-
     HttpProtocol.reset_graceful_drain()
 
 
@@ -49,9 +50,6 @@ def _isolate_custom_converters():
     but removes through the public `unregister_converter`, so the fixture
     exercises the same inverse a user has.
     """
-    from veloce import unregister_converter
-    from veloce.routing import converters
-
     saved = dict(converters._CUSTOM)
     yield
     for name in set(converters._CUSTOM) - set(saved):
@@ -74,8 +72,6 @@ def _short_close_handshake_timeout(monkeypatch):
     it here - and what the timeout actually does is now covered properly, and
     deterministically, in `tests/test_websocket_close_handshake.py`.
     """
-    from veloce.websocket import WebSocket
-
     monkeypatch.setattr(WebSocket, "CLOSE_HANDSHAKE_TIMEOUT", 0.05)
 
 
@@ -122,8 +118,6 @@ def _reset_principal():
     A contextvar leaking between tests is a suite-wide hazard, so the guard
     belongs here rather than in whichever module happens to remember it.
     """
-    from veloce import set_principal
-
     set_principal(None)
     yield
     set_principal(None)
@@ -139,8 +133,6 @@ def _reset_g():
     prologue that defended one module and nothing else, which is the shape
     `_reset_principal` above was moved here to remove.
     """
-    from veloce import g
-
     g._reset()
     yield
     g._reset()
@@ -183,8 +175,6 @@ def _no_task_outlives_its_loop():
     `finally: loop.close()`, a fixture, a helper class owning a loop for its
     lifetime. `tests/_loops.py` is the fix; this is what notices a new one.
     """
-    from veloce.serving.protocol import HttpProtocol
-
     yield
     leaked = [task for task in HttpProtocol._active_tasks if not task.done()]
     HttpProtocol._active_tasks.difference_update(leaked)

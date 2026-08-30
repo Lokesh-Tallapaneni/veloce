@@ -1,4 +1,4 @@
-"""Request scheme / is_secure derived from ASGI scope (Q-URL-scheme)."""
+"""Request scheme / is_secure derived from the ASGI scope."""
 
 from __future__ import annotations
 

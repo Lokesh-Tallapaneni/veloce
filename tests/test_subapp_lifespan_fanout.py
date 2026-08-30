@@ -40,8 +40,8 @@ async def test_mounted_subapp_startup_and_shutdown_fired():
 
     parent.mount("/sub", child)
 
-    await parent._run_lifecycle("startup")
-    await parent._run_lifecycle("shutdown")
+    async with parent.lifespan_context():
+        pass
 
     # Child starts after the parent's own startup, and tears down BEFORE the
     # parent's on_shutdown handlers - reverse of parent-then-children startup, so
@@ -75,8 +75,8 @@ async def test_multiple_children_torn_down_newest_first():
     parent.mount("/a", a)
     parent.mount("/b", b)
 
-    await parent._run_lifecycle("startup")
-    await parent._run_lifecycle("shutdown")
+    async with parent.lifespan_context():
+        pass
 
     # Startup in mount order, shutdown newest-first.
     assert order == ["a-up", "b-up", "b-down", "a-down"]
@@ -106,7 +106,8 @@ async def test_child_startup_failure_unwinds_started_children():
     parent.mount("/bad", bad)
 
     with pytest.raises(RuntimeError, match="child startup failed"):
-        await parent._run_lifecycle("startup")
+        async with parent.lifespan_context():
+            pass
 
     # The already-started "good" child is torn down during the unwind.
     assert order == ["good-up", "bad-up", "good-down"]
@@ -122,8 +123,8 @@ async def test_non_veloce_asgi_mount_not_lifecycled():
     parent = Veloce()
     parent.mount("/ext", asgi_app)
 
-    await parent._run_lifecycle("startup")
-    await parent._run_lifecycle("shutdown")
+    async with parent.lifespan_context():
+        pass
 
     # The ASGI mount owns its own lifecycle; the parent never invoked it.
     assert events == []
@@ -145,9 +146,8 @@ async def test_nested_subapp_lifespan_cm_paired():
     child = Veloce(lifespan=child_lifespan)
     parent.mount("/c", child)
 
-    await parent._run_lifecycle("startup")
-    assert order == ["child-cm-enter"]
-    await parent._run_lifecycle("shutdown")
+    async with parent.lifespan_context():
+        assert order == ["child-cm-enter"]
     assert order == ["child-cm-enter", "child-cm-exit"]
 
 
@@ -171,8 +171,8 @@ async def test_same_child_mounted_twice_runs_lifecycle_once():
     parent.mount("/a", child)
     parent.mount("/b", child)  # same instance, second prefix (alias mount)
 
-    await parent._run_lifecycle("startup")
-    await parent._run_lifecycle("shutdown")
+    async with parent.lifespan_context():
+        pass
 
     assert counts == {"up": 1, "down": 1}
 
@@ -195,9 +195,8 @@ async def test_parent_spawned_tasks_drained_before_child_shutdown():
             order.append("parent-task-stopped")
 
     parent.mount("/c", child)
-    await parent._run_lifecycle("startup")
-    parent.spawn(bg(), name="bg")
-    for _ in range(5):
-        await asyncio.sleep(0)
-    await parent._run_lifecycle("shutdown")
+    async with parent.lifespan_context():
+        parent.spawn(bg(), name="bg")
+        for _ in range(5):
+            await asyncio.sleep(0)
     assert order == ["parent-task-stopped", "child-down"]

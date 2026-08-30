@@ -21,13 +21,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-import pathlib
 import urllib.parse
 from collections.abc import AsyncIterator
 
 import pytest
 
 from tests._mcp import SSEStream, auth
+from tests._mcp_source import assigned_names, call_args, function, tree
 from veloce import AsyncTestClient, MCPContext, Veloce
 from veloce.contrib.mcp import MCPAuth
 from veloce.principal import Principal, current_principal
@@ -240,15 +240,10 @@ async def test_the_http_transport_reports_the_same_subject():
 
 def test_the_sse_post_path_publishes_the_principal():
     """A guard: the discard-name bug is invisible at runtime until it matters."""
-    source = (
-        pathlib.Path(__file__).resolve().parents[1]
-        / "src"
-        / "veloce"
-        / "contrib"
-        / "mcp"
-        / "transports"
-        / "sse.py"
-    ).read_text(encoding="utf-8")
-    receive = source[source.index("async def receive_message") :]
-    assert "_principal, challenge" not in receive
-    assert "set_principal(principal)" in receive
+    receive = function(tree("transports", "sse.py"), "receive_message")
+    assert receive is not None, "sse.py no longer defines receive_message"
+    # The bug was unpacking the principal into `_principal` - a discard name -
+    # and then never publishing it. Asserted on what the function binds and
+    # calls rather than on a source slice, which a reflow would defeat.
+    assert "_principal" not in assigned_names(receive)
+    assert ("principal",) in call_args(receive, "set_principal")

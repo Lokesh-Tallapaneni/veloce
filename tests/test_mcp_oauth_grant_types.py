@@ -29,11 +29,13 @@ the narrow set asks for it, and now gets it.
 from __future__ import annotations
 
 import asyncio
-import re
+import base64
+import hashlib
 from urllib.parse import parse_qs, urlparse
 
 import pytest
 
+from tests._mcp_source import compared_constants, tree
 from veloce import Principal, Veloce
 from veloce.contrib.mcp.authorization import (
     SUPPORTED_GRANT_TYPES,
@@ -81,9 +83,6 @@ def _register(client: TestClient, **extra) -> dict:
 
 
 def _challenge() -> str:
-    import base64
-    import hashlib
-
     digest = hashlib.sha256(VERIFIER.encode()).digest()
     return base64.urlsafe_b64encode(digest).decode().rstrip("=")
 
@@ -363,13 +362,5 @@ def test_an_unknown_grant_type_at_the_token_endpoint_is_unchanged():
 
 def test_the_supported_set_matches_what_the_endpoint_implements():
     """A grant accepted at registration that `/token` cannot serve is a dead end."""
-    source = (
-        __import__("pathlib")
-        .Path(__file__)
-        .resolve()
-        .parents[1]
-        .joinpath("src/veloce/contrib/mcp/authorization.py")
-        .read_text(encoding="utf-8")
-    )
-    dispatched = set(re.findall(r'if grant_type == "([a-z_]+)"', source))
+    dispatched = compared_constants(tree("authorization.py"), "grant_type")
     assert dispatched == set(SUPPORTED_GRANT_TYPES)
