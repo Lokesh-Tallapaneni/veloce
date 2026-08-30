@@ -87,7 +87,7 @@ def _client_data_frame(payload: bytes, mask: bytes, opcode: int) -> bytes:
     return bytes(header) + masked
 
 
-@settings(max_examples=300, deadline=None)
+@settings(deadline=None)
 @given(
     data=st.binary(max_size=400),
     steps=st.lists(st.integers(min_value=1, max_value=7), min_size=1, max_size=80),
@@ -103,7 +103,7 @@ def test_arbitrary_bytes_never_crash(data: bytes, steps: list[int]) -> None:
     assert buffered_bytes(ws) <= len(data)
 
 
-@settings(max_examples=200, deadline=None)
+@settings(deadline=None)
 @given(
     payload=st.binary(max_size=130),
     mask=st.binary(min_size=4, max_size=4),
@@ -124,7 +124,7 @@ def test_split_binary_frame_reassembles(payload: bytes, mask: bytes, steps: list
     assert delivered(ws)[0] == payload
 
 
-@settings(max_examples=300, deadline=None)
+@settings(deadline=None)
 @given(
     edits=st.lists(
         st.tuples(st.integers(min_value=0), st.integers(min_value=0, max_value=255)),

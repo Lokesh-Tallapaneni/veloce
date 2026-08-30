@@ -17,6 +17,12 @@ from veloce.websocket import WebSocket
 # suite without slowing it down; the `ci` profile (selected by the CI fuzz leg
 # via HYPOTHESIS_PROFILE=ci) explores more examples to catch parser
 # regressions. A generous deadline avoids flaky timeouts under CPU contention.
+# The example budget belongs to the profile, not to a test. Five fuzz tests
+# pinned `max_examples` themselves, so the CI leg - whose whole purpose is to
+# fuzz deeper - raised the budget for every fuzz test except those five, and one
+# of them pinned a number *below* the CI profile's. `deadline=None` is kept on
+# the tests that had it: it says "this test is a fuzz run, not a latency check",
+# which is a property of the test rather than of the run.
 settings.register_profile("default", deadline=None)
 settings.register_profile("ci", max_examples=400, deadline=None)
 settings.load_profile(os.getenv("HYPOTHESIS_PROFILE", "default"))

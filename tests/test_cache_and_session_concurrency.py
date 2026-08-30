@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import pathlib
+import time
 
 import pytest
 
@@ -154,12 +155,17 @@ async def test_a_miss_is_none_not_an_error():
 
 async def test_an_expired_entry_reads_as_a_miss_under_load():
     cache = InMemoryCache()
-    await cache.set("k", {"v": 1}, ttl=1)
-    # A monotonic-clock TTL of 1s cannot be waited out quickly; drop it instead
-    # and assert the same observable outcome a caller sees on expiry.
-    await cache.delete("k")
+    await cache.set("k", {"v": 1}, ttl=60)
+    # Age the entry rather than deleting it. Deleting asserts the same *outcome*
+    # but not the same *path*: a deleted key is gone from `_entries`, where an
+    # expired one is still there and has to be rejected on the deadline check -
+    # which is the branch this test is named for, and the one twenty concurrent
+    # readers race. `tests/test_cache.py:37` expires the same way.
+    value, _deadline = cache._entries["k"]
+    cache._entries["k"] = (value, time.monotonic() - 1)
+
     values = await asyncio.gather(*[cache.get("k") for _ in range(20)])
-    assert all(v is None for v in values)
+    assert all(v is None for v in values), "an expired entry was read as a hit"
 
 
 async def test_bulk_deletes_racing_reads_never_yield_a_partial_value():

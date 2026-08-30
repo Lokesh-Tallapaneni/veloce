@@ -29,6 +29,7 @@ from typing import Union  # noqa: UP035 — exercises the typing.Union (not PEP 
 
 from pydantic import BaseModel
 
+from tests.conftest import make_request
 from veloce import Body, Cookie, Form, Header, Query, Request, Veloce
 from veloce.contrib.openapi import _python_type_to_schema, get_openapi_schema
 
@@ -42,20 +43,15 @@ class _Other(BaseModel):
 
 
 def _make_request(path: str, query_string: str = "") -> Request:
-    return Request(
-        method="GET",
-        path=path,
-        query_string=query_string,
-        headers={},
-        body=b"",
-    )
+    """A GET, through the shared factory rather than a second spelling of it."""
+    return make_request(path=path, query_string=query_string)
 
 
 def _make_form_request(path: str, body: bytes) -> Request:
-    return Request(
+    """A urlencoded POST; the two headers are what this module varies."""
+    return make_request(
         method="POST",
         path=path,
-        query_string="",
         headers={
             "content-type": "application/x-www-form-urlencoded",
             "content-length": str(len(body)),
