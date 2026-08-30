@@ -1,4 +1,4 @@
-"""FileResponse ETag header emission (Q42)."""
+"""FileResponse ETag header emission."""
 
 from __future__ import annotations
 

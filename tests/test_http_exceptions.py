@@ -105,7 +105,7 @@ def test_abort_unknown_code_falls_back_to_base():
 
 
 def _req(path="/"):
-    return make_request(method="GET", path=path, query_string="", headers={}, body=b"")
+    return make_request(path=path)
 
 
 async def test_handler_on_specific_subclass_catches_that_subclass():

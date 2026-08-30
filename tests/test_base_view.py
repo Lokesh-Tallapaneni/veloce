@@ -12,7 +12,7 @@ from veloce.testclient import TestClient
 
 
 def _req(method: str = "GET") -> Request:
-    return make_request(method=method, path="/", query_string="", headers={}, body=b"")
+    return make_request(method=method)
 
 
 def test_view_dispatch_request_routed():

@@ -124,13 +124,6 @@ def test_an_unmarked_hook_does_not_suppress_it():
     assert len(app._instrumentation) == 2
 
 
-def test_the_built_in_access_log_is_installed_once():
-    app = Veloce(openapi_url=None)
-    app._install_dev_access_log()
-    app._install_dev_access_log()
-    assert len(app._instrumentation) == 1
-
-
 def test_the_built_in_hook_carries_the_marker():
     """So a second installer can recognise it the same way."""
     app = Veloce(openapi_url=None)

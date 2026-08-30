@@ -1,4 +1,4 @@
-"""StaticFiles HTTP Range support (ST4)."""
+"""StaticFiles HTTP Range support."""
 
 from __future__ import annotations
 

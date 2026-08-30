@@ -1,4 +1,4 @@
-"""FileResponse emits Last-Modified (Q40 partial)."""
+"""FileResponse emits Last-Modified."""
 
 from __future__ import annotations
 

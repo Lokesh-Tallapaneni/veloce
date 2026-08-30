@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from tests.conftest import make_request
 from veloce import RangeSpec, Request
 
 
 def _req(range_value: str | None = None) -> Request:
     headers = {"range": range_value} if range_value else {}
-    return Request(method="GET", path="/", query_string="", headers=headers, body=b"")
+    return make_request(headers=headers)
 
 
 # ── RangeSpec.parse ───────────────────────────────────────────────────

@@ -15,8 +15,10 @@ import sys
 
 import pytest
 
+from tests._loops import protocol_loop
+from tests._protocol import _FakeTransport
+from tests.conftest import make_request
 from veloce import SetupError, Veloce
-from veloce.http.request import Request
 from veloce.serving.protocol import HttpProtocol
 from veloce.testclient import TestClient
 
@@ -134,7 +136,7 @@ def test_setup_locks_after_first_request_outside_debug():
     async def a():
         return {"ok": True}
 
-    asyncio.run(app.handle_request(_get("/a")))
+    asyncio.run(app.handle_request(make_request(path="/a")))
 
     with pytest.raises(SetupError):
 
@@ -156,7 +158,7 @@ def test_setup_lock_relaxed_under_debug():
     async def a():
         return {}
 
-    asyncio.run(app.handle_request(_get("/a")))
+    asyncio.run(app.handle_request(make_request(path="/a")))
 
     # DEBUG keeps setup mutable for hot-reload ergonomics.
     @app.get("/late")
@@ -191,7 +193,7 @@ def test_add_instrumentation_locks_after_first_request_outside_debug():
     async def a():
         return {"ok": True}
 
-    asyncio.run(app.handle_request(_get("/a")))
+    asyncio.run(app.handle_request(make_request(path="/a")))
 
     with pytest.raises(SetupError):
         app.add_instrumentation(lambda metrics: None)
@@ -206,11 +208,11 @@ def test_add_instrumentation_lock_relaxed_under_debug():
     async def a():
         return {}
 
-    asyncio.run(app.handle_request(_get("/a")))
+    asyncio.run(app.handle_request(make_request(path="/a")))
 
     seen: list[object] = []
     app.add_instrumentation(seen.append)
-    asyncio.run(app.handle_request(_get("/a")))
+    asyncio.run(app.handle_request(make_request(path="/a")))
     assert len(seen) == 1
 
 
@@ -358,8 +360,7 @@ async def test_asgi_lifespan_shutdown_failed_message():
 
 def test_begin_drain_closes_idle_connection():
 
-    loop = asyncio.new_event_loop()
-    try:
+    with protocol_loop() as loop:
         proto = HttpProtocol(Veloce(openapi_url=None), loop)
         transport = _RecordingTransport()
         proto.connection_made(transport)
@@ -367,23 +368,20 @@ def test_begin_drain_closes_idle_connection():
         proto.begin_drain()
         assert proto._draining is True
         assert transport.closed is True
-    finally:
-        loop.close()
 
 
 def test_start_graceful_drain_flips_live_connections():
 
-    loop = asyncio.new_event_loop()
-    try:
-        HttpProtocol.reset_graceful_drain()
-        proto = HttpProtocol(Veloce(openapi_url=None), loop)
-        transport = _RecordingTransport()
-        proto.connection_made(transport)
-        HttpProtocol.start_graceful_drain()
-        assert proto._draining is True
-    finally:
-        HttpProtocol.reset_graceful_drain()
-        loop.close()
+    with protocol_loop() as loop:
+        try:
+            HttpProtocol.reset_graceful_drain()
+            proto = HttpProtocol(Veloce(openapi_url=None), loop)
+            transport = _RecordingTransport()
+            proto.connection_made(transport)
+            HttpProtocol.start_graceful_drain()
+            assert proto._draining is True
+        finally:
+            HttpProtocol.reset_graceful_drain()
 
 
 def test_draining_serves_inflight_request_and_declines_pipelined_followup():
@@ -391,46 +389,40 @@ def test_draining_serves_inflight_request_and_declines_pipelined_followup():
     request is served in full and the pipelined follow-up is declined (the
     connection closes at the boundary instead of cancelling mid-pipeline)."""
 
-    loop = asyncio.new_event_loop()
-    try:
-        HttpProtocol.reset_graceful_drain()
-        app = Veloce(openapi_url=None)
+    with protocol_loop() as loop:
+        try:
+            HttpProtocol.reset_graceful_drain()
+            app = Veloce(openapi_url=None)
 
-        @app.get("/a")
-        async def a(request):  # noqa: ANN001, ANN202
-            return {"who": "A"}
+            @app.get("/a")
+            async def a(request):  # noqa: ANN001, ANN202
+                return {"who": "A"}
 
-        @app.get("/b")
-        async def b(request):  # noqa: ANN001, ANN202
-            return {"who": "B"}
+            @app.get("/b")
+            async def b(request):  # noqa: ANN001, ANN202
+                return {"who": "B"}
 
-        from tests.test_server_protocol import _FakeTransport
+            proto = HttpProtocol(app, loop)
+            transport = _FakeTransport()
+            proto.connection_made(transport)
+            proto.data_received(
+                b"GET /a HTTP/1.1\r\nHost: x\r\n\r\nGET /b HTTP/1.1\r\nHost: x\r\n\r\n"
+            )
+            # Quiesce before the loop runs: the already-popped request A completes,
+            # then the loop closes at the boundary without serving B.
+            proto.begin_drain()
+            if proto._server_loop is not None:
+                loop.run_until_complete(proto._server_loop)
 
-        proto = HttpProtocol(app, loop)
-        transport = _FakeTransport()
-        proto.connection_made(transport)
-        proto.data_received(b"GET /a HTTP/1.1\r\nHost: x\r\n\r\nGET /b HTTP/1.1\r\nHost: x\r\n\r\n")
-        # Quiesce before the loop runs: the already-popped request A completes,
-        # then the loop closes at the boundary without serving B.
-        proto.begin_drain()
-        if proto._server_loop is not None:
-            loop.run_until_complete(proto._server_loop)
-
-        emitted = b"".join(transport.writes)
-        assert b'"who":"A"' in emitted
-        assert b'"who":"B"' not in emitted
-        assert transport.closed is True
-    finally:
-        HttpProtocol.reset_graceful_drain()
-        loop.close()
+            emitted = b"".join(transport.writes)
+            assert b'"who":"A"' in emitted
+            assert b'"who":"B"' not in emitted
+            assert transport.closed is True
+        finally:
+            HttpProtocol.reset_graceful_drain()
 
 
 # -- Helpers ---------------------------------------------------------
-
-
-def _get(path: str):
-
-    return Request(method="GET", path=path, query_string="", headers={}, body=b"")
 
 
 class _RecordingTransport:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from jinja2 import Environment
 
 from veloce import Veloce
 
@@ -19,8 +20,6 @@ def test_jinja_env_available_with_template_folder(tmp_path):
     env = app.jinja_env
     assert env is not None
     # It's a real Jinja2 Environment.
-    from jinja2 import Environment
-
     assert isinstance(env, Environment)
 
 

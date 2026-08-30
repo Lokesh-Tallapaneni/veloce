@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 import veloce
 from veloce import Veloce
 from veloce.testclient import TestClient
@@ -99,7 +101,6 @@ def test_state_namespace_holds_per_connection_data():
 
 def test_connection_rejects_undeclared_attributes():
     """`WebSocket` is slotted, so application data goes on `ws.state`."""
-    import pytest
 
     async def receive():
         return {"type": "websocket.connect"}

@@ -1,4 +1,4 @@
-"""StaticFiles conditional GET — ETag + Last-Modified + If-Modified-Since (ST3).
+"""StaticFiles conditional GET — ETag + Last-Modified + If-Modified-Since.
 
 The single home for weak-ETag comparison. `test_routing_e2e.py`, a module about
 routing, carried its own `static_app` fixture and two weak-ETag round trips that

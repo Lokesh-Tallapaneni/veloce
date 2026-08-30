@@ -8,6 +8,7 @@ import textwrap
 import pytest
 
 from veloce import Veloce
+from veloce.cli import main
 
 
 def test_app_cli_is_click_group():
@@ -57,8 +58,6 @@ def test_cli_custom_subcommand_runs_app_command(tmp_path, monkeypatch, capsys):
     monkeypatch.syspath_prepend(str(tmp_path))
     sys.modules.pop("cli_custom_app", None)
 
-    from veloce.cli import main
-
     rc = main(["custom", "cli_custom_app:app", "greet"])
     assert rc == 0
     assert "hi from custom" in capsys.readouterr().out
@@ -80,8 +79,6 @@ def test_cli_custom_help_path(tmp_path, monkeypatch, capsys):
     )
     monkeypatch.syspath_prepend(str(tmp_path))
     sys.modules.pop("cli_help_app", None)
-
-    from veloce.cli import main
 
     rc = main(["custom", "cli_help_app:app", "--help"])
     out = capsys.readouterr().out

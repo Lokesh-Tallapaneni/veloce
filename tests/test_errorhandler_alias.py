@@ -9,7 +9,7 @@ from veloce import HTTPException, Request, Veloce, abort
 
 
 def _req(path: str = "/x") -> Request:
-    return make_request(method="GET", path=path, query_string="", headers={}, body=b"")
+    return make_request(path=path)
 
 
 async def test_errorhandler_status_code():

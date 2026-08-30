@@ -11,13 +11,7 @@ from veloce.testclient import TestClient
 
 
 def _req(path: str, host: str) -> Request:
-    return make_request(
-        method="GET",
-        path=path,
-        query_string="",
-        headers={"host": host},
-        body=b"",
-    )
+    return make_request(path=path, headers={"host": host})
 
 
 async def test_subdomain_match_by_leftmost_label_without_server_name():

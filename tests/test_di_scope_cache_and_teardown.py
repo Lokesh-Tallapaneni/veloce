@@ -21,6 +21,7 @@ import sys
 
 import pytest
 
+import veloce
 from tests.conftest import make_request
 from veloce import (
     ConfigurationError,
@@ -31,12 +32,11 @@ from veloce import (
     SecurityScopes,
     Veloce,
 )
-from veloce import ConfigurationError as CE
 from veloce.dependency import DependencyResolver
 
 
 def _req(path: str = "/", query: str = "") -> Request:
-    return make_request(method="GET", path=path, query_string=query, headers={}, body=b"")
+    return make_request(path=path, query_string=query)
 
 
 # ── Finding 13: scope-aware dependency cache ───────────────────────────
@@ -381,7 +381,7 @@ def _registered(app: Veloce, path: str) -> bool:
 
 def test_configuration_error_in_exports():
 
-    assert CE is ConfigurationError
+    assert "ConfigurationError" in veloce.__all__
 
 
 async def test_nested_scope_reader_behind_plain_depends_not_collapsed():

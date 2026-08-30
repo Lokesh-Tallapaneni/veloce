@@ -1,4 +1,4 @@
-"""ORJSONResponse + UJSONResponse tests (Q34)."""
+"""ORJSONResponse + UJSONResponse tests."""
 
 from __future__ import annotations
 

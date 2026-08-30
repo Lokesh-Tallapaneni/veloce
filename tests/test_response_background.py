@@ -1,4 +1,4 @@
-"""Response(background=...) plumbing tests (B2)."""
+"""Response(background=...) plumbing tests."""
 
 from __future__ import annotations
 

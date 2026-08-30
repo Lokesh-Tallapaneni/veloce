@@ -1,4 +1,4 @@
-"""Request.mimetype + mimetype_params tests (Q17)."""
+"""Request.mimetype + mimetype_params tests."""
 
 from __future__ import annotations
 

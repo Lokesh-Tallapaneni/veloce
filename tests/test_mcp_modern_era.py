@@ -12,6 +12,7 @@ import orjson
 import pytest
 
 from veloce import TestClient, Veloce
+from veloce.contrib.mcp.errors import ProtocolVersionError
 from veloce.contrib.mcp.server import (
     MODERN_PROTOCOL_VERSION,
     SERVED_PROTOCOL_VERSIONS,

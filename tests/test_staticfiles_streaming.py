@@ -53,7 +53,10 @@ def test_streamed_static_file_reaches_client_intact(tmp_path):
     (tmp_path / "blob.bin").write_bytes(payload)
     sf = StaticFiles(directory=str(tmp_path), prefix="/static")
     sf.STREAM_THRESHOLD = 1024
-    app._static_handlers.append(sf)
+    # Through `mount`, not a bare append: mounting is what registers the
+    # handler as feature state and invalidates the compiled pipeline, so
+    # this exercises the supported registration path rather than around it.
+    app.mount("/static", sf)
 
     resp = TestClient(app).get("/static/blob.bin")
     assert resp.status_code == 200

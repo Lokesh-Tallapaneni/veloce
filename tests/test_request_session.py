@@ -1,4 +1,4 @@
-"""Request.session property tests (S5)."""
+"""Request.session property tests."""
 
 from __future__ import annotations
 

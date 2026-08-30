@@ -9,7 +9,7 @@ from veloce import HTTPDigest, HTTPDigestCredentials, HTTPException, Request
 
 
 def _req(headers: dict | None = None) -> Request:
-    return make_request(method="GET", path="/x", query_string="", headers=headers or {}, body=b"")
+    return make_request(path="/x", headers=headers)
 
 
 def test_no_header_raises_with_digest_challenge():

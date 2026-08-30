@@ -34,10 +34,7 @@ def _context(capabilities: dict, sent: list) -> MCPContext:
         sent.append((method, params))
         return {"action": "accept"}
 
-    context = MCPContext("probe")
-    context._requester = requester
-    context._client_capabilities = capabilities
-    return context
+    return MCPContext("probe", requester=requester, client_capabilities=capabilities)
 
 
 # ── The required identifier ──────────────────────────────────────────

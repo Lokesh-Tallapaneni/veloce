@@ -30,18 +30,15 @@ class TestGObject:
         assert orjson.loads(resp2.body)["user"] == "nobody"
 
     def test_g_attribute_error(self):
-        g._reset()
         with pytest.raises(AttributeError):
             _ = g.nonexistent
 
     def test_g_contains(self):
-        g._reset()
         g.test_key = "val"
         assert "test_key" in g
         assert "missing" not in g
 
     def test_g_setdefault(self):
-        g._reset()
         result = g.setdefault("counter", 0)
         assert result == 0
         g.counter = 5
@@ -49,14 +46,12 @@ class TestGObject:
         assert result == 5
 
     def test_g_pop(self):
-        g._reset()
         g.temp = "data"
         val = g.pop("temp")
         assert val == "data"
         assert "temp" not in g
 
     def test_g_delete(self):
-        g._reset()
         g.to_delete = "x"
         del g.to_delete
         assert "to_delete" not in g

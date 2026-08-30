@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from tests._native_ws import mark_accepted
 from veloce import Veloce
 from veloce.testclient import TestClient
@@ -49,5 +51,5 @@ async def test_raw_receive_non_asgi_raises():
     # (transport-mode → no ASGI escape hatch).
     mark_accepted(ws)
 
-    with __import__("pytest").raises(RuntimeError, match="ASGI-mode only"):
+    with pytest.raises(RuntimeError, match="ASGI-mode only"):
         await ws.receive()

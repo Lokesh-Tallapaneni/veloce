@@ -1,4 +1,4 @@
-"""Parsed `Request.auth` / Authorization tests (Q26)."""
+"""Parsed `Request.auth` / Authorization tests."""
 
 from __future__ import annotations
 

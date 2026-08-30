@@ -1,6 +1,7 @@
 """Shared test fixtures for Veloce test suite."""
 
 import os
+import sys
 
 import pytest
 from hypothesis import settings
@@ -126,6 +127,45 @@ def _reset_principal():
     set_principal(None)
     yield
     set_principal(None)
+
+
+@pytest.fixture(autouse=True)
+def _reset_g():
+    """Keep the request-global `g` store from leaking between tests.
+
+    `g` is backed by a contextvar and a sync test runs in the main context, so a
+    value one test sets stays bound for the rest of the session. Five tests in
+    `test_g_object.py` opened with `g._reset()` for exactly that reason - a
+    prologue that defended one module and nothing else, which is the shape
+    `_reset_principal` above was moved here to remove.
+    """
+    from veloce import g
+
+    g._reset()
+    yield
+    g._reset()
+
+
+#: Namespace a test may fabricate `sys.modules` entries under, so a dynamically
+#: built model has a resolvable `__module__` for `get_type_hints`.
+FABRICATED_MODULE_ROOT = "myapp"
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _drop_fabricated_modules():
+    """Take the fabricated modules back out of `sys.modules` at session end.
+
+    The write happens at COLLECTION - a model must be a module-level global for
+    `get_type_hints` to resolve a handler's string annotations - while the
+    module-scoped teardown that used to undo it fired only when a test in that
+    module was selected. Under `pytest -k` or `--deselect` the fakes therefore
+    stayed in `sys.modules` for the rest of the process. Session scope puts the
+    removal on the same lifecycle as the write.
+    """
+    yield
+    prefix = f"{FABRICATED_MODULE_ROOT}."
+    for name in [n for n in sys.modules if n == FABRICATED_MODULE_ROOT or n.startswith(prefix)]:
+        del sys.modules[name]
 
 
 @pytest.fixture(autouse=True)

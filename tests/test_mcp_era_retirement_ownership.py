@@ -123,6 +123,7 @@ def test_every_retired_method_is_actually_registered():
 def test_a_capability_does_not_advertise_what_it_retires():
     """The property the split made possible to get wrong."""
     server = _server()
+    retiring = []
     for capability in server.capabilities:
         if not capability.handshake_only_methods:
             continue
@@ -130,6 +131,11 @@ def test_a_capability_does_not_advertise_what_it_retires():
             entry = capability.advertise(modern=True)
         except TypeError:  # pragma: no cover - not era-aware
             continue
+        retiring.append((capability, entry))
+    # Both `continue`s above can skip every capability, and the loop below would
+    # then assert nothing while staying green.
+    assert retiring, "no era-aware capability retires a handshake-only method"
+    for capability, entry in retiring:
         rendered = json.dumps(entry or {})
         for method in capability.handshake_only_methods:
             # The advertisement names the sub-capability, not the full method.

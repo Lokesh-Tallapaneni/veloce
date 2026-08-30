@@ -7,7 +7,7 @@ from veloce import Request, Veloce
 
 
 def _req(method: str = "GET", path: str = "/x") -> Request:
-    return make_request(method=method, path=path, query_string="", headers={}, body=b"")
+    return make_request(method=method, path=path)
 
 
 # ── Router-level: HEAD falls back to GET match ───────────────────────

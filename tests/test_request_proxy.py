@@ -1,4 +1,4 @@
-"""`request` context-local proxy (Q1)."""
+"""`request` context-local proxy."""
 
 from __future__ import annotations
 

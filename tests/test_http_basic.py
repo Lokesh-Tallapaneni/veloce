@@ -11,7 +11,7 @@ from veloce import HTTPBasic, HTTPException, Request
 
 
 def _req(headers: dict | None = None) -> Request:
-    return make_request(method="GET", path="/x", query_string="", headers=headers or {}, body=b"")
+    return make_request(path="/x", headers=headers)
 
 
 def _basic(raw: str) -> dict:

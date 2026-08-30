@@ -128,10 +128,12 @@ async def test_the_advertised_type_matches_what_a_read_returns():
     including when the handler's own response would have reported another type.
     """
     entries = await _listing("resources/list", "resources")
-    for uri, entry in entries.items():
-        advertised = entry.get("mimeType")
-        if advertised is not None:
-            assert advertised == await _read_mime(uri), uri
+    declared = {uri: entry["mimeType"] for uri, entry in entries.items() if "mimeType" in entry}
+    # The `if` used to guard the module's only listing-vs-read cross-check, so a
+    # listing that advertised no type at all left this test asserting nothing.
+    assert declared, "no listed resource advertised a mimeType"
+    for uri, advertised in declared.items():
+        assert advertised == await _read_mime(uri), uri
 
 
 async def test_a_declared_type_wins_over_the_response_the_handler_produced():

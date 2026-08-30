@@ -1,4 +1,4 @@
-"""MAX_CONTENT_LENGTH → 413 enforcement (Q19)."""
+"""MAX_CONTENT_LENGTH → 413 enforcement."""
 
 from __future__ import annotations
 

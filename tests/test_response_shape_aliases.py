@@ -29,9 +29,6 @@ def test_is_streamed_true_for_streaming_response():
     assert sr.is_streamed is True
 
 
-# ── Response.charset ─────────────────────────────────────────────────
-
-
 # ── Response.calculate_content_length ────────────────────────────────
 
 

@@ -72,7 +72,7 @@ def test_provider_method_and_property_share_storage():
     assert app.dependency_overrides_provider() is app.dependency_overrides
 
 
-async def test_override():
+async def test_an_override_replaces_the_dependency_for_a_direct_dispatch():
     app = Veloce(openapi_url=None)
 
     def get_db():
@@ -90,9 +90,6 @@ async def test_override():
     assert orjson.loads(resp.body)["real"] is True
 
     # With override
-    app._dependency_overrides[get_db] = get_mock_db
+    app.dependency_overrides[get_db] = get_mock_db
     resp = await app.handle_request(make_request(path="/db"))
     assert orjson.loads(resp.body)["mock"] is True
-
-    # Clean up
-    del app._dependency_overrides[get_db]

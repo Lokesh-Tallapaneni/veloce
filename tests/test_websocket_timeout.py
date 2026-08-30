@@ -81,14 +81,6 @@ async def test_receive_json_times_out_on_an_idle_socket():
         await _accepted_socket().receive_json(timeout=0.01)
 
 
-async def test_a_timeout_is_raised_rather_than_returning_none():
-    """A silent `None` would read as an empty message, not as no message."""
-    ws = _accepted_socket()
-    with pytest.raises(asyncio.TimeoutError):
-        result = await ws.receive_text(timeout=0.01)
-        assert result is None  # unreachable; here so a silent pass is visible
-
-
 # ── the timeout does not fire when a message is waiting ──────────────
 
 

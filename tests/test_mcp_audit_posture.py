@@ -220,13 +220,36 @@ def test_an_app_with_no_mcp_records_nothing():
     assert app._auditables == []
 
 
+@pytest.fixture
+def app_module(tmp_path, monkeypatch):
+    """Write an importable module under `tmp_path` and unimport it afterwards.
+
+    `main(["check", ...])` imports the module, so the `sys.modules` entry
+    outlives the test while `syspath_prepend` is undone - leaving the name bound
+    to a torn-down directory. `monkeypatch.delitem(..., raising=False)` does not
+    fix that: it records nothing to undo when the key is still absent at setup,
+    which is exactly when this one is.
+    """
+    written: list[str] = []
+
+    def write(name: str, source: str) -> None:
+        (tmp_path / f"{name}.py").write_text(source, encoding="utf-8")
+        sys.modules.pop(name, None)
+        written.append(name)
+
+    monkeypatch.syspath_prepend(str(tmp_path))
+    yield write
+    for name in written:
+        sys.modules.pop(name, None)
+
+
 # ── it fails `veloce check` ──────────────────────────────────────────
 
 
-def test_veloce_check_fails_on_an_unauthenticated_endpoint(tmp_path, monkeypatch):
+def test_veloce_check_fails_on_an_unauthenticated_endpoint(app_module):
     """The property the finding is about: the exposure reaches the exit code."""
-    module = tmp_path / "mcp_posture_app.py"
-    module.write_text(
+    app_module(
+        "mcp_posture_app",
         "from veloce import SecurityHeadersMiddleware, Veloce\n"
         "app = Veloce(openapi_url=None)\n"
         'app.config["SECRET_KEY"] = "k"\n'
@@ -235,16 +258,13 @@ def test_veloce_check_fails_on_an_unauthenticated_endpoint(tmp_path, monkeypatch
         '@app.mcp_tool(description="Purge a tenant")\n'
         "async def purge_tenant(tenant: str) -> dict:\n    return {}\n"
         'app.mount_mcp(transport="http", path="/mcp")\n',
-        encoding="utf-8",
     )
-    monkeypatch.syspath_prepend(str(tmp_path))
-    sys.modules.pop("mcp_posture_app", None)
     assert main(["check", "mcp_posture_app:app"]) == 1
 
 
-def test_veloce_check_passes_once_it_is_configured(tmp_path, monkeypatch):
-    module = tmp_path / "mcp_secure_app.py"
-    module.write_text(
+def test_veloce_check_passes_once_it_is_configured(app_module):
+    app_module(
+        "mcp_secure_app",
         "from veloce import SecurityHeadersMiddleware, Veloce\n"
         "from veloce.contrib.mcp.auth import MCPAuth\n"
         "from veloce.principal import Principal\n"
@@ -259,10 +279,7 @@ def test_veloce_check_passes_once_it_is_configured(tmp_path, monkeypatch):
         ' authorization_servers=["https://auth.example.com"])\n'
         'app.mount_mcp(transport="http", path="/mcp", auth=auth,'
         ' allowed_origins=["https://good.example"])\n',
-        encoding="utf-8",
     )
-    monkeypatch.syspath_prepend(str(tmp_path))
-    sys.modules.pop("mcp_secure_app", None)
     assert main(["check", "mcp_secure_app:app"]) == 0
 
 

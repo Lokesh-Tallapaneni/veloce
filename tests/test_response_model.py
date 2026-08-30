@@ -1,4 +1,4 @@
-"""response_model + dump-flag application tests (Q48)."""
+"""response_model + dump-flag application tests."""
 
 from __future__ import annotations
 

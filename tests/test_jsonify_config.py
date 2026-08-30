@@ -1,4 +1,4 @@
-"""jsonify config-driven options (Q32)."""
+"""jsonify config-driven options."""
 
 from __future__ import annotations
 

@@ -21,6 +21,7 @@ import pytest
 from pydantic import BaseModel
 
 from veloce import JSONProvider, Veloce, jsonify
+from veloce._internal import _b64decode
 from veloce.cache import _KEY_OPTIONS
 from veloce.http.response import JSONResponse
 from veloce.signing import Signer
@@ -166,11 +167,20 @@ def test_a_cache_key_sorts_regardless():
     assert _KEY_OPTIONS & orjson.OPT_SORT_KEYS
 
 
-def test_a_signed_payload_round_trips_under_either_setting():
+@pytest.mark.parametrize("sort", [False, True])
+def test_a_signed_payload_is_not_restyled_by_the_app(sort: bool):
+    """A token's payload is the framework's wire format, not the app's.
 
-    for _sort in (False, True):
-        signer = Signer("k")
-        assert signer.loads(signer.dumps(dict(_DATA))) == _DATA
+    Signed under an active app context, so a `Signer` that started resolving
+    the app's provider would see the setting and sort the payload here.
+    """
+    app = _app(JSON_SORT_KEYS=sort)
+    signer = Signer("k")
+    with app.app_context():
+        token = signer.dumps(dict(_DATA))
+        assert signer.loads(token) == _DATA
+    payload_b64 = token.split(".")[0]
+    assert _b64decode(payload_b64) == _INSERTION
 
 
 def test_a_framework_error_body_is_not_restyled():

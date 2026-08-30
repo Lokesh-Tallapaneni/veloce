@@ -34,6 +34,10 @@ TRANSPORTS = [
     ("sse", "/sse", "/messages"),
 ]
 
+#: The same two transports for the tests that only mount, so a signature does
+#: not accept a `post_to` it never sends to.
+MOUNTS = [(transport, path) for transport, path, _post_to in TRANSPORTS]
+
 
 def _auth() -> MCPAuth:
     return auth()
@@ -57,8 +61,8 @@ def _ping() -> dict:
 # ── the challenge and the route agree ────────────────────────────────
 
 
-@pytest.mark.parametrize(("transport", "path", "post_to"), TRANSPORTS)
-def test_the_metadata_route_is_served(transport, path, post_to):
+@pytest.mark.parametrize(("transport", "path"), MOUNTS)
+def test_the_metadata_route_is_served(transport, path):
     """The defect: this was a 404 on the SSE transport."""
     client = _app(transport, path, auth=_auth()).test_client()
     assert client.get(PROTECTED_RESOURCE_METADATA_PATH).status_code == 200
@@ -83,8 +87,8 @@ def test_following_the_challenge_reaches_the_document(transport, path, post_to):
     assert client.get(named).status_code == 200
 
 
-@pytest.mark.parametrize(("transport", "path", "post_to"), TRANSPORTS)
-def test_the_document_names_the_authorization_server(transport, path, post_to):
+@pytest.mark.parametrize(("transport", "path"), MOUNTS)
+def test_the_document_names_the_authorization_server(transport, path):
     """A metadata document that resolves but says nothing is no better."""
     client = _app(transport, path, auth=_auth()).test_client()
     document = client.get(PROTECTED_RESOURCE_METADATA_PATH).json()
@@ -92,8 +96,8 @@ def test_the_document_names_the_authorization_server(transport, path, post_to):
     assert document["resource"] == "https://api.example.com/mcp"
 
 
-@pytest.mark.parametrize(("transport", "path", "post_to"), TRANSPORTS)
-def test_both_transports_serve_the_same_document(transport, path, post_to):
+@pytest.mark.parametrize(("transport", "path"), MOUNTS)
+def test_both_transports_serve_the_same_document(transport, path):
     client = _app(transport, path, auth=_auth()).test_client()
     assert client.get(PROTECTED_RESOURCE_METADATA_PATH).json() == {
         "resource": "https://api.example.com/mcp",
@@ -105,8 +109,8 @@ def test_both_transports_serve_the_same_document(transport, path, post_to):
 # ── no auth, no route ────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize(("transport", "path", "post_to"), TRANSPORTS)
-def test_a_mount_without_auth_registers_no_metadata_route(transport, path, post_to):
+@pytest.mark.parametrize(("transport", "path"), MOUNTS)
+def test_a_mount_without_auth_registers_no_metadata_route(transport, path):
     """There is no resource to describe, and nothing emits a challenge."""
     client = _app(transport, path).test_client()
     assert client.get(PROTECTED_RESOURCE_METADATA_PATH).status_code == 404
