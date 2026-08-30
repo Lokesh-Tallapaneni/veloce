@@ -580,8 +580,21 @@ def test_csrf_header_path_accepts_matching_token() -> None:
 
 
 def _csrf_app() -> Veloce:
+    """An app with a POST under CSRF and a GET to seed the token cookie from.
+
+    The seeding request used to be `GET /echo`, on a route registered for POST
+    only: it answered 405, which no test asserted, and the cookie arrived
+    because the middleware runs ahead of routing. That works, but it means the
+    token these tests submit was minted by a request none of them checked - so
+    a change that stopped setting the cookie on a refusal would surface as a
+    `KeyError` on `cookies["csrf_token"]` several lines later.
+    """
     app = Veloce(openapi_url=None)
     app.add_middleware(CSRFMiddleware(cookie_secure=False))
+
+    @app.get("/seed")
+    async def seed(request):
+        return {"seeded": True}
 
     @app.post("/echo")
     async def echo(request):
@@ -596,7 +609,8 @@ def test_csrf_upload_file_in_token_field_returns_403_not_500():
     as a missing token rather than crash."""
     app = _csrf_app()
     with TestClient(app) as client:
-        seed = client.get("/echo")
+        seed = client.get("/seed")
+        assert seed.status_code == 200
         token = seed.cookies["csrf_token"]
 
         resp = client.post(
@@ -613,7 +627,8 @@ def test_csrf_matching_cookie_and_header_passes():
     """The double-submit happy path: cookie + matching header → 200."""
     app = _csrf_app()
     with TestClient(app) as client:
-        seed = client.get("/echo")
+        seed = client.get("/seed")
+        assert seed.status_code == 200
         token = seed.cookies["csrf_token"]
         resp = client.post("/echo", json={}, headers={"X-CSRF-Token": token})
 
