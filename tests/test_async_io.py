@@ -173,6 +173,16 @@ def _fast_app() -> Veloce:
 # on `builtins` never sees it.
 _FILESYSTEM_ENTRY_POINTS = [(builtins, "open"), (io, "open"), (os, "open"), (os, "stat")]
 
+# Below Python 3.11, `pathlib` reaches the filesystem through a `_NormalAccessor`
+# whose `stat` / `open` are bound to the `os` and `io` functions at class
+# definition, so patching the module attribute afterwards is invisible to it.
+# Without these the watch still fires for a direct `open()` but not for a
+# `Path.open()`, which would let the "the dispatch path touches no filesystem"
+# test above pass on 3.10 while missing exactly the calls it exists to catch.
+_accessor = getattr(pathlib, "_NormalAccessor", None)
+if _accessor is not None:  # pragma: no cover - 3.10 only
+    _FILESYSTEM_ENTRY_POINTS += [(_accessor, "stat"), (_accessor, "open")]
+
 
 @contextlib.contextmanager
 def _watching_the_filesystem():
@@ -188,7 +198,13 @@ def _watching_the_filesystem():
         return probe
 
     for module, name, original in originals:
-        setattr(module, name, spy(module.__name__, name, original))
+        probe = spy(getattr(module, "__name__", type(module).__name__), name, original)
+        # `staticmethod` when the target is a class: the pre-3.11 pathlib
+        # accessor is patched on the class and called as `self._accessor.stat(p)`,
+        # so a plain function would bind and swallow the first argument as
+        # `self`. The builtins it replaces do not bind, which is why the
+        # unwrapped form works on every module target.
+        setattr(module, name, staticmethod(probe) if isinstance(module, type) else probe)
     try:
         yield calls
     finally:

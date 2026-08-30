@@ -18,9 +18,17 @@ import importlib
 import inspect
 import pathlib
 import re
-import typing
 
 import pytest
+
+# `typing_extensions.get_type_hints`, not `typing`'s: below Python 3.11 the
+# stdlib one drops the `Annotated` wrapper whenever the annotated type is a
+# union, so `Annotated[dict | None, Doc(...)]` loses its `Doc` and every
+# documentation check below reads it as undocumented. The backport carries the
+# fix. Runtime dispatch is unaffected - `_handler_plan` does not read
+# annotations this way - so this is a property of the introspection, not of the
+# framework.
+import typing_extensions
 
 from veloce import Blueprint, Request, Router, Veloce
 from veloce.routing.router import MCPRouteOptions, RouteInfo
@@ -304,7 +312,7 @@ _DOC_MAY_DIFFER = {"methods"}
 def _documented_params(func) -> dict[str, str]:
     """Map each parameter of `func` to the `Doc` text its annotation carries."""
     documented = {}
-    for name, hint in typing.get_type_hints(func, include_extras=True).items():
+    for name, hint in typing_extensions.get_type_hints(func, include_extras=True).items():
         for meta in getattr(hint, "__metadata__", ()):
             text = getattr(meta, "documentation", None)
             if text is not None:
@@ -347,7 +355,7 @@ def test_the_longest_docs_are_one_shared_object_rather_than_two_copies(param: st
     """Identity, not equality: two copies can drift, one object cannot."""
 
     def doc_object(func):
-        hint = typing.get_type_hints(func, include_extras=True)[param]
+        hint = typing_extensions.get_type_hints(func, include_extras=True)[param]
         return next(m for m in hint.__metadata__ if getattr(m, "documentation", None))
 
     assert doc_object(Router.add_route) is doc_object(Router.route)

@@ -14,13 +14,17 @@ why the suite did not.
 
 from __future__ import annotations
 
-import msgspec
 import pytest
 from pydantic import BaseModel
 
 from tests._openapi import document
 from veloce import Veloce
 from veloce.contrib._jsonschema import _is_model_type
+
+# The `fast` extra's backend is optional, and a CI leg installs without it.
+# Imported plainly at module top this took the whole file's collection with it
+# there; the repo's convention for an optional backend is to skip instead.
+msgspec = pytest.importorskip("msgspec")
 
 
 class ItemModel(BaseModel):

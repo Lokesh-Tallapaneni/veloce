@@ -73,7 +73,7 @@ def _raise_unwind_errors(errors: list[BaseException]) -> None:
     A single failure is re-raised as-is so its traceback is preserved
     verbatim. Several failures are combined into a `BaseExceptionGroup`
     (Python 3.11+) so none is masked; on 3.10, where groups are unavailable,
-    the first failure is raised with the rest chained as a note.
+    the first failure is raised with the rest attached as notes.
     """
     if not errors:
         return
@@ -83,11 +83,35 @@ def _raise_unwind_errors(errors: list[BaseException]) -> None:
         raise _BaseExceptionGroup("lifespan shutdown failed", errors)
     first = errors[0]
     for extra in errors[1:]:
-        with contextlib.suppress(Exception):
-            first.add_note(  # type: ignore[attr-defined]
-                f"+ also raised during lifespan unwind: {extra!r}"
-            )
+        _attach_note(first, f"+ also raised during lifespan unwind: {extra!r}")
     raise first
+
+
+def _attach_note(error: BaseException, note: str) -> None:
+    """Record `note` on `error`, on interpreters with and without `add_note`.
+
+    `BaseException.add_note` is PEP 678, so it arrived in 3.11 - the same
+    release as `BaseExceptionGroup`. The 3.10 branch above is reached precisely
+    when groups are unavailable, which is exactly when `add_note` is unavailable
+    too, so the fallback could never run: the `AttributeError` was swallowed and
+    every failure but the first was dropped. A shutdown that failed twice
+    reported once.
+
+    `add_note` appends to `__notes__`, so writing that list directly is the same
+    record by the same name; 3.10 will not render it in a traceback (that is
+    PEP 678 too), but the failures stay attached to the exception that is raised
+    rather than being discarded.
+    """
+    add_note = getattr(error, "add_note", None)
+    if add_note is not None:
+        add_note(note)
+        return
+    notes = getattr(error, "__notes__", None)
+    if not isinstance(notes, list):
+        notes = []
+        with contextlib.suppress(AttributeError):
+            error.__notes__ = notes  # type: ignore[attr-defined]
+    notes.append(note)
 
 
 def _build_watchdog_attributor(app: Veloce) -> Callable[[FrameType], str | None]:
