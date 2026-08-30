@@ -1,4 +1,13 @@
-"""jsonify config-driven options."""
+"""`jsonify()`'s config-driven options.
+
+The narrowest of the three modules that touch `JSON_SORT_KEYS`, and the only one
+about the public helper itself: what `jsonify(...)` does with the setting when a
+user calls it directly. Whether every *other* surface resolves the same
+serialiser is `test_json_serialiser_consistency.py`'s `_ROUTES` table, and the
+edges that table cannot express - the bare-mapping SSE branch, a provider that
+raises, a response built with no app - are in
+`test_json_dialect_reaches_every_surface.py`.
+"""
 
 from __future__ import annotations
 

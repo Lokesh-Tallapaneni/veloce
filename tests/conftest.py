@@ -86,8 +86,16 @@ def make_request(
 ) -> Request:
     """Build a `Request` for a test.
 
-    The one place the suite constructs a `Request`. Dozens of modules used to
-    re-derive this as a private `_req` / `_request` factory - 71 of them
+    The place the suite should construct a `Request`, and increasingly does -
+    but not yet the only one. Thirty-nine modules still build one by hand, and
+    `tests/test_request_factory_convergence.py` holds that number as a ceiling
+    it may fall below and never rise above, along with a second ceiling on
+    forwarders that add nothing over this call. Saying "the one place" here
+    while thirty-nine others exist made the claim the thing a reader trusted
+    and the ratchet the thing that was true.
+
+    Dozens of modules used to re-derive this as a private `_req` / `_request`
+    factory - 71 of them
     returning exactly this call with these five arguments, under mutually
     incompatible signatures - so a change to the constructor meant editing all of
     them.

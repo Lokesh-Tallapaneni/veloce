@@ -530,3 +530,90 @@ def test_a_route_with_no_request_parameter_keeps_the_default():
     info = app.match("GET", "/n").route_info
     assert info.is_request_only_plan is False
     assert info.request_param_name == "request"
+
+
+# ── The two decorator signatures declare one option set ──────────────
+
+
+#: Parameters one signature has and the other legitimately does not.
+#: `add_route` takes the handler as an argument where `route` returns a
+#: decorator that receives it, and `methods` differs in default because
+#: `add_route` is the general form.
+SIGNATURE_DIVERGENCES = {"handler", "methods"}
+
+
+def _annotated_parameters(function_name: str) -> dict[str, str]:
+    """Each parameter of the named `Router` method, with its `Doc(...)` text."""
+    for source in _SOURCES.values():
+        for node in ast.walk(ast.parse(source)):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if node.name != function_name:
+                continue
+            args = node.args
+            found = {}
+            for argument in [*args.posonlyargs, *args.args, *args.kwonlyargs]:
+                if argument.arg == "self":
+                    continue
+                found[argument.arg] = _doc_text(argument.annotation, source)
+            return found
+    raise AssertionError(f"{function_name} not found in {', '.join(_SEARCHED_MODULES)}")
+
+
+def _doc_text(annotation, source: str) -> str:
+    """The `Doc("...")` string inside an `Annotated[...]`, or "" if there is none."""
+    if annotation is None:
+        return ""
+    for node in ast.walk(annotation):
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "Doc" and node.args:
+            argument = node.args[0]
+            if isinstance(argument, ast.Constant):
+                return str(argument.value)
+            # A `_DOC_*` constant: the name is the identity, which is the point.
+            return ast.get_source_segment(source, argument) or ""
+    return ""
+
+
+def test_route_and_add_route_declare_the_same_options():
+    """The other half of the duplication these tests already guard.
+
+    `route` and `add_route` enumerate ~40 route options each, by hand. The two
+    copy functions above are checked field by field because one of them dropped
+    `stream` once; nothing checked that the two *signatures* stay in step, and
+    an option added to one and not the other is silently unreachable through the
+    form the user happened to pick.
+    """
+    route = _annotated_parameters("route")
+    add_route = _annotated_parameters("add_route")
+
+    only_route = set(route) - set(add_route) - SIGNATURE_DIVERGENCES
+    only_add_route = set(add_route) - set(route) - SIGNATURE_DIVERGENCES
+    assert not only_route, f"`route` declares options `add_route` does not: {sorted(only_route)}"
+    assert not only_add_route, (
+        f"`add_route` declares options `route` does not: {sorted(only_add_route)}"
+    )
+
+
+def test_the_shared_options_document_themselves_identically():
+    """Four parameter docstrings had already drifted, losing a caveat on one side.
+
+    The `_DOC_*` constants repaired seven of them; the rest are still written
+    twice, so this holds the two copies to the same text.
+    """
+    route = _annotated_parameters("route")
+    add_route = _annotated_parameters("add_route")
+
+    drifted = [
+        f"{name}: route={route[name]!r} add_route={add_route[name]!r}"
+        for name in sorted(set(route) & set(add_route) - SIGNATURE_DIVERGENCES)
+        if route[name] and add_route[name] and route[name] != add_route[name]
+    ]
+    assert not drifted, "the same option is documented two ways:\n" + "\n".join(drifted)
+
+
+def test_the_signature_scan_is_not_vacuous():
+    """A scan finding no parameters would satisfy both checks above."""
+    route = _annotated_parameters("route")
+    assert len(route) > 30, f"only {len(route)} parameters found on `route`"
+    assert "stream" in route, "the parameter a copy dropped once is not being seen"
+    assert any(route.values()), "no `Doc(...)` text was extracted from any parameter"
