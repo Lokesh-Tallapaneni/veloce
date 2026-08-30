@@ -22,6 +22,7 @@ documented schema is honoured at request time:
 
 from __future__ import annotations
 
+import json
 import urllib.parse
 import uuid
 from datetime import date, datetime
@@ -447,4 +448,6 @@ async def test_union_with_str_query_param_text_value_resolves_200() -> None:
 
     resp = await app.handle_request(_make_request("/search", "q=abc"))
     assert resp.status_code == 200
-    assert b'"abc"' in resp.body
+    # Decoded, not matched: `b'"abc"' in body` holds wherever the value lands,
+    # including under a different key than the one the model declares.
+    assert json.loads(resp.body)["q"] == "abc"

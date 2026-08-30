@@ -466,12 +466,6 @@ def test_an_mcp_field_declared_through_the_decorator_reaches_the_tree():
 # than `request` must still be bound correctly through every route-copy path.
 
 
-def _renamed_request_app(register):
-    app = Veloce(openapi_url=None)
-    register(app)
-    return app
-
-
 def test_a_renamed_request_parameter_is_recorded():
     app = Veloce(openapi_url=None)
 
