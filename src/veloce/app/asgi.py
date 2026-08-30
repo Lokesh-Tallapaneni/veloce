@@ -97,11 +97,27 @@ _CT_BYTES_CACHE: dict[str, bytes] = {
     MIME_OCTET: MIME_OCTET.encode("ascii"),
 }
 
+
+def _content_type_bytes(content_type: str) -> bytes:
+    """Return the content-type as guarded ASCII bytes, cached when it is known.
+
+    The ASGI emit path bypasses `Response.encode()`, so the response-splitting
+    guard it would have applied belongs here instead. One function for all three
+    emit sites: the cold one encoded bare, and shipped a CR/LF-bearing value as a
+    raw ASGI header.
+    """
+    cached = _CT_BYTES_CACHE.get(content_type)
+    if cached is not None:
+        return cached
+    return _reject_header_crlf(content_type, "content-type").encode()
+
+
 # Pre-encoded ASCII bytes for small content-length values. Body sizes
 # below 2048 cover the entire json-hello / path-param hot path and the
 # vast majority of typical JSON API responses; larger payloads fall
 # through to the per-request `str(n).encode()` allocation.
-_CL_BYTES_SMALL: tuple[bytes, ...] = tuple(str(i).encode("ascii") for i in range(2048))
+_CL_SMALL_MAX = 2048
+_CL_BYTES_SMALL: tuple[bytes, ...] = tuple(str(i).encode("ascii") for i in range(_CL_SMALL_MAX))
 
 
 # Encoded `(name, value) -> (name_bytes, value_bytes)` pairs, memoised across
@@ -412,7 +428,7 @@ class AsgiMixin:
             headers.append((RAW_HEADER_CONTENT_LENGTH, str(len(body)).encode("ascii")))
         # An explicit handler-set content-type still survives via `has_ct`.
         if not has_ct and body_allowed:
-            headers.append((RAW_HEADER_CONTENT_TYPE, response.content_type.encode()))
+            headers.append((RAW_HEADER_CONTENT_TYPE, _content_type_bytes(response.content_type)))
         await send(
             {
                 "type": ASGI_EVENT_HTTP_RESPONSE_START,
@@ -802,10 +818,7 @@ class AsgiMixin:
                     # CRLF-validate every header value - the ASGI emit path
                     # bypasses `Response.encode()`, so the splitting guard must
                     # be applied here too. Built-in content types hit the cache.
-                    _ct = response.content_type
-                    _ct_bytes = _CT_BYTES_CACHE.get(_ct)
-                    if _ct_bytes is None:
-                        _ct_bytes = _reject_header_crlf(_ct, "content-type").encode()
+                    _ct_bytes = _content_type_bytes(response.content_type)
                     # ASGI does not mandate header order, so append (O(1))
                     # rather than insert at the front (O(n) list shift).
                     stream_headers.append((RAW_HEADER_CONTENT_TYPE, _ct_bytes))
@@ -864,13 +877,10 @@ class AsgiMixin:
             # bypasses `Response.encode()`, so the response-splitting
             # guard must be applied here too. Built-in content types and
             # small content-length values hit the precomputed caches.
-            _ct = response.content_type
-            _ct_bytes = _CT_BYTES_CACHE.get(_ct)
-            if _ct_bytes is None:
-                _ct_bytes = _reject_header_crlf(_ct, "content-type").encode()
+            _ct_bytes = _content_type_bytes(response.content_type)
             _cl_bytes = (
                 _CL_BYTES_SMALL[content_length]
-                if 0 <= content_length < 2048
+                if 0 <= content_length < _CL_SMALL_MAX
                 else str(content_length).encode("ascii")
             )
             # Single pass over the response headers: emit each as an ASGI

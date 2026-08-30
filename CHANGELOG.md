@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- The cold ASGI emit path applies the response-splitting guard to `content_type`; a CR or LF in it reached the wire as a raw header value. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
 - An unresolvable annotation no longer erases the whole signature's PEP 593 metadata; a route whose unrelated parameter had a bad annotation stopped enforcing its `Depends()` security scheme and served unauthenticated. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 - `Response` copies the `headers` mapping it is given; a handler reusing one dict across requests shipped a previous request's `Set-Cookie`, leaking another user's session. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
