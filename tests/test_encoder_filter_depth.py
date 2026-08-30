@@ -197,3 +197,51 @@ def test_an_unset_field_that_was_set_survives():
 def test_exclude_defaults_keeps_a_non_default_value():
     encoded = jsonable_encoder({"m": Model(set_field=5, default_field=9)}, exclude_defaults=True)
     assert encoded["m"] == {"set_field": 5, "default_field": 9}
+
+
+# ── `include` reaching a model, which is where it reads as a bug ──────
+#
+# The plain-dict contract is stated above. The same rule reached through a
+# *model* is what surprises: `include={"a"}` on a model with a nested model
+# field yields `{"a": {}}`, because the nested keys are not on the whitelist.
+# Deliberate, and pinned here so the surprising half has a test of its own -
+# it was described in a CHANGELOG `### Fixed` entry as being "as documented"
+# when the docstring said nothing about `include` at all.
+
+
+class NestedInner(BaseModel):
+    b: int = 1
+    c: int = 2
+
+
+class NestedOuter(BaseModel):
+    a: NestedInner = NestedInner()
+    d: int = 9
+
+
+def test_include_on_a_model_field_empties_it_unless_its_keys_are_listed():
+    """The report's exact shape, made a decision rather than a discovery."""
+    assert jsonable_encoder(NestedOuter(), include={"a"}) == {"a": {}}
+
+
+def test_listing_the_nested_keys_keeps_them():
+    """The other half: the whitelist is over key names, so name them."""
+    assert jsonable_encoder(NestedOuter(), include={"a", "b", "c"}) == {"a": {"b": 1, "c": 2}}
+
+
+def test_exclude_on_a_model_needs_no_such_listing():
+    """`exclude` is the blacklist reading of the same rule, and is unaffected."""
+    assert jsonable_encoder(NestedOuter(), exclude={"d"}) == {"a": {"b": 1, "c": 2}}
+
+
+def test_the_docstring_states_the_include_contract():
+    """The CHANGELOG called this documented; that is now true.
+
+    A corpus check rather than a behaviour one: the surprise is only a surprise
+    because the public docstring described every other filter's depth behaviour
+    and omitted this one.
+    """
+    doc = jsonable_encoder.__doc__ or ""
+
+    assert "include" in doc
+    assert "whitelist" in doc

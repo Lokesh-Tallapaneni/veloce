@@ -319,6 +319,14 @@ def jsonable_encoder(
     any depth; and `exclude_unset` / `exclude_defaults` reach a model
     nested inside a dict or list, not just one passed in directly.
 
+    `include` is the same rule read the other way: a whitelist of key names
+    applied at every depth, not a selection of top-level fields. A nesting
+    key must therefore be listed too, or the branch holding the value is
+    dropped - `jsonable_encoder(outer, include={"a"})` gives `{"a": {}}`,
+    while `include={"a", "b"}` keeps `a`'s `b`. This differs from Pydantic's
+    `model_dump(include=...)`, which selects fields at one level; pass the
+    nested key names when you want them.
+
     Raises `ValueError` on a self-referential object graph (a container
     that transitively contains itself) instead of recursing until the
     stack overflows. Detection is by `id()`; the per-call `_seen` set

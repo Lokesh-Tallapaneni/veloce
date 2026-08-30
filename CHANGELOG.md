@@ -202,6 +202,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Config.from_mapping` raises `TypeError` for a non-uppercase keyword argument instead of dropping it. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - Route registration no longer computes a dependency-grouping map that nothing read. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - An MCP server-to-client request is refused when the client advertised the capability as `false`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `jsonable_encoder` applies `include` as a key whitelist at every depth; list a nesting key or its branch is dropped. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Removed
 
@@ -210,6 +211,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - A grouped parameter's schema walk reports failure instead of silently publishing the field without its `ge` / `le` / `title`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `jsonable_encoder` applies `exclude` below a model, not only to its own fields. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `Query(default=[])` and other mutable marker defaults are copied per request. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `client.session_transaction()` applies the middleware's own age ceiling, so a cookie a request would refuse no longer loads. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
@@ -355,7 +357,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The MCP transport does not send an SSE stream to a client that refused it with `q=0`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `RedisRateLimitBackend` falls back to optimistic locking on a server with scripting disabled. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - Dynamic client registration stores the requested `grant_types` and echoes what it stored. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-- `jsonable_encoder` applies `include` and `exclude` below a model, as documented. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `HTTPBearer(scheme_name=...)` publishes that scheme in the OpenAPI document, not a fixed `bearer`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `handle_http_exception` renders the same body as the request cycle for an exception with an empty detail. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `response_model=Sequence[Model]`, `tuple[Model, ...]` and `set[Model]` document an array of refs. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
