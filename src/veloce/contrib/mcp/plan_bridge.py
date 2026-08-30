@@ -68,6 +68,7 @@ _INPUT_KINDS = frozenset({K_BODY_MODEL, K_QUERY_LIST, K_PARAM_MARKER, K_QUERY})
 _ANNOTATION_KEYWORDS = frozenset({"description", "title", "default"})
 
 
+# ── Reading the handler plan ──────────────────────────────
 def _is_context_slot(slot: _Slot) -> bool:
     """Whether `slot` binds the MCPContext rather than an agent input.
 
@@ -125,6 +126,7 @@ _MCP_REF_PREFIX = "#/$defs/"
 JSON_SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
 
 
+# ── Schema generation ─────────────────────────────────────
 def build_input_schema(
     plan: HandlerPlan,
     schemas_registry: dict[str, dict[str, Any]],
@@ -498,6 +500,7 @@ _JSON_TYPE_NAMES = {
 _SCALAR_TARGETS = frozenset({str, int, float, bool})
 
 
+# ── Argument coercion ─────────────────────────────────────
 def _json_type_name(value: Any) -> str:
     """Name `value`'s JSON type the way the client that sent it would."""
     return _JSON_TYPE_NAMES.get(type(value), "a value")
@@ -652,6 +655,7 @@ def _coerce_argument(slot: _Slot, value: Any) -> Any:
     return value
 
 
+# ── Model binding ─────────────────────────────────────────
 def _bind_model_group(slot: _Slot, arguments: dict[str, Any]) -> Any:
     """Rebuild a grouped model from the flat arguments its fields were published as.
 

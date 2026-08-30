@@ -350,6 +350,8 @@ async def _refuse_websocket(
 class AsgiMixin(AppHost):
     """The ASGI transport + response-emit layer, mixed into Veloce."""
 
+    # ── Refusals and direct emits ───────────────────────
+
     async def _refuse_too_large(
         self,
         send: Any,
@@ -445,6 +447,8 @@ class AsgiMixin(AppHost):
             {"detail": detail, "status_code": status.HTTP_400_BAD_REQUEST},
         )
 
+    # ── The middleware stack ────────────────────────────
+
     def _build_asgi_stack(self, cp: CompiledPipeline) -> Callable:
         """Wrap the core ASGI app with the compiled PH_ASGI_WRAP chain.
 
@@ -458,6 +462,8 @@ class AsgiMixin(AppHost):
         for cls, options in reversed(flatten_asgi_wrap(cp.asgi_wrap)):
             app = cls(app, **options)
         return app
+
+    # ── WebSocket dispatch ──────────────────────────────
 
     async def _run_websocket(self, ws: WebSocket, route_info: RouteInfo) -> None:
         """Run a matched WebSocket handler and apply the close-code mapping.
@@ -562,6 +568,8 @@ class AsgiMixin(AppHost):
                 await ws_resolver.run_teardowns(ws_exc)
             except Exception:
                 self.logger.exception("yield-dependency teardown raised")
+
+    # ── The ASGI entry points ───────────────────────────
 
     async def __call__(self, scope: dict[str, Any], receive: Callable, send: Callable) -> None:
         """ASGI interface - allows running under uvicorn/hypercorn if desired.

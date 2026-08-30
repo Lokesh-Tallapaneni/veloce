@@ -1,4 +1,11 @@
-"""Helpers — abort, jsonify, make_response, flash, g, current_app, send_from_directory."""
+"""Helpers — the request-scoped proxies and the response and file shortcuts.
+
+`g`, `current_app`, `request` and `session` are the context-local proxies;
+`jsonify`, `make_response`, `redirect` and `abort` build a response; `flash` and
+`get_flashed_messages` carry one-shot messages in the session; `send_file` and
+`send_from_directory` serve a path; and `url_for`, `stream_with_context` and
+`after_this_request` are the remaining per-request conveniences.
+"""
 
 from __future__ import annotations
 

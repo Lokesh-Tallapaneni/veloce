@@ -1,57 +1,6 @@
 """Model Context Protocol integration — every Veloce route is also an AI tool.
 
-`veloce.contrib.mcp` exposes a Veloce app's handlers as Model Context Protocol
-tools so an AI agent can call them over JSON-RPC 2.0. Register MCP-only tools
-with `@app.mcp_tool(...)`, opt an existing route in with
-`expose_as_mcp_tool=True` / `mcp_description=...`, then serve over stdio with
-`app.mount_mcp(transport="stdio")`.
-
-**Transports.** stdio, Streamable HTTP, and the legacy SSE split-endpoint wire.
-The server negotiates the protocol version with the client and answers ``ping``.
-
-**Tools.** A tool definition carries HTTP-derived annotation hints (read-only /
-idempotent / destructive / open-world) with the route summary as
-``annotations.title``, a top-level ``title``, an ``inputSchema`` declaring the
-JSON Schema 2020-12 dialect, and - where the result has a declared object shape
-- an ``outputSchema`` (also dialect-declared) whose structured value
-``tools/call`` returns alongside the text block. A tool returning an image or
-audio response emits the matching typed content block, and a route may return
-its result as a ``resource_link`` or embedded ``resource`` block through the
-``X-MCP-Resource-Link`` / ``X-MCP-Embedded-Resource`` response header.
-
-**Resources and prompts.** A read-only route flagged
-``expose_as_mcp_resource=True`` is served as a resource (``resources/list``,
-``resources/templates/list``, ``resources/read``); a ``@app.mcp_prompt``
-callable is served as a prompt template (``prompts/list``, ``prompts/get``); and
-a ``@app.mcp_completer`` callable suggests values for a prompt or
-resource-template argument (``completion/complete``). Any of the three may carry
-opt-in ``icons`` (`Icon` objects) a client renders beside it.
-
-**Tasks.** A tool flagged ``task_support=True`` may be invoked as a background
-task: a task-augmented ``tools/call`` returns a ``CreateTaskResult`` the client
-polls via ``tasks/get`` / ``tasks/result`` (``tasks/list`` / ``tasks/cancel``
-round it out). The same handler runs whether the call is synchronous or a task.
-
-**Sessions.** One `MCPSession` tracks the connection: it records the client's
-advertised capabilities from ``initialize`` and rejects any request other than
-``initialize`` / ``ping`` that precedes initialization. The ``initialize`` result
-carries ``instructions`` (the app description / summary) and a
-``serverInfo.title`` (the app title).
-
-**Subscriptions.** With ``MCP_RESOURCE_SUBSCRIPTIONS`` enabled a client may
-``resources/subscribe`` to a resource URI, and the app signals a change with
-``MCPServer.notify_resource_updated`` (or ``notify_resources_list_changed``),
-fanning ``notifications/resources/updated`` and
-``notifications/resources/list_changed`` out to subscribed connections.
-
-**Server-initiated requests.** Over a bidirectional transport a tool's
-`MCPContext` issues ``ctx.sample`` (``sampling/createMessage``, with model
-preferences and sampling tools), ``ctx.elicit`` (``elicitation/create``, in form
-or URL mode) and ``ctx.roots`` (``roots/list``) - each gated on the client having
-advertised the matching capability in ``initialize``.
-
-**Also.** Tool search, versioning, proxying to an upstream MCP server, and an
-OAuth 2.1 authorization server.
+The feature guide is `docs/guide/mcp.md`; this gateway only re-exports.
 """
 
 from __future__ import annotations

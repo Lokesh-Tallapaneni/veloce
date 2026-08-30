@@ -88,6 +88,8 @@ _WEB_MEDIA_TYPES: dict[str, str] = {
 
 
 @functools.lru_cache(maxsize=512)
+
+# ── Media types ───────────────────────────────────────────
 def guess_content_type(path: str) -> str:
     """Return the media type a path's extension names, or the octet-stream default.
 
@@ -174,6 +176,7 @@ def json_body_refused(mimetype: str) -> bool:
     return bool(mimetype) and not is_json_mimetype(mimetype)
 
 
+# ── Async offload ─────────────────────────────────────────
 def offload(fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> asyncio.Future[Any]:
     """Run a sync callable in the default executor, preserving request context.
 
@@ -191,6 +194,7 @@ def offload(fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> asyncio.Fut
     return loop.run_in_executor(None, ctx.run, functools.partial(fn, *args, **kwargs))
 
 
+# ── Value coercion ────────────────────────────────────────
 def _coerce_secret_bytes(value: str | bytes | Secret) -> bytes:
     """Unwrap a `Secret` and UTF-8 encode a `str`, returning raw bytes.
 
@@ -251,6 +255,7 @@ def _unpack_response_tuple(value: tuple[Any, ...]) -> tuple[Any, int | None, Any
     return None
 
 
+# ── Header encoding and the CRLF guard ────────────────────
 def _header_value_has_crlf(value: str) -> bool:
     """Return True if `value` carries CR, LF, or NUL (unsafe in a header)."""
     return "\r" in value or "\n" in value or "\x00" in value
@@ -391,6 +396,7 @@ def _encode_response_head(
     return parts
 
 
+# ── ETags ─────────────────────────────────────────────────
 def _file_etag(path: str, size: int, mtime: float) -> str:
     """Weak, opaque-quoted ETag derived from (path, size, mtime).
 
@@ -437,6 +443,7 @@ def _etag_matches_strong(server_etag: str, client_token: str) -> bool:
     return a == b
 
 
+# ── Base64 ────────────────────────────────────────────────
 def _b64encode(data: bytes) -> str:
     """URL-safe base64 with `=` padding stripped."""
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
@@ -453,6 +460,7 @@ def _b64decode(data: str) -> bytes:
 _iscoro_cache: weakref.WeakKeyDictionary[Callable[..., Any], bool] = weakref.WeakKeyDictionary()
 
 
+# ── Callable introspection ────────────────────────────────
 def _is_async_callable(fn: Callable[..., Any]) -> bool:
     """Memoised `inspect.iscoroutinefunction` for hot-path hook dispatch.
 
@@ -491,6 +499,7 @@ _NETLOC_DEFAULT_PORTS: dict[str, int] = {"http": 80, "https": 443}
 DEFAULT_PORTS: dict[str, int] = {"http": 80, "https": 443, "ws": 80, "wss": 443}
 
 
+# ── URL parts ─────────────────────────────────────────────
 def is_default_port(scheme: str, port: int | None) -> bool:
     """True when `port` is the default http/https port for `scheme` (or unset)."""
     return port is None or _NETLOC_DEFAULT_PORTS.get(scheme) == port

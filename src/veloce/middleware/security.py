@@ -74,6 +74,7 @@ _RL_STATE_KEY = "rate_limit_state"
 CSP_NONCE_STATE_KEY = "csp_nonce"
 
 
+# ── Content Security Policy ───────────────────────────────
 def csp_nonce(request: Request | None = None) -> str | None:
     """Return the per-request CSP nonce, materializing it on first access.
 
@@ -201,6 +202,7 @@ class CSPMiddleware(Middleware):
         return response
 
 
+# ── Host validation ───────────────────────────────────────
 class TrustedHostMiddleware(Middleware):
     """Validates Host header against an allow-list.
 
@@ -257,6 +259,7 @@ class TrustedHostMiddleware(Middleware):
         return None
 
 
+# ── Rate limiting ─────────────────────────────────────────
 class RateLimitMiddleware(Middleware):
     """Per-client rate limiter with a selectable algorithm and backend.
 
@@ -712,6 +715,7 @@ class RateLimitMiddleware(Middleware):
         response.headers[HEADER_X_RATELIMIT_RESET] = str(reset)
 
 
+# ── Transport upgrade ─────────────────────────────────────
 class HTTPSRedirectMiddleware(Middleware):
     """Redirect HTTP requests to HTTPS.
 
@@ -788,6 +792,7 @@ class HTTPSRedirectMiddleware(Middleware):
         return RedirectResponse(url, status_code=status.HTTP_308_PERMANENT_REDIRECT)
 
 
+# ── Hardening headers ─────────────────────────────────────
 class SecurityHeadersMiddleware(Middleware):
     """Attach common hardening response headers to every response.
 
@@ -905,6 +910,7 @@ class SecurityHeadersMiddleware(Middleware):
         return response
 
 
+# ── WebSocket origin ──────────────────────────────────────
 class WebSocketOriginMiddleware(Middleware):
     """Reject cross-site WebSocket handshakes (CSWSH).
 
