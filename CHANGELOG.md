@@ -23,6 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `make_response` answers a one- or four-element tuple as data; it dropped a four-element tuple's status and headers in silence. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `Veloce.make_response`, `veloce.make_response` and dispatch read one response-tuple table, so a tuple cannot answer three ways. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A handler may return `(body, header_list)`; dispatch read the pair list as a status and answered `500`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `Blueprint` refuses a dot in its own name or a route's `name`; the dot separates the blueprint from the route in an endpoint. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `make_response(response, status, headers)` applies them instead of returning the response untouched; an omitted status is `None`, not `200`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `HTTPBasicCredentials` and `HTTPDigestCredentials` compare by identity, so both are hashable again. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- A conditional `GET` for a streamed response answers `304`; an asset past `FileResponse`'s streaming threshold was re-sent in full. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- A `304` advertises the length the equivalent `200` would carry, or none when it is unknown, instead of `0`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `{value:float}` is matched before `{value:decimal}`; float accepts a strict subset, so it is the more restrictive of the pair. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Security
 
@@ -73,6 +79,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A registered OAuth client is refused a grant type it did not register for. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A route exposed as an MCP tool keeps its rate limit; the replayed call reported no caller, so every call got a fresh bucket. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `@rate_limit` is enforced above a `max_requests=`/`window_seconds=` limiter; the tag was dropped in silence, leaving the route unthrottled. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- An MCP token minted without a `resource` no longer satisfies a verifier configured with `resource=`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- A resuming MCP `GET` checks `Mcp-Session-Id`, so a terminated session cannot replay its buffered payloads. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `HTTPBasicCredentials` and `HTTPDigestCredentials` mask the password and the digest response in their `repr`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- A blueprint-scoped `before_request` runs on every route of its blueprint; a dotted route name skipped it. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
+### Fixed
+
+- A streamed file sends no more than the `Content-Length` it declared when the file grows mid-response. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- A `list`-typed `Header()` or `Cookie()` resolves on a websocket route instead of closing the handshake `1011`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `/openapi.json` gives a request schema its own component when a nested model is also returned by another route. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- The derived-model cache for `response_model_include` / `_exclude` keys on the model, not its address. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- The MCP HTTP transport publishes the session from its SSE reply path, so a conformant client's handshake is recorded. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- A `@rate_limit`-tagged route's backend honours the middleware's `max_keys`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- The MCP stdio ordering wait no longer absorbs a cancel delivered to its own task. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- An MCP server-to-client request whose emit fails leaves no entry in the pending correlation table. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Added
 
