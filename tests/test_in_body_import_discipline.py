@@ -41,8 +41,6 @@ import pathlib
 import re
 import sys
 
-import pytest
-
 TESTS = pathlib.Path(__file__).resolve().parent
 
 
@@ -180,24 +178,29 @@ def _unjustified_first_party(path: pathlib.Path) -> list[str]:
     return offenders
 
 
-@pytest.mark.parametrize("path", _modules(), ids=lambda p: p.name)
-def test_no_first_party_import_hides_inside_a_body(path):
-    offenders = _unjustified_first_party(path)
+def test_no_first_party_import_hides_inside_a_body():
+    """One scan of the corpus; the message names every offender."""
+    offenders = [
+        f"{path.name}: {found}" for path in _modules() if (found := _unjustified_first_party(path))
+    ]
     assert offenders == [], (
-        f"{path.name}: `veloce` is always importable and this module has no "
-        "skip guard, so these have nothing to defer - move them to the module "
-        f"top, or add a comment saying what the deferral is for: {offenders}"
+        "`veloce` is always importable and these modules carry no skip guard, "
+        "so these have nothing to defer - move them to the module top, or add "
+        f"a comment saying what the deferral is for: {offenders}"
     )
 
 
-@pytest.mark.parametrize("path", _modules(), ids=lambda p: p.name)
-def test_no_runtime_dependency_import_hides_inside_a_body(path):
-    offenders = _unjustified_runtime_dependency(path)
+def test_no_runtime_dependency_import_hides_inside_a_body():
+    """One scan of the corpus; the message names every offender."""
+    offenders = [
+        f"{path.name}: {found}"
+        for path in _modules()
+        if (found := _unjustified_runtime_dependency(path))
+    ]
     assert offenders == [], (
-        f"{path.name}: these import the standard library or a declared runtime "
-        "dependency, which this module needs to be collected at all, so there "
-        "is nothing to defer - move them to the module top, or add a comment "
-        f"saying what the deferral is for: {offenders}"
+        "these import the standard library or a declared runtime dependency, "
+        "which the module needs to be collected at all, so there is nothing to "
+        f"defer - move them to the module top, or say what it is for: {offenders}"
     )
 
 
@@ -258,12 +261,12 @@ def test_a_module_top_import_is_not_an_offence(tmp_path):
     assert _unjustified_runtime_dependency(module) == []
 
 
-@pytest.mark.parametrize("path", _modules(), ids=lambda p: p.name)
-def test_no_in_body_import_repeats_a_module_top_one(path):
-    offenders = _redundant(path)
+def test_no_in_body_import_repeats_a_module_top_one():
+    """One scan of the corpus; the message names every offender."""
+    offenders = [f"{path.name}: {found}" for path in _modules() if (found := _redundant(path))]
     assert offenders == [], (
-        f"{path.name}: these re-import what module scope already binds - "
-        f"delete them or give the module-top import a reason to go: {offenders}"
+        "these re-import what module scope already binds - delete them or give "
+        f"the module-top import a reason to go: {offenders}"
     )
 
 

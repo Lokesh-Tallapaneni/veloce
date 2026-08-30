@@ -17,8 +17,6 @@ import asyncio
 import pathlib
 import re
 
-import pytest
-
 TESTS = pathlib.Path(__file__).resolve().parent
 
 
@@ -40,12 +38,11 @@ def _marked(path: pathlib.Path) -> list[str]:
     return found
 
 
-@pytest.mark.parametrize("path", _modules(), ids=lambda p: p.name)
-def test_no_module_carries_the_redundant_marker(path):
-    marked = _marked(path)
-    assert marked == [], (
-        f'{path.name}: `asyncio_mode = "auto"` collects these already - '
-        f"the marker adds nothing: {marked}"
+def test_no_module_carries_the_redundant_marker():
+    """One scan of the corpus; the message names every offender."""
+    offenders = [f"{path.name}: {found}" for path in _modules() if (found := _marked(path))]
+    assert offenders == [], (
+        f'`asyncio_mode = "auto"` collects these already - the marker adds nothing: {offenders}'
     )
 
 

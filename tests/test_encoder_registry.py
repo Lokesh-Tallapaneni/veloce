@@ -65,9 +65,21 @@ def test_subclass_nested_in_container():
 
 
 def test_repeated_subclass_is_memoized():
-    # Second call hits the memo cache; both must agree.
+    """One MRO walk for two encodes of the same subclass.
+
+    Both values agreeing says nothing about the memo: the encoder is correct
+    with the cache removed. What the cache does is resolve the type once, so
+    that is what this observes.
+    """
+    enc._RESOLVED_ENCODERS.pop(MyInt, None)
     assert jsonable_encoder(MyInt(1)) == 1
+    resolved_after_first = dict(enc._RESOLVED_ENCODERS)
+    assert MyInt in resolved_after_first, "the first encode did not memoize the subclass"
+
     assert jsonable_encoder(MyInt(2)) == 2
+    assert enc._RESOLVED_ENCODERS[MyInt] is resolved_after_first[MyInt], (
+        "the second encode re-resolved the type instead of reusing the memo"
+    )
 
 
 # ── Per-call custom_encoder ──

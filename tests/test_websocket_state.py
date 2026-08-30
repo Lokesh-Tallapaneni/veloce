@@ -5,7 +5,6 @@ from __future__ import annotations
 from veloce import Veloce
 from veloce.testclient import TestClient
 from veloce.websocket import WebSocket, WebSocketState
-from veloce.websocket import WebSocketState as TopState
 
 
 def test_state_enum_values():
@@ -55,11 +54,6 @@ def test_state_disconnected_after_peer_close():
     # receive_text marks `_closed = True` before raising. State is
     # therefore DISCONNECTED once the loop exits.
     assert final == [WebSocketState.DISCONNECTED]
-
-
-def test_state_importable_from_top_level():
-
-    assert TopState is WebSocketState
 
 
 # -- `ws.state` scratch namespace + slotted connection object ---------

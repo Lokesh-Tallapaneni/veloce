@@ -116,10 +116,10 @@ def _complaint(path: pathlib.Path) -> str | None:
     return None
 
 
-@pytest.mark.parametrize("path", _modules(), ids=lambda p: p.name)
-def test_a_module_is_named_for_its_subject(path):
-    complaint = _complaint(path)
-    assert complaint is None, f"{path.name} is {complaint}"
+def test_a_module_is_named_for_its_subject():
+    """One scan of the corpus; the message names every offender."""
+    offenders = [f"{path.name} is {found}" for path in _modules() if (found := _complaint(path))]
+    assert offenders == [], offenders
 
 
 # ── the checks are not vacuous ───────────────────────────────────────

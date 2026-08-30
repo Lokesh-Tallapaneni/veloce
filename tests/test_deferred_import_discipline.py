@@ -12,8 +12,6 @@ from __future__ import annotations
 
 import pathlib
 
-import pytest
-
 TESTS = pathlib.Path(__file__).resolve().parent
 SUPPRESSION = "# noqa: E402"
 GUARDS = ("importorskip", "pytest.skip", "skip_module")
@@ -23,19 +21,23 @@ def _modules() -> list[pathlib.Path]:
     return sorted(p for p in TESTS.glob("test_*.py") if p.name != pathlib.Path(__file__).name)
 
 
-@pytest.mark.parametrize("path", _modules(), ids=lambda p: p.name)
-def test_every_late_import_sits_under_a_skip_guard(path: pathlib.Path) -> None:
-    lines = path.read_text(encoding="utf-8").split("\n")
-    for number, line in enumerate(lines, start=1):
-        if not line.startswith(("import ", "from ")) or SUPPRESSION not in line:
-            continue
-        preceding = "\n".join(lines[: number - 1])
-        assert any(guard in preceding for guard in GUARDS), (
-            f"{path.name}:{number} imports below the module header behind "
-            f"{SUPPRESSION!r} with no skip guard above it. Move it into the "
-            "header block; the suppression is only for an import that cannot "
-            "run until an importorskip has passed."
-        )
+def test_every_late_import_sits_under_a_skip_guard() -> None:
+    """One scan of the corpus; the message names every offender."""
+    offenders: list[str] = []
+    for path in _modules():
+        lines = path.read_text(encoding="utf-8").split("\n")
+        for number, line in enumerate(lines, start=1):
+            if not line.startswith(("import ", "from ")) or SUPPRESSION not in line:
+                continue
+            preceding = "\n".join(lines[: number - 1])
+            if not any(guard in preceding for guard in GUARDS):
+                offenders.append(f"{path.name}:{number}")
+    assert offenders == [], (
+        f"these import below the module header behind {SUPPRESSION!r} with no "
+        "skip guard above them. Move them into the header block; the "
+        "suppression is only for an import that cannot run until an "
+        f"importorskip has passed: {offenders}"
+    )
 
 
 def test_the_scan_recognises_an_unguarded_late_import() -> None:

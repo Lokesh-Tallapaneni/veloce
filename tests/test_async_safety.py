@@ -8,6 +8,7 @@ import orjson
 import pytest
 
 import veloce
+from tests._protocol import _FakeTransport, _run_until
 from tests.conftest import make_request
 from veloce import Request, StreamingResponse, Veloce
 from veloce.serving.protocol import HttpProtocol
@@ -39,11 +40,55 @@ def test_no_module_uses_the_deprecated_event_loop_accessor(path):
 
 
 class TestTaskStrongReferences:
-    """Verify fire-and-forget tasks are held to prevent GC."""
+    """A fire-and-forget task is held in `_active_tasks` while it runs.
 
-    def test_protocol_has_active_tasks_set(self):
-        assert hasattr(HttpProtocol, "_active_tasks")
-        assert isinstance(HttpProtocol._active_tasks, set)
+    The class used to assert only that the attribute existed and was a `set`,
+    which is true whether or not anything is ever put in it - and "nothing is
+    put in it" is precisely the GC-safety bug. The suite's autouse leak
+    detector cannot catch it either: it inspects what is already in the set.
+
+    The task this reaches is the per-connection serve loop, which nothing else
+    references once `create_task` returns. The other two holds - the detached
+    handler left alive by a shield timeout, and the WebSocket task - need their
+    own transports to reach and are not covered here.
+    """
+
+    def test_the_connection_serve_loop_is_held_while_it_runs(self):
+        app = Veloce(openapi_url=None)
+        parked = asyncio.Event()
+        arrived = asyncio.Event()
+
+        @app.get("/park")
+        async def park():
+            arrived.set()
+            await parked.wait()
+            return {"ok": True}
+
+        loop = asyncio.new_event_loop()
+        try:
+            proto = HttpProtocol(app, loop)
+            proto.connection_made(_FakeTransport())
+            # Sampled *after* `connection_made`, which puts the connection's own
+            # server loop in the set: counting that would make this pass whether
+            # or not the request task is ever held.
+            before = set(HttpProtocol._active_tasks)
+            proto.data_received(b"GET /park HTTP/1.1\r\nHost: t\r\n\r\n")
+
+            _run_until(loop, arrived.is_set)
+            assert arrived.is_set(), "the handler never ran"
+            held = set(HttpProtocol._active_tasks) - before
+            assert held, "the connection's serve loop was not held in `_active_tasks`"
+            assert all("_serve" in repr(task) for task in held), held
+
+            parked.set()
+            _run_until(loop, lambda: not (set(HttpProtocol._active_tasks) - before))
+            assert not (set(HttpProtocol._active_tasks) - before), (
+                "the task stayed in `_active_tasks` after finishing"
+            )
+        finally:
+            parked.set()
+            HttpProtocol._active_tasks.difference_update(set(HttpProtocol._active_tasks) - before)
+            loop.close()
 
     def test_protocol_has_keep_alive_timeout(self):
         assert HttpProtocol.KEEP_ALIVE_TIMEOUT == 75
