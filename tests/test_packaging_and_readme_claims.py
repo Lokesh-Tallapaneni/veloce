@@ -33,7 +33,6 @@ import importlib.metadata as metadata
 import importlib.util
 import pathlib
 import re
-import re as _re
 import warnings
 
 import pytest
@@ -234,7 +233,7 @@ def test_the_floors_quoted_in_the_docs_match_the_manifest():
     """A worked example that drifts from the manifest teaches the wrong number."""
     page = ROOT / "docs/deployment/versions.md"
     section = page.read_text(encoding="utf-8").split("## How Veloce pins its own", 1)[1]
-    quoted = dict(_re.findall(r'"([a-z0-9-]+)>=([0-9.]+)"', section))
+    quoted = dict(re.findall(r'"([a-z0-9-]+)>=([0-9.]+)"', section))
     # Same hazard: if the page stops quoting versions in this style the
     # loop below runs zero times and reports nothing.
     assert quoted, "the versions page quoted no pinned dependency"

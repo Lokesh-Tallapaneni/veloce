@@ -28,6 +28,7 @@ answers - values and error payloads alike - to be identical.
 
 from __future__ import annotations
 
+import ast
 import enum
 import linecache
 from typing import Literal
@@ -50,6 +51,22 @@ def _source(handler) -> str:
     resolver = _compile(handler)
     assert resolver is not None, "handler did not compile"
     return "".join(linecache.getlines(resolver.__code__.co_filename))
+
+
+def _calls(handler, name: str) -> int:
+    """How many times the generated resolver calls `name(...)` directly.
+
+    `"int(" in source` is an unanchored substring: it is satisfied by any
+    identifier ending in `int`, so a regression from the inlined conversion to
+    a helper named `coerce_int(` or `_to_int(` would keep the assertion green
+    while removing the thing it exists to prove. Parsing counts the call by its
+    callee, not by its spelling.
+    """
+    return sum(
+        1
+        for node in ast.walk(ast.parse(_source(handler)))
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == name
+    )
 
 
 class Colour(enum.Enum):
@@ -82,8 +99,7 @@ def test_an_int_parameter_emits_the_conversion_itself():
     async def h(q: int = 0):
         return q
 
-    source = _source(h)
-    assert "int(" in source
+    assert _calls(h, "int") >= 1
 
 
 def test_a_float_parameter_emits_the_conversion_itself():
@@ -114,8 +130,8 @@ def test_a_mixed_handler_inlines_only_what_it_can():
         return name
 
     source = _source(h)
-    assert "int(" in source  # age
-    assert "_cv(" in source  # shade
+    assert _calls(h, "int") >= 1, "the int conversion is no longer inlined"
+    assert "_cv(" in source, "the enum still goes through the converter"
 
 
 # ── positive: values arrive correctly ────────────────────────────────
