@@ -12,6 +12,7 @@ import gzip
 import zlib
 
 from tests._asgi_drive import drive
+from tests.conftest import make_request
 from veloce import EventSourceResponse, GZipMiddleware, Request, Veloce
 from veloce.http.response import StreamingResponse
 
@@ -155,13 +156,7 @@ async def test_streaming_delivers_decodable_frame_per_chunk():
     # compressor directly and assert each yielded output advances a streaming
     # decompressor by the corresponding plaintext chunk - i.e. data is
     # deliverable before the final Z_FINISH trailer is written.
-    request = Request(
-        method="GET",
-        path="/",
-        query_string="",
-        headers=[(b"accept-encoding", b"gzip")],
-        body=b"",
-    )
+    request = make_request(headers={"accept-encoding": "gzip"})
 
     chunks = [b'{"line": %d}\n' % i for i in range(8)]
 

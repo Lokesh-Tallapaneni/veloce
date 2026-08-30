@@ -29,7 +29,14 @@ TESTS = pathlib.Path(__file__).resolve().parent
 #: Modules still constructing `Request(...)` without the shared factory. This is
 #: a ceiling, not a target: it is expected to fall as those are converted, and
 #: lowering it is the point. It must never be raised.
-DIRECT_CONSTRUCTION_CEILING = 68
+DIRECT_CONSTRUCTION_CEILING = 63
+
+#: Modules that still wrap the factory in a private forwarder. A second ceiling,
+#: for the same reason and with the same rule: it may fall, never rise. The
+#: ratchet above cannot see these - a forwarder calls `make_request`, not
+#: `Request` - so without this one the pattern it exists to drive out can grow
+#: unobserved.
+FACTORY_WRAPPER_CEILING = 69
 
 
 def _modules_constructing_request() -> list[str]:
@@ -41,6 +48,37 @@ def _modules_constructing_request() -> list[str]:
             continue
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "Request":
+                found.append(path.name)
+                break
+    return found
+
+
+def _modules_wrapping_the_factory() -> list[str]:
+    """Modules defining a private `_req`-style function that only forwards.
+
+    The migration converted these wrappers' *bodies* to call `make_request` and
+    left the wrapper layer, so the ratchet above stopped seeing them: it matches
+    `Request(...)` calls, and a forwarder makes none. A reader still has to open
+    each module to learn what `_req("/x")` defaults to, and a new forwarder
+    could be added without anything noticing.
+    """
+    found = []
+    for path in sorted(TESTS.rglob("test_*.py")):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except SyntaxError:  # pragma: no cover - a broken test module fails elsewhere
+            continue
+        for node in tree.body:
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if not node.name.startswith("_req") and not node.name.startswith("_request"):
+                continue
+            calls = {
+                call.func.id
+                for call in ast.walk(node)
+                if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+            }
+            if "make_request" in calls:
                 found.append(path.name)
                 break
     return found
@@ -58,6 +96,7 @@ def _modules_importing_the_factory() -> list[str]:
 # re-parsed all ~750 test modules - three of the suite's six slowest tests, for
 # one answer computed three times.
 CONSTRUCTING = _modules_constructing_request()
+WRAPPING = _modules_wrapping_the_factory()
 IMPORTING = _modules_importing_the_factory()
 
 
@@ -133,3 +172,23 @@ def test_the_defaults_build_a_usable_request():
     request = make_request()
     assert request.method == "GET"
     assert request.path == "/"
+
+
+def test_no_new_module_wraps_the_factory_in_a_forwarder():
+    """A private `_req` that only forwards is the wrapper layer, not the copy.
+
+    The first ratchet counts hand-built `Request(...)`; this one counts the
+    forwarders the migration left behind, which that scan structurally cannot
+    see. Both are ceilings: convert modules to call `make_request` directly and
+    lower the number.
+    """
+    assert len(WRAPPING) <= FACTORY_WRAPPER_CEILING, (
+        f"{len(WRAPPING)} modules wrap `make_request` in a private forwarder, "
+        f"above the ceiling of {FACTORY_WRAPPER_CEILING}. Call `make_request` "
+        "directly instead of adding another wrapper."
+    )
+
+
+def test_the_wrapper_scan_reads_a_real_corpus():
+    """A scan of nothing would satisfy the ceiling above."""
+    assert len(WRAPPING) > 20

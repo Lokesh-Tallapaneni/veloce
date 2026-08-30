@@ -3,25 +3,14 @@
 from __future__ import annotations
 
 from tests.conftest import make_request
-from veloce import Request
 from veloce.contrib.staticfiles import StaticFiles
-
-
-def _req(path: str, headers: dict | None = None) -> Request:
-    return make_request(
-        method="GET",
-        path=path,
-        query_string="",
-        headers=headers or {},
-        body=b"",
-    )
 
 
 async def test_serves_br_when_accepted(tmp_path):
     (tmp_path / "app.css").write_bytes(b"body{color:red}")
     (tmp_path / "app.css.br").write_bytes(b"BR-COMPRESSED")
     sf = StaticFiles(directory=str(tmp_path), prefix="/s", precompressed=True)
-    resp = await sf.handle(_req("/s/app.css", {"Accept-Encoding": "br, gzip"}))
+    resp = await sf.handle(make_request(path="/s/app.css", headers={"Accept-Encoding": "br, gzip"}))
     assert resp.status_code == 200
     assert resp.headers["Content-Encoding"] == "br"
     assert resp.headers["Vary"] == "Accept-Encoding"
@@ -35,7 +24,9 @@ async def test_qvalue_picks_gzip_over_br(tmp_path):
     (tmp_path / "app.css.br").write_bytes(b"BR")
     (tmp_path / "app.css.gz").write_bytes(b"GZIP")
     sf = StaticFiles(directory=str(tmp_path), prefix="/s", precompressed=True)
-    resp = await sf.handle(_req("/s/app.css", {"Accept-Encoding": "br;q=0.1, gzip;q=0.9"}))
+    resp = await sf.handle(
+        make_request(path="/s/app.css", headers={"Accept-Encoding": "br;q=0.1, gzip;q=0.9"})
+    )
     assert resp.status_code == 200
     assert resp.headers["Content-Encoding"] == "gzip"
     assert resp.body == b"GZIP"
@@ -48,7 +39,9 @@ async def test_falls_back_to_next_accepted_variant(tmp_path):
     (tmp_path / "app.css").write_bytes(b"body{color:red}")
     (tmp_path / "app.css.gz").write_bytes(b"GZIP")
     sf = StaticFiles(directory=str(tmp_path), prefix="/s", precompressed=True)
-    resp = await sf.handle(_req("/s/app.css", {"Accept-Encoding": "br;q=1, gzip;q=0.5"}))
+    resp = await sf.handle(
+        make_request(path="/s/app.css", headers={"Accept-Encoding": "br;q=1, gzip;q=0.5"})
+    )
     assert resp.status_code == 200
     assert resp.headers["Content-Encoding"] == "gzip"
     assert resp.headers["Vary"] == "Accept-Encoding"
@@ -59,7 +52,7 @@ async def test_qzero_rejects_encoding(tmp_path):
     (tmp_path / "app.css").write_bytes(b"RAW")
     (tmp_path / "app.css.br").write_bytes(b"BR")
     sf = StaticFiles(directory=str(tmp_path), prefix="/s", precompressed=True)
-    resp = await sf.handle(_req("/s/app.css", {"Accept-Encoding": "br;q=0"}))
+    resp = await sf.handle(make_request(path="/s/app.css", headers={"Accept-Encoding": "br;q=0"}))
     assert resp.status_code == 200
     assert "Content-Encoding" not in resp.headers
     assert resp.body == b"RAW"
@@ -74,7 +67,9 @@ async def test_explicit_qzero_overrides_wildcard(tmp_path):
     (tmp_path / "app.css.br").write_bytes(b"BR")
     (tmp_path / "app.css.gz").write_bytes(b"GZIP")
     sf = StaticFiles(directory=str(tmp_path), prefix="/s", precompressed=True)
-    resp = await sf.handle(_req("/s/app.css", {"Accept-Encoding": "br;q=0, *;q=1"}))
+    resp = await sf.handle(
+        make_request(path="/s/app.css", headers={"Accept-Encoding": "br;q=0, *;q=1"})
+    )
     assert resp.status_code == 200
     assert resp.headers["Content-Encoding"] == "gzip"
     assert resp.body == b"GZIP"
@@ -87,7 +82,9 @@ async def test_explicit_qzero_all_codings_serves_identity(tmp_path):
     (tmp_path / "app.css.br").write_bytes(b"BR")
     (tmp_path / "app.css.gz").write_bytes(b"GZIP")
     sf = StaticFiles(directory=str(tmp_path), prefix="/s", precompressed=True)
-    resp = await sf.handle(_req("/s/app.css", {"Accept-Encoding": "br;q=0, gzip;q=0, *;q=1"}))
+    resp = await sf.handle(
+        make_request(path="/s/app.css", headers={"Accept-Encoding": "br;q=0, gzip;q=0, *;q=1"})
+    )
     assert resp.status_code == 200
     assert "Content-Encoding" not in resp.headers
     assert resp.body == b"RAW"
@@ -100,7 +97,7 @@ async def test_wildcard_only_selects_variant(tmp_path):
     (tmp_path / "app.css.br").write_bytes(b"BR")
     (tmp_path / "app.css.gz").write_bytes(b"GZIP")
     sf = StaticFiles(directory=str(tmp_path), prefix="/s", precompressed=True)
-    resp = await sf.handle(_req("/s/app.css", {"Accept-Encoding": "*"}))
+    resp = await sf.handle(make_request(path="/s/app.css", headers={"Accept-Encoding": "*"}))
     assert resp.status_code == 200
     assert resp.headers["Content-Encoding"] == "br"
     assert resp.body == b"BR"
@@ -109,7 +106,7 @@ async def test_wildcard_only_selects_variant(tmp_path):
 async def test_no_sibling_falls_through(tmp_path):
     (tmp_path / "app.css").write_bytes(b"RAW")
     sf = StaticFiles(directory=str(tmp_path), prefix="/s", precompressed=True)
-    resp = await sf.handle(_req("/s/app.css", {"Accept-Encoding": "br, gzip"}))
+    resp = await sf.handle(make_request(path="/s/app.css", headers={"Accept-Encoding": "br, gzip"}))
     assert resp.status_code == 200
     assert "Content-Encoding" not in resp.headers
     assert resp.body == b"RAW"
@@ -119,7 +116,7 @@ async def test_disabled_by_default(tmp_path):
     (tmp_path / "app.css").write_bytes(b"RAW")
     (tmp_path / "app.css.br").write_bytes(b"BR")
     sf = StaticFiles(directory=str(tmp_path), prefix="/s")
-    resp = await sf.handle(_req("/s/app.css", {"Accept-Encoding": "br, gzip"}))
+    resp = await sf.handle(make_request(path="/s/app.css", headers={"Accept-Encoding": "br, gzip"}))
     assert resp.status_code == 200
     assert "Content-Encoding" not in resp.headers
     assert resp.body == b"RAW"
@@ -129,9 +126,11 @@ async def test_etag_matches_compressed_bytes(tmp_path):
     (tmp_path / "app.css").write_bytes(b"RAW")
     (tmp_path / "app.css.br").write_bytes(b"BR-COMPRESSED")
     sf = StaticFiles(directory=str(tmp_path), prefix="/s", precompressed=True)
-    first = await sf.handle(_req("/s/app.css", {"Accept-Encoding": "br"}))
+    first = await sf.handle(make_request(path="/s/app.css", headers={"Accept-Encoding": "br"}))
     etag = first.headers["ETag"]
-    second = await sf.handle(_req("/s/app.css", {"Accept-Encoding": "br", "If-None-Match": etag}))
+    second = await sf.handle(
+        make_request(path="/s/app.css", headers={"Accept-Encoding": "br", "If-None-Match": etag})
+    )
     assert second.status_code == 304
 
 
@@ -139,7 +138,9 @@ async def test_range_over_precompressed(tmp_path):
     (tmp_path / "app.css").write_bytes(b"RAW")
     (tmp_path / "app.css.br").write_bytes(b"BRCOMPRESSEDBYTES")
     sf = StaticFiles(directory=str(tmp_path), prefix="/s", precompressed=True)
-    resp = await sf.handle(_req("/s/app.css", {"Accept-Encoding": "br", "Range": "bytes=0-3"}))
+    resp = await sf.handle(
+        make_request(path="/s/app.css", headers={"Accept-Encoding": "br", "Range": "bytes=0-3"})
+    )
     assert resp.status_code == 206
     assert resp.headers["Content-Encoding"] == "br"
     assert resp.headers["Vary"] == "Accept-Encoding"
@@ -153,7 +154,7 @@ async def test_missing_accept_encoding_serves_raw(tmp_path):
     (tmp_path / "app.css.br").write_bytes(b"BR")
     sf = StaticFiles(directory=str(tmp_path), prefix="/s", precompressed=True)
     # No Accept-Encoding header at all: the quality>0 gate must reject br.
-    resp = await sf.handle(_req("/s/app.css"))
+    resp = await sf.handle(make_request(path="/s/app.css"))
     assert resp.status_code == 200
     assert "Content-Encoding" not in resp.headers
     assert resp.body == b"RAW"
@@ -168,7 +169,7 @@ async def test_identity_precompressed_carries_vary(tmp_path):
     (tmp_path / "app.css").write_bytes(b"RAW")
     (tmp_path / "app.css.br").write_bytes(b"BR")
     sf = StaticFiles(directory=str(tmp_path), prefix="/s", precompressed=True)
-    resp = await sf.handle(_req("/s/app.css"))
+    resp = await sf.handle(make_request(path="/s/app.css"))
     assert resp.status_code == 200
     assert "Content-Encoding" not in resp.headers
     assert resp.headers["Vary"] == "Accept-Encoding"
@@ -181,7 +182,7 @@ async def test_identity_precompressed_range_carries_vary(tmp_path):
     (tmp_path / "app.css").write_bytes(b"RAWBYTES")
     (tmp_path / "app.css.br").write_bytes(b"BR")
     sf = StaticFiles(directory=str(tmp_path), prefix="/s", precompressed=True)
-    resp = await sf.handle(_req("/s/app.css", {"Range": "bytes=0-2"}))
+    resp = await sf.handle(make_request(path="/s/app.css", headers={"Range": "bytes=0-2"}))
     assert resp.status_code == 206
     assert "Content-Encoding" not in resp.headers
     assert resp.headers["Vary"] == "Accept-Encoding"
@@ -196,7 +197,9 @@ async def test_406_when_identity_rejected_and_no_variant(tmp_path):
     (tmp_path / "app.css").write_bytes(b"body{color:red}")
     sf = StaticFiles(directory=str(tmp_path), prefix="/s", precompressed=True)
     resp = await sf.handle(
-        _req("/s/app.css", {"Accept-Encoding": "identity;q=0, br;q=0, gzip;q=0"})
+        make_request(
+            path="/s/app.css", headers={"Accept-Encoding": "identity;q=0, br;q=0, gzip;q=0"}
+        )
     )
     assert resp.status_code == 406
 
@@ -206,7 +209,7 @@ async def test_identity_served_when_no_accept_encoding(tmp_path):
     # acceptable and the uncompressed asset is served with 200.
     (tmp_path / "app.css").write_bytes(b"body{color:red}")
     sf = StaticFiles(directory=str(tmp_path), prefix="/s", precompressed=True)
-    resp = await sf.handle(_req("/s/app.css"))
+    resp = await sf.handle(make_request(path="/s/app.css"))
     assert resp.status_code == 200
     assert resp.body == b"body{color:red}"
     assert "Content-Encoding" not in resp.headers
@@ -217,7 +220,9 @@ async def test_identity_served_when_only_compression_rejected(tmp_path):
     # uncompressed asset is still acceptable (200), not 406.
     (tmp_path / "app.css").write_bytes(b"body{color:red}")
     sf = StaticFiles(directory=str(tmp_path), prefix="/s", precompressed=True)
-    resp = await sf.handle(_req("/s/app.css", {"Accept-Encoding": "br;q=0, gzip;q=0"}))
+    resp = await sf.handle(
+        make_request(path="/s/app.css", headers={"Accept-Encoding": "br;q=0, gzip;q=0"})
+    )
     assert resp.status_code == 200
     assert resp.body == b"body{color:red}"
     assert "Content-Encoding" not in resp.headers
@@ -229,6 +234,8 @@ async def test_precompressed_false_ignores_identity_rejection(tmp_path):
     # unchanged from a plain static handler.
     (tmp_path / "app.css").write_bytes(b"body{color:red}")
     sf = StaticFiles(directory=str(tmp_path), prefix="/s", precompressed=False)
-    resp = await sf.handle(_req("/s/app.css", {"Accept-Encoding": "identity;q=0"}))
+    resp = await sf.handle(
+        make_request(path="/s/app.css", headers={"Accept-Encoding": "identity;q=0"})
+    )
     assert resp.status_code == 200
     assert resp.body == b"body{color:red}"
