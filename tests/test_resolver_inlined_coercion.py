@@ -35,20 +35,13 @@ from typing import Literal
 
 import pytest
 
+from tests._resolver import resolver_for
 from veloce import Depends, Header, Path, Query, Veloce
-from veloce._handler_plan import build_plan
-from veloce._resolver_codegen import compile_param_resolver
-from veloce.dependency import _coerce_value
-from veloce.exceptions import RequestValidationError
 from veloce.testclient import TestClient
 
 
-def _compile(handler):
-    return compile_param_resolver(build_plan(handler), _coerce_value, RequestValidationError)
-
-
 def _source(handler) -> str:
-    resolver = _compile(handler)
+    resolver = resolver_for(handler)
     assert resolver is not None, "handler did not compile"
     return "".join(linecache.getlines(resolver.__code__.co_filename))
 
@@ -287,8 +280,8 @@ def test_the_two_paths_are_actually_different_paths():
     async def interpreted(n: int = 0, _d: int = Depends(_dep)):
         return n
 
-    assert _compile(compiled) is not None
-    assert _compile(interpreted) is None
+    assert resolver_for(compiled) is not None
+    assert resolver_for(interpreted) is None
 
 
 @pytest.mark.parametrize(("kind", "raw"), [("int", "abc"), ("float", "abc"), ("int", "")])

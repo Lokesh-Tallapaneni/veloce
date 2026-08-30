@@ -6,6 +6,7 @@ import inspect
 import linecache
 import traceback
 
+from tests._resolver import resolver_for
 from veloce import (
     Body,
     Cookie,
@@ -19,14 +20,8 @@ from veloce import (
     Veloce,
 )
 from veloce._handler_plan import build_plan
-from veloce._resolver_codegen import compile_param_resolver
-from veloce.dependency import DependencyResolver, _coerce_value
-from veloce.exceptions import RequestValidationError
+from veloce.dependency import DependencyResolver
 from veloce.http.request import Request
-
-
-def _compile(handler):
-    return compile_param_resolver(build_plan(handler), _coerce_value, RequestValidationError)
 
 
 def _q_errors(resp):
@@ -54,8 +49,8 @@ def test_422_payload_parity_compiled_vs_interpreter():
 
     client = TestClient(app)
     # Both paths must actually be what we think they are.
-    assert _compile(compiled) is not None  # compiled path
-    assert _compile(interp) is None  # falls back to interpreter
+    assert resolver_for(compiled) is not None  # compiled path
+    assert resolver_for(interp) is None  # falls back to interpreter
 
     # Missing required.
     assert _q_errors(client.get("/compiled")) == _q_errors(client.get("/interp"))
@@ -67,14 +62,14 @@ def test_compiles_request_only_handler():
     async def h(request):
         return None
 
-    assert _compile(h) is not None
+    assert resolver_for(h) is not None
 
 
 def test_compiles_scalar_path_and_query_handler():
     async def h(x: int, y: str = "d"):
         return None
 
-    assert _compile(h) is not None
+    assert resolver_for(h) is not None
 
 
 def test_does_not_compile_dependency_handler():
@@ -84,7 +79,7 @@ def test_does_not_compile_dependency_handler():
     async def h(x: int, d: int = Depends(dep)):
         return None
 
-    assert _compile(h) is None
+    assert resolver_for(h) is None
 
 
 def test_compiles_sync_marker_handler():
@@ -93,7 +88,7 @@ def test_compiles_sync_marker_handler():
     async def h(q: int = Query(gt=0)):
         return None
 
-    assert _compile(h) is not None
+    assert resolver_for(h) is not None
 
 
 def test_does_not_compile_unmarked_list_param():
@@ -101,7 +96,7 @@ def test_does_not_compile_unmarked_list_param():
     async def h(tags: list[str]):
         return None
 
-    assert _compile(h) is None
+    assert resolver_for(h) is None
 
 
 def test_does_not_compile_body_marker():
@@ -109,21 +104,21 @@ def test_does_not_compile_body_marker():
         return None
 
     # Body reads `await request.json()`, unreachable from the sync resolver.
-    assert _compile(h) is None
+    assert resolver_for(h) is None
 
 
 def test_does_not_compile_form_marker():
     async def h(p: str = Form()):
         return None
 
-    assert _compile(h) is None
+    assert resolver_for(h) is None
 
 
 def test_does_not_compile_file_marker():
     async def h(p: bytes = File()):
         return None
 
-    assert _compile(h) is None
+    assert resolver_for(h) is None
 
 
 def test_query_marker_present_default_optional_and_constraint():
@@ -137,7 +132,7 @@ def test_query_marker_present_default_optional_and_constraint():
     ):
         return {"q": q, "page": page, "opt": opt}
 
-    assert _compile(q_route) is not None
+    assert resolver_for(q_route) is not None
     client = TestClient(app)
     # Present value, default fallback, optional -> None.
     assert client.get("/q?q=5").json() == {"q": 5, "page": 1, "opt": None}
@@ -160,7 +155,7 @@ def test_header_marker_present_default_and_missing():
     ):
         return {"token": token, "ua": ua}
 
-    assert _compile(h_route) is not None
+    assert resolver_for(h_route) is not None
     client = TestClient(app)
     assert client.get("/h", headers={"x-token": "abc"}).json() == {"token": "abc", "ua": "none"}
     assert client.get("/h", headers={"x-token": "abc", "x-ua": "veloce"}).json() == {
@@ -178,7 +173,7 @@ def test_cookie_marker_present_and_optional():
     async def c_route(sid: str | None = Cookie(default=None)):
         return {"sid": sid}
 
-    assert _compile(c_route) is not None
+    assert resolver_for(c_route) is not None
     client = TestClient(app)
     assert client.get("/c").json() == {"sid": None}
     assert client.get("/c", headers={"cookie": "sid=xyz"}).json() == {"sid": "xyz"}
@@ -191,7 +186,7 @@ def test_path_marker_scalar():
     async def p_route(item_id: int = Path(gt=0)):
         return {"item_id": item_id}
 
-    assert _compile(p_route) is not None
+    assert resolver_for(p_route) is not None
     client = TestClient(app)
     assert client.get("/p/7").json() == {"item_id": 7}
     # Constraint failure on the path value.
@@ -205,7 +200,7 @@ def test_list_typed_query_marker():
     async def tags_route(tags: list[str] = Query(default=[])):
         return {"tags": tags}
 
-    assert _compile(tags_route) is not None
+    assert resolver_for(tags_route) is not None
     client = TestClient(app)
     assert client.get("/tags?tags=a&tags=b").json() == {"tags": ["a", "b"]}
     # Empty -> default.
@@ -219,7 +214,7 @@ def test_list_typed_query_marker_int_coercion():
     async def nums_route(nums: list[int] = Query(default=[])):
         return {"nums": nums}
 
-    assert _compile(nums_route) is not None
+    assert resolver_for(nums_route) is not None
     client = TestClient(app)
     assert client.get("/nums?nums=1&nums=2&nums=3").json() == {"nums": [1, 2, 3]}
 
@@ -240,8 +235,8 @@ def test_marker_parity_compiled_vs_interpreter():
     async def interp(q: int = Query(gt=0), _d: int = Depends(_dep)):
         return {"q": q}
 
-    assert _compile(compiled) is not None
-    assert _compile(interp) is None
+    assert resolver_for(compiled) is not None
+    assert resolver_for(interp) is None
     client = TestClient(app)
 
     def _detail(resp):
@@ -369,12 +364,6 @@ async def test_reused_resolver_clears_state_before_compiled_path():
 # resolver, written at registration time, and nothing per request.
 
 
-def _resolver_of(handler):
-
-    plan = build_plan(handler)
-    return compile_param_resolver(plan, _coerce_value, RequestValidationError)
-
-
 async def _one(q: int = 0):
     return q
 
@@ -385,7 +374,7 @@ async def _two(page: int = 1):
 
 def test_the_generated_frame_shows_its_source():
     """The defect: a traceback through generated code showed no line."""
-    resolver = _resolver_of(_one)
+    resolver = resolver_for(_one)
     filename = resolver.__code__.co_filename
     frame = traceback.StackSummary.from_list([(filename, 2, "_resolver", None)]).format()
     rendered = "".join(frame)
@@ -397,19 +386,19 @@ def test_the_generated_frame_shows_its_source():
 
 def test_each_resolver_gets_its_own_filename():
     """One shared name meant one resolver's source described them all."""
-    first = _resolver_of(_one)
-    second = _resolver_of(_two)
+    first = resolver_for(_one)
+    second = resolver_for(_two)
     assert first.__code__.co_filename != second.__code__.co_filename
 
 
 def test_the_filename_names_the_handler():
     """So a frame identifies which route generated it."""
-    assert "_one" in _resolver_of(_one).__code__.co_filename
+    assert "_one" in resolver_for(_one).__code__.co_filename
 
 
 def test_the_registered_source_is_the_resolver_that_ran():
     """A per-resolver entry must hold that resolver's own code."""
-    resolver = _resolver_of(_one)
+    resolver = resolver_for(_one)
     source = "".join(linecache.getlines(resolver.__code__.co_filename))
     assert "def _resolver(" in source
     assert "'q'" in source or '"q"' in source
@@ -418,7 +407,7 @@ def test_the_registered_source_is_the_resolver_that_ran():
 def test_checkcache_does_not_evict_the_entry():
     """`linecache.checkcache` runs on every traceback; a stat-based entry for a
     filename with no file on disk would be dropped before it was ever read."""
-    resolver = _resolver_of(_one)
+    resolver = resolver_for(_one)
     filename = resolver.__code__.co_filename
     assert linecache.getline(filename, 1) != ""
     linecache.checkcache()
@@ -426,7 +415,7 @@ def test_checkcache_does_not_evict_the_entry():
 
 
 def test_inspect_can_read_the_generated_source():
-    resolver = _resolver_of(_one)
+    resolver = resolver_for(_one)
     assert "def _resolver(" in inspect.getsource(resolver)
 
 
@@ -481,7 +470,7 @@ def test_registration_still_returns_a_working_resolver():
 def test_the_filename_is_stable_for_the_same_generated_code():
     """Documented in the debugging guide: the digest changes only when the
     generated code does, so a frame is comparable across runs and processes."""
-    assert _resolver_of(_one).__code__.co_filename == _resolver_of(_one).__code__.co_filename
+    assert resolver_for(_one).__code__.co_filename == resolver_for(_one).__code__.co_filename
 
 
 def test_recompiling_one_plan_adds_one_cache_entry():
@@ -489,13 +478,13 @@ def test_recompiling_one_plan_adds_one_cache_entry():
     route or a test suite would accumulate an entry per compile, never freed."""
     before = {k for k in linecache.cache if k.startswith("<veloce-")}
     for _ in range(25):
-        _resolver_of(_one)
+        resolver_for(_one)
     after = {k for k in linecache.cache if k.startswith("<veloce-")}
     assert len(after - before) <= 1
 
 
 def test_a_different_plan_gets_its_own_entry():
     """Bounded must not mean shared: two resolvers keep two sources."""
-    first = _resolver_of(_one).__code__.co_filename
-    second = _resolver_of(_two).__code__.co_filename
+    first = resolver_for(_one).__code__.co_filename
+    second = resolver_for(_two).__code__.co_filename
     assert first != second
