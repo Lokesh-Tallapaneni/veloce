@@ -62,12 +62,27 @@ def _parse_digest(value: str) -> HTTPDigestCredentials:
     )
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, repr=False, eq=False)
 class HTTPBasicCredentials:
-    """HTTP Basic auth credentials."""
+    """HTTP Basic auth credentials.
+
+    `eq=False` keeps the identity equality - and so the hashability - these
+    credentials had before they were a dataclass; a generated `__eq__` sets
+    `__hash__` to `None`, which stops them being usable as a dict key or set
+    member.
+    """
 
     username: str
     password: str
+
+    def __repr__(self) -> str:
+        # The password is masked, following `Secret`: a credential object sits in
+        # the frame locals of everything downstream of `Depends(HTTPBasic())`, so
+        # a generated field-rendering repr writes the plaintext into any error
+        # tracker that captures locals and into every `%r`-formatted log line.
+        # The username is kept - a render that identifies nothing is not worth
+        # having.
+        return f"HTTPBasicCredentials(username={self.username!r}, password='***')"
 
 
 class HTTPBasic(SecurityScheme):
@@ -139,9 +154,13 @@ class HTTPBasic(SecurityScheme):
         return {"type": "http", "scheme": "basic"}
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, repr=False, eq=False)
 class HTTPDigestCredentials:
-    """Parsed Digest auth challenge response - RFC 7616 Sec. 3.4."""
+    """Parsed Digest auth challenge response - RFC 7616 Sec. 3.4.
+
+    `eq=False` for the same reason as `HTTPBasicCredentials`: it keeps the
+    identity equality, and the hashability, these had before the dataclass.
+    """
 
     username: str = ""
     realm: str = ""
@@ -153,6 +172,18 @@ class HTTPDigestCredentials:
     cnonce: str = ""
     opaque: str = ""
     algorithm: str = ""
+
+    def __repr__(self) -> str:
+        # `response` is the keyed digest that authenticates the request (RFC 7616
+        # Sec. 3.4) - the one field here that is credential material, and replayable
+        # for the nonce's lifetime. The rest describe the exchange and are what
+        # make the render useful, so they are shown.
+        return (
+            f"HTTPDigestCredentials(username={self.username!r}, realm={self.realm!r}, "
+            f"nonce={self.nonce!r}, uri={self.uri!r}, response='***', qop={self.qop!r}, "
+            f"nc={self.nc!r}, cnonce={self.cnonce!r}, opaque={self.opaque!r}, "
+            f"algorithm={self.algorithm!r})"
+        )
 
 
 class HTTPDigest(SecurityScheme):
