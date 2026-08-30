@@ -14,7 +14,7 @@ import pytest
 from pydantic import BaseModel
 
 from veloce import Veloce
-from veloce.app import _URLMap
+from veloce.app import URLMap
 from veloce.background import BackgroundTask
 from veloce.blueprints import Blueprint
 from veloce.http.response import JSONResponse, Response
@@ -72,9 +72,9 @@ def test_url_map_cached_until_route_added():
     first = app.url_map
     second = app.url_map
     assert first is second
-    assert isinstance(first, _URLMap)
+    assert isinstance(first, URLMap)
 
-    # _URLMap's internal _build() cache also stable across access
+    # URLMap's internal _build() cache also stable across access
     list_a = list(first)
     list_b = list(first)
     assert [r.endpoint for r in list_a] == [r.endpoint for r in list_b]

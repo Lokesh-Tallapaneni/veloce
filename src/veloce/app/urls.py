@@ -38,7 +38,7 @@ class URLRule:
         return f"<URLRule {self.endpoint}: {','.join(self.methods)} {self.rule}>"
 
 
-class _URLMap:
+class URLMap:
     """Veloce's read-only `Map`-style route-table wrapper.
 
     Iterating yields `URLRule` objects in registration order (grouped

@@ -325,10 +325,16 @@ class AsgiMixin(AppHost):
         # general "emit an already-built Response" path, and the next caller
         # should not have to know the two branches disagreed.
         body_allowed = status.status_permits_body(response.status_code)
+        # RFC 9110 Sec. 8.6 / 15.4.5: a 304 sends no body but may carry the
+        # `Content-Length` the equivalent 200 would have, which is what both
+        # `Response.encode` and the buffered branch advertise. 1xx, 204 and 205
+        # have no representation, so their length is 0.
+        is_304 = response.status_code == status.HTTP_304_NOT_MODIFIED
+        advertised_length = len(body) if (body_allowed or is_304) else 0
         if not body_allowed:
             body = b""
         if not has_cl:
-            headers.append((RAW_HEADER_CONTENT_LENGTH, str(len(body)).encode("ascii")))
+            headers.append((RAW_HEADER_CONTENT_LENGTH, str(advertised_length).encode("ascii")))
         # An explicit handler-set content-type still survives via `has_ct`.
         if not has_ct and body_allowed:
             headers.append((RAW_HEADER_CONTENT_TYPE, _content_type_bytes(response.content_type)))

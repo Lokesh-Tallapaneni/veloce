@@ -63,10 +63,25 @@ async def test_a_bodiless_status_sends_no_body(status_code):
     assert body == b""
 
 
-@pytest.mark.parametrize("status_code", BODILESS)
+@pytest.mark.parametrize("status_code", [code for code in BODILESS if code != 304])
 async def test_a_bodiless_status_reports_zero_length(status_code):
+    """1xx, 204 and 205 have no representation, so their length is 0."""
     headers, _body = await _emit(status_code)
     assert headers["content-length"] == "0"
+
+
+async def test_a_304_advertises_the_length_the_200_would_have():
+    """The third rule this helper was out of step on.
+
+    RFC 9110 Sec. 8.6 / 15.4.5: a 304 sends no body but may carry the
+    `Content-Length` of the representation it is telling the client to reuse.
+    `Response.encode` and the buffered ASGI branch both advertise it; this path
+    advertised `0`, so the same response described itself two ways depending on
+    which emit it went through.
+    """
+    headers, body = await _emit(304, body=b"payload")
+    assert body == b""
+    assert headers["content-length"] == str(len(b"payload"))
 
 
 # ── and a body-permitting status is unaffected ───────────────────────

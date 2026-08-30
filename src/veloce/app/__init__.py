@@ -27,6 +27,6 @@ from veloce.app.dispatch import (
     _exc_handler_sig_cache,  # noqa: F401  - veloce.app._exc_handler_sig_cache
 )
 from veloce.app.plugins import Plugin
-from veloce.app.urls import URLRule, _URLMap  # noqa: F401  - veloce.app._URLMap
+from veloce.app.urls import URLMap, URLRule
 
-__all__ = ["Plugin", "URLRule", "Veloce"]
+__all__ = ["Plugin", "URLMap", "URLRule", "Veloce"]

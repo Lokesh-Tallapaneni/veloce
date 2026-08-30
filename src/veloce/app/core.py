@@ -51,7 +51,7 @@ from veloce.app.plugins import PluginsMixin
 from veloce.app.serving import ServingMixin
 from veloce.app.templating import TemplatingMixin
 from veloce.app.testing import TestingMixin
-from veloce.app.urls import _URLMap
+from veloce.app.urls import URLMap
 from veloce.audit import run as audit_run
 from veloce.blueprints import Blueprint, _resolve_scoped_chain
 from veloce.exceptions import (
@@ -156,7 +156,7 @@ class Veloce(
     # replace it with the built value.
     _cached_routes: list[dict[str, Any]] | None
     _cached_view_functions: dict[str, Callable] | None
-    _cached_url_map: _URLMap | None
+    _cached_url_map: URLMap | None
     _json_provider: Any
     _aborter: Any
     _cli_group: Any
@@ -520,7 +520,7 @@ class Veloce(
         self.config["SECRET_KEY"] = value
 
     @property
-    def url_map(self) -> _URLMap:
+    def url_map(self) -> URLMap:
         """Read-only mapping of registered URL rules.
 
         Iterating it yields `URLRule` objects (rule, methods, endpoint).
@@ -533,7 +533,7 @@ class Veloce(
         """
         cached = self._cached_url_map
         if cached is None:
-            cached = _URLMap(self)
+            cached = URLMap(self)
             self._cached_url_map = cached
         return cached
 
@@ -566,7 +566,7 @@ class Veloce(
         Called from every route-mutation entry-point (`add_route`,
         `include_router`); `register_blueprint` and `add_url_rule`
         funnel through `add_route` so they are covered transitively.
-        Also resets the `_URLMap` instance cache so its own built-list
+        Also resets the `URLMap` instance cache so its own built-list
         cache is rebuilt on next access.
         """
         self._cached_routes = None

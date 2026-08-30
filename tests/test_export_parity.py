@@ -504,3 +504,62 @@ def test_request_attribute_types_are_all_top_level():
     for attribute, value in attribute_types.items():
         name = type(value).__name__
         assert name in top, f"request.{attribute} is a {name}, which is not top level"
+
+
+# ── a public member must not return a name the docs cannot render ────
+
+
+#: `member -> private return type` pairs that stay private, with the reason.
+#: mkdocstrings filters `!^_` (mkdocs.yml), so a public method annotated with a
+#: private class documents a type the reader cannot look up.
+PRIVATE_RETURNS: dict[str, str] = {
+    "LifecycleMixin.lifespan_context": "entered with `async with`, never named by a caller",
+    "TestingMixin.app_context": "entered with `with`, never named by a caller",
+    "TestingMixin.test_request_context": "entered with `with`, never named by a caller",
+    "TestClient.cookies": "a mapping the caller indexes, never annotates",
+    "AsyncTestClient.cookies": "a mapping the caller indexes, never annotates",
+    "TestClient.websocket_connect": "entered with `with`, never named by a caller",
+}
+
+
+def _public_members_returning_private() -> list[str]:
+    """`Class.member -> _Private` for every public member of a public class."""
+    found: list[str] = []
+    for path in sorted(PACKAGE_ROOT.rglob("*.py")):
+        if any(part.startswith("_") for part in path.relative_to(PACKAGE_ROOT).parts[:-1]):
+            continue
+        for cls in [
+            node
+            for node in ast.walk(_parse(path))
+            if isinstance(node, ast.ClassDef) and not node.name.startswith("_")
+        ]:
+            for member in cls.body:
+                if not isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                if member.name.startswith("_") or member.returns is None:
+                    continue
+                rendered = ast.unparse(member.returns)
+                if rendered.lstrip('"').startswith("_") or "._" in rendered:
+                    found.append(f"{cls.name}.{member.name}")
+    return found
+
+
+def test_a_public_member_returning_a_private_type_is_recorded():
+    """The class `URLMap` was renamed out of: a documented return nobody can read.
+
+    `Veloce.url_map` returned `_URLMap`, which mkdocstrings filters out, so the
+    docs named a type with no page. It is `URLMap` now. The six that remain are
+    entered or indexed rather than annotated, and each says so here.
+    """
+    unrecorded = sorted(set(_public_members_returning_private()) - set(PRIVATE_RETURNS))
+    assert not unrecorded, (
+        "these public members return a private type the docs cannot render - "
+        f"rename and export it, or record it in PRIVATE_RETURNS with a reason: {unrecorded}"
+    )
+
+
+def test_the_private_return_records_are_still_accurate():
+    """A record for a member that is gone, or now public, is stale."""
+    live = set(_public_members_returning_private())
+    stale = sorted(key for key in PRIVATE_RETURNS if key not in live)
+    assert not stale, f"PRIVATE_RETURNS records members that no longer match: {stale}"

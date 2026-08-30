@@ -9,7 +9,7 @@ subsystem at all.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Coroutine, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, Any
 
@@ -341,7 +341,14 @@ class MCPMixin(AppHost):
         message_path: Annotated[
             str, Doc("URL an SSE stream names for the client to POST to; ignored elsewhere.")
         ] = "/messages",
-    ) -> Coroutine[Any, Any, None] | None:
+    ) -> Any:
+        # Deliberately `Any`, not `Coroutine[Any, Any, None] | None`. The return
+        # really does depend on `transport` - stdio yields a serve coroutine,
+        # http and sse mount routes and return `None` - but declaring the union
+        # makes the documented `asyncio.run(app.mount_mcp(transport="stdio"))`
+        # fail a strict type-check in *user* code, because `asyncio.run` cannot
+        # take a `| None`. Expressing it honestly needs `@overload` on a
+        # `Literal` transport, which duplicates this whole keyword signature.
         """Build the MCP server and serve the registered tools.
 
         Assembles the tool registry from `@app.mcp_tool` registrations plus every

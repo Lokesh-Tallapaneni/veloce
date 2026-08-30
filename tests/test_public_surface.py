@@ -171,6 +171,7 @@ VELOCE_ALL = {
     "TrustedHostMiddleware",
     "UJSONResponse",
     "URL",
+    "URLMap",
     "URLRule",
     "Unauthorized",
     "UnprocessableEntity",
@@ -413,7 +414,7 @@ def test_every_subpackage_export_is_importable():
 # these names must stay reachable as `veloce.app.X` regardless of how the package
 # is split internally (public `Veloce`/`URLRule` plus the private names that
 # tests and internal modules reach through the module path).
-VELOCE_APP_PATHS = ("Veloce", "URLRule", "_URLMap", "_exc_handler_sig_cache")
+VELOCE_APP_PATHS = ("Veloce", "URLMap", "URLRule", "_exc_handler_sig_cache")
 
 
 def test_veloce_app_paths_resolve():

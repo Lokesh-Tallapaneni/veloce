@@ -27,7 +27,7 @@ from veloce import status
 # Parameter markers
 from veloce._params import Body, Cookie, File, Form, Header, Path, Query
 from veloce._warnings import VeloceDeprecationWarning
-from veloce.app import Plugin, URLRule, Veloce
+from veloce.app import Plugin, URLMap, URLRule, Veloce
 from veloce.audit import AuditContext, AuditFailed, Finding
 
 # Background tasks
@@ -331,6 +331,7 @@ __all__ = [
     "Router",
     "Blueprint",
     "APIRouter",
+    "URLMap",
     "URLRule",
     "Config",
     # Responses
