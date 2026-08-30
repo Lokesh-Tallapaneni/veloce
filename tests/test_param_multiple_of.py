@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from tests._openapi import document
 from veloce import Path, Query, Veloce
 from veloce.testclient import TestClient
 
@@ -55,7 +56,7 @@ def test_multiple_of_emitted_to_openapi():
         return {}
 
     with TestClient(app) as client:
-        schema = client.get("/openapi.json").json()
+        schema = document(client)
 
     params = schema["paths"]["/x"]["get"]["parameters"]
     n = [p for p in params if p["name"] == "n"][0]

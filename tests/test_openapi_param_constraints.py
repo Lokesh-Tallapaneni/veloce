@@ -14,9 +14,9 @@ def _params(app: Veloce, path: str, method: str = "get") -> list[dict]:
 
 
 def _schema_for(params: list[dict], name: str) -> dict:
-    for p in params:
-        if p["name"] == name:
-            return p["schema"]
+    for candidate in params:
+        if candidate["name"] == name:
+            return candidate["schema"]
     raise AssertionError(f"parameter {name!r} not found")
 
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tests._openapi import parameters
+from tests._openapi import document, parameters
 from veloce import Query, Veloce
 from veloce.testclient import TestClient
 
@@ -15,7 +15,7 @@ def test_hidden_param_absent_from_schema():
         return {}
 
     with TestClient(app) as client:
-        schema = client.get("/openapi.json").json()
+        schema = document(client)
 
     names = [p["name"] for p in parameters(schema, "/x")]
     assert "internal" not in names
@@ -32,7 +32,7 @@ def test_visible_param_still_present():
         return {}
 
     with TestClient(app) as client:
-        schema = client.get("/openapi.json").json()
+        schema = document(client)
 
     names = [p["name"] for p in parameters(schema, "/x")]
     assert "shown" in names

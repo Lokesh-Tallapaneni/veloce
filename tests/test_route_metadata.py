@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from tests._openapi import document
 from veloce import Veloce
 from veloce.testclient import TestClient
 
@@ -16,7 +17,7 @@ def test_operation_id_override_appears_in_openapi():
         return []
 
     client = TestClient(app)
-    spec = client.get("/openapi.json").json()
+    spec = document(client)
     op = spec["paths"]["/items"]["get"]
     assert op["operationId"] == "list_items_v1"
 
@@ -30,7 +31,7 @@ def test_operation_id_defaults_to_name_underscore_method():
         return []
 
     client = TestClient(app)
-    spec = client.get("/openapi.json").json()
+    spec = document(client)
     op = spec["paths"]["/items"]["get"]
     assert op["operationId"] == "list_items_get"
 
@@ -43,6 +44,6 @@ def test_operation_id_works_via_route_decorator():
     async def x():
         return {}
 
-    spec = TestClient(app).get("/openapi.json").json()
+    spec = document(app)
     op = spec["paths"]["/x"]["post"]
     assert op["operationId"] == "create_x_explicit"

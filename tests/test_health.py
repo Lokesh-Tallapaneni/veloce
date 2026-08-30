@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 
+from tests._openapi import document
 from veloce import Veloce
 from veloce.health import HealthPlugin
 from veloce.testclient import TestClient
@@ -112,7 +113,7 @@ def test_probe_paths_are_configurable():
 def test_probes_stay_out_of_the_openapi_schema_by_default():
     app = Veloce()
     app.install(HealthPlugin())
-    paths = TestClient(app).get("/openapi.json").json()["paths"]
+    paths = document(app)["paths"]
     assert "/livez" not in paths
     assert "/readyz" not in paths
 

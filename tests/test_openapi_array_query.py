@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from tests._openapi import document, parameter
 from veloce import Query, Veloce
 from veloce.testclient import TestClient
 
 
 def _query_param(schema: dict, path: str, name: str) -> dict:
-    params = schema["paths"][path]["get"]["parameters"]
-    return [p for p in params if p["name"] == name][0]
+    found = parameter(schema, path, name)
+    assert found is not None, f"parameter {name!r} not found on {path}"
+    return found
 
 
 def test_list_query_param_is_array_schema():
@@ -19,7 +21,7 @@ def test_list_query_param_is_array_schema():
         return {}
 
     with TestClient(app) as client:
-        schema = client.get("/openapi.json").json()
+        schema = document(client)
 
     p = _query_param(schema, "/items", "tags")
     assert p["schema"]["type"] == "array"
@@ -34,7 +36,7 @@ def test_list_query_param_typed_items():
         return {}
 
     with TestClient(app) as client:
-        schema = client.get("/openapi.json").json()
+        schema = document(client)
 
     p = _query_param(schema, "/items", "ids")
     assert p["schema"]["items"] == {"type": "integer"}
@@ -48,7 +50,7 @@ def test_array_query_param_style_and_explode():
         return {}
 
     with TestClient(app) as client:
-        schema = client.get("/openapi.json").json()
+        schema = document(client)
 
     p = _query_param(schema, "/items", "tags")
     assert p["style"] == "form"
@@ -63,7 +65,7 @@ def test_scalar_query_param_has_no_style_explode():
         return {}
 
     with TestClient(app) as client:
-        schema = client.get("/openapi.json").json()
+        schema = document(client)
 
     p = _query_param(schema, "/items", "name")
     assert "style" not in p
@@ -80,7 +82,7 @@ def test_plain_list_query_param_collects_multiple_values():
     with TestClient(app) as client:
         # Plain `list[str]` query param collects every repeated value.
         resp = client.get("/items?tags=a&tags=b")
-        schema = client.get("/openapi.json").json()
+        schema = document(client)
 
     assert resp.json() == {"tags": ["a", "b"]}
     p = _query_param(schema, "/items", "tags")

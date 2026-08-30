@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from tests._openapi import document
 from veloce import Depends, HTTPException, Request, Veloce
 from veloce.testclient import TestClient
 
@@ -48,7 +49,7 @@ def test_global_responses_overlaid_in_openapi():
         return {}
 
     with TestClient(app) as client:
-        schema = client.get("/openapi.json").json()
+        schema = document(client)
 
     responses = schema["paths"]["/x"]["get"]["responses"]
     assert "404" in responses

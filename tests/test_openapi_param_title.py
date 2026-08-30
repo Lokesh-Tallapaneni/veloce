@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tests._openapi import parameters
+from tests._openapi import document, parameters
 from veloce import Path, Query, Veloce
 from veloce.testclient import TestClient
 
@@ -15,7 +15,7 @@ def test_query_title_emitted():
         return {}
 
     with TestClient(app) as client:
-        schema = client.get("/openapi.json").json()
+        schema = document(client)
 
     params = parameters(schema, "/search")
     q = [p for p in params if p["name"] == "q"][0]
@@ -30,7 +30,7 @@ def test_path_title_emitted():
         return {}
 
     with TestClient(app) as client:
-        schema = client.get("/openapi.json").json()
+        schema = document(client)
 
     params = parameters(schema, "/items/{item_id}")
     p = [p for p in params if p["name"] == "item_id"][0]
@@ -45,7 +45,7 @@ def test_no_title_key_when_unset():
         return {}
 
     with TestClient(app) as client:
-        schema = client.get("/openapi.json").json()
+        schema = document(client)
 
     q = [p for p in parameters(schema, "/plain") if p["name"] == "q"][0]
     assert "title" not in q["schema"]
@@ -59,7 +59,7 @@ def test_title_coexists_with_description():
         return {}
 
     with TestClient(app) as client:
-        schema = client.get("/openapi.json").json()
+        schema = document(client)
 
     q = [p for p in parameters(schema, "/both") if p["name"] == "q"][0]
     assert q["schema"]["title"] == "The Query"

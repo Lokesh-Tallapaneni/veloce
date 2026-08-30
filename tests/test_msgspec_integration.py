@@ -14,6 +14,7 @@ import re
 import pytest
 from pydantic import BaseModel
 
+from tests._openapi import document
 from veloce import ORJSONResponse, TestClient, Veloce
 
 msgspec = pytest.importorskip("msgspec")
@@ -252,7 +253,7 @@ def test_openapi_includes_struct_schema():
     async def listing():
         return []
 
-    spec = TestClient(app).get("/openapi.json").json()
+    spec = document(app)
     schemas = spec["components"]["schemas"]
     # Both the model and its nested struct get component schemas.
     assert "User" in schemas

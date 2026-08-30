@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tests._openapi import parameters
+from tests._openapi import document, parameters
 from veloce import Header, Veloce
 from veloce.testclient import TestClient
 
@@ -15,7 +15,7 @@ def test_unaliased_header_documents_hyphenated():
         return {}
 
     with TestClient(app) as client:
-        schema = client.get("/openapi.json").json()
+        schema = document(client)
     params = parameters(schema, "/a")
     headers = [p for p in params if p["in"] == "header"]
     names = {p["name"] for p in headers}
@@ -31,7 +31,7 @@ def test_convert_underscores_false_keeps_raw():
         return {}
 
     with TestClient(app) as client:
-        schema = client.get("/openapi.json").json()
+        schema = document(client)
     headers = [p for p in parameters(schema, "/b") if p["in"] == "header"]
     assert {p["name"] for p in headers} == {"x_token"}
 
@@ -44,6 +44,6 @@ def test_explicit_alias_wins():
         return {}
 
     with TestClient(app) as client:
-        schema = client.get("/openapi.json").json()
+        schema = document(client)
     headers = [p for p in parameters(schema, "/c") if p["in"] == "header"]
     assert {p["name"] for p in headers} == {"X-Custom"}

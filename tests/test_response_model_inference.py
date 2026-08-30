@@ -6,6 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from tests._openapi import document
 from veloce import HTMLResponse, Veloce
 
 
@@ -23,7 +24,7 @@ class Other(BaseModel):
 
 
 def _schema_for(app: Veloce, path: str, method: str = "get") -> dict | None:
-    spec = app.test_client().get("/openapi.json").json()
+    spec = document(app)
     return spec["paths"][path][method]["responses"]["200"].get("content")
 
 

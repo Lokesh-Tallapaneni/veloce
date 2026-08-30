@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
+from tests._openapi import document
 from veloce import Request, Veloce
 from veloce.contrib.openapi import get_openapi_schema
 from veloce.middleware.security import CSPMiddleware
@@ -153,7 +154,7 @@ def test_openapi_with_metadata():
         servers=[{"url": "https://api.example.com", "description": "Production"}],
         openapi_tags=[{"name": "users", "description": "User operations"}],
     )
-    schema = TestClient(app).get("/openapi.json").json()
+    schema = document(app)
 
     assert schema["info"]["title"] == "My API"
     assert schema["info"]["description"] == "A test API"

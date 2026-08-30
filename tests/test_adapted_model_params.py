@@ -18,6 +18,7 @@ import pytest
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
+from tests._openapi import document
 from veloce import Veloce, _model_backend
 from veloce._model_backend import ModelBackend, adapter_for, backend_of
 from veloce.contrib.mcp.server import MCPServer
@@ -306,7 +307,7 @@ def test_openapi_documents_a_dataclass_body():
         return {"x": p.x}
 
     with app.test_client() as client:
-        schema = client.get("/openapi.json").json()
+        schema = document(client)
     assert "Point" in schema["components"]["schemas"]
     assert sorted(schema["components"]["schemas"]["Point"]["properties"]) == ["x", "y"]
 
