@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A `tools/call` over the HTTP transport is answered as JSON when the tool cannot send a second message, instead of always framing an SSE stream. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - An insufficient-scope `tools/call` on a tool answered as JSON returns `403` with a scope challenge, where a streamed one carries the error in band. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - The built-in server's accept queue follows the machine's `somaxconn` rather than asyncio's default of 100. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `make_response` answers a one- or four-element tuple as data; it dropped a four-element tuple's status and headers in silence. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `Veloce.make_response`, `veloce.make_response` and dispatch read one response-tuple table, so a tuple cannot answer three ways. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- A handler may return `(body, header_list)`; dispatch read the pair list as a status and answered `500`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Security
 

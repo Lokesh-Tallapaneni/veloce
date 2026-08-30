@@ -224,8 +224,8 @@ method.
 
 [`make_response`](../reference/helpers.md#veloce.make_response) coerces a body, status
 code, and headers into a [`Response`](../reference/responses.md#veloce.Response), picking
-the response type from the body. A `str` becomes an HTML response, `bytes` an
-octet-stream, and a `dict` or `list` a JSON response:
+the response type from the body. A `str` or `bytes` becomes an HTML response, and a
+`dict` or `list` a JSON response:
 
 ```python
 from veloce import Veloce, make_response
@@ -248,6 +248,17 @@ async def created():
 The signature is `make_response(body=b"", status_code=200, headers=None,
 content_type=None)`. A Pydantic model (anything with `model_dump`) is
 serialised to JSON.
+
+A tuple body is unpacked as `(body, status)`, `(body, headers)` or
+`(body, status, headers)` - the same shapes a handler may return, read from the
+same table as [`Veloce.make_response`](../reference/app.md#veloce.Veloce.make_response)
+and the dispatcher. A tuple of any other length is not a response tuple and is
+serialised as data.
+
+!!! note "Changed in version 0.18"
+
+    A one- or four-element tuple is answered as data. A four-element tuple
+    previously dropped its status and headers in silence.
 
 ## send_file
 

@@ -21,6 +21,7 @@ from veloce._internal import (
     MIME_HTML,
     _coerce_bool,
     _is_async_callable,
+    _unpack_response_tuple,
 )
 from veloce._pipeline import (
     PH_ASGI_WRAP,
@@ -1109,35 +1110,33 @@ class Veloce(
         - `Response` -> returned as-is
         - `str` / `bytes` -> wrapped as a text/HTML response
         - `dict` / `list` -> wrapped as a JSON response via `jsonify`
-        - `tuple` of `(body,)`, `(body, status)`, `(body, status, headers)`,
-          or `(body, headers)` -> unpacked and re-coerced
+        - `tuple` of `(body, status)`, `(body, status, headers)` or
+          `(body, headers)` -> unpacked and re-coerced
         - anything else -> JSON, matching what dispatch does with the same
           value returned from a handler
 
-        `veloce.make_response` applies the same table; dispatch keeps its own
-        fast lanes for the shapes a handler returns most, but answers alike.
+        A tuple of any other length is not a response tuple and is answered as
+        a plain value. `veloce.make_response` and dispatch read the same table
+        (`_unpack_response_tuple`); dispatch keeps its own fast lanes for the
+        shapes a handler returns most, but answers alike.
         """
         if isinstance(value, Response):
             return value
         if isinstance(value, tuple):
-            body: Any = value[0]
-            status: int | None = None
-            headers: Any = None
-            if len(value) == 2:
-                if isinstance(value[1], int):
-                    status = value[1]
-                else:
-                    headers = value[1]
-            elif len(value) == 3:
-                status, headers = value[1], value[2]
-            resp = self.make_response(body)
-            if status is not None:
-                resp.status_code = status
-            if headers:
-                items = headers.items() if isinstance(headers, dict) else headers
-                for k, v in items:
-                    resp.headers[k] = v
-            return resp
+            unpacked = _unpack_response_tuple(value)
+            if unpacked is not None:
+                body, code, headers = unpacked
+                resp = self.make_response(body)
+                if code is not None:
+                    resp.status_code = code
+                if headers:
+                    items = headers.items() if isinstance(headers, dict) else headers
+                    for k, v in items:
+                        resp.headers[k] = v
+                # `body` may already have been a `Response` carrying a cached
+                # encoding; the status line and headers just changed.
+                resp._encoded = None
+                return resp
         if isinstance(value, (dict, list)):
             return jsonify(value)
         if isinstance(value, bytes):

@@ -46,6 +46,7 @@ from veloce._internal import (
     _current_request_var,
     _extract_host,
     _is_async_callable,
+    _unpack_response_tuple,
     dumps_for,
     offload,
 )
@@ -1616,25 +1617,16 @@ class DispatchMixin:
                 return JSONResponse.from_bytes(dumps(_msgspec.to_builtins(result)))
             result = _msgspec.to_builtins(result)
         # A `(body, status[, headers])` return, unpacked once for both the
-        # `response_class` and no-class paths. Two copies had drifted: a
-        # one-element tuple meant the body with a class and a one-item JSON array
-        # without, and a four-element tuple lost its status and headers in
-        # silence. Any other length is not a response tuple and falls through as
-        # a plain value.
+        # `response_class` and no-class paths, through the one table the two
+        # `make_response` entry points also use. Any other length is not a
+        # response tuple and falls through as a plain value.
         if isinstance(result, tuple):
-            length = len(result)
-            if length == 2 or length == 3:
-                if length == 3:
-                    body, code, headers = result
-                else:
-                    body, second = result
-                    if isinstance(second, dict):
-                        code, headers = status.HTTP_200_OK, second
-                    else:
-                        code = second if isinstance(second, int) else int(second)
-                        headers = None
+            unpacked = _unpack_response_tuple(result)
+            if unpacked is not None:
+                body, code, headers = unpacked
                 resp = self._coerce_response(body, response_class)
-                resp.status_code = code
+                if code is not None:
+                    resp.status_code = code
                 if headers:
                     resp.headers.update(headers)
                 # The body was coerced and may already carry a cached encoding;

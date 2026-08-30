@@ -19,6 +19,7 @@ from veloce._internal import (
     MIME_HTML,
     _current_app_var,
     _current_request_var,
+    _unpack_response_tuple,
 )
 from veloce.exceptions import exception_for_status
 from veloce.http.dates import http_date
@@ -556,10 +557,11 @@ def make_response(
     """Create a Response - a convenience wrapper.
 
     A tuple body is unpacked as `(body, status)` / `(body, status, headers)` /
-    `(body, headers)`, the same shapes a handler may return and `app.make_response`
-    already accepted. Without that, `make_response((b"raw", 201))` JSON-encoded
-    the tuple - status code and all - into a `200` body, so the same call answered
-    differently depending on which `make_response` a caller reached for.
+    `(body, headers)`, the same shapes a handler may return. A tuple of any other
+    length is not a response tuple and is answered as a plain value. The table is
+    `_unpack_response_tuple`, shared with `Veloce.make_response` and dispatch, so
+    one value cannot answer differently depending on which entry point a caller
+    reached for.
 
     Usage::
 
@@ -567,24 +569,23 @@ def make_response(
         resp = make_response({"data": True}, 201)
         resp = make_response((b"raw", 201))
     """
-    if isinstance(body, tuple) and body:
-        inner: Any = body[0]
-        if len(body) == 3:
-            status_code, headers = body[1], body[2]
-        elif len(body) == 2:
-            if isinstance(body[1], int):
-                status_code = body[1]
-            else:
-                headers = body[1]
-        # A `Response` inside the tuple takes the tuple's status and headers,
-        # the way dispatch applies them to a handler's `return resp, 404`.
-        if isinstance(inner, Response):
-            inner.status_code = status_code
-            if headers:
-                inner.headers.update(headers)
-            inner._encoded = None
-            return inner
-        return make_response(inner, status_code, headers, content_type)
+    if isinstance(body, tuple):
+        unpacked = _unpack_response_tuple(body)
+        if unpacked is not None:
+            inner, code, tuple_headers = unpacked
+            if code is not None:
+                status_code = code
+            if tuple_headers is not None:
+                headers = tuple_headers
+            # A `Response` inside the tuple takes the tuple's status and headers,
+            # the way dispatch applies them to a handler's `return resp, 404`.
+            if isinstance(inner, Response):
+                inner.status_code = status_code
+                if headers:
+                    inner.headers.update(headers)
+                inner._encoded = None
+                return inner
+            return make_response(inner, status_code, headers, content_type)
     # A `Response` passes through untouched. Without this it fell to the JSON
     # branch below and was encoded via its `__str__`, so the body became the
     # object's repr - `b'"<veloce.http.response.Response object at 0x...>"'`.

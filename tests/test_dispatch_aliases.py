@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import orjson
+import pytest
 
 from tests.conftest import make_request
 from veloce import Request, Response, Veloce
+from veloce.helpers import make_response as helpers_make_response
 from veloce.testclient import TestClient
 
 
@@ -184,3 +186,74 @@ def test_bare_str_return_and_make_response_str_share_content_type():
 
     client = app.test_client()
     assert client.get("/a").content_type == client.get("/b").content_type
+
+
+# ── One coercion table ───────────────────────────────────────────────
+
+
+#: Every tuple shape the three entry points can be handed, including the two
+#: that used to be answered three different ways.
+_TUPLE_SHAPES = [
+    (b"x",),
+    (b"x", 201, {"a": "b"}, "extra"),
+    (),
+    ("body", 201),
+    ("body", {"X-Foo": "bar"}),
+    ("body", 202, {"X-Foo": "bar"}),
+    ({"k": 1}, 201),
+    ("body", [("X-Foo", "bar")]),
+    ("body", "404"),
+    ("body", 204, [("X-Foo", "bar")]),
+]
+
+
+@pytest.mark.parametrize("shape", _TUPLE_SHAPES, ids=lambda s: f"len{len(s)}")
+def test_the_three_coercers_answer_a_tuple_alike(shape):
+    """`app.make_response`, `veloce.make_response` and dispatch share one table.
+
+    They kept three copies of it and had drifted where nothing tested them:
+    `(b"x",)` was the body to two of them and a one-item JSON array to the
+    third, and a four-element tuple lost its status and headers in silence
+    rather than being answered as data. Both shapes were reachable from user
+    code, under a docstring asserting the three agreed.
+    """
+    app = Veloce(openapi_url=None)
+    answers = [
+        app.make_response(shape),
+        helpers_make_response(shape),
+        app._coerce_response(shape, None),
+    ]
+    bodies = {resp.status_code: resp.body for resp in answers}
+    assert len({(r.status_code, r.body) for r in answers}) == 1, bodies
+
+
+def test_a_tuple_that_is_not_a_response_tuple_is_data():
+    """Only two- and three-element tuples carry a status or headers.
+
+    A four-element tuple silently dropped its status and headers; answering it
+    as data at least does not discard what the caller wrote.
+    """
+    app = Veloce(openapi_url=None)
+    resp = app.make_response((b"x", 201, {"a": "b"}, "extra"))
+    assert resp.status_code == 200
+    assert b"201" in resp.body, resp.body
+    assert b"extra" in resp.body, resp.body
+
+
+def test_a_handler_may_return_a_body_and_a_header_list():
+    """`return "x", [("X-Foo", "y")]` reached dispatch as a status and 500'd.
+
+    The two `make_response` entry points read the same pair list as headers, so
+    one tuple was a working response through one door and a `TypeError` through
+    the other.
+    """
+    app = Veloce(openapi_url=None)
+
+    @app.get("/pairs")
+    async def pairs():
+        return "x", [("X-Foo", "bar")]
+
+    resp = TestClient(app).get("/pairs")
+    assert resp.status_code == 200
+    assert resp.headers["X-Foo"] == "bar"
+    assert resp.text == "x"

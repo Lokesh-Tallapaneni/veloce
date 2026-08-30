@@ -219,6 +219,38 @@ def _coerce_bool(value: Any) -> bool:
     return bool(value)
 
 
+def _unpack_response_tuple(value: tuple[Any, ...]) -> tuple[Any, int | None, Any] | None:
+    """Split a `(body, status)` / `(body, headers)` / `(body, status, headers)` return.
+
+    Returns `(body, status, headers)` with `None` for whatever the tuple did not
+    carry, or `None` when `value` is not a response tuple at all - any length but
+    two or three, which every caller then treats as a plain value.
+
+    One table, three callers. `Veloce.make_response`, `veloce.make_response` and
+    dispatch each kept their own copy, and they had drifted: a one-element tuple
+    was the body to two of them and a one-item JSON array to the third, and a
+    four-element tuple lost its status and headers in silence rather than being
+    answered as data. The disagreement was reachable from user code with a
+    docstring asserting it did not exist.
+    """
+    length = len(value)
+    if length == 3:
+        return value[0], value[1], value[2]
+    if length == 2:
+        body, second = value
+        # Headers are a mapping or an iterable of pairs; a status is an int, or
+        # something that names one. Reading a header list as a status raised
+        # `TypeError` on the dispatch path while the two `make_response` entry
+        # points accepted it, so `return "x", [("X", "y")]` from a handler was a
+        # 500 that the same tuple handed to `make_response` answered 200.
+        if isinstance(second, (dict, list, tuple)):
+            return body, None, second
+        if isinstance(second, int):
+            return body, second, None
+        return body, int(second), None
+    return None
+
+
 def _header_value_has_crlf(value: str) -> bool:
     """Return True if `value` carries CR, LF, or NUL (unsafe in a header)."""
     return "\r" in value or "\n" in value or "\x00" in value
