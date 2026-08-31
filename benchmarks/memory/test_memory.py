@@ -68,16 +68,24 @@ def _build_deep_dependency_app() -> Veloce:
 
 
 def _build_route_table_app() -> Veloce:
-    """`ROUTE_COUNT` routes, each with a typed parameter and a body model."""
+    """`ROUTE_COUNT` routes, each with a typed parameter and a body model.
+
+    Each route is named explicitly. A handler defined in a loop takes its
+    function name as its endpoint, so without this every route after the first
+    collides with the one before it and registration emits a duplicate-name
+    warning per route - about two hundred of them, whose formatting and locking
+    then dominate what this is supposed to measure. `test_deep_dependency_graph`
+    below has always named its dependencies for the same reason.
+    """
     app = Veloce(openapi_url=None)
 
     for index in range(ROUTE_COUNT):
 
-        @app.get(f"/resource-{index}/{{item_id:int}}")
+        @app.get(f"/resource-{index}/{{item_id:int}}", name=f"read_{index}")
         async def read(item_id: int, q: str = "", limit: int = 10) -> dict:
             return {"item_id": item_id, "q": q, "limit": limit}
 
-        @app.post(f"/resource-{index}")
+        @app.post(f"/resource-{index}", name=f"create_{index}")
         async def create(item: Item) -> Item:
             return item
 
@@ -101,8 +109,9 @@ def test_openapi_schema(benchmark):
     app = Veloce()
 
     for index in range(ROUTE_COUNT):
-
-        @app.post(f"/documented-{index}")
+        # Named per route, as `_build_route_table_app` explains: otherwise this
+        # measures a hundred duplicate-name warnings alongside the schema.
+        @app.post(f"/documented-{index}", name=f"documented_{index}")
         async def documented(item: Item) -> Item:
             return item
 
