@@ -41,7 +41,7 @@ import mimetypes
 import os
 import sys
 import weakref
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
 from email.header import Header
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
@@ -250,7 +250,16 @@ def _unpack_response_tuple(value: tuple[Any, ...]) -> tuple[Any, int | None, Any
         # `TypeError` on the dispatch path while the two `make_response` entry
         # points accepted it, so `return "x", [("X", "y")]` from a handler was a
         # 500 that the same tuple handed to `make_response` answered 200.
-        if isinstance(second, (dict, list, tuple)):
+        #
+        # The mapping test is `Mapping`, not `dict`. `Headers` is a `CIMultiDict`
+        # and not a `dict` subclass, so a handler returning the documented
+        # `(body, headers)` with the framework's own header type fell through to
+        # `int(second)` and answered 500 - while the same object passed to
+        # `Response(headers=...)` worked. `str` and `bytes` are iterable but name
+        # a status, so they are excluded rather than read as pairs.
+        if isinstance(second, Mapping) or (
+            isinstance(second, Iterable) and not isinstance(second, (str, bytes))
+        ):
             return body, None, second
         if isinstance(second, int):
             return body, second, None
