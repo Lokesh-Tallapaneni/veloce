@@ -294,6 +294,49 @@ _LIST_METHODS = frozenset(
 )
 
 
+def _tool_entry_legacy(tool: MCPTool) -> dict[str, Any]:
+    """Return the tool's listing entry, built once and memoized on the tool.
+
+    A pure function of registration data: nothing it reads can change once the
+    registry is built.
+    """
+    entry = tool.listing_entry
+    if entry is None:
+        entry = tool.listing_entry = _build_tool_listing_entry(tool)
+    return entry
+
+
+def _tool_entry_modern(tool: MCPTool) -> dict[str, Any]:
+    """Return the tool's entry for the modern revision, memoized alongside it.
+
+    The modern revision removed `execution` from `Tool` - task support is
+    negotiated through the extension capability instead - so an entry carrying
+    the field does not validate against the schema that client negotiated. Only
+    a task-capable tool differs; every other tool shares the one object.
+    """
+    modern = tool.listing_entry_modern
+    if modern is not None:
+        return modern
+    entry = _tool_entry_legacy(tool)
+    modern = tool.listing_entry_modern = (
+        {key: value for key, value in entry.items() if key != "execution"}
+        if "execution" in entry
+        else entry
+    )
+    return modern
+
+
+def _tool_describer(modern: bool) -> Callable[[MCPTool], dict[str, Any]]:
+    """Return the describer for an era.
+
+    Chosen once per listing rather than consulted once per tool. Reading the era
+    inside the describer cost a `ContextVar` lookup and a second attribute load
+    for every entry, which a fifty-tool listing paid fifty times over while the
+    memoized entries themselves cost nothing.
+    """
+    return _tool_entry_modern if modern else _tool_entry_legacy
+
+
 def _in_band_status_for(error: _InBandError) -> int:
     """Map an in-band failure to the status instrumentation should record."""
     if isinstance(error, _InvalidArgumentsError):
@@ -1029,7 +1072,8 @@ class MCPServer(TasksMixin, InvocationMixin):
             and not self._any_scoped_tools
             else await self._visible_tools()
         )
-        return self._listing("tools", tools, _tool_key, self._describe_tool, params)
+        describe = _tool_describer(_era_modern_var.get())
+        return self._listing("tools", tools, _tool_key, describe, params)
 
     def _resource_listing(
         self, params: dict[str, Any], page_size: int | None | _ServerPageSize = _SERVER_PAGE_SIZE
@@ -1427,19 +1471,7 @@ class MCPServer(TasksMixin, InvocationMixin):
         Callers treat the returned mapping as read-only - the dispatcher stamps
         `ttlMs` / `cacheScope` onto the enclosing result, never onto an entry.
         """
-        entry = tool.listing_entry
-        if entry is None:
-            entry = tool.listing_entry = _build_tool_listing_entry(tool)
-        if not _era_modern_var.get():
-            return entry
-        modern = tool.listing_entry_modern
-        if modern is None:
-            modern = tool.listing_entry_modern = (
-                {key: value for key, value in entry.items() if key != "execution"}
-                if "execution" in entry
-                else entry
-            )
-        return modern
+        return _tool_describer(_era_modern_var.get())(tool)
 
     async def _tools_call(self, params: dict[str, Any]) -> dict[str, Any]:
         name = params.get("name")
