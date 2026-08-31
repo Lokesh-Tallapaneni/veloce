@@ -6,46 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- `Veloce.instrumentation_hooks` returns the registered instrumentation hooks in run order, the read half `add_instrumentation` lacked. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-- `URLMap` is exported from `veloce` and is the public name of the class `Veloce.url_map` returns. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-- `WebSocketState` is exported from `veloce`; it is the declared return type of `WebSocket.application_state` and `.client_state`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-- `Severity` is exported from `veloce`; it is the declared type of `Finding.severity`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-- `RateLimitState` is exported from `veloce`; a `RateLimitStrategy` implementation names it in `evaluate`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-- `SignalResult` is exported from `veloce`; it is the declared return type of `Signal.send`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
-### Changed
-
-- A `tools/call` over the HTTP transport is answered as JSON when the tool cannot send a second message, instead of always framing an SSE stream. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-- An insufficient-scope `tools/call` on a tool answered as JSON returns `403` with a scope challenge, where a streamed one carries the error in band. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-- The built-in server's accept queue follows the machine's `somaxconn` rather than asyncio's default of 100. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-- `make_response` answers a one- or four-element tuple as data; it dropped a four-element tuple's status and headers in silence. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-- `Veloce.make_response`, `veloce.make_response` and dispatch read one response-tuple table, so a tuple cannot answer three ways. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-- A handler may return `(body, header_list)`; dispatch read the pair list as a status and answered `500`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-- `Blueprint` refuses a dot in its own name or a route's `name`; the dot separates the blueprint from the route in an endpoint. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-- `make_response(response, status, headers)` applies them instead of returning the response untouched; an omitted status is `None`, not `200`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-- `HTTPBasicCredentials` and `HTTPDigestCredentials` compare by identity, so both are hashable again. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-- A conditional `GET` for a streamed response answers `304`; an asset past `FileResponse`'s streaming threshold was re-sent in full. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-- A `304` advertises the length the equivalent `200` would carry, or none when it is unknown, instead of `0`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-- `{value:float}` is matched before `{value:decimal}`; float accepts a strict subset, so it is the more restrictive of the pair. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+## [0.18.0] - 2026-08-31
 
 ### Security
 
 - The cold ASGI emit path applies the response-splitting guard to `content_type`; a CR or LF in it reached the wire as a raw header value. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - An unresolvable annotation no longer erases the whole signature's PEP 593 metadata; a route whose unrelated parameter had a bad annotation stopped enforcing its `Depends()` security scheme and served unauthenticated. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - `Response` copies the `headers` mapping it is given; a handler reusing one dict across requests shipped a previous request's `Set-Cookie`, leaking another user's session. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - `ProxyFix` counts `Forwarded:` hops correctly when an element carries a backslash; one outside a quoted string hid the following comma, merging the trusted proxy's element into the client's and putting attacker text into `request.remote_addr`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - The built-in server serves a request whose target is split across two reads; it answered `400`, and measured `MAX_URL_SIZE` against the last fragment rather than the whole target. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - `request.authorization` and `HTTPBasic` decode a `Basic` payload through one implementation, so a header with extra whitespace no longer yields credentials from one and a `401` from the other. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - `HttpSessionStore` bounds live MCP sessions with `max_sessions` (default `10_000`); the idle TTL limited how long a session lived, not how many a client could mint. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - The built-in server's `413` for a declared over-limit `Content-Length` runs the response phase, so it carries the CORS and security headers the ASGI path already gave it. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `StaticFiles` streams a byte range at or above `STREAM_THRESHOLD`; `Range: bytes=0-` previously read the whole file into memory. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - The built-in server stops reading a connection once `MAX_PIPELINED_REQUESTS` (default `64`) requests are queued, bounding what a pipelining flood can allocate. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
@@ -53,19 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An MCP task `ttl` is clamped to one hour; a client could otherwise pin a task and its result for the process lifetime. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `request.authorization` reports no username for a colon-less `Basic` payload, which RFC 7617 makes malformed; it previously named one for a header `HTTPBasic` answers with a `401`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `response_model` filters a msgspec struct or `list[Struct]` response as it filters a Pydantic one; it previously shaped nothing on that backend, so a subclass returned under a base-model contract put its extra fields on the wire. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - A credential carrying a non-ASCII byte is refused rather than crashing the request: `decode_jwt` raises `InvalidTokenError`, a forged CSRF token answers `403`, and a PKCE verifier is rejected. All three answered `500` before, pre-authentication. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - `CORSMiddleware` emits `Vary: Origin` on every response whose allowed origin could depend on the request, including refusals, so a shared cache cannot serve an unkeyed response to an allowed origin. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - `CSPMiddleware` raises `ValueError` rather than asserting when given no policy, so `python -O` cannot leave it constructed and emitting no header. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - Runtime dependency floors raised to releases carrying current security fixes: `orjson>=3.11.5`, `pydantic>=2.4.0`, `python-multipart>=0.0.22`, `jinja2>=3.1.6`, `gunicorn>=23.0.0`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - A `dependencies=` entry that is not a `Depends` raises `TypeError` at registration. `dependencies=[guard]` - the `Depends()` wrapper forgotten - was silently discarded, so the guard never ran and every route on it was open. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - The SSE transport runs a tool as the principal that authenticated the `POST`, not the one that opened the `GET` stream. A validated token for one caller executed under another caller's scopes. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - The MCP HTTP endpoint authenticates and `Origin`-checks `GET` and `DELETE`, not only `POST`. A resuming `GET` replayed another principal's tool output without a credential, and any origin could terminate a session. Clients must now send their token on both verbs. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A JSON body model refuses a body whose `Content-Type` declares it is not JSON, closing a CSRF avenue: `text/plain` and the form types are sent cross-origin without a CORS preflight. An absent header and a `+json` suffix are still accepted. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `await request.json()` applies that same rule and reads a declared non-JSON body as `None`, closing the avenue for handlers that parse the body themselves. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
@@ -84,61 +48,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `HTTPBasicCredentials` and `HTTPDigestCredentials` mask the password and the digest response in their `repr`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A blueprint-scoped `before_request` runs on every route of its blueprint; a dotted route name skipped it. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
-### Fixed
-
-- A streamed file sends no more than the `Content-Length` it declared when the file grows mid-response. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-- A `list`-typed `Header()` or `Cookie()` resolves on a websocket route instead of closing the handshake `1011`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-- `/openapi.json` gives a request schema its own component when a nested model is also returned by another route. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-- The derived-model cache for `response_model_include` / `_exclude` keys on the model, not its address. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-- The MCP HTTP transport publishes the session from its SSE reply path, so a conformant client's handshake is recorded. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-- A `@rate_limit`-tagged route's backend honours the middleware's `max_keys`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-- The MCP stdio ordering wait no longer absorbs a cancel delivered to its own task. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-- An MCP server-to-client request whose emit fails leaves no entry in the pending correlation table. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 ### Added
 
+- `Veloce.instrumentation_hooks` returns the registered instrumentation hooks in run order, the read half `add_instrumentation` lacked. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `URLMap` is exported from `veloce` and is the public name of the class `Veloce.url_map` returns. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `WebSocketState` is exported from `veloce`; it is the declared return type of `WebSocket.application_state` and `.client_state`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `Severity` is exported from `veloce`; it is the declared type of `Finding.severity`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `RateLimitState` is exported from `veloce`; a `RateLimitStrategy` implementation names it in `evaluate`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `SignalResult` is exported from `veloce`; it is the declared return type of `Signal.send`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `app.register_auditable(component)` reports a non-middleware component to `veloce check` and `security_audit()`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `unregister_converter(name)` removes a converter added with `register_converter`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `MCPServer(capabilities=[...])` serves an out-of-tree `Capability`; `MethodHandler` is exported to annotate its handler map. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `TestResponse` is exported from `veloce` and documented; it is what every test-client call returns. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `veloce.contrib.mcp` publishes all seven capability classes, not three. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - `app.wait_for_background_tasks()`, and the same on both test clients, waits for spawned background work to finish. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - `MCPServer.capabilities` exposes the capabilities a server was built with. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - `SessionMiddlewareBase.wire_cookie_name` exposes the cookie name after the `__Host-` / `__Secure-` prefix. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - `SessionMiddleware.bind_secret_key()` settles the signing key from a config before the first request. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - `app.middlewares` exposes the registered middleware instances in pipeline order. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - `SessionMiddleware.encode_cookie()` / `.decode_cookie()` sign and verify a session cookie outside a request. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - `InMemorySessionStore` supports `in`, iteration, `expires_at()` and `clear()`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
-
 - `app.iter_routes()` returns each route as `(method, path, RouteInfo)`; `app.routes` remains the six-field summary. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - `CompressionMiddleware` negotiates zstd, brotli and gzip from `Accept-Encoding`; install the `brotli` / `zstd` extras to offer the newer codings. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - The `ciso8601` extra accelerates the `{x:datetime}` path converter for values without a numeric offset; what matches is unchanged. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - `RateLimitStrategy.lua_script` / `lua_argv`, an opt-in server-side form a backend can run in place of the Python `evaluate`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - `veloce.http.response.header_pop`, the replacement half of `header_get` / `header_present`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - `Veloce()` warns when an unrecognised keyword looks like a misspelled parameter (`tittle=` for `title=`), which was previously absorbed into `app.extra` in silence. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - `veloce check` reports an MCP endpoint mounted without `auth=` or without `allowed_origins=`, as `mcp-endpoint-unauthenticated` and `mcp-origin-unchecked`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - `Blueprint` accepts `tags=` and `on_duplicate=`, the two `Router` options it dropped. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `StaticFiles(max_age=...)` sets the cache lifetime, and the handler honours `SEND_FILE_MAX_AGE_DEFAULT` as `send_file` already did. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `GRACEFUL_DRAIN_TIMEOUT` bounds how long shutdown waits for in-flight requests; it was a literal 30 seconds no setting could reach. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `Auditable` carries the audit contract for every middleware shape, so a `BaseHTTPMiddleware` can declare `sets_hardening_headers` and contribute findings. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `Converter.specificity` declares how restrictive a custom converter is, so it can outrank `str` during route matching. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `SecurityScheme.openapi_scheme` publishes a custom authentication scheme in the OpenAPI document like a built-in. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - `WEBSOCKET_IDLE_TIMEOUT` closes an idle WebSocket with `1001 Going Away` on both transports; it was read only by the built-in server, and is now a documented config key. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `TestClient(app, loop=...)` drives the app on a loop you supply, which the client never closes. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `Middleware.audit` lets any middleware contribute findings to the audit, with a severity that decides whether startup refuses to serve. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
@@ -153,47 +95,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Signal.doc` records the description given to `Namespace.signal(name, doc=...)`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A second route taking an existing `name=` logs a warning naming both paths. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
-- `app.register_auditable(component)` reports a non-middleware component to `veloce check` and `security_audit()`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-- `unregister_converter(name)` removes a converter added with `register_converter`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-- `MCPServer(capabilities=[...])` serves an out-of-tree `Capability`; `MethodHandler` is exported to annotate its handler map. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-- `TestResponse` is exported from `veloce` and documented; it is what every test-client call returns. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-- `veloce.contrib.mcp` publishes all seven capability classes, not three. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 ### Changed
 
+- A `tools/call` over the HTTP transport is answered as JSON when the tool cannot send a second message, instead of always framing an SSE stream. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- An insufficient-scope `tools/call` on a tool answered as JSON returns `403` with a scope challenge, where a streamed one carries the error in band. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- The built-in server's accept queue follows the machine's `somaxconn` rather than asyncio's default of 100. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `make_response` answers a one- or four-element tuple as data; it dropped a four-element tuple's status and headers in silence. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `Veloce.make_response`, `veloce.make_response` and dispatch read one response-tuple table, so a tuple cannot answer three ways. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- A handler may return `(body, header_list)`; dispatch read the pair list as a status and answered `500`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `Blueprint` refuses a dot in its own name or a route's `name`; the dot separates the blueprint from the route in an endpoint. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `make_response(response, status, headers)` applies them instead of returning the response untouched; an omitted status is `None`, not `200`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `HTTPBasicCredentials` and `HTTPDigestCredentials` compare by identity, so both are hashable again. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- A conditional `GET` for a streamed response answers `304`; an asset past `FileResponse`'s streaming threshold was re-sent in full. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- A `304` advertises the length the equivalent `200` would carry, or none when it is unknown, instead of `0`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `{value:float}` is matched before `{value:decimal}`; float accepts a strict subset, so it is the more restrictive of the pair. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `parse_multipart_form` is no longer re-exported from `veloce.http.datastructures`; import it from `veloce.http`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - `exclude_middleware` accepts a middleware class, matched by type so it covers subclasses; a string still matches the resolved name exactly. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `exclude_middleware` raises `TypeError` for an entry that is neither a middleware class nor a name; such an entry previously matched nothing in silence. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `RedisRateLimitBackend` runs a built-in strategy as a Lua script - one round trip instead of three, executed atomically, with no contended-key fallback that could admit requests over the limit. A custom strategy keeps the `WATCH` path unless it declares `lua_script`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - `View`, `JSONProvider`, the path-converter base and the MCP registry base refuse a subclass that omits a required method, at definition. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - `Cache` and `SessionStore` refuse a subclass that omits a required method, at definition rather than on the request that first calls it. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - A traceback frame from a compiled resolver names its handler and shows its source, instead of a bare `<veloce-resolver>` with no line. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - `response_model_*` filter flags resolve when the route is registered rather than on every response; assigning one to a `RouteInfo` afterwards no longer takes effect. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - A compiled resolver converts `str`, `int` and `float` parameters inline instead of calling the shared coercion helper per parameter. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - A response with no background work returns before allocating the task list it used to build and discard. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - An MCP JSON-RPC envelope is encoded as protocol on every transport, so a custom `json_provider_class` no longer injects its keys into protocol frames and `JSONIFY_PRETTYPRINT_REGULAR` no longer inflates each SSE frame. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - `/openapi.json`, `/docs` and `/redoc` are excluded from the OpenAPI document they serve, so a generated client no longer carries three operations for them. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `instance_path=` must be a rooted path; a relative one resolved against the working directory the process happened to start in. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - An env file refuses a value that is not the type its config key declares, naming the key. `DEBUG=flase` read as `False`; an empty value still reads as off. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - An MCP `Capability` declares the methods a modern revision retired as `handshake_only_methods`; the server derives what it refuses from those instead of a separate table. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - An app-level `url_value_preprocessor` runs before a blueprint's, matching the request hooks; registration order no longer interleaves the two. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `app.url_value_preprocessors` and `app.url_default_functions` key each blueprint's entries under its dotted name instead of flattening them under `None`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - Three deferred imports of Veloce modules are hoisted to module scope and three are documented with the cycle they break. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `SecurityHeadersMiddleware` applies its headers with one pass over the response's keys instead of a case-insensitive scan per header, saving 1-4 us per response. Output is unchanged. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `APPLICATION_ROOT`, `MAX_COOKIE_SIZE` and `PERMANENT_SESSION_LIFETIME` are removed from the config defaults and stop startup when set; pass `path=`, `max_cookie_size=` and `permanent_lifetime=` to the session middleware. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - `SessionMiddleware` and `ServerSessionMiddleware` take every cookie setting from their constructor; `SESSION_COOKIE_NAME`, `SESSION_COOKIE_SECURE`, `SESSION_COOKIE_HTTPONLY` and `SESSION_COOKIE_SAMESITE` no longer configure them, and setting one stops startup with `AuditFailed`. Pass `secure=True` and the rest as arguments. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `SECRET_KEY` remains the one session setting read from the app; a middleware given no `secret_key=` still signs with it. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `SessionMiddlewareBase.cookie_lifetime` replaces the private `_cookie_lifetime`; a subclass calling the old name must rename it. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
@@ -234,13 +169,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `veloce.routing.params` is removed; import the markers from `veloce` or `veloce.routing`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Fixed
+
+- A streamed file sends no more than the `Content-Length` it declared when the file grows mid-response. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- A `list`-typed `Header()` or `Cookie()` resolves on a websocket route instead of closing the handshake `1011`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `/openapi.json` gives a request schema its own component when a nested model is also returned by another route. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- The derived-model cache for `response_model_include` / `_exclude` keys on the model, not its address. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- The MCP HTTP transport publishes the session from its SSE reply path, so a conformant client's handshake is recorded. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- A `@rate_limit`-tagged route's backend honours the middleware's `max_keys`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- The MCP stdio ordering wait no longer absorbs a cancel delivered to its own task. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- An MCP server-to-client request whose emit fails leaves no entry in the pending correlation table. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A grouped parameter's schema walk reports failure instead of silently publishing the field without its `ge` / `le` / `title`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `jsonable_encoder` applies `exclude` below a model, not only to its own fields. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `Query(default=[])` and other mutable marker defaults are copied per request. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `client.session_transaction()` applies the middleware's own age ceiling, so a cookie a request would refuse no longer loads. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - A status-code error handler taking `(request, exc)` is called correctly on the unhandled-exception and `405` paths; it raised `TypeError` out of dispatch. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - `SessionAuth` describes itself in the OpenAPI document, so a session-guarded route declares a security requirement instead of publishing as open. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - The legacy MCP SSE transport sends its reconnect hint on the first frame; no frame carried `retry` before. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A header parameter containing a backslash is quoted and escaped, so a `Content-Disposition` filename ending in one no longer emits an unterminated quoted-string. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
@@ -266,40 +208,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A tuple return that is not `(body, status[, headers])` reads the same with and without a `response_class`; the `response_class` path took the first element and discarded the rest. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A parameter declared on a dependency is published in the OpenAPI document; it was enforced with a `422` but absent from the schema. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A tool declared with `@app.mcp_tool` renders its result in the app's JSON dialect, as a route-exposed tool already did; the two disagreed and the route-backed one only matched by accident. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - `CORSMiddleware` keeps an `Access-Control-Expose-Headers` entry another middleware contributed under any casing; it checked two spellings and silently discarded the rest. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - Replacing `Allow` or `Content-Length` clears the existing header whatever casing it was stored under, so a response cannot carry two. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - `app.openapi_version` is emitted in the generated document; it was documented as the spec version the document carries and was read nowhere. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - The OpenAPI document and the MCP `initialize` result report the same application title; the two builders carried different fallback defaults. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - A pre-dispatch refusal (the 413 on both transports, and the ASGI 400) is encoded in the app's JSON dialect. These ran before the app contextvar was bound, so the dialect appeared only when an earlier request had left it set on the same task. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - `app.run()` answers a `MAX_CONTENT_LENGTH` refusal with the same JSON body as the ASGI path; it sent `Content Too Large` as untyped text, so a client parsing the documented error shape failed on that transport only. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - `title` and `version` must be non-empty strings; a non-string produced an invalid OpenAPI document and a 500 on `/docs`, and `validate_openapi=True` did not catch it. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - An `exception_handlers=` key that is not an int status code or an exception class raises `TypeError`. A string key was stored in a table matched by MRO walk, so the handler never fired. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `docs_url=""` and `redoc_url=""` disable that page instead of mounting it at the site root, and two documentation pages sharing a path are refused at construction rather than on a later request. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - A text `response_class` given a `dict` or `list` raises `TypeError` naming the class and the remedy, instead of `AttributeError: 'dict' object has no attribute 'encode'`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - `/docs` and `/redoc` point at the schema path the app actually serves, including `prefix=` and `root_path`. Both rendered empty on a prefixed app, and ReDoc had no way to override it. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - `mount_mcp(transport="sse", auth=...)` serves the RFC 9728 protected-resource metadata its `401` challenge points at; the route was registered by the HTTP transport alone. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - The MCP stdio transport encodes a reply with the same fallback the HTTP path uses, and answers `-32603` rather than writing nothing when a value cannot be serialised. A `Decimal` in `ctx.result_meta` hung the client. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - An MCP request naming a handshake-era revision in `_meta` is served as handshake-era by both the transport and the core, so it no longer skips the standard-header cross-check while being answered in the modern envelope. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - A mounted sub-app that cannot serve a request raises instead of silently falling through to the next mount with the body already drained. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - A blueprint `url_value_preprocessor` no longer runs on every request nor costs every route in the app its straight-line dispatch. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - `Veloce.process_response` runs the dispatch path, so a hook declaring only `response` no longer raises, a non-`Response` return no longer replaces the response, and `after_this_request` callbacks run. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - `Router(tags=[...])` copies the list instead of appending route tags to the caller's own. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - `TestClient.cookies` and `TestResponse.cookies` report the decoded value the handler receives, not the percent-encoded wire form. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A route whose `response_model=` disagrees with its return annotation fails `veloce check`; it was printed and the command exited 0. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - Response-contract findings carry ids, so `SILENCED_AUDIT_IDS` reaches them, and are reported by severity rather than only under `debug`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
@@ -327,7 +253,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `SILENCED_AUDIT_IDS` from an env file splits on commas; left a string, a membership test matched single characters. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A blueprint's `before_request`, `after_request` and `teardown_request` run on routes of a nested blueprint that declares none of its own; a guard on a parent blueprint was skipped there. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `security_audit` no longer warns about a session middleware constructed with an explicit `secure=True`; it read only `SESSION_COOKIE_SECURE`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - The `Connection` header states what the built-in server actually did: an HTTP/1.0 request, one asking for `Connection: close`, and a native SSE stream were all answered `keep-alive` on a socket the server then closed. `EventSourceResponse` no longer sets `Connection` as a response header. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A `StreamingResponse` with a bodiless status (`204`, `205`, `304`) sends no chunks and advertises no `Transfer-Encoding`, which RFC 9112 Sec. 6.1 forbids there; it previously desynchronised keep-alive connections. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - Assigning `response.body` refreshes `Content-Length`, as `set_data` already did; a middleware rewriting a body advertised the previous length. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
@@ -389,7 +314,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An MCP tool schema publishes a parameter marker's constraints, matching the OpenAPI document. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `CORSMiddleware`'s usage example lists `allow_headers`, which credentials require. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - Mounting an MCP transport twice no longer leaves the first mount unreachable by `url_for`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-
 - Fix the order of grouped lifespan-teardown failures; an expanded exception group's members were reported backwards. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `request.is_disconnected()` reports `True` on the built-in server when a client vanishes mid-body; the disconnect was signalled as an ordinary end-of-body. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `veloce mcp run --transport http` says which server it fell back to when uvicorn is absent, as `veloce run` already did. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
