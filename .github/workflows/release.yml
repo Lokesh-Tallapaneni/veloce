@@ -7,6 +7,8 @@ on:
 
 permissions:
   contents: read
+  # Reading a pull request's state, to check the links the release notes carry.
+  pull-requests: read
 
 jobs:
   # Gate the tag on the same full matrix that gates a merge (3.10-3.13 +
@@ -29,6 +31,39 @@ jobs:
         uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
         with:
           python-version: "3.12"
+      # Every PR the notes link must be merged. The entries are written before
+      # the pull request exists, so its number is a guess, and a guess that
+      # lands on somebody else's PR is invisible: the link resolves, it just
+      # goes somewhere unrelated. 0.18.0 shipped 295 entries pointing at an
+      # open dependency bump this way. Checked here rather than in the release
+      # job because that one runs after the PyPI upload, and an artifact cannot
+      # be unpublished.
+      - name: Check the release notes' PR links
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v tag="[$version]" '
+            /^## \[/ {
+              if (found) exit
+              if (index($0, tag)) { found=1; next }
+            }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "::error::CHANGELOG.md has no [$version] section to release"
+            exit 1
+          fi
+          status=0
+          for pr in $(grep -oE 'pull/[0-9]+' release-notes.md | cut -d/ -f2 | sort -nu); do
+            state=$(gh pr view "$pr" --repo "$GITHUB_REPOSITORY" --json state --jq .state 2>/dev/null || echo UNKNOWN)
+            if [ "$state" != "MERGED" ]; then
+              echo "::error::CHANGELOG [$version] links pull/$pr, which is $state - expected MERGED"
+              status=1
+            fi
+          done
+          exit $status
+
       - name: Build
         run: uv build
       - name: Check artifacts
