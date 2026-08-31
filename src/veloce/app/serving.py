@@ -10,11 +10,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import signal
 import socket
 import ssl
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any, cast
+
+from typing_extensions import Doc
 
 from veloce._protocol_constants import (
     LIFECYCLE_SHUTDOWN,
@@ -22,34 +25,74 @@ from veloce._protocol_constants import (
     URL_SCHEME_HTTP,
     URL_SCHEME_HTTPS,
 )
+from veloce._version import resolve_version
+from veloce.app._host import AppHost
+
+if TYPE_CHECKING:  # pragma: no cover
+    from veloce.app.core import Veloce
+
+# Bounds for the built-in server's accept queue. The floor is what the queue
+# is never allowed to fall below; the ceiling stops a machine advertising an
+# enormous limit from being taken at its word.
+_MIN_LISTEN_BACKLOG = 512
+_MAX_LISTEN_BACKLOG = 4096
 
 
-class ServingMixin:
+@functools.lru_cache(maxsize=1)
+def _resolve_listen_backlog() -> int:
+    """Depth to request for the built-in server's accept queue.
+
+    The queue is kernel-side, and the kernel silently clamps the request to
+    its own maximum, so a fixed constant is wrong in both directions: below
+    the machine's limit it refuses bursts the machine would have taken, and
+    above it the extra is discarded without a word. asyncio's own default of
+    100 is far below any of these - a burst of 5000 concurrent connects was
+    measured establishing 1000 connections against it, which reads as the
+    server falling over when it is really a queue depth.
+
+    Ask the machine what it allows and stay inside it, bounded so a host with
+    a tiny or unreadable limit still gets a usable queue.
+
+    Memoized: this is a `procfs` read on the path that creates the listening
+    socket, before any connection exists, and the answer cannot change while
+    the process runs. Reading it at import instead would make every application
+    pay the syscall for a server most never start.
+    """
+    try:
+        with open("/proc/sys/net/core/somaxconn", "rb") as fh:
+            limit = int(fh.read())
+    except (OSError, ValueError):
+        # No procfs (Windows, macOS, a container without it), or a value that
+        # will not parse. Ask for the ceiling and let the kernel clamp what it
+        # cannot honour - which is what it does to any request, including one
+        # this file could have read.
+        limit = _MAX_LISTEN_BACKLOG
+    return max(_MIN_LISTEN_BACKLOG, min(limit, _MAX_LISTEN_BACKLOG))
+
+
+class ServingMixin(AppHost):
     """Run and gracefully stop the built-in development server."""
-
-    __slots__ = ()
-
-    if TYPE_CHECKING:  # pragma: no cover
-        # Attributes / methods the host application (`Veloce`) provides.
-        config: Any
-        logger: Any
-        debug: bool
-        version: str
-        _run_lifecycle: Callable[..., Any]
-        _stop_watchdog: Callable[..., Any]
-        _shutdown_subapps: Callable[..., Any]
-        _drain_spawned_tasks: Callable[..., Any]
-        _setup_openapi: Callable[..., Any]
 
     def run(
         self,
-        host: str | None = None,
-        port: int = 8000,
-        workers: int = 1,
-        access_log: bool = True,
-        ssl_context: ssl.SSLContext | None = None,
-        bind_all: bool = False,
-        reload: bool = False,
+        host: Annotated[
+            str | None,
+            Doc("Interface to bind; defaults to `127.0.0.1`. Conflicts with `bind_all`."),
+        ] = None,
+        port: Annotated[int, Doc("TCP port to listen on.")] = 8000,
+        workers: Annotated[int, Doc("Must be `1`; the built-in server runs a single process.")] = 1,
+        access_log: Annotated[
+            bool, Doc("Print the start-up banner and install the development access log.")
+        ] = True,
+        ssl_context: Annotated[
+            ssl.SSLContext | None, Doc("Serve HTTPS for local testing when given.")
+        ] = None,
+        bind_all: Annotated[
+            bool, Doc("Bind every interface (`0.0.0.0`) instead of localhost.")
+        ] = False,
+        reload: Annotated[
+            bool, Doc("Restart the server whenever a project `.py` file changes.")
+        ] = False,
     ) -> None:
         """Start the built-in **development** server.
 
@@ -144,16 +187,19 @@ class ServingMixin:
             pass
 
         if access_log:
-            scheme = URL_SCHEME_HTTPS if ssl_context is not None else URL_SCHEME_HTTP
-            print(f"\n  Veloce v{self.version}")
-            print(f"  Listening on {scheme}://{host}:{port}")
-            print("  Press Ctrl+C to stop\n")
+            self._print_banner(host, port, tls=ssl_context is not None)
+            # The flag named itself after this and only printed the banner: a
+            # development server that answers requests silently is the odd one
+            # out, and a request that fails leaves nothing to correlate it with.
+            # Only the built-in server installs it - under an ASGI server that
+            # server writes the access log, and a second one would duplicate it.
+            self._install_dev_access_log()
 
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
         try:
-            loop.run_until_complete(self._serve(host, port, access_log, ssl_context))
+            loop.run_until_complete(self._serve(host, port, ssl_context))
         except KeyboardInterrupt:
             pass
         finally:
@@ -161,12 +207,113 @@ class ServingMixin:
             loop.run_until_complete(self._graceful_shutdown(loop))
             loop.close()
 
-    async def _serve(self, host: str, port: int, access_log: bool, ssl_context: Any = None) -> None:
+    def _print_banner(self, host: str, port: int, tls: bool = False) -> None:
+        """Print the development server's start-up banner.
+
+        The version is the installed *framework* version, resolved from the same
+        distribution metadata `veloce.__version__` and `veloce --version` read.
+        Not `self.version`, which is the constructor's `version=` - the API
+        version emitted into the OpenAPI document. Printing that makes a
+        default app announce `Veloce v0.1.0` whatever framework version is
+        running, on the one line an operator reads to find out.
+        """
+        scheme = URL_SCHEME_HTTPS if tls else URL_SCHEME_HTTP
+        print(f"\n  Veloce v{resolve_version()}")
+        print(f"  Listening on {scheme}://{host}:{port}")
+        print("  Press Ctrl+C to stop\n")
+
+    def _install_dev_access_log(self) -> None:
+        """Register the per-request access log for the built-in server.
+
+        A no-op when the application already registered one, so `run()` never
+        doubles up on an app that called `instrument_access_log` itself.
+        """
+        # Deferred to keep the layering: `app/` is core, `observability` is not.
+        from veloce.observability import instrument_access_log
+
+        # Ask the hook whether it is an access log, rather than testing which
+        # module defined it: a user's own access-log instrumentation could not
+        # suppress the built-in one, so `run(access_log=True)` logged twice.
+        for hook in self._instrumentation:
+            if getattr(hook, "is_access_log", False):
+                return
+        instrument_access_log(cast("Veloce", self))
+
+    @staticmethod
+    def _install_shutdown_signals(
+        loop: asyncio.AbstractEventLoop, on_shutdown: Callable[[], None]
+    ) -> tuple[bool, list[tuple[int, Any]]]:
+        """Arrange for `on_shutdown` to run when the process is asked to stop.
+
+        Returns `(loop_owns_the_handlers, handlers_to_restore)`. The first
+        decides how `_serve` waits: with loop-installed handlers the wait can
+        block indefinitely, because the handler runs on the loop thread and
+        wakes it. The second is non-empty only on the fallback path, and must be
+        restored when serving ends.
+
+        POSIX installs through the loop. Windows does not support
+        `loop.add_signal_handler`, and without a handler Ctrl+C / Ctrl+Break
+        raise `KeyboardInterrupt` straight out of the loop, tearing down
+        in-flight connections before the graceful drain can run - so the
+        fallback uses `signal.signal` (which replaces the default
+        KeyboardInterrupt-raising handler) and bounces the cooperative shutdown
+        onto the loop thread, letting an in-flight request drain at its own
+        boundary.
+
+        `signal.signal` installs a PROCESS-WIDE handler, which is why the
+        previous ones are returned to be restored: a handler closing over this
+        (soon-closed) loop would otherwise outlive `run()`, and a later Ctrl+C
+        would schedule onto a dead loop.
+        """
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, on_shutdown)
+            except NotImplementedError:
+                break
+        else:
+            return True, []
+
+        def _os_signal_handler(signum: int, frame: Any) -> None:
+            # A late console control event can arrive once the loop is already
+            # closing/closed; ignore it rather than raising on a closed loop.
+            if not loop.is_closed():
+                loop.call_soon_threadsafe(on_shutdown)
+
+        restore: list[tuple[int, Any]] = []
+        win_signals = [signal.SIGINT]
+        if hasattr(signal, "SIGBREAK"):
+            win_signals.append(signal.SIGBREAK)
+        for sig in win_signals:
+            previous = signal.getsignal(sig)
+            try:
+                signal.signal(sig, _os_signal_handler)
+            except (ValueError, OSError):
+                # `signal.signal` only works on the main thread; if `run()` is
+                # driven from another thread, skip it (shutdown then relies on
+                # the main thread / explicit stop).
+                continue
+            restore.append((sig, previous))
+        return False, restore
+
+    @staticmethod
+    def _restore_shutdown_signals(restore: list[tuple[int, Any]]) -> None:
+        """Put back the process-wide handlers the fallback path replaced.
+
+        Empty on the loop-installed path, which owns its handlers and drops them
+        with the loop. Failures are suppressed: restoration runs while the
+        process is already shutting down, and a handler that can no longer be
+        installed must not become the reason `run()` raises.
+        """
+        for sig_num, previous in restore:
+            with contextlib.suppress(ValueError, OSError):
+                signal.signal(sig_num, previous)
+
+    async def _serve(self, host: str, port: int, ssl_context: Any = None) -> None:
         """Create the server and run forever."""
-        # Deferred: serving.protocol imports `veloce.status`, which triggers
-        # `veloce/__init__` -> back to this app module. Hoisting would
-        # circle at package import time. Both call sites below share the
-        # same break.
+        # Deferred for import cost, not for a cycle: hoisting this import was
+        # measured to add 11 modules and ~8ms to `import veloce`, which every
+        # application pays and only one that calls `run()` uses. Both call sites
+        # below share the same deferral.
         from veloce.serving.protocol import HttpProtocol
 
         loop = asyncio.get_running_loop()
@@ -181,63 +328,24 @@ class ServingMixin:
         reuse_port = True if hasattr(socket, "SO_REUSEPORT") else None
         # `ssl=None` (the default) makes `create_server` behave exactly as
         # the plain-HTTP path; TLS cost is paid only when a context is set.
+        # See `_resolve_listen_backlog`: asyncio's default of 100 refuses a
+        # connection burst before the loop ever sees it.
         server = await loop.create_server(
             # `self` is always a `Veloce` (this mixin is only composed into it).
             lambda: HttpProtocol(self, loop),  # type: ignore[arg-type]
             host,
             port,
+            backlog=_resolve_listen_backlog(),
             reuse_port=reuse_port,
             ssl=ssl_context,
         )
-        # Handle signals for graceful shutdown
         shutdown_event = asyncio.Event()
 
         def _signal_handler() -> None:
             server.close()
             shutdown_event.set()
 
-        # POSIX: the loop installs the handler and runs it on the loop thread.
-        native_signals = True
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            try:
-                loop.add_signal_handler(sig, _signal_handler)
-            except NotImplementedError:
-                # Windows: `loop.add_signal_handler` is unsupported. Without a
-                # handler, Ctrl+C / Ctrl+Break raise `KeyboardInterrupt` straight
-                # out of the loop, tearing down in-flight connections before the
-                # graceful drain can run. Fall back to `signal.signal` (which
-                # replaces the default KeyboardInterrupt-raising handler) and
-                # bounce the cooperative shutdown onto the loop thread, so an
-                # in-flight request drains at its own boundary.
-                native_signals = False
-                break
-
-        # Windows fallback: `signal.signal` installs a PROCESS-WIDE handler, so
-        # the previous handlers are saved and restored after serving - otherwise a
-        # handler closing over this (soon-closed) loop leaks past `run()` and a
-        # later Ctrl+C would schedule onto a dead loop.
-        restore_signals: list[tuple[int, Any]] = []
-        if not native_signals:
-
-            def _os_signal_handler(signum: int, frame: Any) -> None:
-                # A late console control event can arrive once the loop is already
-                # closing/closed; ignore it rather than raising on a closed loop.
-                if not loop.is_closed():
-                    loop.call_soon_threadsafe(_signal_handler)
-
-            win_signals = [signal.SIGINT]
-            if hasattr(signal, "SIGBREAK"):
-                win_signals.append(signal.SIGBREAK)
-            for sig in win_signals:
-                previous = signal.getsignal(sig)
-                try:
-                    signal.signal(sig, _os_signal_handler)
-                except (ValueError, OSError):
-                    # `signal.signal` only works on the main thread; if `run()` is
-                    # driven from another thread, skip it (shutdown then relies on
-                    # the main thread / explicit stop).
-                    continue
-                restore_signals.append((sig, previous))
+        native_signals, restore_signals = self._install_shutdown_signals(loop, _signal_handler)
 
         try:
             async with server:
@@ -258,9 +366,7 @@ class ServingMixin:
                 # `_graceful_shutdown` ever got the chance to drain it.
                 HttpProtocol.start_graceful_drain()
         finally:
-            for sig_num, previous in restore_signals:
-                with contextlib.suppress(ValueError, OSError):
-                    signal.signal(sig_num, previous)
+            self._restore_shutdown_signals(restore_signals)
 
     async def _graceful_shutdown(self, loop: asyncio.AbstractEventLoop) -> None:
         """Two-phase graceful shutdown, then run the shutdown lifecycle.
@@ -273,9 +379,8 @@ class ServingMixin:
         with a timeout, then cancelled - so a stuck handler can never hang the
         process.
         """
-        # Deferred: same `veloce.status` -> `veloce/__init__` cycle that
-        # the matching import in `_serve` breaks. These are the only two
-        # call sites; not worth a structural refactor.
+        # Deferred for the same import-cost reason as the matching import in
+        # `_serve`, which this shares. These are the only two call sites.
         from veloce.serving.protocol import HttpProtocol
 
         # Phase one: flip every live connection's drain flag so each self-
@@ -285,10 +390,17 @@ class ServingMixin:
         # Phase two (hard fallback): give in-flight dispatch tasks a bounded
         # window to finish draining, then cancel any straggler so shutdown
         # cannot block forever on a handler that ignores the drain.
+        #
+        # How long that window is belongs to the deployment, not to the
+        # framework: it has to fit inside the orchestrator's termination grace
+        # period, which the framework cannot know. Written as a literal here, a
+        # container with a ten-second grace was killed mid-drain and no operator
+        # setting could change it - while the two budgets either side of this
+        # line were both config-driven.
         if HttpProtocol._active_tasks:
             await asyncio.wait(
                 HttpProtocol._active_tasks,
-                timeout=30,
+                timeout=self.config.get("GRACEFUL_DRAIN_TIMEOUT", 30),
             )
 
         # Cancel any still-running tasks

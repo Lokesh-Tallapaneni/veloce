@@ -73,9 +73,11 @@ remote-code-execution surface.
 
 ## Surfacing exceptions in tests
 
-By default an unhandled exception becomes a `500` response, which is correct
-for production but hides the real error from a test. Set `PROPAGATE_EXCEPTIONS`
-to re-raise it out of dispatch so the assertion sees the original traceback.
+By default an unhandled exception becomes a `500` response and is logged with
+its traceback (see [Error handling](error-handling.md#unhandled-exceptions-are-logged)),
+which is right for production but still hides the error from an assertion. Set
+`PROPAGATE_EXCEPTIONS` to re-raise it out of dispatch so the test sees the
+original traceback directly.
 
 ```python
 from veloce import TestClient, Veloce
@@ -145,6 +147,38 @@ app.config["TESTING"] = True        # DEBUG + TESTING -> exceptions propagate
     handler that returns a response for the raised type wins; propagation only
     applies to exceptions that reach the unhandled `500` path. See
     [Error handling](error-handling.md).
+
+## Frames from generated code
+
+Veloce compiles a small resolver for routes whose parameters it can bind
+directly, so a traceback can pass through code that has no file on disk. Those
+frames read like any other — they name the handler they belong to and show
+their source:
+
+```text
+  File "<veloce-resolver:search:9f2c1a0b4e77>", line 7, in _resolver
+    _qp = request.query_params
+          ^^^^^^^^^^^^^^^^^^^^
+```
+
+The name between the colons is the handler, so a frame tells you which route
+generated it. The trailing digest distinguishes resolvers, and is stable for a
+given handler — it changes only when the generated code does.
+
+What you see there is the parameter binding for that route, with each type
+resolved into the code rather than looked up per request: a `str` parameter is
+read straight out of the query string, and an `int` or `float` appears as the
+conversion itself, wrapped so a bad value raises the same `422` it always did.
+A validation failure on a converted parameter therefore surfaces from generated
+source rather than from a shared helper — the response is unchanged.
+
+There is nothing to enable, and nothing to turn off in production: the source is
+registered once when the route is registered, and the request path never
+consults it.
+
+!!! note "Changed in version 0.18.0"
+    Generated frames used to render as a bare `File "<veloce-resolver>", line N`
+    with no source line, and every resolver in the process shared that one name.
 
 ## Next steps
 

@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from veloce._internal import _current_app_var, _current_request_var, _is_async_callable, offload
 from veloce.contrib.mcp._helpers import (
@@ -38,6 +38,7 @@ from veloce.routing.router import RouteMatch
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.registry import MCPTool
+    from veloce.contrib.mcp.server import MCPServer
 
 _logger = logging.getLogger(__name__)
 
@@ -45,11 +46,11 @@ _logger = logging.getLogger(__name__)
 def _argument_error_text(errors: Any) -> str:
     """Render binding errors as text a language model can act on.
 
-    The wire form used to be `str()` of the error list - a Python repr, with
-    single quotes and a `loc` path that reads as framework internals. A model
-    receiving that has to guess which argument it got wrong; naming the argument
-    and the expectation is the difference between a retry that can succeed and
-    one that cannot.
+    Not `str()` of the error list: that is a Python repr, with single quotes
+    and a `loc` path that reads as framework internals, and a model receiving it
+    has to guess which argument it got wrong. Naming the argument and the
+    expectation is the difference between a retry that can succeed and one that
+    cannot.
     """
     if not isinstance(errors, list) or not errors:
         return "Invalid arguments"
@@ -70,7 +71,7 @@ def _argument_error_text(errors: Any) -> str:
 
 
 def _resolve_log_level(session: Any) -> str | None:
-    """The level this call's notifications are filtered against.
+    """Resolve the level this call's notifications are filtered against.
 
     Precedence is per-request first, then per-connection. A modern request names
     its level in `_meta` and the dispatcher puts that in the ContextVar, so it
@@ -227,7 +228,9 @@ class InvocationMixin:
             log_level=_resolve_log_level(session),
             requester=_requester_var.get(),
             session=session,
-            server=self,
+            # `self` is the `MCPServer` this mixin is mixed into; only the
+            # subclass declares that, so the cast restores it for the checker.
+            server=cast("MCPServer", self),
             request_meta=request_meta,
             request_id=_request_id_var.get(),
         )
@@ -362,17 +365,7 @@ class InvocationMixin:
             response = self.app._build_response(request, match, result)
             response = await self.app._run_after_hooks(request, response, bp_name)
 
-            # Background work: the handler's injected queue plus any task it
-            # attached to its own `Response`. Awaited inline (the stdio path has
-            # no response to flush first); a task error is logged, never allowed
-            # to fail the produced tool result.
-            tasks = request._background_tasks
-            if tasks is not None:
-                try:
-                    await tasks.run_all()
-                except Exception:
-                    _logger.exception("MCP background task failed")
-            await self._run_response_background(response)
+            await self._run_background(request, response)
             return _RouteResponse(response, model_filtered)
         except MCPError:
             # Not a handled application failure: an error the author raised to
@@ -418,13 +411,7 @@ class InvocationMixin:
         surfaced in-band by `_tools_call`.
         """
         result = await self._bind_and_call(tool, arguments, context, resolver, request)
-        tasks = request._background_tasks
-        if tasks is not None:
-            try:
-                await tasks.run_all()
-            except Exception:
-                _logger.exception("MCP background task failed")
-        await self._run_response_background(result)
+        await self._run_background(request, result)
         return result
 
     async def _bind_and_call(
@@ -462,6 +449,7 @@ class InvocationMixin:
                 tool.route_dep_plans,
                 request=request,
                 route_defaults=route_defaults,
+                dependency_inputs=tool.dependency_inputs,
             )
         except RequestValidationError as err:
             raise _InvalidArgumentsError(_argument_error_text(err.errors)) from err
@@ -475,6 +463,22 @@ class InvocationMixin:
         # loop - the same offload the HTTP path applies; `offload` preserves
         # request-scoped ContextVars.
         return await offload(handler, **kwargs)
+
+    async def _run_background(self, request: Any, result: Any) -> None:
+        """Run everything this call scheduled: the injected queue, then the response's.
+
+        Both invocation paths reach here - the route path with its `Response`,
+        the pure-tool path with the handler's raw return. Awaited inline (the
+        stdio path has no response to flush first); a task error is logged,
+        never allowed to fail the produced tool result.
+        """
+        tasks = request._background_tasks
+        if tasks is not None:
+            try:
+                await tasks.run_all()
+            except Exception:
+                _logger.exception("MCP background task failed")
+        await self._run_response_background(result)
 
     @staticmethod
     async def _run_response_background(result: Any) -> None:

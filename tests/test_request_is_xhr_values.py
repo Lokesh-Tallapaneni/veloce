@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import pytest
-
+from tests.conftest import make_request
 from veloce import Request
 
 
@@ -12,7 +11,7 @@ def _req(
     body: bytes = b"",
     headers: dict | None = None,
 ) -> Request:
-    return Request(
+    return make_request(
         method="POST",
         path="/x",
         query_string=query,
@@ -45,7 +44,6 @@ def test_is_xhr_false_with_other_value():
 # ── values: query + form merged ──────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_values_includes_query_string():
     r = _req(query="a=1&b=2")
     v = await r.values()
@@ -53,7 +51,6 @@ async def test_values_includes_query_string():
     assert v.get("b") == "2"
 
 
-@pytest.mark.asyncio
 async def test_values_includes_form_body():
     r = _req(
         body=b"x=10&y=20",
@@ -64,7 +61,6 @@ async def test_values_includes_form_body():
     assert v.get("y") == "20"
 
 
-@pytest.mark.asyncio
 async def test_values_merges_query_and_form():
     r = _req(
         query="src=q",

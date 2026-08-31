@@ -16,6 +16,7 @@ kind, so the taxonomy answers the question rather than a list of classes.
 
 from __future__ import annotations
 
+from tests._mcp import FORBIDDEN, INVALID_PARAMS
 from veloce import MCPContext, Veloce
 from veloce.contrib.mcp._helpers import _requester_var
 from veloce.contrib.mcp.errors import (
@@ -98,7 +99,7 @@ def _app() -> Veloce:
 
 async def test_an_invalid_params_error_keeps_its_code():
     error = (await _call(_app(), "bad_params"))["error"]
-    assert error["code"] == -32602
+    assert error["code"] == INVALID_PARAMS
     assert error["message"] == "the cursor is not one this server issued"
 
 
@@ -128,7 +129,7 @@ async def test_an_authorization_failure_still_reaches_the_caller():
     async def reader(ctx: MCPContext) -> str:
         raise AuthorizationError(frozenset({"admin"}))
 
-    assert (await _call(app, "reader"))["error"]["code"] == -32003
+    assert (await _call(app, "reader"))["error"]["code"] == FORBIDDEN
 
 
 async def test_a_route_backed_tool_delivers_its_error_too():
@@ -216,7 +217,7 @@ async def test_a_resource_read_still_delivers_its_error():
         {"jsonrpc": "2.0", "id": 1, "method": "resources/read", "params": {"uri": "doc://ledger"}},
         MCPSession(),
     )
-    assert response["error"]["code"] == -32602
+    assert response["error"]["code"] == INVALID_PARAMS
 
 
 # ── What instrumentation records ─────────────────────────────────────

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from veloce._internal import _require_slots
 from veloce.security._utils import _extract_bearer_token
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -38,12 +39,34 @@ class SecurityScheme:
         # a subclass that omits `__slots__` would regain a per-instance
         # `__dict__`, defeating the slotted layout the base establishes.
         super().__init_subclass__(**kwargs)
-        if "__slots__" not in cls.__dict__:
-            raise TypeError(f"{cls.__name__} must declare __slots__ (use () if it adds no fields)")
+        _require_slots(cls)
 
     def __call__(self, request: Request) -> Any:
         """Extract the credential from the request, or 401 when `auto_error`."""
         raise NotImplementedError
+
+    def openapi_scheme(self) -> dict[str, Any] | None:
+        """Describe this scheme as an OpenAPI Security Scheme Object.
+
+        Return the object published under `components.securitySchemes`, or
+        `None` when the scheme cannot be described. A route guarded by an
+        undescribed scheme is published with no security requirement - which
+        asserts the endpoint is open - so the schema build warns rather than
+        doing that silently.
+
+        Only the scheme knows what it reads and how a client should send it,
+        so it answers for itself: a subclass adding a new authentication style
+        implements this and is published like a built-in.
+
+        Usage::
+
+            class CertHeaderAuth(SecurityScheme):
+                __slots__ = ()
+
+                def openapi_scheme(self):
+                    return {"type": "apiKey", "in": "header", "name": "X-Cert"}
+        """
+        return None
 
 
 class _BearerScheme(SecurityScheme):

@@ -1,13 +1,28 @@
-"""jsonify config-driven options (Q32)."""
+"""`jsonify()`'s config-driven options.
+
+The narrowest of the three modules that touch `JSON_SORT_KEYS`, and the only one
+about the public helper itself: what `jsonify(...)` does with the setting when a
+user calls it directly. Whether every *other* surface resolves the same
+serialiser is `test_json_serialiser_consistency.py`'s `_ROUTES` table, and the
+edges that table cannot express - the bare-mapping SSE branch, a provider that
+raises, a response built with no app - are in
+`test_json_dialect_reaches_every_surface.py`.
+"""
 
 from __future__ import annotations
+
+import orjson
 
 from veloce import Request, Veloce, jsonify
 from veloce.testclient import TestClient
 
 
-def test_jsonify_default_sorts_keys():
-    """the built-in default: `JSON_SORT_KEYS` is True → keys sorted, no indent."""
+def test_jsonify_keeps_insertion_order_by_default():
+    """The built-in default: `JSON_SORT_KEYS` is False, so order is as written.
+
+    Sorting costs 24-49% of the serialise and is not what most JSON APIs do, so
+    it is opt-in. `test_jsonify_sort_keys_when_config_set` covers the opt-in.
+    """
     app = Veloce(debug=True, openapi_url=None)
 
     @app.get("/x")
@@ -15,8 +30,7 @@ def test_jsonify_default_sorts_keys():
         return jsonify(b=2, a=1, c=3)
 
     resp = TestClient(app).get("/x")
-    # spec-faithful: keys sorted alphabetically, compact output.
-    assert resp.body == b'{"a":1,"b":2,"c":3}'
+    assert resp.body == b'{"b":2,"a":1,"c":3}'
 
 
 def test_jsonify_no_sort_when_disabled():
@@ -58,8 +72,6 @@ def test_jsonify_pretty_print_when_config_set():
     assert b"\n" in resp.body
     assert b"  " in resp.body
     # Still valid JSON.
-    import orjson
-
     assert orjson.loads(resp.body) == {"a": 1, "b": [1, 2]}
 
 
@@ -110,26 +122,21 @@ def test_jsonify_list_passthrough():
     assert resp.body == b"[1,2,3]"
 
 
-class TestJsonify:
-    def test_jsonify_kwargs(self):
-        resp = jsonify(name="alice", age=30)
-        assert resp.status_code == 200
-        import orjson
+def test_jsonify_kwargs():
+    resp = jsonify(name="alice", age=30)
+    assert resp.status_code == 200
+    data = orjson.loads(resp.body)
+    assert data["name"] == "alice"
 
-        data = orjson.loads(resp.body)
-        assert data["name"] == "alice"
 
-    def test_jsonify_dict(self):
-        resp = jsonify({"x": 1})
-        import orjson
+def test_jsonify_dict():
+    resp = jsonify({"x": 1})
+    assert orjson.loads(resp.body) == {"x": 1}
 
-        assert orjson.loads(resp.body) == {"x": 1}
 
-    def test_jsonify_list(self):
-        resp = jsonify([1, 2, 3])
-        import orjson
-
-        assert orjson.loads(resp.body) == [1, 2, 3]
+def test_jsonify_list():
+    resp = jsonify([1, 2, 3])
+    assert orjson.loads(resp.body) == [1, 2, 3]
 
 
 def test_jsonify_via_testclient():

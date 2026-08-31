@@ -23,7 +23,7 @@ That's much easier to guarantee when you own the whole pipeline rather than comp
 So Veloce treats your handlers as the source for a compiler:
 
 - **Source** — your typed handler signature.
-- **IR** — a `HandlerPlan`, built once at registration: the dependency graph, each parameter's type and source, the side-effect class. (The declared response type rides alongside on the route's contract, which the lowerings below also read.)
+- **IR** — a `HandlerPlan`, built once at registration: the dependency graph, each parameter's type and source. (The declared response type rides alongside on the route's contract, and the side-effect class is derived from the HTTP verb; the lowerings below read both.)
 - **Emit targets** — the runtime request pipeline, the OpenAPI 3.1 document, and — for routes you opt into MCP exposure — a first-party MCP (Model Context Protocol) tool surface. All lowered from the same plan.
 
 ```python

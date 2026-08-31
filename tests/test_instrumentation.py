@@ -152,7 +152,7 @@ def test_no_hook_registered_is_inert():
     app = _app()
     resp = app.test_client().get("/items/4")
     assert resp.status_code == 200
-    assert app._instrumentation == []
+    assert app.instrumentation_hooks == ()
 
 
 def test_no_hook_skips_the_clock_read():
@@ -381,7 +381,7 @@ def test_add_instrumentation_decorator_with_exclude_routes():
 
     # The decorator returns the original function unchanged.
     assert callable(record)
-    assert app._instrumentation == [record]
+    assert app.instrumentation_hooks == (record,)
     assert app._instrumentation_excludes[record] == frozenset({"/items/{item_id}"})
 
     client = app.test_client()

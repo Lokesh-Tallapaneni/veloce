@@ -12,16 +12,18 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import inspect
 import time
 import traceback
 import weakref
-from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, get_args, get_origin
+from collections.abc import Callable, MutableMapping
+from typing import Any, get_args, get_origin
 
+import orjson
 from pydantic import BaseModel as _PydanticBaseModel
 
-from veloce import status
+import veloce.status as status
 from veloce._constants import (
     HEADER_ACCEPT,
     HEADER_ALLOW,
@@ -33,20 +35,31 @@ from veloce._constants import (
     MSG_INTERNAL_SERVER_ERROR,
     MSG_METHOD_NOT_ALLOWED,
     MSG_NOT_FOUND,
-    MSG_REQUEST_BODY_EXCEEDS_MAX,
     STATE_INJECTED_RESPONSE,
 )
 from veloce._internal import (
+    _UNRESOLVED_JSON_DUMPS,
     MIME_HTML,
     MIME_JSON,
+    _close_form_uploads,
     _coerce_bool,
     _current_app_var,
     _current_request_var,
     _extract_host,
     _is_async_callable,
+    _unpack_response_tuple,
+    dumps_for,
     offload,
 )
-from veloce._model_backend import _HAS_MSGSPEC, _msgspec, is_msgspec_struct, is_pydantic_model
+from veloce._model_backend import (
+    _HAS_MSGSPEC,
+    ModelBackend,
+    _msgspec,
+    backend_of,
+    is_msgspec_struct,
+    is_pydantic_model,
+    shape_through_model,
+)
 from veloce._pipeline import (
     CompiledPipeline,
 )
@@ -58,14 +71,17 @@ from veloce._protocol_constants import (
     TRACE_HEADER_TRACESTATE,
     build_trace_carrier,
 )
-from veloce.app.urls import URLRule as URLRule
+from veloce.app._host import AppHost
 from veloce.blueprints import _endpoint_blueprint
 from veloce.debug import render_traceback_html
 from veloce.dependency import DependencyResolver, Depends
+from veloce.encoders import orjson_default
 from veloce.exceptions import (
     HTTPException,
+    http_exception_payload,
 )
-from veloce.helpers import g
+from veloce.helpers import g, jsonify
+from veloce.http._body import too_large_payload
 from veloce.http.request import Request
 from veloce.http.response import (
     JSONResponse,
@@ -80,10 +96,6 @@ from veloce.signals import (
     request_started,
     request_tearing_down,
 )
-
-if TYPE_CHECKING:  # pragma: no cover
-    pass
-
 
 # ── Dispatch-scoped module state ───────────────────────────
 
@@ -167,56 +179,61 @@ def _is_struct_list_model(model: Any) -> bool:
     return False
 
 
-class DispatchMixin:
+def _adapt_hook_kwargs(
+    fn: Callable,
+    cache: MutableMapping[Any, tuple[bool, bool]],
+    second_name: str,
+    request: Request,
+    second_value: Any,
+) -> dict[str, Any]:
+    """Select the kwargs `fn` accepts, from `request` and one other value.
+
+    After-request hooks and exception handlers are the same adapter: both take
+    `request` and one more parameter (`response` / `exc`), either by name or via
+    `**kwargs`, and both cache the answer per callable. Written out twice, the
+    copies drifted - only one of them handled `**kwargs`, so an exception handler
+    declared `def handler(**kwargs)` was called with an empty dict and could not
+    see the exception it was handling.
+
+    A plain function, not a coroutine: it is called from inside an existing
+    `await` on the response path, and wrapping it would add a coroutine per hook
+    per request for a dict build.
+    """
+    # The read is guarded as well as the write below. The caches are
+    # `WeakKeyDictionary`s, so a callable that cannot be weakly referenced - a
+    # method descriptor such as `str.upper`, say - raises `TypeError` on lookup,
+    # not only on insert. Only the write was guarded, so registering one as a
+    # hook answered `500` on every request. Such a callable is simply not
+    # cached: its signature is resolved per call, which is the cost the guard on
+    # the write was already accepting.
+    try:
+        flags = cache.get(fn)
+    except TypeError:
+        flags = None
+    if flags is None:
+        params = inspect.signature(fn).parameters
+        # A callable taking `**kwargs` accepts whatever is offered.
+        if any(p.kind is p.VAR_KEYWORD for p in params.values()):
+            flags = (True, True)
+        else:
+            flags = ("request" in params, second_name in params)
+        with contextlib.suppress(TypeError):
+            cache[fn] = flags
+    wants_request, wants_second = flags
+    kwargs: dict[str, Any] = {}
+    if wants_request:
+        kwargs["request"] = request
+    if wants_second:
+        kwargs[second_name] = second_value
+    return kwargs
+
+
+class DispatchMixin(AppHost):
     """The per-request HTTP dispatch pipeline, mixed into Veloce.
 
     Not slotted: the first-request latch assigns host state (`_setup_locked`,
     `_first_request_fired`) onto the composed `Veloce`, which carries a `__dict__`.
     """
-
-    if TYPE_CHECKING:  # pragma: no cover
-        # Attributes / methods the host application (Veloce) provides.
-        config: Any
-        logger: Any
-        debug: bool
-        match: Callable[..., Any]
-        update_template_context: Callable[..., Any]
-        make_default_options_response: Callable[..., Any]
-        _status_handlers: Any
-        _find_exception_handler: Callable[..., Any]
-        _find_scoped_exception_handler: Callable[..., Any]
-        _find_scoped_status_handler: Callable[..., Any]
-        _mcp_context: Any
-        _instrumentation: Any
-        _middlewares: Any
-        _should_propagate_exceptions: Callable[..., Any]
-        _setup_locked: bool
-        _setup_lock_enabled: bool
-        _first_request_fired: bool
-        _first_request_lock: Any
-        _before_first_request_hooks: Any
-        _before_request_hooks: Any
-        _after_request_hooks: Any
-        _bp_before_hooks: Any
-        _bp_after_hooks: Any
-        _teardown_request_hooks: Any
-        _bp_teardown_hooks: Any
-        _teardown_appcontext_hooks: Any
-        _url_value_preprocessors: Any
-        _ensure_pipeline: Callable[..., Any]
-        _setup_openapi: Callable[..., Any]
-        _openapi_setup: bool
-        spawn: Callable[..., Any]
-        _run_teardown_hooks: Callable[..., Any]
-        _select_teardown_request_hooks: Callable[..., Any]
-        get_allowed_methods: Callable[..., Any]
-        _dependency_overrides: Any
-        _override_subplans: Any
-        _instrumentation_excludes: Any
-        _mounted_apps: Any
-        _static_handlers: Any
-        _mw_version: Any
-        redirect_slashes: bool
 
     # ── Entry point and core dispatch ──────────────────────
 
@@ -228,14 +245,14 @@ class DispatchMixin:
         Shared by the eager declared/buffered check and the streamed-body drain so
         both reject with the identical `{detail, status_code, limit}` payload.
         """
-        response: Response = JSONResponse(
-            {
-                "detail": MSG_REQUEST_BODY_EXCEEDS_MAX,
-                "status_code": status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                "limit": max_size,
-            },
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+        # Encoded against `self` rather than through `JSONResponse`'s own
+        # resolution: this runs before the app contextvar is bound, so the
+        # dialect was applied only when a previous request on the same task had
+        # left it set.
+        response: Response = JSONResponse._from_encoded(
+            dumps_for(self, too_large_payload(max_size))
         )
+        response.status_code = status.HTTP_413_REQUEST_ENTITY_TOO_LARGE
         # No route matched on a reject, so no per-route exclusion chain exists.
         if cp is not None and cp.http_post is not None:
             response = await self._run_response_phase(cp.http_post, request, response, False)
@@ -244,7 +261,7 @@ class DispatchMixin:
     async def handle_request(
         self, request: Request, cp: CompiledPipeline | None = None, match: Any = None
     ) -> Response:
-        """Main request handler - runs middleware chain + route dispatch.
+        """Handle one request - run the middleware chain, then route dispatch.
 
         `cp` is the compiled pipeline for this request. `__call__` already
         resolves it (to gate the ASGI wrapper stack) and threads it in so the
@@ -432,10 +449,19 @@ class DispatchMixin:
     ) -> Response:
         """Core request dispatch - middleware, routing, handler execution.
 
-        Thin orchestrator: the request phase, route resolution, handler
-        invocation, and response hooks each live in a focused helper. The
-        `try/finally` here owns the per-request teardown state (`_exc`,
-        `_bp_name`, `resolver`) that the `finally` block reads.
+        The per-request hot path, and **deliberately inline**: extracting a
+        phase out of this loop measured about 5% per request, which is why the
+        cold branches were moved out of `_asgi_app` and these were not. What is
+        here is here on purpose.
+
+        This is not a thin orchestrator delegating to per-phase helpers: the
+        method is over three hundred lines and the phases are inline. Reading
+        it means reading it, not following calls out.
+
+        The `try/finally` owns the per-request teardown state (`_exc`,
+        `_bp_name`, `resolver`) that the `finally` block reads; that is the
+        reason the state is bound before the `try` rather than where it is
+        first used.
         """
         _exc: Exception | None = None
         # Whether a background task took ownership of releasing this request's
@@ -492,13 +518,32 @@ class DispatchMixin:
                 # guarantees no url-value preprocessors and `is_fast_eligible`
                 # no route `defaults`, so the raw match params are final.
                 request.path_params = match.path_params
+                # One truthiness test in the common case. `is_bare` covers the
+                # app-level processors (they apply to every endpoint); a
+                # blueprint's apply to its own routes only, so they no longer
+                # cost the whole app its fast path - just this lookup.
+                if cp.bp_url_procs is not None:
+                    bp = _endpoint_blueprint(route_info.name)
+                    bp_procs = cp.bp_url_procs.get(bp) if bp is not None else None
+                    if bp_procs is not None:
+                        for proc in bp_procs:
+                            proc(route_info.name, request.path_params)
                 if route_info.is_request_only_plan:
-                    result = await route_info.handler(
-                        **{route_info.handler_plan.slots[0].name: request}
-                    )
+                    result = await route_info.handler(**{route_info.request_param_name: request})
                 else:
                     result = await route_info.handler()
-                response = self._build_response(request, match, result)
+                # `_build_response` reduced to this one call on this path, and
+                # every other line of it was dead work. `is_fast_eligible`
+                # (routing/router.py) is set only when `response_model is None`,
+                # `response_class is None` and `status_code == HTTP_200_OK`, so
+                # its three tests can never fire; and it requires a trivial or
+                # request-only plan, which by definition carries no `Response`
+                # slot and no dependencies - the only writers of
+                # `STATE_INJECTED_RESPONSE` - so the injection merge cannot fire
+                # either. `test_fast_path_response_agreement` pins that, so a
+                # future loosening of `is_fast_eligible` fails rather than
+                # silently skipping work this path still needs.
+                response = self._coerce_response(result)
                 # `is_bare` guarantees the app/blueprint after_request hooks are
                 # empty, so the only work `_run_after_hooks` could do here is
                 # drain one-shot `after_this_request` callbacks. Probe for them
@@ -642,6 +687,13 @@ class DispatchMixin:
             # `raise` re-raises the active exception with its original traceback.
             if self._should_propagate_exceptions():
                 raise
+            # Log it here or it is lost. The response is a generic 500 and the
+            # exception does not leave the app, so an ASGI server's error
+            # logging never sees it and the native server has nothing to catch
+            # either - an unhandled failure would reach production with no
+            # record anywhere. `got_request_exception` fires below, but only
+            # for an app that subscribed to it; this is the default.
+            self.log_exception(exc, request)
             return await self._shape_server_error(request, exc, cp, excluded)
         finally:
             # Yield-dependency teardowns first - they conceptually wrap the
@@ -765,8 +817,7 @@ class DispatchMixin:
     ) -> Response:
         """Run a registered exception handler and apply the response phase."""
         response = await self._dispatch_exc_handler(handler, request, exc)
-        if cp.http_post is not None:
-            response = await self._run_response_phase(cp.http_post, request, response, excluded)
+        response = await self._run_response_phase(cp.http_post, request, response, excluded)
         return response
 
     async def _default_http_exception_response(
@@ -778,15 +829,12 @@ class DispatchMixin:
         `.errors` list - emitted verbatim as `{"detail": [...]}` - rather than
         the stringified repr stored in `exc.detail`.
         """
-        structured = getattr(exc, "errors", None)
-        detail_payload: Any = structured if structured is not None else exc.detail
         response: Response = JSONResponse(
-            {"detail": detail_payload, "status_code": exc.status_code},
+            http_exception_payload(exc),
             status_code=exc.status_code,
             headers=exc.headers,
         )
-        if cp.http_post is not None:
-            response = await self._run_response_phase(cp.http_post, request, response, excluded)
+        response = await self._run_response_phase(cp.http_post, request, response, excluded)
         return response
 
     async def _shape_server_error(
@@ -812,8 +860,7 @@ class DispatchMixin:
                 body=body,
                 content_type=content_type,
             )
-            if cp.http_post is not None:
-                response = await self._run_response_phase(cp.http_post, request, response, excluded)
+            response = await self._run_response_phase(cp.http_post, request, response, excluded)
             return response
         return await self._handle_error(
             request,
@@ -822,6 +869,7 @@ class DispatchMixin:
                 {"detail": MSG_INTERNAL_SERVER_ERROR},
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             ),
+            exc,
         )
 
     # ── Hooks and route resolution ─────────────────────────
@@ -879,29 +927,45 @@ class DispatchMixin:
         defaults, endpoint, and url_rule and run URL value preprocessors.
         Raises `HTTPException` for the 404 / constraint-mismatch cases.
         """
-        # Check mounted sub-apps
+        # Check mounted sub-apps.
+        #
+        # A linear prefix scan, kept deliberately. The `has_mounted_apps` gate
+        # makes an app with no mounts pay nothing, and beyond that the cost is
+        # ~0.07 us per mount per request (measured on the project's benchmark
+        # host, min-of-7 over 5k requests each: 0 mounts 5.54 us, 1 mount
+        # 6.74 us, 3 mounts 6.91 us, 10 mounts 7.33 us, 50 mounts 10.14 us).
+        # A prefix trie would lose to a list scan at the two or three mounts a
+        # typical app registers, and an overlapping mount is now a
+        # registration-time `ValueError` rather than a shadowing to disambiguate
+        # here. Revisit if an app is ever seen with mounts in the dozens.
         if cp.has_mounted_apps:
             for prefix, prefix_slash, sub_app in self._mounted_apps:
                 if request.path.startswith(prefix_slash) or request.path == prefix:
                     sub_path = request.path[len(prefix) :] or "/"
-                    # Surface the mount prefix as the sub-app's `root_path`, the
-                    # same way the ASGI-mount path does (`_asgi_app`), so a route
-                    # inside the sub-app sees `request.root_path == <mount prefix>`
-                    # and `url_for` builds prefix-correct URLs. Stacks under the
-                    # parent's own root_path when the parent is itself mounted.
-                    sub_request = Request(
-                        method=request.method,
-                        path=sub_path,
-                        query_string=request.query_string,
-                        headers=request.headers,
-                        body=await request.body(),
-                        transport=request.transport,
-                        app=sub_app,
-                        scope={"root_path": request.root_path + prefix},
+                    # Only the sub-app knows whether its route streams. Hand the
+                    # body source straight over when it does, so a `stream=True`
+                    # route keeps streaming once mounted; otherwise drain here,
+                    # which is what the transport would have done at top level.
+                    # `mount()` routes a non-`Veloce` app to `_asgi_mounts` or
+                    # `_static_handlers`, so every entry here is a `Veloce` and
+                    # has both methods. Probing for them would turn a missing one
+                    # into a silent fall-through to the next mount, with this
+                    # request's body already drained into `sub_request`.
+                    sub_match = sub_app.match(request.method, sub_path)
+                    streams = sub_match is not None and sub_match.route_info.stream
+                    # `derive_for_mount` owns what the mount changes and what it
+                    # carries forward; it stacks under the parent's own root_path
+                    # when the parent is itself mounted.
+                    sub_request = Request.derive_for_mount(
+                        request,
+                        sub_path,
+                        b"" if streams else await request.body(),
+                        sub_app,
+                        prefix,
+                        body_source=request._body_source if streams else None,
                     )
-                    if hasattr(sub_app, "handle_request"):
-                        response = await sub_app.handle_request(sub_request)
-                        return await self._run_response_middleware(request, response)
+                    response = await sub_app.handle_request(sub_request)
+                    return await self._run_response_middleware(request, response)
 
         # Check static files
         if cp.has_static_handlers:
@@ -957,10 +1021,7 @@ class DispatchMixin:
                 # exist on the parent. `root_path` is "" for a top-level app, so
                 # the unmounted case is unchanged.
                 response = RedirectResponse(request.root_path + alt, status_code=code)
-                if cp.http_post is not None:
-                    response = await self._run_response_phase(
-                        cp.http_post, request, response, excluded
-                    )
+                response = await self._run_response_phase(cp.http_post, request, response, excluded)
                 return response
 
         if match is None:
@@ -973,10 +1034,9 @@ class DispatchMixin:
                     response = self.make_default_options_response(
                         request.path, allowed_methods=allowed
                     )
-                    if cp.http_post is not None:
-                        response = await self._run_response_phase(
-                            cp.http_post, request, response, excluded
-                        )
+                    response = await self._run_response_phase(
+                        cp.http_post, request, response, excluded
+                    )
                     return response
                 return await self._handle_error(
                     request,
@@ -1008,6 +1068,13 @@ class DispatchMixin:
             endpoint = match.route_info.name
             for proc in self._url_value_preprocessors:
                 proc(endpoint, request.path_params)
+        if self._bp_url_value_preprocessors:
+            endpoint = match.route_info.name
+            bp = _endpoint_blueprint(endpoint)
+            bp_procs = self._bp_url_value_preprocessors.get(bp) if bp is not None else None
+            if bp_procs is not None:
+                for proc in bp_procs:
+                    proc(endpoint, request.path_params)
 
         return match
 
@@ -1017,14 +1084,21 @@ class DispatchMixin:
         """Run every registered `url_value_preprocessor` against `path_params`.
 
         Each processor receives `(endpoint, path_params)` and may mutate
-        `path_params` in place (e.g. pop a locale segment into `g`). App-level
-        processors plus the blueprint-gated ones merged into the single list
-        run in registration order. Shared by HTTP dispatch and the MCP
-        route-backed tool path so a processor sees the same call on both.
+        `path_params` in place (e.g. pop a locale segment into `g`).
+        App-level processors run first, then the ones the endpoint's blueprint
+        contributes - the same order the request hooks use. Shared by HTTP
+        dispatch and the MCP route-backed tool path so a processor sees the
+        same call on both.
         """
         if self._url_value_preprocessors:
             for proc in self._url_value_preprocessors:
                 proc(endpoint, path_params)
+        if self._bp_url_value_preprocessors:
+            bp = _endpoint_blueprint(endpoint)
+            bp_procs = self._bp_url_value_preprocessors.get(bp) if bp is not None else None
+            if bp_procs is not None:
+                for proc in bp_procs:
+                    proc(endpoint, path_params)
 
     # ── Dependencies and response building ─────────────────
 
@@ -1045,7 +1119,7 @@ class DispatchMixin:
             if route_info.is_trivial_plan:
                 return {}, None
             if route_info.is_request_only_plan:
-                return {route_info.handler_plan.slots[0].name: request}, None
+                return {route_info.request_param_name: request}, None
             resolver = DependencyResolver()
             resolver._overrides = self._dependency_overrides
             resolver._override_subplans = self._override_subplans
@@ -1079,16 +1153,11 @@ class DispatchMixin:
         # The handler may return a dict/BaseModel/list; if the route
         # declared a response_model, route the value through it so
         # extra fields drop, aliases apply, and unset/None filters fire.
-        # A msgspec-struct response_model (or `list[Struct]`) is encoded by the
-        # runtime branch in `_coerce_response`, not reshaped through Pydantic's
-        # `model_dump` / `model_validate`. Both guards are False for every
-        # Pydantic model, so the Pydantic path is unchanged.
-        if (
-            route_info.response_model is not None
-            and not isinstance(result, Response)
-            and not is_msgspec_struct(route_info.response_model)
-            and not _is_struct_list_model(route_info.response_model)
-        ):
+        # Every backend shapes. `_apply_response_model` dispatches a msgspec
+        # struct (or `list[Struct]`) to the backend-agnostic shaper like any
+        # other value: a backend that reached `_coerce_response` unshaped would
+        # filter nothing, and a subclass would put its extra fields on the wire.
+        if route_info.response_model is not None and not isinstance(result, Response):
             result = self._apply_response_model(result, route_info)
 
         response = self._coerce_response(result, route_info.response_class)
@@ -1131,12 +1200,12 @@ class DispatchMixin:
         # Run after_request hooks - app-level then matched blueprint.
         for hook in reversed(self._after_request_hooks):
             hook_result = await self._call_after_hook(hook, request, response)
-            if hook_result is not None and isinstance(hook_result, Response):
+            if isinstance(hook_result, Response):
                 response = hook_result
         if self._bp_after_hooks and bp_name is not None:
             for hook in reversed(self._bp_after_hooks.get(bp_name, ())):
                 hook_result = await self._call_after_hook(hook, request, response)
-                if hook_result is not None and isinstance(hook_result, Response):
+                if isinstance(hook_result, Response):
                     response = hook_result
 
         # Drain one-shot `after_this_request(fn)` callbacks. These run
@@ -1146,7 +1215,7 @@ class DispatchMixin:
         if one_shot:
             for fn in one_shot:
                 fn_result = await self._call_after_hook(fn, request, response)
-                if fn_result is not None and isinstance(fn_result, Response):
+                if isinstance(fn_result, Response):
                     response = fn_result
         return response
 
@@ -1163,13 +1232,19 @@ class DispatchMixin:
         request's spool files are released after it finishes rather than at
         teardown; the caller uses this to decide which.
         """
-        coros = []
-        if request._background_tasks is not None:
-            coros.append(request._background_tasks.run_all())
-
         # Response-attached background task (shape:
         # `Response(content=..., background=BackgroundTask(fn))`).
-        attached_bg = getattr(response, "background", None)
+        injected = request._background_tasks
+        attached_bg = response.background
+        # Both sources checked before anything is allocated: almost every
+        # response has neither, and used to build a list only to discard it.
+        if injected is None and attached_bg is None:
+            return False
+
+        coros = []
+        if injected is not None:
+            coros.append(injected.run_all())
+
         if attached_bg is not None:
             # `BackgroundTasks` collection -> `.run_all()`;
             # single `BackgroundTask` -> `.run()`. Anything else with
@@ -1192,14 +1267,20 @@ class DispatchMixin:
         # no tracked task to drain at shutdown, and leaves the tasks running
         # concurrently as they did before. A failed task still counts as done,
         # so a failure cannot strand the files.
-        if request._form is not None:
+        form = request._form
+        if form is not None:
             remaining = len(tasks)
 
+            # Closes over the *form*, not the request. Capturing `request` kept
+            # the whole object alive - headers, body bytes, state, scope and the
+            # ASGI callables - for as long as the slowest background task ran,
+            # which can be far longer than the response it belonged to. The
+            # spool files are all this callback needs.
             def _release(_task: asyncio.Task[Any]) -> None:
                 nonlocal remaining
                 remaining -= 1
                 if remaining == 0:
-                    request._close_uploads()
+                    _close_form_uploads(form)
 
             for task in tasks:
                 task.add_done_callback(_release)
@@ -1208,7 +1289,11 @@ class DispatchMixin:
     # ── Error handling and handler invocation ──────────────
 
     async def _handle_error(
-        self, request: Request, status_code: int, default: Response
+        self,
+        request: Request,
+        status_code: int,
+        default: Response,
+        exc: BaseException | None = None,
     ) -> Response:
         """Check for status-code handler, fall back to default response."""
         # Prefer a handler on the failing request's blueprint chain (a
@@ -1217,37 +1302,36 @@ class DispatchMixin:
         # exception -> 500 path, not only on the HTTPException path.
         handler = self._find_scoped_status_handler(status_code, request)
         if handler:
-            result = await self._call_handler(handler, {"request": request})
+            # Adapt to the handler's signature rather than assuming it takes
+            # only `request`. The same handler registered for a status code is
+            # reachable from here and from `handle_http_exception`, which passes
+            # the exception - so a `(request, exc)` handler must be callable on
+            # both paths, or the `TypeError` escapes dispatch itself.
+            if exc is None:
+                exc = HTTPException(status_code=status_code)
+            result = await self._call_exc_handler(handler, request, exc)
             return await self._run_response_middleware(request, self._coerce_response(result))
         return await self._run_response_middleware(request, default)
 
     def _subdomain_matches(self, request: Request, subdomain: str) -> bool:
         """Check whether `request`'s host carries the expected subdomain.
 
-        `subdomain` is the literal subdomain string (`"api"`,
-        `"admin"`) - the request's `Host` header must be
-        `{subdomain}.{SERVER_NAME}`. `"*"` matches any non-empty
-        subdomain of `SERVER_NAME`. When no `SERVER_NAME` is configured
-        we degrade to comparing the leftmost label of the host with
-        the subdomain literal - useful for tests that drive the app
-        without setting `SERVER_NAME`.
+        `subdomain` is the literal subdomain string (`"api"`, `"admin"`); `"*"`
+        matches any non-empty subdomain. What the request's subdomain *is* comes
+        from `Request.subdomain`, which is the same question a handler asks.
+
+        Deriving it here separately would let the two disagree, and the way
+        they disagree is not benign: `Request.subdomain` short-circuits an IP
+        literal, because its dots are address structure and not name labels. A
+        second derivation without that rule matches a route declared
+        `subdomain="192"` against a request to `192.168.1.1` - and the handler
+        it matched then asks the framework the same question and is told the
+        subdomain is empty.
         """
-        host = _extract_host(request.host or "")
-        if not host:
-            return False
-        server_name = (self.config.get("SERVER_NAME") or "").lower()
-        if server_name:
-            if not host.endswith("." + server_name):
-                return False
-            prefix = host[: -(len(server_name) + 1)]
-            if subdomain == "*":
-                return bool(prefix)
-            return prefix == subdomain
-        # No SERVER_NAME - compare the leftmost label.
-        leftmost = host.split(".", 1)[0]
+        actual = request.subdomain
         if subdomain == "*":
-            return "." in host
-        return leftmost == subdomain
+            return bool(actual)
+        return actual == subdomain
 
     async def _call_handler(
         self, handler: Callable, kwargs: dict, is_coro: bool | None = None
@@ -1270,40 +1354,14 @@ class DispatchMixin:
 
     async def _call_after_hook(self, hook: Callable, request: Request, response: Response) -> Any:
         """Call an after-request hook, adapting kwargs to match its signature."""
-        flags = _after_hook_sig_cache.get(hook)
-        if flags is None:
-            params = inspect.signature(hook).parameters
-            # A hook taking `**kwargs` accepts whatever is offered.
-            if any(p.kind is p.VAR_KEYWORD for p in params.values()):
-                flags = (True, True)
-            else:
-                flags = ("request" in params, "response" in params)
-            with contextlib.suppress(TypeError):
-                _after_hook_sig_cache[hook] = flags
-        wants_request, wants_response = flags
-        kwargs: dict[str, Any] = {}
-        if wants_request:
-            kwargs["request"] = request
-        if wants_response:
-            kwargs["response"] = response
+        kwargs = _adapt_hook_kwargs(hook, _after_hook_sig_cache, "response", request, response)
         return await self._call_handler(hook, kwargs)
 
     async def _call_exc_handler(
         self, handler: Callable, request: Request, exc: BaseException
     ) -> Any:
         """Call an exception handler, adapting kwargs to match its signature."""
-        flags = _exc_handler_sig_cache.get(handler)
-        if flags is None:
-            params = set(inspect.signature(handler).parameters)
-            flags = ("request" in params, "exc" in params)
-            with contextlib.suppress(TypeError):
-                _exc_handler_sig_cache[handler] = flags
-        wants_request, wants_exc = flags
-        kwargs: dict[str, Any] = {}
-        if wants_request:
-            kwargs["request"] = request
-        if wants_exc:
-            kwargs["exc"] = exc
+        kwargs = _adapt_hook_kwargs(handler, _exc_handler_sig_cache, "exc", request, exc)
         return await self._call_handler(handler, kwargs)
 
     async def _dispatch_exc_handler(
@@ -1356,21 +1414,11 @@ class DispatchMixin:
           validates each element individually.
         """
         model = route_info.response_model
-        dump_kwargs: dict[str, Any] = {}
-        if route_info.response_model_exclude_unset:
-            dump_kwargs["exclude_unset"] = True
-        if route_info.response_model_exclude_defaults:
-            dump_kwargs["exclude_defaults"] = True
-        if route_info.response_model_by_alias:
-            dump_kwargs["by_alias"] = True
-        if route_info.response_model_exclude_none:
-            dump_kwargs["exclude_none"] = True
-        if route_info.response_model_include:
-            dump_kwargs["include"] = route_info.response_model_include
-        if route_info.response_model_exclude:
-            dump_kwargs["exclude"] = route_info.response_model_exclude
+        # Resolved once when the route was registered - see `RouteInfo.__init__`.
+        # Read, never mutated: every route shares its own mapping across requests.
+        dump_kwargs = route_info.response_dump_kwargs
 
-        origin = get_origin(model)
+        origin = route_info.response_model_origin
         # Sequence-style response models - `response_model=list[Item]` - dump
         # each element through the inner model.
         if origin is list:
@@ -1400,6 +1448,16 @@ class DispatchMixin:
                             )
                             dumped.append(inner.model_validate(payload).model_dump(**dump_kwargs))
                     return dumped
+                if backend_of(inner) is not ModelBackend.NONE:
+                    # msgspec / dataclass / TypedDict elements shape through the
+                    # backend-agnostic shaper. `dump_kwargs` is Pydantic's
+                    # vocabulary and does not apply. An element that is exactly
+                    # the declared type skips the round-trip, as the scalar
+                    # branch below does.
+                    return [
+                        item if type(item) is inner else shape_through_model(item, inner)
+                        for item in result
+                    ]
             return result
 
         # Scalar Pydantic model.
@@ -1421,8 +1479,73 @@ class DispatchMixin:
             validated = model.model_validate(payload)
             return validated.model_dump(**dump_kwargs)
 
-        # Non-pydantic model (e.g. plain class) - pass through unchanged.
+        # msgspec struct / dataclass / TypedDict: shape through the shared
+        # backend-agnostic shaper so a declared output contract filters the same
+        # way whichever kind of type declared it. Skipping this let a subclass
+        # returned under a base-model contract put its extra fields on the wire.
+        # Exactly the declared type carries no field the contract excludes, so it
+        # needs no reshaping and is handed to the encoder as before. Tested
+        # before classifying the backend: `backend_of` walks an isinstance
+        # ladder, and this is the common case on every response.
+        if type(result) is model:
+            return result
+        if route_info.response_model_backend is not ModelBackend.NONE:
+            # A subclass, or a mapping - the case that leaked. The shaper is a
+            # full builtins round-trip, which is why the exact-type check above
+            # keeps it off the common path.
+            return shape_through_model(result, model)
+
+        # Not a model at all (e.g. a plain class) - pass through unchanged.
         return result
+
+    @staticmethod
+    def _response_class_mismatch(response_class: Any, result: Any) -> str:
+        """Build the message for a return the declared response class cannot render.
+
+        A text response class encodes what it is given, so a `dict` reached
+        `.encode()` and produced `AttributeError: 'dict' object has no attribute
+        'encode'` - a 500 naming neither the class that was asked for nor the
+        route that returned the value.
+        """
+        name = getattr(response_class, "__name__", response_class)
+        return (
+            f"{name} cannot render a {type(result).__name__}; it encodes str or bytes. "
+            f"Return a str, or declare response_class=JSONResponse on this route "
+            f"to send the value as JSON."
+        )
+
+    def _json_from_handler(self, data: Any) -> Response:
+        """Build the JSON response for a handler's `dict` / `list` / model return.
+
+        Takes the direct path unless the application configured a provider or a
+        JSON option, in which case that dialect applies here the way it already
+        applies to `jsonify` - and, since the dialect was extended to every
+        response, the way it applies to an error payload and a validation report
+        too. Only genuine protocol frames stay outside it: a signed cookie, a
+        JWT, an MCP JSON-RPC envelope.
+        """
+        dumps = self._json_dumps_override()
+        # `from_bytes` on both branches, not a bare `Response`: the return type
+        # is part of the contract - a `default_response_class` check and an
+        # `isinstance` on the coerced response both expect a `JSONResponse`.
+        # And encoding here rather than through `JSONResponse(data)` avoids
+        # resolving the dialect twice: this line has just done it. The
+        # constructor resolves it for a handler that builds one itself, which
+        # is the path that has no other way to learn the application's dialect.
+        body = orjson.dumps(data, default=orjson_default) if dumps is None else dumps(data)
+        return JSONResponse._from_encoded(body)
+
+    def _json_dumps_override(self) -> Any:
+        """Return the configured serialiser, or `None` to take the direct path.
+
+        Resolved once and cached. `None` is the stock case - the default
+        provider with no options set - where the direct path already emits
+        exactly what the provider would, so nothing is paid for the indirection.
+        """
+        dumps = self._handler_json_dumps
+        if dumps is _UNRESOLVED_JSON_DUMPS:
+            dumps = self._handler_json_dumps = self._resolve_handler_json_dumps()
+        return dumps
 
     def _coerce_response(self, result: Any, response_class: Any = None) -> Response:
         """Convert handler return value to a Response object."""
@@ -1435,7 +1558,7 @@ class DispatchMixin:
         # Gated on `response_class is None` so the JSONResponse-subclass branch
         # below still owns dicts when a class was requested.
         if type(result) is dict and response_class is None:
-            return JSONResponse(result)
+            return self._json_from_handler(result)
         # A msgspec struct (or a list of structs) encodes in C with no
         # intermediate dict. With no response_class it is written straight to a
         # JSON Response; with one, it is normalized to builtins so the requested
@@ -1444,38 +1567,57 @@ class DispatchMixin:
         # recurses on the struct body.
         if _HAS_MSGSPEC and _is_msgspec_payload(result):
             if response_class is None:
-                return Response(body=_msgspec.json.encode(result), content_type=MIME_JSON)
+                dumps = self._json_dumps_override()
+                if dumps is None:
+                    return Response(body=_msgspec.json.encode(result), content_type=MIME_JSON)
+                # A configured dialect outranks the struct fast path: convert to
+                # builtins so the same serialiser answers for every return type.
+                return JSONResponse.from_bytes(dumps(_msgspec.to_builtins(result)))
             result = _msgspec.to_builtins(result)
+        # A `(body, status[, headers])` return, unpacked once for both the
+        # `response_class` and no-class paths, through the one table the two
+        # `make_response` entry points also use. Any other length is not a
+        # response tuple and falls through as a plain value.
+        if isinstance(result, tuple):
+            unpacked = _unpack_response_tuple(result)
+            if unpacked is not None:
+                body, code, headers = unpacked
+                resp = self._coerce_response(body, response_class)
+                if code is not None:
+                    resp.status_code = code
+                if headers:
+                    resp.headers.update(headers)
+                # The body was coerced and may already carry a cached encoding;
+                # the status line and headers just changed, so it is stale.
+                resp._encoded = None
+                return resp
         # Use custom response_class if specified
         if response_class is not None:
-            if isinstance(result, tuple):
-                if len(result) == 3:
-                    body, code, headers = result
-                elif len(result) == 2:
-                    body, second = result
-                    if isinstance(second, int):
-                        body, code, headers = body, second, {}
-                    elif isinstance(second, dict):
-                        body, code, headers = body, status.HTTP_200_OK, second
-                    else:
-                        body, code, headers = body, int(second), {}
-                else:
-                    body, code, headers = result[0], status.HTTP_200_OK, {}
-                resp = self._coerce_response(body, response_class)
-                resp.status_code = code
-                resp.headers.update(headers)
-                return resp
             if isinstance(response_class, type) and issubclass(response_class, JSONResponse):
                 if isinstance(result, _PydanticBaseModel):
-                    return response_class(result.model_dump())
+                    result = result.model_dump()
+                dumps = self._json_dumps_override()
+                if dumps is None:
+                    return response_class(result)
+                # `from_bytes` on the requested class, so a subclass keeps its
+                # own `default_media_type` while the dialect still applies.
+                return response_class.from_bytes(dumps(result))
+            if isinstance(result, (str, bytes)):
                 return response_class(result)
-            if isinstance(result, str):
+            # Try, then translate. This refusal was raised *before* attempting,
+            # which also turned away a user-defined serialiser that renders the
+            # value perfectly well - those answered 200 and then 500, told to
+            # declare `response_class=JSONResponse` on a route whose whole point
+            # was not to. A class that genuinely cannot render structured data
+            # still fails, and still says so: the clear message stands in front
+            # of the `AttributeError: 'dict' object has no attribute 'encode'`
+            # it replaced, chained rather than discarded.
+            try:
                 return response_class(result)
-            if isinstance(result, bytes):
-                return response_class(result)
-            return response_class(result)
+            except (AttributeError, TypeError) as exc:
+                raise TypeError(self._response_class_mismatch(response_class, result)) from exc
         if isinstance(result, (dict, list)):
-            return JSONResponse(result)
+            return self._json_from_handler(result)
         if isinstance(result, str):
             # A bare `str` return defaults to text/html - the same default
             # `make_response()` applies, so the media type is consistent
@@ -1485,30 +1627,8 @@ class DispatchMixin:
             return Response(body=result, content_type=MIME_HTML)
         # Pydantic model
         if isinstance(result, _PydanticBaseModel):
-            return JSONResponse(result.model_dump())
-        # Tuple response (body, status_code) or (body, status_code, headers)
-        if isinstance(result, tuple):
-            if len(result) == 2:
-                body, second = result
-                if isinstance(second, int):
-                    resp = self._coerce_response(body)
-                    resp.status_code = second
-                elif isinstance(second, dict):
-                    resp = self._coerce_response(body)
-                    resp.headers.update(second)
-                else:
-                    resp = self._coerce_response(body)
-                    resp.status_code = int(second)
-                resp._encoded = None
-                return resp
-            if len(result) == 3:
-                body, code, headers = result
-                resp = self._coerce_response(body)
-                resp.status_code = code
-                resp.headers.update(headers)
-                resp._encoded = None
-                return resp
-        return JSONResponse(result)
+            return self._json_from_handler(result.model_dump())
+        return self._json_from_handler(result)
 
     # ── Middleware phases ──────────────────────────────────
 
@@ -1555,7 +1675,12 @@ class DispatchMixin:
         version = self._mw_version
         if cache is not None and cache[0] == version:
             return cache[1], cache[2]
-        request_chain = [mw for mw in self._middlewares if mw.middleware_name not in excluded]
+        names, types = excluded
+        request_chain = [
+            mw
+            for mw in self._middlewares
+            if mw.middleware_name not in names and not isinstance(mw, types)
+        ]
         response_chain = request_chain[::-1]
         route_info._mw_chain_cache = (version, request_chain, response_chain)
         return request_chain, response_chain
@@ -1663,4 +1788,131 @@ class DispatchMixin:
             except Exception:
                 self.logger.exception("instrumentation hook raised an exception")
 
-    # ── Server ────────────────────────────────────────────
+    # ── Dispatch aliases and response coercion ─────────────
+
+    # Veloce exposes the internal dispatcher under two names downstream
+    # extension code reaches for. Both alias `_dispatch_request`.
+    # `full_dispatch_request` runs the full before/after_request chain
+    # - which `_dispatch_request` already does inline - so both names
+    # point at the same method.
+    async def dispatch_request(self, request: Request) -> Any:
+        """Alias for `_dispatch_request`."""
+        return await self._dispatch_request(request, self._ensure_pipeline())
+
+    async def full_dispatch_request(self, request: Request) -> Any:
+        """Dispatch `request` through the full before/after-request hook chain.
+
+        An alias for `_dispatch_request`, which already runs the chain inline.
+        """
+        return await self._dispatch_request(request, self._ensure_pipeline())
+
+    async def preprocess_request(self, request: Request) -> Any:
+        """Run all `before_request` hooks for `request`.
+
+        Walks the registered hooks in order; if any hook returns a
+        non-None value it short-circuits the chain and that value is
+        returned (the contract - a non-None return becomes the
+        response). Both sync and async hooks are supported. App-level
+        hooks fire first, then the matched-blueprint bucket - the
+        same shape `_dispatch_request` uses.
+        """
+        for hook in self._before_request_hooks:
+            result = await self._call_handler(hook, {"request": request})
+            if result is not None:
+                return result
+        # Read directly: `endpoint` is a `Request.__slots__` field assigned in
+        # `__init__`, so the `getattr` default could never apply - and reading it
+        # the same way `_run_before_hooks` does keeps the two walks comparable.
+        bp = _endpoint_blueprint(request.endpoint)
+        if bp is not None and self._bp_before_hooks:
+            for hook in self._bp_before_hooks.get(bp, ()):
+                result = await self._call_handler(hook, {"request": request})
+                if result is not None:
+                    return result
+        return None
+
+    async def process_response(self, request: Request, response: Response) -> Response:
+        """Run all `after_request` hooks for `(request, response)`.
+
+        Hooks fire in **reverse** registration order; each hook may return a
+        replacement `Response` (the contract: any other return keeps the
+        existing one). App-level hooks reverse-iterate first, then the matched
+        blueprint's, then the request's one-shot `after_this_request` callbacks.
+
+        This is the dispatch path itself, not a re-implementation of it, so a
+        hook behaves here exactly as it will in production - including the
+        signature adaptation that lets a hook declare only the arguments it
+        wants.
+        """
+        return await self._run_after_hooks(request, response, _endpoint_blueprint(request.endpoint))
+
+    @staticmethod
+    def ensure_sync(func: Callable) -> Callable:
+        """Wrap `func` so it is callable from synchronous code.
+
+        - If `func` is a regular function, returns it unchanged.
+        - If `func` is a coroutine function, returns a sync wrapper
+          that runs the coroutine to completion on a dedicated event
+          loop and returns the result.
+
+        Use to bridge async handlers / hooks into sync code (CLI
+        commands, background workers, test scaffolding).
+        """
+        if not _is_async_callable(func):
+            return func
+
+        @functools.wraps(func)
+        def _sync_wrapper(*args: Any, **kwargs: Any) -> Any:
+            return asyncio.run(func(*args, **kwargs))
+
+        return _sync_wrapper
+
+    def make_response(self, value: Any) -> Response:
+        """Coerce a handler-return value into a `Response`.
+
+        Accepts (with this coercion table):
+        - `Response` -> returned as-is
+        - `str` / `bytes` -> wrapped as a text/HTML response
+        - `dict` / `list` -> wrapped as a JSON response via `jsonify`
+        - `tuple` of `(body, status)`, `(body, status, headers)` or
+          `(body, headers)` -> unpacked and re-coerced
+        - anything else -> JSON, matching what dispatch does with the same
+          value returned from a handler
+
+        A tuple of any other length is not a response tuple and is answered as
+        a plain value. `veloce.make_response` and dispatch read the same table
+        (`_unpack_response_tuple`); dispatch keeps its own fast lanes for the
+        shapes a handler returns most, but answers alike.
+        """
+        if isinstance(value, Response):
+            return value
+        if isinstance(value, tuple):
+            unpacked = _unpack_response_tuple(value)
+            if unpacked is not None:
+                body, code, headers = unpacked
+                resp = self.make_response(body)
+                if code is not None:
+                    resp.status_code = code
+                if headers:
+                    items = headers.items() if isinstance(headers, dict) else headers
+                    for k, v in items:
+                        resp.headers[k] = v
+                # `body` may already have been a `Response` carrying a cached
+                # encoding; the status line and headers just changed.
+                resp._encoded = None
+                return resp
+        if isinstance(value, (dict, list)):
+            return jsonify(value)
+        if isinstance(value, bytes):
+            return Response(body=value, content_type=MIME_HTML)
+        if isinstance(value, str):
+            return Response(
+                body=value.encode("utf-8"),
+                content_type=MIME_HTML,
+            )
+        # Anything else is JSON-encoded, which is what a handler returning the
+        # same value already gets from dispatch. Raising here made the public
+        # coercer refuse `123` and `None` while a handler returning them was
+        # answered `200` with a JSON body - one framework, two answers for one
+        # value.
+        return jsonify(value)

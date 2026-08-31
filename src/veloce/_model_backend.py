@@ -34,6 +34,18 @@ except ImportError:  # pragma: no cover - exercised in the no-msgspec CI leg
     _HAS_MSGSPEC = False
 
 
+# `typing.is_typeddict` answers False for a class built from
+# `typing_extensions.TypedDict` - which is the form Pydantic *requires* below
+# Python 3.12 - so using it alone made those types invisible here and they fell
+# to the scalar path. The typing_extensions predicate recognises both spellings.
+# It ships with Pydantic, so it is always present in practice; the fallback
+# keeps this importable if that ever stops being true.
+try:
+    from typing_extensions import is_typeddict as _is_typeddict
+except ImportError:  # pragma: no cover - typing_extensions comes with pydantic
+    from typing import is_typeddict as _is_typeddict
+
+
 class ModelBackend(IntEnum):
     """Which validation/serialization backend owns a model type."""
 
@@ -58,19 +70,39 @@ def resolve_return_model(handler: Callable[..., Any]) -> Any:
     resolved degrades to `None`, so an unrepresentable return type simply
     declares no contract instead of needing an explicit opt-out.
 
-    Single source of the return-annotation contract, so the HTTP door
-    (`response_model`, OpenAPI) and the MCP door (`outputSchema`) derive the
-    same model from the same handler.
+    The **base** of the return-annotation contract, so the HTTP door
+    (`response_model`, OpenAPI) and the MCP door (`outputSchema`) derive the same
+    model from the same handler. `resolve_response_contract` widens this with the
+    shapes only a route can document (`list[Model]`, a model union) and reaches
+    it through this function rather than restating the base checks - they had
+    diverged once, and `-> SomeDataclass` produced an MCP `outputSchema` and no
+    HTTP response contract as a result.
+    """
+    return _base_return_model(_return_annotation(handler))
+
+
+def _return_annotation(handler: Callable[..., Any]) -> Any:
+    """Read the handler's resolved `return` annotation, or `None` if unreadable.
+
+    Resolved through `get_type_hints` so a `from __future__ import annotations`
+    string annotation still yields the real class.
     """
     try:
         hints = typing.get_type_hints(handler)
     except Exception:
         return None
-    annotation = hints.get("return")
+    return hints.get("return")
+
+
+def _base_return_model(annotation: Any) -> Any:
+    """Return the model an annotation declares directly, or `None`.
+
+    The checks both resolvers share, in one place: a Pydantic model, a msgspec
+    struct, or an adaptable shape (a dataclass / `TypedDict`, which declares an
+    object shape as much as a model does).
+    """
     if is_pydantic_model(annotation) or is_msgspec_struct(annotation):
         return annotation
-    # A dataclass or `TypedDict` return declares an object shape as much as a
-    # model does, so it is the same contract on both doors.
     if is_adaptable_model(annotation):
         return annotation
     return None
@@ -100,15 +132,17 @@ def resolve_response_contract(handler: Callable[..., Any]) -> Any:
     annotation - returns `None`, declaring no contract without needing an
     explicit opt-out.
     """
-    try:
-        hints = typing.get_type_hints(handler)
-    except Exception:
-        return None
-    annotation = hints.get("return")
+    annotation = _return_annotation(handler)
     if annotation is None:
         return None
-    if is_pydantic_model(annotation) or is_msgspec_struct(annotation):
-        return annotation
+    # The base checks come from the shared helper rather than being restated
+    # here. Restating them is how the two resolvers diverged: this one dropped
+    # the adaptable-model arm, so `-> SomeDataclass` produced an MCP
+    # `outputSchema` and no HTTP response contract, and the return went
+    # unfiltered.
+    base = _base_return_model(annotation)
+    if base is not None:
+        return base
     origin = get_origin(annotation)
     if origin is list:
         args = get_args(annotation)
@@ -134,18 +168,6 @@ def struct_to_dict(obj: Any) -> dict[str, Any]:
     rule already covers them.
     """
     return dict(_msgspec.structs.asdict(obj))
-
-
-# `typing.is_typeddict` answers False for a class built from
-# `typing_extensions.TypedDict` - which is the form Pydantic *requires* below
-# Python 3.12 - so using it alone made those types invisible here and they fell
-# to the scalar path. The typing_extensions predicate recognises both spellings.
-# It ships with Pydantic, so it is always present in practice; the fallback
-# keeps this importable if that ever stops being true.
-try:
-    from typing_extensions import is_typeddict as _is_typeddict
-except ImportError:  # pragma: no cover - typing_extensions comes with pydantic
-    from typing import is_typeddict as _is_typeddict
 
 
 def is_adaptable_model(tp: Any) -> bool:
@@ -220,8 +242,33 @@ def shape_through_model(value: Any, model: Any) -> Any:
     conform; the caller decides how to report that.
     """
     if is_pydantic_model(model):
-        return model.model_validate(value).model_dump(mode="json")
+        # Dump a model instance to a mapping *before* validating it. Handing
+        # `model_validate` a subclass instance returns that subclass, and the
+        # dump then carries the subclass's own fields - so a richer object
+        # returned under a base-model contract leaks exactly the fields the
+        # contract excludes. Going through a mapping is what drops them.
+        #
+        # `by_alias=True` because the dump is fed straight back to
+        # `model_validate`: a field declared `Field(alias=...)` is accepted only
+        # under its alias unless the model sets `populate_by_name`, so a dump by
+        # field name made the model fail to validate its own output.
+        payload = value.model_dump(by_alias=True) if is_pydantic_model(type(value)) else value
+        return model.model_validate(payload).model_dump(mode="json")
+    if is_msgspec_struct(model):
+        # `adapter_for` is a Pydantic `TypeAdapter` and raises
+        # `PydanticSchemaGenerationError` on a Struct, which is why this branch
+        # exists rather than falling through. `convert` from builtins drops any
+        # field the target does not declare and still refuses a value that does
+        # not conform.
+        return _msgspec.to_builtins(_msgspec.convert(_msgspec.to_builtins(value), model))
     adapter = adapter_for(model)
+    # A dataclass adapter refuses an instance of a *different* dataclass
+    # outright ("Input should be a dictionary or an instance of X"), so an
+    # unrelated richer object under a narrower contract was a 500 rather than a
+    # filtered body. Dumping to a mapping first both fixes that and drops the
+    # extra fields, the same way the Pydantic branch above does.
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        value = dataclasses.asdict(value)
     return adapter.dump_python(adapter.validate_python(value), mode="json")
 
 

@@ -19,6 +19,7 @@ from __future__ import annotations
 from typing import Any
 
 # JSON-RPC 2.0 error codes (Sec. 5.1) plus the MCP "method not found" reuse.
+_JSONRPC_PARSE_ERROR = -32700
 _JSONRPC_INVALID_REQUEST = -32600
 _JSONRPC_METHOD_NOT_FOUND = -32601
 _JSONRPC_INVALID_PARAMS = -32602
@@ -40,6 +41,11 @@ _JSONRPC_FORBIDDEN = -32003
 # is allocated -32022 there.
 _JSONRPC_UNSUPPORTED_PROTOCOL_VERSION = -32022
 
+# Allocated in the same reserved range: a standard request header that is
+# missing, disagrees with the body it labels, or carries characters the header
+# encoding does not permit.
+_JSONRPC_HEADER_MISMATCH = -32020
+
 
 def _error(msg_id: Any, code: int, message: str, data: Any = None) -> dict[str, Any]:
     """Build a JSON-RPC 2.0 error response object."""
@@ -47,6 +53,38 @@ def _error(msg_id: Any, code: int, message: str, data: Any = None) -> dict[str, 
     if data is not None:
         error["data"] = data
     return {"jsonrpc": "2.0", "id": msg_id, "error": error}
+
+
+def parse_error() -> dict[str, Any]:
+    """Build the JSON-RPC error for a body that is not readable as JSON at all.
+
+    JSON-RPC keeps two failures apart: -32700 says the text could not be read,
+    -32600 says what was read is not a Request object. Every transport frames
+    its own bytes, but the two answers live here so a transport cannot invent a
+    third. A transport answering both with its own code - -32603, say -
+    would make a client with per-code retry logic behave differently purely by
+    which wire it came in on.
+    """
+    return _error(None, _JSONRPC_PARSE_ERROR, "Parse error")
+
+
+def invalid_request_error() -> dict[str, Any]:
+    """Build the JSON-RPC error for a readable body that is not a Request.
+
+    A JSON array lands here too: the revisions this server speaks carry no
+    batches. See `parse_error` for why the two are distinct.
+    """
+    return _error(None, _JSONRPC_INVALID_REQUEST, "Invalid Request")
+
+
+def internal_error(msg_id: Any, message: str) -> dict[str, Any]:
+    """Build the JSON-RPC error for a server-owned failure, carrying the id.
+
+    A transport that cannot put a reply on the wire must still answer with
+    something: a dropped reply leaves the client waiting for the lifetime of the
+    process with nothing written anywhere to say why.
+    """
+    return _error(msg_id, _JSONRPC_INTERNAL_ERROR, message)
 
 
 def _insufficient_scope(required: frozenset[str]) -> str:
@@ -120,6 +158,22 @@ class UnsupportedProtocolVersionError(MCPError):
             "Unsupported protocol version",
             data={"supported": list(supported), "requested": requested},
         )
+
+
+class HeaderMismatchError(MCPError):
+    """A standard request header disagrees with the body it labels.
+
+    A fronting intermediary routes on `Mcp-Method` / `Mcp-Name` while the server
+    executes the JSON-RPC body, so a divergence between the two is a request
+    smuggling primitive rather than a formatting nit: the two ends of the hop
+    would act on different requests. The transport rejects it before dispatch
+    (MCP 2026-07-28 Streamable HTTP, "Server Validation"), which also covers a
+    required header that is absent and a value carrying characters the header
+    encoding does not permit.
+    """
+
+    code = _JSONRPC_HEADER_MISMATCH
+    http_status = 400
 
 
 class OriginNotAllowedError(InvalidRequestError):

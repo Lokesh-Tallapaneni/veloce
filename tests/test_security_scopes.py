@@ -1,8 +1,8 @@
-"""SecurityScopes injection tests (D6)."""
+"""SecurityScopes injection tests."""
 
 from __future__ import annotations
 
-import pytest
+import orjson
 
 from tests.conftest import make_request
 from veloce import (
@@ -14,11 +14,12 @@ from veloce import (
     SecurityScopes,
     Veloce,
 )
+from veloce import SecurityScopes as SS
 from veloce.testclient import TestClient
 
 
 def _req(path: str = "/") -> Request:
-    return Request(method="GET", path=path, query_string="", headers={}, body=b"")
+    return make_request(method="GET", path=path, query_string="", headers={}, body=b"")
 
 
 # ── SecurityScopes class shape ─────────────────────────────────────────
@@ -43,7 +44,6 @@ def test_security_scopes_repr():
 # ── End-to-end: scopes flow from Security() to the auth callable ─────
 
 
-@pytest.mark.asyncio
 async def test_scopes_reach_sub_dependency():
     app = Veloce(debug=True, openapi_url=None)
     seen: dict = {}
@@ -62,7 +62,6 @@ async def test_scopes_reach_sub_dependency():
     assert seen["scope_str"] == "read:profile"
 
 
-@pytest.mark.asyncio
 async def test_scopes_accumulate_across_nested_security():
     """`Security(inner, scopes=["a"])` then `Security(outer, scopes=["b"])`
     chained must give the innermost auth callable the union of both."""
@@ -85,7 +84,6 @@ async def test_scopes_accumulate_across_nested_security():
     assert seen["base"] == ["outer", "inner"]
 
 
-@pytest.mark.asyncio
 async def test_scopes_do_not_leak_between_requests():
     """Two requests in sequence must not share the resolver's scope stack."""
     app = Veloce(debug=True, openapi_url=None)
@@ -108,7 +106,6 @@ async def test_scopes_do_not_leak_between_requests():
     assert captured == [["A"], ["B"]]
 
 
-@pytest.mark.asyncio
 async def test_plain_depends_does_not_push_scopes():
     """A non-Security dependency wraps its sub-plan without changing the
     accumulated scope list."""
@@ -132,7 +129,6 @@ async def test_plain_depends_does_not_push_scopes():
     assert seen["scopes"] == ["only-from-security"]
 
 
-@pytest.mark.asyncio
 async def test_no_security_chain_yields_empty_scopes():
     """A `SecurityScopes` parameter without any Security() above it
     receives an empty list, not None."""
@@ -166,34 +162,29 @@ def test_security_scopes_via_testclient():
 
 def test_security_scopes_in_veloce_exports():
     """`from veloce import SecurityScopes` works."""
-    from veloce import SecurityScopes as SS
 
     assert SS is SecurityScopes
 
 
-class TestSecurityDependency:
-    @pytest.mark.asyncio
-    async def test_security_with_scopes(self):
-        import orjson
+async def test_security_with_scopes():
+    app = Veloce(openapi_url=None)
+    oauth2 = OAuth2PasswordBearer(token_url="/token")
 
-        app = Veloce(openapi_url=None)
-        oauth2 = OAuth2PasswordBearer(token_url="/token")
+    @app.get("/users/me")
+    async def me(token=Security(oauth2, scopes=["users:read"])):
+        return {"token": token}
 
-        @app.get("/users/me")
-        async def me(token=Security(oauth2, scopes=["users:read"])):
-            return {"token": token}
+    resp = await app.handle_request(
+        make_request(path="/users/me", headers={"authorization": "Bearer mytoken"})
+    )
+    assert resp.status_code == 200
+    data = orjson.loads(resp.body)
+    assert data["token"] == "mytoken"
 
-        resp = await app.handle_request(
-            make_request(path="/users/me", headers={"authorization": "Bearer mytoken"})
-        )
-        assert resp.status_code == 200
-        data = orjson.loads(resp.body)
-        assert data["token"] == "mytoken"
 
-    @pytest.mark.asyncio
-    async def test_security_inherits_depends(self):
-        # Security is a subclass of Depends
-        security = HTTPBearer()
-        dep = Security(security, scopes=["admin"])
-        assert isinstance(dep, Depends)
-        assert dep.scopes == ["admin"]
+async def test_security_inherits_depends():
+    # Security is a subclass of Depends
+    security = HTTPBearer()
+    dep = Security(security, scopes=["admin"])
+    assert isinstance(dep, Depends)
+    assert dep.scopes == ["admin"]

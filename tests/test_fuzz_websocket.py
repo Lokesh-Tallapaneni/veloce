@@ -9,13 +9,15 @@ its receive buffer (an over-allocation / DoS bug).
 from __future__ import annotations
 
 import contextlib
+import itertools
 import struct
 
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from veloce import WebSocket
+from tests._native_ws import buffered_bytes, delivered
+from veloce import WebSocket, WebSocketState
 from veloce.exceptions import WebSocketDisconnect
 
 pytestmark = pytest.mark.fuzz
@@ -50,6 +52,23 @@ def _feed(ws: WebSocket, chunk: bytes) -> None:
         ws.feed_data(chunk)
 
 
+def _feed_in_chunks(
+    ws: WebSocket, data: bytes, steps: list[int], *, stop_when_closed: bool = False
+) -> None:
+    """Feed `data` in `steps`-sized chunks, repeating 1 once `steps` runs out."""
+    pos = 0
+    for step in itertools.chain(steps, itertools.repeat(1)):
+        if pos >= len(data) or (stop_when_closed and _is_closed(ws)):
+            return
+        _feed(ws, data[pos : pos + step])
+        pos += step
+
+
+def _is_closed(ws: WebSocket) -> bool:
+    """Closedness through the public property rather than the private flag."""
+    return ws.application_state is WebSocketState.DISCONNECTED
+
+
 def _client_data_frame(payload: bytes, mask: bytes, opcode: int) -> bytes:
     """Encode a FIN=1 masked client data frame (RFC 6455 §5.2)."""
     n = len(payload)
@@ -68,7 +87,7 @@ def _client_data_frame(payload: bytes, mask: bytes, opcode: int) -> bytes:
     return bytes(header) + masked
 
 
-@settings(max_examples=300, deadline=None)
+@settings(deadline=None)
 @given(
     data=st.binary(max_size=400),
     steps=st.lists(st.integers(min_value=1, max_value=7), min_size=1, max_size=80),
@@ -80,19 +99,11 @@ def test_arbitrary_bytes_never_crash(data: bytes, steps: list[int]) -> None:
     buffer is an over-allocation bug.
     """
     ws = _raw_websocket()
-    pos = 0
-    step_iter = iter(steps)
-    while pos < len(data) and not ws._closed:
-        try:
-            step = next(step_iter)
-        except StopIteration:
-            step = 1
-        _feed(ws, data[pos : pos + step])
-        pos += step
-    assert len(ws._recv_buffer) <= len(data)
+    _feed_in_chunks(ws, data, steps, stop_when_closed=True)
+    assert buffered_bytes(ws) <= len(data)
 
 
-@settings(max_examples=200, deadline=None)
+@settings(deadline=None)
 @given(
     payload=st.binary(max_size=130),
     mask=st.binary(min_size=4, max_size=4),
@@ -107,40 +118,65 @@ def test_split_binary_frame_reassembles(payload: bytes, mask: bytes, steps: list
     """
     frame = _client_data_frame(payload, mask, 0x2)
     ws = _raw_websocket()
-    pos = 0
-    step_iter = iter(steps)
-    while pos < len(frame):
-        try:
-            step = next(step_iter)
-        except StopIteration:
-            step = 1
-        _feed(ws, frame[pos : pos + step])
-        pos += step
-    assert not ws._closed
-    assert ws._recv_buffer == bytearray()
-    assert ws._receive_queue.get_nowait() == payload
+    _feed_in_chunks(ws, frame, steps)
+    assert not _is_closed(ws)
+    assert buffered_bytes(ws) == 0
+    assert delivered(ws)[0] == payload
 
 
-@settings(max_examples=300, deadline=None)
+@settings(deadline=None)
 @given(
-    positions=st.lists(st.integers(min_value=0), max_size=5),
-    replacements=st.lists(st.integers(min_value=0, max_value=255), max_size=5),
+    edits=st.lists(
+        st.tuples(st.integers(min_value=0), st.integers(min_value=0, max_value=255)),
+        min_size=1,
+        max_size=5,
+    ),
 )
-def test_corrupted_valid_frame_never_over_allocates(
-    positions: list[int], replacements: list[int]
-) -> None:
-    """Flipping random bytes in a valid frame yields only controlled outcomes.
+def test_corrupted_valid_frame_never_over_allocates(edits: list[tuple[int, int]]) -> None:
+    """Flipping random bytes in a valid frame never parks more than it was fed.
 
-    A declared 64-bit length past `MAX_FRAME_SIZE` must trip the controlled
-    close, never park unbounded bytes in the buffer.
+    The buffer bound is what this reaches. The docstring used to promise that a
+    declared 64-bit length past `MAX_FRAME_SIZE` trips the controlled close,
+    which these edits essentially cannot produce - the base frame declares a
+    19-byte payload, so an edit would have to land on the length byte *and*
+    leave a huge value behind it. `test_inflated_length_closes_not_allocates`
+    below builds that frame directly and asserts the close.
+
+    The conditional assertion is kept for the case the strategy does reach it.
     """
     base = _client_data_frame(b"the quick brown fox", b"\x01\x02\x03\x04", 0x1)
     corrupted = bytearray(base)
-    for pos, rep in zip(positions, replacements):
+    # One draw of pairs; see the note in `test_fuzz_signing.py`.
+    for pos, rep in edits:
         corrupted[pos % len(corrupted)] = rep
     ws = _raw_websocket()
     _feed(ws, bytes(corrupted))
-    assert len(ws._recv_buffer) <= len(corrupted)
+    assert buffered_bytes(ws) <= len(corrupted)
+    # The docstring's actual promise. A buffer bound alone is satisfied by a
+    # frame that parked the bytes and stayed open, which is the outcome this
+    # exists to rule out: an over-long declared length must have *closed*.
+    declared = _declared_payload_length(bytes(corrupted))
+    if declared is not None and declared > WebSocket.MAX_FRAME_SIZE:
+        assert _is_closed(ws), (
+            f"a declared length of {declared} exceeds MAX_FRAME_SIZE and the "
+            "connection is still open"
+        )
+
+
+def _declared_payload_length(frame: bytes) -> int | None:
+    """The payload length a frame header declares, or `None` if it is truncated.
+
+    Read from the frame rather than assumed, because the fuzzer's edits may
+    land on the length bytes - which is the case worth checking.
+    """
+    if len(frame) < 2:
+        return None
+    short = frame[1] & 0x7F
+    if short < 126:
+        return short
+    if short == 126:
+        return struct.unpack("!H", frame[2:4])[0] if len(frame) >= 4 else None
+    return struct.unpack("!Q", frame[2:10])[0] if len(frame) >= 10 else None
 
 
 def test_inflated_length_closes_not_allocates() -> None:
@@ -148,5 +184,5 @@ def test_inflated_length_closes_not_allocates() -> None:
     header = bytes([0x82, 127]) + struct.pack("!Q", WebSocket.MAX_FRAME_SIZE + 1)
     ws = _raw_websocket()
     _feed(ws, header)
-    assert ws._closed
-    assert len(ws._recv_buffer) <= len(header)
+    assert _is_closed(ws)
+    assert buffered_bytes(ws) <= len(header)

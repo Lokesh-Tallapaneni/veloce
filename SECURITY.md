@@ -53,16 +53,15 @@ common hardening primitives — register the ones your deployment
 needs:
 
 - **`SecurityHeadersMiddleware`** — `nosniff`, `X-Frame-Options`,
-  HSTS, `Referrer-Policy`, an optional CSP. Also installed by
-  `app.use_secure_defaults()`.
+  HSTS, `Referrer-Policy`, an optional CSP. Register it explicitly:
+  `app.add_middleware(SecurityHeadersMiddleware(hsts_max_age=31536000))`.
 - **`TrustedHostMiddleware`** — `Host`-header allow-list; rejects
   spoofed `Host` headers used to abuse URL generation or cache keys.
 - **`HTTPSRedirectMiddleware`** — redirects plain HTTP to HTTPS when
   the framework is behind a TLS-terminating proxy.
 - **`WebSocketOriginMiddleware`** — allow-list for the WebSocket
-  handshake `Origin` header. **This is not covered by
-  `use_secure_defaults()`** because the allow-list can't be inferred
-  from the app — register it explicitly when you serve WebSockets.
+  handshake `Origin` header. The allow-list can't be inferred from the
+  app, so register it explicitly when you serve WebSockets.
   See [WebSockets → Origin validation](docs/guide/websockets.md#origin-validation-cswsh-defence)
   for the full walkthrough and the per-handler
   `WebSocket.check_origin(allowed)` alternative.

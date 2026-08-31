@@ -16,10 +16,11 @@ from __future__ import annotations
 
 import pytest
 
+from tests._mcp import INVALID_REQUEST, PARSE_ERROR
 from veloce import TestClient, Veloce
-
-_PARSE_ERROR = -32700
-_INVALID_REQUEST = -32600
+from veloce.contrib.mcp.server import MCPServer
+from veloce.contrib.mcp.session import MCPSession
+from veloce.contrib.mcp.transports.stdio import StdioTransport
 
 
 def _client() -> TestClient:
@@ -45,33 +46,33 @@ def _send(raw: bytes):
 
 
 @pytest.mark.parametrize(
-    ("raw", "label"),
+    "raw",
     [
-        (b'[{"jsonrpc":"2.0","id":1,"method":"ping"}]', "a batch array"),
-        (b'"just a string"', "a bare string"),
-        (b"42", "a bare number"),
-        (b"true", "a bare boolean"),
-        (b"null", "a bare null"),
+        pytest.param(b'[{"jsonrpc":"2.0","id":1,"method":"ping"}]', id="a batch array"),
+        pytest.param(b'"just a string"', id="a bare string"),
+        pytest.param(b"42", id="a bare number"),
+        pytest.param(b"true", id="a bare boolean"),
+        pytest.param(b"null", id="a bare null"),
     ],
 )
-def test_json_that_is_not_a_request_object_is_an_invalid_request(raw: bytes, label: str):
+def test_json_that_is_not_a_request_object_is_an_invalid_request(raw: bytes):
     response = _send(raw)
     assert response.status_code == 400
-    assert response.json()["error"]["code"] == _INVALID_REQUEST
+    assert response.json()["error"]["code"] == INVALID_REQUEST
 
 
 @pytest.mark.parametrize(
-    ("raw", "label"),
+    "raw",
     [
-        (b"{not valid json", "unbalanced brace"),
-        (b'{"jsonrpc": ', "truncated"),
-        (b"", "empty body"),
+        pytest.param(b"{not valid json", id="unbalanced brace"),
+        pytest.param(b'{"jsonrpc": ', id="truncated"),
+        pytest.param(b"", id="empty body"),
     ],
 )
-def test_text_that_is_not_json_is_a_parse_error(raw: bytes, label: str):
+def test_text_that_is_not_json_is_a_parse_error(raw: bytes):
     response = _send(raw)
     assert response.status_code == 400
-    assert response.json()["error"]["code"] == _PARSE_ERROR
+    assert response.json()["error"]["code"] == PARSE_ERROR
 
 
 def test_the_two_failures_are_told_apart():
@@ -96,7 +97,7 @@ def _post(payload: dict):
 
 def test_a_request_with_a_null_id_is_refused():
     response = _post({"jsonrpc": "2.0", "id": None, "method": "ping", "params": {}})
-    assert response.json()["error"]["code"] == _INVALID_REQUEST
+    assert response.json()["error"]["code"] == INVALID_REQUEST
     assert "null" in response.json()["error"]["message"]
 
 
@@ -119,9 +120,6 @@ def test_a_real_id_is_still_answered(ident):
 
 async def _stdio_reply(raw: str) -> dict:
     """Feed one line to the stdio transport and return what it writes back."""
-    from veloce.contrib.mcp.server import MCPServer
-    from veloce.contrib.mcp.session import MCPSession
-    from veloce.contrib.mcp.transports.stdio import StdioTransport
 
     app = Veloce(title="Stdio", openapi_url=None)
 
@@ -148,22 +146,22 @@ async def _stdio_reply(raw: str) -> dict:
 
 async def test_stdio_reports_a_shape_failure_the_same_way():
     reply = await _stdio_reply('"just a string"')
-    assert reply["error"]["code"] == _INVALID_REQUEST
+    assert reply["error"]["code"] == INVALID_REQUEST
 
 
 async def test_stdio_reports_a_batch_the_same_way():
     reply = await _stdio_reply('[{"jsonrpc":"2.0","id":1,"method":"ping"}]')
-    assert reply["error"]["code"] == _INVALID_REQUEST
+    assert reply["error"]["code"] == INVALID_REQUEST
 
 
 async def test_stdio_still_reports_unreadable_text_as_a_parse_error():
     reply = await _stdio_reply("{not json")
-    assert reply["error"]["code"] == _PARSE_ERROR
+    assert reply["error"]["code"] == PARSE_ERROR
 
 
 async def test_stdio_refuses_a_null_id_too():
     reply = await _stdio_reply('{"jsonrpc":"2.0","id":null,"method":"ping","params":{}}')
-    assert reply["error"]["code"] == _INVALID_REQUEST
+    assert reply["error"]["code"] == INVALID_REQUEST
 
 
 async def test_stdio_still_answers_a_real_request():

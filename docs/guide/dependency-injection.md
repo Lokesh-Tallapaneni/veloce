@@ -185,6 +185,58 @@ assert resp.json() == {"region": "eu", "calls": 1}  # ran once
 Caching is keyed on the dependency callable, so the same function reached
 through different paths shares one result.
 
+### Parameters declared on a dependency
+
+A dependency may read the wire directly. `Query()`, `Header()`, `Cookie()` and
+friends work inside a dependency exactly as they do on a handler, and a missing
+required one fails the request with a `422` before the handler runs.
+
+Such a parameter belongs to the route's public contract, so it is published in
+the OpenAPI document and in the MCP tool schema alongside the handler's own
+parameters — a client generated from the schema sends everything the route
+actually requires.
+
+```python title="app.py"
+from veloce import Depends, Query, TestClient, Veloce
+
+app = Veloce(title="Catalogue", version="1.0.0")
+
+
+class Page:
+    def __init__(self, number: int, size: int) -> None:
+        self.number = number
+        self.size = size
+
+
+def paginate(page: int = Query(default=1, ge=1), size: int = Query(default=20, le=100)) -> Page:
+    return Page(page, size)
+
+
+@app.get("/items")
+async def list_items(q: str = "", page: Page = Depends(paginate)):
+    return {"q": q, "page": page.number, "size": page.size}
+
+
+client = TestClient(app)
+
+assert client.get("/items", params={"page": "3"}).json()["page"] == 3
+assert client.get("/items", params={"page": "0"}).status_code == 422
+
+published = {p["name"] for p in app.openapi()["paths"]["/items"]["get"]["parameters"]}
+assert published == {"q", "page", "size"}
+```
+
+Two rules keep the published list honest:
+
+- A parameter the handler declares itself **shadows** a sub-dependency parameter
+  of the same name, whatever order they are declared in.
+- A dependency reached twice — injected at two sites, or shared by two other
+  dependencies — contributes its parameters **once**.
+
+!!! note "Changed in version 0.13"
+    Parameters declared on a dependency are published in the OpenAPI document.
+    Earlier versions enforced them at runtime but omitted them from the schema.
+
 ### Opting out with `use_cache=False`
 
 When a dependency must run freshly at every reference — a fresh token, a

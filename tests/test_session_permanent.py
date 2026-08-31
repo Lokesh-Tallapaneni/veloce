@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 
+import veloce.signing as signing
 from veloce import Request, Session, Veloce
 from veloce.middleware.sessions import SessionMiddleware
 from veloce.testclient import TestClient
@@ -12,20 +13,28 @@ _DEFAULT_MAX_AGE = 86400 * 14
 _PERMANENT_LIFETIME = 86400 * 31
 
 
-def _sign_aged_cookie(mw: SessionMiddleware, payload: dict, age_seconds: int) -> str:
+def _sign_aged_cookie(mw: SessionMiddleware, payload: dict, age_seconds: int, monkeypatch) -> str:
     """Sign a session payload as if it were issued `age_seconds` ago.
 
     Replay safety, not the client `Max-Age`, is what the server must enforce:
     an attacker keeps the stolen cookie regardless of its browser expiry.
-    """
-    import veloce.signing as signing
 
-    real_time = time.time
-    try:
-        signing.time.time = lambda: real_time() - age_seconds  # type: ignore[attr-defined]
-        return mw._signer.dumps(payload)
-    finally:
-        signing.time.time = real_time  # type: ignore[attr-defined]
+    `mw` must be the instance the app was given - `add_middleware` accepts a
+    built one. These tests used to construct the middleware twice, restating
+    `max_age` and `permanent_lifetime` by hand, so a drift between the two
+    would have signed with one configuration and read with another and the
+    failure would have looked like the middleware's.
+    """
+
+    # `monkeypatch`, not a hand-written try/finally: this rebinds an attribute
+    # on the *stdlib* `time` module, so anything that escapes between the
+    # assignment and the restore leaves every later test in the session reading
+    # a shifted clock. The two sibling modules doing the same job use the
+    # fixture, and it undoes the patch even when the body raises.
+    real_now = time.time
+    with monkeypatch.context() as patched:
+        patched.setattr(signing.time, "time", lambda: real_now() - age_seconds)
+        return mw.encode_cookie(payload)
 
 
 def test_permanent_defaults_false():
@@ -108,11 +117,11 @@ def test_permanent_persists_across_requests():
     assert seen == [True]
 
 
-def test_stale_non_permanent_cookie_rejected_past_max_age():
+def test_stale_non_permanent_cookie_rejected_past_max_age(monkeypatch):
     """A non-permanent cookie older than max_age does not replay server-side."""
     app = Veloce()
     mw = SessionMiddleware(secret_key="k" * 32)
-    app.add_middleware(SessionMiddleware, secret_key="k" * 32)
+    app.add_middleware(mw)
     seen: list = []
 
     @app.get("/read")
@@ -122,7 +131,7 @@ def test_stale_non_permanent_cookie_rejected_past_max_age():
 
     # Aged past the 14-day max_age but still within the 31-day permanent
     # window the read uses to avoid rejecting permanent cookies.
-    aged = _sign_aged_cookie(mw, {"user": "alice"}, _DEFAULT_MAX_AGE + 3600)
+    aged = _sign_aged_cookie(mw, {"user": "alice"}, _DEFAULT_MAX_AGE + 3600, monkeypatch)
     with TestClient(app) as client:
         client.cookies["session"] = aged
         client.get("/read")
@@ -132,11 +141,11 @@ def test_stale_non_permanent_cookie_rejected_past_max_age():
     assert data == {}
 
 
-def test_fresh_non_permanent_cookie_within_max_age_accepted():
+def test_fresh_non_permanent_cookie_within_max_age_accepted(monkeypatch):
     """A non-permanent cookie younger than max_age still loads normally."""
     app = Veloce()
     mw = SessionMiddleware(secret_key="k" * 32)
-    app.add_middleware(SessionMiddleware, secret_key="k" * 32)
+    app.add_middleware(mw)
     seen: list = []
 
     @app.get("/read")
@@ -144,7 +153,7 @@ def test_fresh_non_permanent_cookie_within_max_age_accepted():
         seen.append((request.session.new, dict(request.session)))
         return {}
 
-    aged = _sign_aged_cookie(mw, {"user": "alice"}, _DEFAULT_MAX_AGE - 3600)
+    aged = _sign_aged_cookie(mw, {"user": "alice"}, _DEFAULT_MAX_AGE - 3600, monkeypatch)
     with TestClient(app) as client:
         client.cookies["session"] = aged
         client.get("/read")
@@ -154,11 +163,11 @@ def test_fresh_non_permanent_cookie_within_max_age_accepted():
     assert data == {"user": "alice"}
 
 
-def test_permanent_cookie_within_permanent_lifetime_accepted():
+def test_permanent_cookie_within_permanent_lifetime_accepted(monkeypatch):
     """A permanent cookie older than max_age but within permanent_lifetime loads."""
     app = Veloce()
     mw = SessionMiddleware(secret_key="k" * 32)
-    app.add_middleware(SessionMiddleware, secret_key="k" * 32)
+    app.add_middleware(mw)
     seen: list = []
 
     @app.get("/read")
@@ -166,7 +175,9 @@ def test_permanent_cookie_within_permanent_lifetime_accepted():
         seen.append((request.session.new, request.session.permanent))
         return {}
 
-    aged = _sign_aged_cookie(mw, {"user": "alice", "_permanent": True}, _DEFAULT_MAX_AGE + 3600)
+    aged = _sign_aged_cookie(
+        mw, {"user": "alice", "_permanent": True}, _DEFAULT_MAX_AGE + 3600, monkeypatch
+    )
     with TestClient(app) as client:
         client.cookies["session"] = aged
         client.get("/read")
@@ -176,7 +187,7 @@ def test_permanent_cookie_within_permanent_lifetime_accepted():
     assert permanent is True
 
 
-def test_stale_permanent_cookie_rejected_when_permanent_lifetime_shorter():
+def test_stale_permanent_cookie_rejected_when_permanent_lifetime_shorter(monkeypatch):
     """With permanent_lifetime < max_age, a permanent cookie older than
     permanent_lifetime is rejected: the ceiling follows the `_permanent` flag,
     not whichever configured value is larger."""
@@ -186,12 +197,7 @@ def test_stale_permanent_cookie_rejected_when_permanent_lifetime_shorter():
     mw = SessionMiddleware(
         secret_key="k" * 32, max_age=long_max_age, permanent_lifetime=short_permanent
     )
-    app.add_middleware(
-        SessionMiddleware,
-        secret_key="k" * 32,
-        max_age=long_max_age,
-        permanent_lifetime=short_permanent,
-    )
+    app.add_middleware(mw)
     seen: list = []
 
     @app.get("/read")
@@ -201,7 +207,9 @@ def test_stale_permanent_cookie_rejected_when_permanent_lifetime_shorter():
 
     # Permanent, older than the 2-day permanent_lifetime but younger than the
     # 30-day max_age: must NOT replay despite max_age being larger.
-    aged = _sign_aged_cookie(mw, {"user": "alice", "_permanent": True}, short_permanent + 3600)
+    aged = _sign_aged_cookie(
+        mw, {"user": "alice", "_permanent": True}, short_permanent + 3600, monkeypatch
+    )
     with TestClient(app) as client:
         client.cookies["session"] = aged
         client.get("/read")

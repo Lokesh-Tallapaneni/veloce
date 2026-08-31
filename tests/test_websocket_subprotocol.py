@@ -2,19 +2,9 @@
 
 from __future__ import annotations
 
+from tests._protocol import _FakeTransport
 from veloce import Veloce
 from veloce.websocket import WebSocket
-
-
-class _FakeTransport:
-    def __init__(self) -> None:
-        self.writes: list[bytes] = []
-
-    def write(self, data: bytes) -> None:
-        self.writes.append(data)
-
-    def close(self) -> None:
-        pass
 
 
 def _ws(protocol_header: str | None = None) -> WebSocket:

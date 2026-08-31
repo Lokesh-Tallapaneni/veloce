@@ -1,42 +1,92 @@
 """Tests for async safety — no leaks, proper resource management."""
 
 import asyncio
+import time
 
+import orjson
 import pytest
 
+from tests._protocol import _FakeTransport, _run_until
+from tests._source import SRC
 from tests.conftest import make_request
 from veloce import Request, StreamingResponse, Veloce
 from veloce.serving.protocol import HttpProtocol
 
+PACKAGE_MODULES = sorted(SRC.rglob("*.py"))
 
-class TestNoDeprecatedEventLoop:
-    """Verify no deprecated asyncio.get_event_loop() calls remain."""
 
-    def test_no_get_event_loop_in_app(self):
-        import inspect
+def test_the_deprecated_loop_scan_covers_the_package():
+    """The parametrized check below is vacuous on an empty file list."""
+    assert len(PACKAGE_MODULES) > 100
 
-        import veloce.app.core as mod
 
-        source = inspect.getsource(mod)
-        assert "get_event_loop()" not in source, (
-            "app.py still uses deprecated asyncio.get_event_loop()"
-        )
+@pytest.mark.parametrize("path", PACKAGE_MODULES, ids=lambda p: p.relative_to(SRC).as_posix())
+def test_no_module_uses_the_deprecated_event_loop_accessor(path):
+    """`asyncio.get_event_loop()` is deprecated and returns a loop that may not run.
 
-    def test_no_get_event_loop_in_protocol(self):
-        import inspect
-
-        import veloce.serving.protocol as mod
-
-        source = inspect.getsource(mod)
-        assert "get_event_loop()" not in source
+    This used to grep exactly two modules for a repository-wide claim, and its
+    failure message named `app.py` - a path that stopped existing when the
+    package was split into `veloce/app/`. A third module reintroducing the call
+    was invisible to it.
+    """
+    source = path.read_text(encoding="utf-8")
+    assert "get_event_loop()" not in source, (
+        f"{path.relative_to(SRC).as_posix()} uses the deprecated "
+        "asyncio.get_event_loop(); use get_running_loop() or take the loop as "
+        "an argument"
+    )
 
 
 class TestTaskStrongReferences:
-    """Verify fire-and-forget tasks are held to prevent GC."""
+    """A fire-and-forget task is held in `_active_tasks` while it runs.
 
-    def test_protocol_has_active_tasks_set(self):
-        assert hasattr(HttpProtocol, "_active_tasks")
-        assert isinstance(HttpProtocol._active_tasks, set)
+    The class used to assert only that the attribute existed and was a `set`,
+    which is true whether or not anything is ever put in it - and "nothing is
+    put in it" is precisely the GC-safety bug. The suite's autouse leak
+    detector cannot catch it either: it inspects what is already in the set.
+
+    The task this reaches is the per-connection serve loop, which nothing else
+    references once `create_task` returns. The other two holds - the detached
+    handler left alive by a shield timeout, and the WebSocket task - need their
+    own transports to reach and are not covered here.
+    """
+
+    def test_the_connection_serve_loop_is_held_while_it_runs(self):
+        app = Veloce(openapi_url=None)
+        parked = asyncio.Event()
+        arrived = asyncio.Event()
+
+        @app.get("/park")
+        async def park():
+            arrived.set()
+            await parked.wait()
+            return {"ok": True}
+
+        loop = asyncio.new_event_loop()
+        try:
+            proto = HttpProtocol(app, loop)
+            proto.connection_made(_FakeTransport())
+            # Sampled *after* `connection_made`, which puts the connection's own
+            # server loop in the set: counting that would make this pass whether
+            # or not the request task is ever held.
+            before = set(HttpProtocol._active_tasks)
+            proto.data_received(b"GET /park HTTP/1.1\r\nHost: t\r\n\r\n")
+
+            _run_until(loop, arrived.is_set)
+            assert arrived.is_set(), "the handler never ran"
+            held = set(HttpProtocol._active_tasks) - before
+            assert held, "the connection's serve loop was not held in `_active_tasks`"
+            assert all("_serve" in repr(task) for task in held), held
+
+            parked.set()
+            _run_until(loop, lambda: not (set(HttpProtocol._active_tasks) - before))
+            assert not (set(HttpProtocol._active_tasks) - before), (
+                "the task stayed in `_active_tasks` after finishing"
+            )
+        finally:
+            parked.set()
+            HttpProtocol._active_tasks.difference_update(set(HttpProtocol._active_tasks) - before)
+            loop.close()
 
     def test_protocol_has_keep_alive_timeout(self):
         assert HttpProtocol.KEEP_ALIVE_TIMEOUT == 75
@@ -45,25 +95,19 @@ class TestTaskStrongReferences:
 class TestSyncHandlerOffloading:
     """Verify sync handlers don't block the event loop."""
 
-    @pytest.mark.asyncio
     async def test_sync_handler_runs_correctly(self):
         """Sync handler should still return the right result even through executor."""
         app = Veloce(openapi_url=None)
 
         @app.get("/sync")
         def sync_handler(request: Request):
-            import time
-
             time.sleep(0.001)  # Would block event loop without executor
             return {"sync": True}
 
         resp = await app.handle_request(make_request(path="/sync"))
         assert resp.status_code == 200
-        import orjson
-
         assert orjson.loads(resp.body)["sync"] is True
 
-    @pytest.mark.asyncio
     async def test_async_handler_still_works(self):
         app = Veloce(openapi_url=None)
 
@@ -79,7 +123,6 @@ class TestSyncHandlerOffloading:
 class TestStreamingResponse:
     """Verify streaming responses produce correct output."""
 
-    @pytest.mark.asyncio
     async def test_streaming_response_has_stream_to(self):
         async def generate():
             for i in range(3):
@@ -91,7 +134,6 @@ class TestStreamingResponse:
         encoded = resp.encode()
         assert b"Transfer-Encoding: chunked" in encoded
 
-    @pytest.mark.asyncio
     async def test_streaming_response_returned_from_handler(self):
         app = Veloce(openapi_url=None)
 
@@ -107,76 +149,13 @@ class TestStreamingResponse:
         assert isinstance(resp, StreamingResponse)
 
 
-class TestBackgroundTaskSafety:
-    """Verify background tasks hold strong references."""
-
-    @pytest.mark.asyncio
-    async def test_background_task_completes(self):
-        app = Veloce(openapi_url=None)
-        results = []
-
-        async def bg_work():
-            results.append("done")
-
-        from veloce.background import BackgroundTasks
-
-        @app.post("/work")
-        async def do_work(request: Request, tasks: BackgroundTasks):
-            tasks.add_task(bg_work)
-            return {"queued": True}
-
-        resp = await app.handle_request(make_request(method="POST", path="/work"))
-        assert resp.status_code == 200
-        await asyncio.sleep(0.05)
-        assert "done" in results
-
-
-class TestTeardownAlwaysRuns:
-    """Verify teardown hooks run even on errors."""
-
-    @pytest.mark.asyncio
-    async def test_teardown_on_success(self):
-        app = Veloce(openapi_url=None)
-        log = []
-
-        @app.teardown_request
-        async def td(exc):
-            log.append(("td", exc is None))
-
-        @app.get("/ok")
-        async def ok(request: Request):
-            return {"ok": True}
-
-        await app.handle_request(make_request(path="/ok"))
-        assert log == [("td", True)]
-
-    @pytest.mark.asyncio
-    async def test_teardown_on_exception(self):
-        app = Veloce(openapi_url=None)
-        log = []
-
-        @app.teardown_request
-        async def td(exc):
-            log.append(("td", type(exc).__name__ if exc else None))
-
-        @app.get("/boom")
-        async def boom(request: Request):
-            raise RuntimeError("crash")
-
-        await app.handle_request(make_request(path="/boom"))
-        assert log[0][1] == "RuntimeError"
-
-    @pytest.mark.asyncio
-    async def test_teardown_on_404(self):
-        app = Veloce(openapi_url=None)
-        log = []
-
-        @app.teardown_request
-        async def td(exc):
-            log.append("ran")
-
-        await app.handle_request(make_request(path="/nope"))
-        assert "ran" in log
+# `TestBackgroundTaskSafety` and `TestTeardownAlwaysRuns` used to sit here,
+# duplicating `test_background_tasks.py` and `test_teardown_request.py` - two
+# whole modules in this same directory. Their one piece of distinct coverage
+# was that the teardown hooks were `async` where the sibling's were sync;
+# `test_teardown_request.py` is parameterised over both shapes now. The
+# `teardown_appcontext`-on-shutdown case moved to `test_teardown_appcontext.py`,
+# which is where a reader looks for it.
 
 
 class TestGracefulShutdownStructure:
@@ -186,7 +165,6 @@ class TestGracefulShutdownStructure:
         app = Veloce()
         assert hasattr(app, "_graceful_shutdown")
 
-    @pytest.mark.asyncio
     async def test_teardown_appcontext_not_fired_on_shutdown(self):
         """teardown_appcontext is per-request only; _graceful_shutdown
         must not duplicate it."""
@@ -214,10 +192,7 @@ class TestPerformanceAfterFixes:
     actually exercise these checks.
     """
 
-    @pytest.mark.asyncio
     async def test_async_handler_under_50us(self):
-        import time
-
         app = Veloce(openapi_url=None)
 
         @app.get("/bench")
@@ -237,7 +212,6 @@ class TestPerformanceAfterFixes:
         avg_us = sum(times) / len(times) / 1000
         assert avg_us < 100, f"Avg {avg_us:.1f}us exceeds 100us budget"
 
-    @pytest.mark.asyncio
     async def test_sync_handler_adds_little_over_its_executor_hop(self):
         """Dispatching a sync handler costs its thread hop plus this framework's
         dispatch, and dispatch is the only part of that this framework controls.
@@ -249,8 +223,6 @@ class TestPerformanceAfterFixes:
         an improvement. The bare hop is timed in the same run and subtracted, so
         what is asserted is what dispatch adds on top of it.
         """
-        import time
-
         app = Veloce(openapi_url=None)
 
         @app.get("/sync-bench")

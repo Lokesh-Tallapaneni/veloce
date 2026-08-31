@@ -1,10 +1,17 @@
-"""Contrib sub-package — optional integrations (templating, OpenAPI, static files).
+"""Contrib sub-package — optional integrations.
 
-Names are resolved on first attribute access rather than at import. These are
-optional integrations, and importing the gateway eagerly made every `import
-veloce` pay for all four - OpenAPI, Redis, static files and templating - whether
-or not the application touches any of them. `from veloce.contrib import X` is
-unchanged; only the moment the work happens moves.
+Names are resolved on first attribute access rather than at import, so an
+optional integration is not imported until one of its names is used.
+`from veloce.contrib import X` is unchanged; only the moment the work happens
+moves.
+
+Three of the five modules `_EXPORTS` names are deferred in practice: OpenAPI,
+Redis and the docs UI. Static files and templating are still pulled in by
+`import veloce` itself, because the top-level package imports
+`contrib.templating` for its own re-exports.
+
+The `mcp` sub-package is the sixth integration here. It exports nothing through
+`_EXPORTS`; reach it by importing `veloce.contrib.mcp` directly.
 """
 
 from __future__ import annotations
@@ -12,7 +19,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover
-    from veloce.contrib.openapi import get_openapi_schema, setup_openapi_routes
+    from veloce.contrib.docs_ui import setup_openapi_routes
+    from veloce.contrib.openapi import get_openapi_schema
     from veloce.contrib.redis import RedisCache, RedisRateLimitBackend, RedisSessionStore
     from veloce.contrib.staticfiles import StaticFiles
     from veloce.contrib.templating import (
@@ -33,7 +41,7 @@ _EXPORTS: dict[str, str] = {
     "get_openapi_schema": "veloce.contrib.openapi",
     "render_template": "veloce.contrib.templating",
     "render_template_string": "veloce.contrib.templating",
-    "setup_openapi_routes": "veloce.contrib.openapi",
+    "setup_openapi_routes": "veloce.contrib.docs_ui",
     "stream_template": "veloce.contrib.templating",
 }
 

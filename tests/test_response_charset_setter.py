@@ -1,10 +1,22 @@
-"""Response.charset accessor and setter."""
+"""`Response.charset` — the accessor and the setter.
+
+The single home for charset behaviour. `test_response_shape_aliases.py` also
+carried a default / parameter / quoted-value trio, each a subset of the
+parametrized cases below; they are gone rather than kept in parallel, and that
+module is about `content_length`, `is_streamed` and the `environ` alias.
+
+The neighbouring `test_response_mimetype.py` and
+`test_response_mimetype_params.py` are separate on purpose: each is named for
+one accessor of the same header, and `test_charset_agrees_with_mimetype_params`
+below is what ties them together.
+"""
 
 from __future__ import annotations
 
 import pytest
 
-from veloce import Request, Response
+from tests.conftest import make_request
+from veloce import Response
 
 
 def test_charset_default_utf8():
@@ -90,7 +102,7 @@ def test_charset_agrees_with_mimetype_params(content_type):
 )
 def test_charset_agrees_with_request_charset(content_type):
     """The two doors read one header the same way."""
-    req = Request(
+    req = make_request(
         method="GET", path="/x", query_string="", headers={"content-type": content_type}, body=b""
     )
     assert Response(content_type=content_type).charset == req.charset

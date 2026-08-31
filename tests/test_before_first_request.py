@@ -4,16 +4,14 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
-
+from tests.conftest import make_request
 from veloce import Request, Veloce
 
 
 def _req(path: str = "/x") -> Request:
-    return Request(method="GET", path=path, query_string="", headers={}, body=b"")
+    return make_request(method="GET", path=path, query_string="", headers={}, body=b"")
 
 
-@pytest.mark.asyncio
 async def test_fires_on_first_request_only():
     app = Veloce(debug=True, openapi_url=None)
     fired: list[int] = []
@@ -32,7 +30,6 @@ async def test_fires_on_first_request_only():
     assert fired == [1]
 
 
-@pytest.mark.asyncio
 async def test_runs_in_registration_order():
     app = Veloce(debug=True, openapi_url=None)
     order: list[str] = []
@@ -53,7 +50,6 @@ async def test_runs_in_registration_order():
     assert order == ["a", "b"]
 
 
-@pytest.mark.asyncio
 async def test_async_hook_supported():
     app = Veloce(debug=True, openapi_url=None)
     fired: list[int] = []
@@ -71,7 +67,6 @@ async def test_async_hook_supported():
     assert fired == [1]
 
 
-@pytest.mark.asyncio
 async def test_concurrent_first_requests_dont_double_fire():
     """Two requests in flight at once shouldn't both run the init hooks."""
     app = Veloce(debug=True, openapi_url=None)
@@ -98,7 +93,6 @@ async def test_concurrent_first_requests_dont_double_fire():
     assert fired == [1]
 
 
-@pytest.mark.asyncio
 async def test_dotenv_false_strings_still_lock_setup():
     """A dotenv-style `DEBUG="false"`/`TESTING="false"` is falsy, so the first
     request must latch `_setup_locked`. The raw string is truthy, so a naive

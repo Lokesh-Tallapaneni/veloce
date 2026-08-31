@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import orjson
 import pytest
 
+from tests.conftest import make_request
 from veloce import MethodView, Request, Veloce
 from veloce.exceptions import MethodNotAllowed
 
 
 def _req(path: str = "/x", method: str = "GET") -> Request:
-    return Request(method=method, path=path, query_string="", headers={}, body=b"")
+    return make_request(method=method, path=path, query_string="", headers={}, body=b"")
 
 
 # ── as_view returns a dispatcher with the right metadata ─────────────
@@ -57,7 +59,6 @@ def test_sync_method_rejected_at_definition():
 # ── dispatch picks the right method, 405 otherwise ──────────────────
 
 
-@pytest.mark.asyncio
 async def test_dispatch_picks_matching_method():
     class V(MethodView):
         async def get(self, request):
@@ -71,7 +72,6 @@ async def test_dispatch_picks_matching_method():
     assert result == {"ok": "post"}
 
 
-@pytest.mark.asyncio
 async def test_dispatch_missing_method_raises_405_with_allow_header():
     class V(MethodView):
         async def get(self, request):
@@ -86,7 +86,6 @@ async def test_dispatch_missing_method_raises_405_with_allow_header():
 # ── Round trip through Veloce ────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_round_trip_through_app():
     app = Veloce(debug=True, openapi_url=None)
 
@@ -100,15 +99,12 @@ async def test_round_trip_through_app():
     app.add_url_rule("/u", view_func=UserView.as_view("user"), methods=["GET", "POST"])
 
     resp_get = await app.handle_request(_req("/u", "GET"))
-    import orjson
-
     assert orjson.loads(resp_get.body) == {"verb": "GET"}
 
     resp_post = await app.handle_request(_req("/u", "POST"))
     assert orjson.loads(resp_post.body) == {"verb": "POST"}
 
 
-@pytest.mark.asyncio
 async def test_fresh_instance_per_request():
     """Each request constructs a new instance — request-state isolation."""
     # Keep references to every instance for the whole test so their

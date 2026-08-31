@@ -7,9 +7,9 @@ import hashlib
 import os
 import stat
 import warnings
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, MutableMapping
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, BinaryIO, Literal
 from urllib.parse import quote
 
 import orjson
@@ -19,7 +19,6 @@ from veloce._constants import (
     HEADER_AGE,
     HEADER_ALLOW,
     HEADER_CACHE_CONTROL,
-    HEADER_CONNECTION,
     HEADER_CONTENT_DISPOSITION,
     HEADER_CONTENT_ENCODING,
     HEADER_CONTENT_LANGUAGE,
@@ -38,7 +37,6 @@ from veloce._constants import (
     HEADER_VALUE_ATTACHMENT,
     HEADER_VALUE_BYTES,
     HEADER_VALUE_CHUNKED,
-    HEADER_VALUE_KEEP_ALIVE,
     HEADER_VALUE_NO_CACHE,
     HEADER_VALUE_PUBLIC,
     HEADER_VARY,
@@ -56,16 +54,18 @@ from veloce._internal import (
     MIME_PLAIN,
     _encode_response_head,
     _etag_matches_strong,
-    _etag_matches_weak,
     _file_etag,
     _header_value_has_crlf,
+    _preconditions_say_unchanged,
+    _quote_header_value,
     _reject_header_crlf,
+    _write_chunked,
+    dumps_current,
     guess_content_type,
     is_json_mimetype,
 )
 from veloce._protocol_constants import AUTH_SCHEME_BASIC, SET_COOKIE_JOINER
 from veloce._warnings import VeloceDeprecationWarning
-from veloce.encoders import orjson_default
 from veloce.http.cache_control import CacheControl
 from veloce.http.cookies import dump_cookie, iter_cookies
 from veloce.http.dates import http_date, parse_date
@@ -98,6 +98,9 @@ def header_key(headers: Mapping[str, str], name: str) -> str | None:
     if name in headers:
         return name
     lowered = name.lower()
+    # A first-byte guard before the `.lower()` was measured slower here: the
+    # header dict is short enough that the extra test costs more than the
+    # allocations it avoids.
     for key in headers:
         if key.lower() == lowered:
             return key
@@ -113,6 +116,23 @@ def header_get(headers: Mapping[str, str], name: str) -> str | None:
 def header_present(headers: Mapping[str, str], name: str) -> bool:
     """Return True when a header named `name` exists under any casing."""
     return header_key(headers, name) is not None
+
+
+def header_pop(headers: MutableMapping[str, str], name: str) -> str | None:
+    """Remove and return `name` under whatever casing it was stored, or None.
+
+    The replacement half of `header_get`. Every site that rewrites a header
+    hand-rolled this, and each covered only the casings its author thought of -
+    the canonical one and, sometimes, the lower-case one. A contribution written
+    under any other casing was left in place, so `Vary`, `Allow` and
+    `Content-Length` could each be emitted twice, and CORS silently discarded an
+    `Access-Control-Expose-Headers` entry another middleware had added.
+
+    Costs one dict lookup when the header is stored under its canonical casing,
+    which is what the framework itself always writes.
+    """
+    key = header_key(headers, name)
+    return None if key is None else headers.pop(key)
 
 
 def _format_content_disposition(disposition: str, filename: str) -> str:
@@ -132,19 +152,89 @@ def _format_content_disposition(disposition: str, filename: str) -> str:
         c == "\t" or c == " " or "\x21" <= c <= "\x7e" for c in filename
     )
     if quotable:
-        # RFC 9110 Sec. 5.6.4 quoted-string escape: backslash first so an
-        # original backslash is not doubled again when escaping the quote.
-        escaped = filename.replace("\\", "\\\\").replace('"', '\\"')
+        escaped = _quote_header_value(filename)
         param = f'filename="{escaped}"'
     else:
         param = f"filename*=UTF-8''{quote(filename, safe='')}"
     return f"{disposition}; {param}"
 
 
-def _read_file_bytes(path: str) -> bytes:
-    """Read a whole file's bytes - run in an executor for large reads."""
-    with open(path, "rb") as f:
-        return f.read()
+async def _stream_file(path: str, loop: Any, limit: int | None = None) -> Any:
+    """Yield a file's bytes in chunks, each read in the executor, up to `limit`.
+
+    The open and every read are offloaded, so no disk I/O runs on the event
+    loop, and only one chunk is resident at a time.
+
+    `limit` is the `Content-Length` the response already declared. The stat that
+    produced it and these reads are two different moments, so a file appended to
+    in between - a log, an asset replaced by a deploy - would otherwise yield
+    more bytes than the head promised. On the native transport that surplus lands
+    on a keep-alive connection behind the response the client was counting, and
+    is read as the start of the next one. `None` reads to EOF, for a caller with
+    no declared length to honour.
+    """
+    handle = await loop.run_in_executor(None, _open_file_binary, path)
+    remaining = limit
+    try:
+        while remaining is None or remaining > 0:
+            chunk = await loop.run_in_executor(None, _read_file_chunk, handle)
+            if not chunk:
+                return
+            if remaining is not None:
+                if len(chunk) >= remaining:
+                    yield chunk[:remaining]
+                    return
+                remaining -= len(chunk)
+            yield chunk
+    finally:
+        await loop.run_in_executor(None, handle.close)
+
+
+def _open_file_binary(path: str) -> BinaryIO:
+    """Open `path` for binary reading - run in an executor."""
+    return open(path, "rb")  # noqa: SIM115 - closed by `_stream_file`
+
+
+#: Bytes per chunk when streaming a file off disk. Large enough that the
+#: per-chunk executor hop is amortised, small enough that a concurrent download
+#: holds this rather than the whole file.
+FILE_STREAM_CHUNK = 64 * 1024
+
+
+def _read_file_chunk(handle: BinaryIO) -> bytes:
+    """Read one chunk from an open file - run in an executor."""
+    return handle.read(FILE_STREAM_CHUNK)
+
+
+def advertised_length(status_code: int, body: bytes) -> int | None:
+    """Return the `Content-Length` to synthesize, or `None` when it is unknown.
+
+    A body-permitting status advertises what it carries. A 304 may advertise the
+    length the equivalent 200 would have carried (RFC 9110 Sec. 8.6 / 15.4.5),
+    but only when that is knowable - from a body still attached, or from a
+    `Content-Length` its producer set, which takes precedence over this anyway.
+    Downgraded from a stream it is neither, and an unknown length is omitted
+    rather than reported as 0: RFC 9111 Sec. 4.3.4 has caches write a 304's
+    length over their stored entry, so a guessed 0 records a 200 KiB asset as
+    empty. Every other bodiless status (1xx, 204, 205) has no representation, so
+    its length is 0.
+
+    Shared by the three emit paths - `Response.encode` and both ASGI branches -
+    which each carried their own copy of this rule and disagreed about the
+    streamed case.
+    """
+    if status_permits_body(status_code):
+        return len(body)
+    if status_code == HTTP_304_NOT_MODIFIED:
+        return len(body) or None
+    return 0
+
+
+# Merged `Vary` values, keyed by `(existing_header, names_being_added)`. See
+# `Response.add_vary`: the merge is pure, and a given application asks the same
+# handful of questions on every response because its middleware order is fixed.
+_VARY_MERGES: dict[tuple[str, tuple[str, ...]], str] = {}
+_MAX_VARY_MERGES = 256
 
 
 class Response:
@@ -172,6 +262,15 @@ class Response:
         "_ct_params",
     )
 
+    #: Whether this response is a Server-Sent Events stream. `EventSourceResponse`
+    #: overrides it to `True`. Declared here as a class attribute - legal
+    #: alongside `__slots__` and costing nothing per instance - so the transport
+    #: and compression paths can read it directly. They used
+    #: `getattr(response, "is_event_source", False)`, which on a slotted class
+    #: with no such attribute misses the slots *and* the MRO and pays CPython's
+    #: full exception setup and teardown: ~38 ns on every response.
+    is_event_source = False
+
     def __init__(
         self,
         status_code: int = HTTP_200_OK,
@@ -184,7 +283,17 @@ class Response:
         self._encoded: bytes | None = None
         self._body = body
         self.content_type = content_type
-        self.headers = headers or {}
+        # Copy on the way in, for the reason `HTTPException.__init__` already
+        # records: this mapping becomes the response's `headers`, which response
+        # middleware (CORS / Session / SecurityHeaders) and `set_cookie` mutate
+        # in place. Aliasing the caller's dict lets one request's `Set-Cookie`
+        # accumulate on a handler-held constant and ship on every later
+        # response - a module-level `HEADERS = {"X-App-Version": "1.0"}` reused
+        # across routes is the ordinary shape that leaks, and what leaks is a
+        # signed session cookie belonging to a different user. The error path
+        # was given this rule; the success path is the far more common one.
+        # `None` stays free: no copy, just the fresh dict it always allocated.
+        self.headers = dict(headers) if headers else {}
         # Optional `BackgroundTask` or `BackgroundTasks` fired by the
         # dispatch layer after this response is built. None when no task
         # is attached. `Response(content=..., background=BackgroundTask(fn))`.
@@ -205,7 +314,7 @@ class Response:
         self._charset: str = ""
         self._ct_params: dict[str, str] = {}
 
-    # ── `body` ────────────────────────────────────────────
+    # ── `body` ────────────────────────────────────────────────
     # Backed by `_body` so the setter can invalidate the encode cache.
     # Middleware that mutates `response.body = new_bytes` after a prior
     # `.encode()` call would otherwise emit stale bytes + wrong
@@ -218,11 +327,22 @@ class Response:
 
     @body.setter
     def body(self, value: bytes) -> None:
-        """Set the response body."""
+        """Set the response body, keeping any `Content-Length` in step.
+
+        The refresh lives here, on the single assignment `body`, `data` and
+        `set_data` all go through, so every spelling keeps the header in step:
+        one that refreshed on `set_data` alone would let a middleware rewriting
+        `response.body` - the obvious spelling - advertise the old length and
+        desynchronise a keep-alive connection. The constructor assigns `_body`
+        directly, so a response that never reassigns its body pays nothing.
+        """
         self._body = value
+        stored = header_key(self.headers, HEADER_CONTENT_LENGTH)
+        if stored is not None:
+            self.headers[stored] = str(len(value))
         self._encoded = None
 
-    # ── `media_type` alias ────────────────────────────────
+    # ── `media_type` alias ────────────────────────────────────
     # ASGI servers name this attribute `media_type`; veloce's
     # canonical name is `content_type`. Expose both names so code that
     # uses either name reads and writes cleanly.
@@ -240,7 +360,7 @@ class Response:
         # takes effect on the next `encode()` call.
         self._encoded = None
 
-    # ── `mimetype` ────────────────────────────────────────
+    # ── `mimetype` ────────────────────────────────────────────
     # `mimetype` is the bare media type, with no parameters.
     # Setting it preserves the existing `charset` parameter.
 
@@ -273,9 +393,10 @@ class Response:
         ct = self.content_type or ""
         if ct == self._ct_cache_key:
             return
-        media, _, rest = ct.partition(";")
+        media, semi, rest = ct.partition(";")
         self._mimetype = media.strip().lower()
-        params = dict(parse_media_type_params(rest))
+        # `partition` already reports whether there were parameters at all.
+        params = dict(parse_media_type_params(rest)) if semi else {}
         self._ct_params = params
         # RFC 9110 Sec. 8.3.1 makes media-type parameter names case-insensitive
         # and RFC 9110 Sec. 5.6.6 allows whitespace around `=`, so the charset
@@ -305,7 +426,7 @@ class Response:
         self.content_type = f"{value}; charset={cs}" if had_charset else value
         self._encoded = None
 
-    # ── `status` line ─────────────────────────────────────
+    # ── `status` line ─────────────────────────────────────────
     # `response.status` is the full status line
     # ("200 OK"), with `status_code` as the bare int. veloce's
     # canonical field is `status_code`; `status` is the string view.
@@ -335,9 +456,18 @@ class Response:
             self.status_code = int(head)
         self._encoded = None
 
-    def encode(self) -> bytes:
-        """Encode to raw HTTP/1.1 bytes - called once, cached."""
-        if self._encoded is not None:
+    # ── Wire encoding ─────────────────────────────────────────
+
+    def encode(self, keep_alive: bool = True) -> bytes:
+        """Encode to raw HTTP/1.1 bytes - called once, cached.
+
+        `keep_alive` is what the transport decided about this connection; the
+        head advertises it rather than always claiming `keep-alive`. Only the
+        keep-alive encode is cached, so a response re-encoded for a closing
+        connection cannot serve a stale `Connection` line, and the common path
+        keeps its single cached blob.
+        """
+        if keep_alive and self._encoded is not None:
             return self._encoded
 
         # Bodiless statuses (1xx/204/205/304) carry no payload and no default
@@ -347,20 +477,22 @@ class Response:
         # HEAD) may advertise the would-be-200 Content-Length while sending no
         # body (RFC 9110 Sec. 8.6); 1xx/204/205 advertise 0.
         body_allowed = status_permits_body(self.status_code)
-        is_304 = self.status_code == HTTP_304_NOT_MODIFIED
         body = self.body if body_allowed else b""
-        advertised_length = len(self.body) if (body_allowed or is_304) else 0
-        default_headers = {
-            HEADER_CONTENT_LENGTH: str(advertised_length),
-            HEADER_CONNECTION: HEADER_VALUE_KEEP_ALIVE,
-        }
+        length = advertised_length(self.status_code, self.body)
+        default_headers = {} if length is None else {HEADER_CONTENT_LENGTH: str(length)}
         if body_allowed:
             default_headers = {HEADER_CONTENT_TYPE: self.content_type, **default_headers}
-        parts = _encode_response_head(self.status_code, default_headers, self.headers)
+        parts = _encode_response_head(
+            self.status_code, default_headers, self.headers, keep_alive=keep_alive
+        )
         parts.append("\r\n")
 
-        self._encoded = "".join(parts).encode("latin-1") + body
-        return self._encoded
+        encoded = "".join(parts).encode("latin-1") + body
+        if keep_alive:
+            self._encoded = encoded
+        return encoded
+
+    # ── Cookies ───────────────────────────────────────────────
 
     def set_cookie(
         self,
@@ -410,10 +542,6 @@ class Response:
         five fields (name, value, domain, path, samesite), so `set_cookie`
         does not repeat it.
         """
-        # Normalise empty samesite to None so dump_cookie omits it.
-        if samesite is not None and not samesite.strip():
-            samesite = None
-
         # dump_cookie accepts datetime and numeric timestamps but not
         # pre-formatted strings. Handle the string case separately.
         expires_str: str | None = None
@@ -443,16 +571,18 @@ class Response:
         self._encoded = None
 
     def _append_set_cookie_header(self, raw_value: str) -> None:
-        """Append `raw_value` (already a serialised Set-Cookie line, or
-        a `\\r\\nSet-Cookie: `-joined multi-cookie blob) onto the response's
-        Set-Cookie header without overwriting earlier cookies. Single
-        canonical home for the Q44 multi-cookie join format.
+        """Append a serialised `Set-Cookie` line, keeping the earlier ones.
+
+        `raw_value` is one serialised line, or a `\\r\\nSet-Cookie: `-joined
+        multi-cookie blob. The single canonical home for that join format.
         """
         existing = self.headers.get(HEADER_SET_COOKIE)
         if existing:
             self.headers[HEADER_SET_COOKIE] = existing + SET_COOKIE_JOINER + raw_value
         else:
             self.headers[HEADER_SET_COOKIE] = raw_value
+
+    # ── Body and its measurements ─────────────────────────────
 
     @property
     def content_length(self) -> int:
@@ -514,8 +644,10 @@ class Response:
         self._encoded = None
         return n
 
+    # ── Validators and dates ──────────────────────────────────
+
     @property
-    def last_modified(self) -> Any:
+    def last_modified(self) -> datetime | None:
         """Parsed `Last-Modified` header -> UTC `datetime` or None.
 
         Accepts the three RFC 9110 Sec. 5.6.7 HTTP-date
@@ -528,11 +660,11 @@ class Response:
 
     @last_modified.setter
     def last_modified(self, value: Any) -> None:
-        """Set the last modified date."""
+        """Set the `Last-Modified` header."""
         self._set_http_date_header(HEADER_LAST_MODIFIED, value)
 
     @property
-    def expires(self) -> Any:
+    def expires(self) -> datetime | None:
         """Parsed `Expires` header -> UTC `datetime` or None (RFC 9111 Sec. 5.3)."""
         raw = header_get(self.headers, HEADER_EXPIRES)
         if not raw:
@@ -541,18 +673,21 @@ class Response:
 
     @expires.setter
     def expires(self, value: Any) -> None:
-        """Set the expires date."""
+        """Set the `Expires` header."""
         self._set_http_date_header(HEADER_EXPIRES, value)
 
     def _set_http_date_header(self, name: str, value: Any) -> None:
         """Set an HTTP-date header from datetime / unix ts / preformatted str.
 
-        `value=None` removes the header (both canonical and lower-case
-        variants). Naive datetimes are interpreted as UTC.
+        `value=None` removes the header under whatever casing it was stored.
+        Popping only the canonical and lower-case spellings left a third one on
+        the wire while the getter, which reads case-insensitively, reported the
+        clear had worked. Naive datetimes are interpreted as UTC.
         """
         if value is None:
-            self.headers.pop(name, None)
-            self.headers.pop(name.lower(), None)
+            stored = header_key(self.headers, name)
+            if stored is not None:
+                del self.headers[stored]
             self._encoded = None
             return
         if isinstance(value, datetime) and value.tzinfo is None:
@@ -567,7 +702,7 @@ class Response:
     def cookies(self) -> dict[str, str]:
         """Parsed cookie jar from this response's `Set-Cookie` header(s).
 
-        Walks every `Set-Cookie` entry (Q44 separator `\\r\\nSet-Cookie: `
+        Walks every `Set-Cookie` entry (separator `\\r\\nSet-Cookie: `
         respected) and returns `{name: value}`. Values are percent-decoded,
         so a cookie reads back as the string `set_cookie()` was given rather
         than its wire form. Multiple cookies with the same name resolve to
@@ -579,7 +714,7 @@ class Response:
         existing = header_get(self.headers, HEADER_SET_COOKIE) or ""
         if not existing:
             return out
-        # Q44 emits multi-cookies as `cookie1\r\nSet-Cookie: cookie2...`. Only
+        # Multi-cookies are emitted as `cookie1\r\nSet-Cookie: cookie2...`. Only
         # the leading `name=value` segment of each entry is the cookie; the
         # rest are attributes. `iter_cookies` is the inverse of `dump_cookie`'s
         # percent-quoting, and the same parser `Request.cookies` reads with.
@@ -591,7 +726,7 @@ class Response:
     def headerlist(self) -> list[tuple[str, str]]:
         """Headers flattened to the `(name, value)` tuple list the wire emit sends.
 
-        Each `Set-Cookie` (Q44 multi-cookie join) expands to its own tuple, so
+        Each `Set-Cookie` (multi-cookie join) expands to its own tuple, so
         the caller gets the per-cookie view ASGI requires. Two spellings of one
         field name collapse to a single entry carrying the last name and value
         seen, at the position of the first (RFC 9110 Sec. 5.1 makes field names
@@ -627,37 +762,31 @@ class Response:
         """Body bytes alias for `Response.body`.
 
         Read returns the current body; writing through the setter
-        replaces the body, invalidates any cached HTTP/1.1 encoded
-        bytes (`_encoded`), and updates `Content-Length` on the
-        headers if it was previously set.
+        replaces the body, invalidates any cached HTTP/1.1 encoded bytes
+        (`_encoded`), and updates `Content-Length` when the headers carry one.
         """
         return self.body
 
     @data.setter
     def data(self, value: bytes | str) -> None:
-        """Set the data."""
+        """Set the response body; alias for `set_data`."""
         self.set_data(value)
 
     def set_data(self, value: bytes | str) -> None:
         """Replace the response body.
 
         Accepts `bytes` or `str` (UTF-8 encoded). Invalidates the cached
-        HTTP/1.1 encode so the new body wire-out on the next emit.
-        Refreshes `Content-Length` when previously set on the headers.
+        HTTP/1.1 encoding so the new body goes on the wire at the next emit,
+        and refreshes `Content-Length` when the headers carry one. Assigning
+        `response.body` directly does the same.
         """
         if isinstance(value, str):
             value = value.encode("utf-8")
-        # The `body` property setter clears `_encoded`; no separate
-        # invalidation needed.
+        # The `body` property setter clears `_encoded` and refreshes any
+        # `Content-Length`; no separate invalidation or refresh needed.
         self.body = value
-        # If `Content-Length` was explicitly set (e.g. by caller after
-        # the prior body), refresh it to match. The ASGI emit path
-        # always recomputes Content-Length from `body`, so leaving
-        # the header stale would only affect the raw HTTP/1.1 encode
-        # path. Keep both consistent.
-        for key in (HEADER_CONTENT_LENGTH, "content-length"):
-            if key in self.headers:
-                self.headers[key] = str(len(value))
+
+    # ── Caching and negotiation ───────────────────────────────
 
     def set_cache_control(
         self,
@@ -710,34 +839,65 @@ class Response:
         existing entries.
         """
         headers = self.headers
-        # Fast path - the common case (no existing `Vary`, one name, e.g. a
-        # middleware adding `Vary: Cookie` per response) needs no parse/merge:
-        # a single clean token round-trips through `HeaderSet` unchanged, so set
-        # it directly and skip the list+set allocation. Two membership tests
-        # beat two `.get` lookups plus a defensive `.pop`; a (vanishingly rare)
-        # empty-valued lower-case `vary` key falls through to the merge path,
-        # which still clears it. This runs on every session-touched response.
-        if len(header_names) == 1 and HEADER_VARY not in headers and "vary" not in headers:
+        # One scan serves both paths: it decides whether a `Vary` already exists
+        # (under any casing) and, if so, names the key to read and clear.
+        #
+        # Every casing, not just `Vary` and `vary`. It is tempting to argue
+        # that a third casing merely produces two `Vary` field lines, which RFC
+        # 9110 Sec. 5.2 says a recipient combines - but both emit paths fold
+        # duplicate field names and keep the last write
+        # (`_build_asgi_headers`, `_encode_response_head`), so only one line is
+        # ever sent and the earlier value is dropped, not combined. Missing a
+        # casing puts `VARY: Cookie` on the wire as `Vary: Accept-Encoding`
+        # alone - and a `Vary: Cookie` a shared cache never sees is how one
+        # user's response gets served to another. The scan is short-circuited on
+        # the canonical spelling inside `header_key`, so the ordinary case is one
+        # dict lookup.
+        stored_key = header_key(headers, HEADER_VARY)
+        # Fast path - no existing `Vary` and a single clean token (a middleware
+        # adding `Vary: Cookie` per response) needs no parse/merge: the token
+        # round-trips through `HeaderSet` unchanged, so set it directly and skip
+        # the list+set allocation. This runs on every session-touched response.
+        if len(header_names) == 1 and stored_key is None:
             value = header_names[0]
             headers[HEADER_VARY] = value
             self._encoded = None
             return value
-        existing = header_get(headers, HEADER_VARY) or ""
-        # Delegate dedup + ordering to `HeaderSet` so the same
-        # case-insensitive merge logic doesn't drift between this method
-        # and the `vary` property's own datastructure.
-        merged = HeaderSet(existing)
-        merged.update(header_names)
-        value = merged.to_header()
-        # Always write under `Vary` (canonical case) and clear any
-        # lower-case duplicate.
-        headers.pop("vary", None)
+        existing = headers[stored_key] if stored_key is not None else ""
+        # The merge is a pure function of what is already there and what is
+        # being added, and both are fixed per application: middleware order does
+        # not change between requests, so a stack contributing `Origin`, then
+        # `Accept-Encoding`, then `Cookie` asks the same two questions on every
+        # response. Measured at 5.3 us for the second and third calls against
+        # 0.5 us for the first, which takes the fast path above.
+        cache_key = (existing, header_names)
+        cached = _VARY_MERGES.get(cache_key)
+        if cached is not None:
+            value = cached
+        else:
+            # Delegate dedup + ordering to `HeaderSet` so the same
+            # case-insensitive merge logic doesn't drift between this method
+            # and the `vary` property's own datastructure.
+            merged = HeaderSet(existing)
+            merged.update(header_names)
+            value = merged.to_header()
+            # Bounded: a handler may write `response.headers["Vary"]` from user
+            # input, so `existing` is not always framework-controlled. Cleared
+            # outright rather than evicted one entry, matching
+            # `_ENCODED_HEADER_PAIRS` on the emit path.
+            if len(_VARY_MERGES) >= _MAX_VARY_MERGES:
+                _VARY_MERGES.clear()
+            _VARY_MERGES[cache_key] = value
+        # Always write under `Vary` (canonical case), clearing whatever casing
+        # the value was actually stored under.
+        if stored_key is not None:
+            del headers[stored_key]
         headers[HEADER_VARY] = value
         self._encoded = None
         return value
 
     @property
-    def vary(self) -> Any:
+    def vary(self) -> HeaderSet:
         """The `Vary` header as a `HeaderSet`.
 
         Returns a fresh `HeaderSet` parsed from the current header.
@@ -745,34 +905,28 @@ class Response:
         string to replace it. Mutating the returned object does *not*
         write back - call `add_vary(...)` or reassign for that.
         """
-
-        return HeaderSet(self.headers.get(HEADER_VARY, ""))
+        return HeaderSet(header_get(self.headers, HEADER_VARY) or "")
 
     @vary.setter
     def vary(self, value: Any) -> None:
-        """Set the vary."""
-        hs = value if isinstance(value, HeaderSet) else HeaderSet(value)
-        self.headers.pop("vary", None)
-        self.headers[HEADER_VARY] = hs.to_header()
-        self._encoded = None
+        """Set the `Vary` header."""
+        self._set_header_set(HEADER_VARY, value)
 
     @property
-    def allow(self) -> Any:
+    def allow(self) -> HeaderSet:
         """The `Allow` header as a `HeaderSet`.
 
         Lists the HTTP methods the resource supports (RFC 9110 Sec. 10.2.1).
         Assign a `HeaderSet`, iterable, or comma-separated string.
         """
-
-        return HeaderSet(self.headers.get(HEADER_ALLOW, ""))
+        return HeaderSet(header_get(self.headers, HEADER_ALLOW) or "")
 
     @allow.setter
     def allow(self, value: Any) -> None:
-        """Set the allow."""
-        hs = value if isinstance(value, HeaderSet) else HeaderSet(value)
-        self.headers.pop("allow", None)
-        self.headers[HEADER_ALLOW] = hs.to_header()
-        self._encoded = None
+        """Set the `Allow` header."""
+        self._set_header_set(HEADER_ALLOW, value)
+
+    # ── Authentication challenge ──────────────────────────────
 
     @property
     def www_authenticate(self) -> str | None:
@@ -781,13 +935,13 @@ class Response:
         Sent on `401 Unauthorized` to tell the client which auth
         scheme(s) to use. `None` when unset.
         """
-        return self.headers.get(HEADER_WWW_AUTHENTICATE)
+        return header_get(self.headers, HEADER_WWW_AUTHENTICATE)
 
     @www_authenticate.setter
     def www_authenticate(self, value: str | None) -> None:
-        """Set the WWW-Authenticate."""
+        """Set the `WWW-Authenticate` header."""
         if value is None:
-            self.headers.pop(HEADER_WWW_AUTHENTICATE, None)
+            header_pop(self.headers, HEADER_WWW_AUTHENTICATE)
         else:
             # Caller-supplied challenges may interpolate a realm or
             # token68; reject CRLF here so this low-level setter has the
@@ -809,6 +963,18 @@ class Response:
         self._encoded = None
         return value
 
+    def _set_header_set(self, name: str, value: Any) -> None:
+        """Replace header `name` with the `HeaderSet` form of `value`.
+
+        Backs the list-valued headers whose setter accepts a `HeaderSet`,
+        an iterable of strings, or a comma-separated string; invalidates
+        the cached encode after every mutation.
+        """
+        hs = value if isinstance(value, HeaderSet) else HeaderSet(value)
+        header_pop(self.headers, name)
+        self.headers[name] = hs.to_header()
+        self._encoded = None
+
     def _set_or_pop(self, name: str, value: str | None) -> None:
         """Set header `name` to `value`, or remove it when `value is None`.
 
@@ -816,29 +982,31 @@ class Response:
         invalidates the cached encode after every mutation.
         """
         if value is None:
-            self.headers.pop(name, None)
+            header_pop(self.headers, name)
         else:
             self.headers[name] = value
         self._encoded = None
 
+    # ── Single-value header accessors ─────────────────────────
+
     @property
     def content_encoding(self) -> str | None:
         """The `Content-Encoding` header - RFC 9110 Sec. 8.4. `None` when unset."""
-        return self.headers.get(HEADER_CONTENT_ENCODING)
+        return header_get(self.headers, HEADER_CONTENT_ENCODING)
 
     @content_encoding.setter
     def content_encoding(self, value: str | None) -> None:
-        """Set the content encoding."""
+        """Set the `Content-Encoding` header."""
         self._set_or_pop(HEADER_CONTENT_ENCODING, value)
 
     @property
     def content_language(self) -> str | None:
         """The `Content-Language` header - RFC 9110 Sec. 8.5. `None` when unset."""
-        return self.headers.get(HEADER_CONTENT_LANGUAGE)
+        return header_get(self.headers, HEADER_CONTENT_LANGUAGE)
 
     @content_language.setter
     def content_language(self, value: str | None) -> None:
-        """Set the content language."""
+        """Set the `Content-Language` header."""
         self._set_or_pop(HEADER_CONTENT_LANGUAGE, value)
 
     @property
@@ -848,11 +1016,11 @@ class Response:
         Typically `bytes` (range requests supported) or `none`
         (explicitly unsupported). `None` when the header is unset.
         """
-        return self.headers.get(HEADER_ACCEPT_RANGES)
+        return header_get(self.headers, HEADER_ACCEPT_RANGES)
 
     @accept_ranges.setter
     def accept_ranges(self, value: str | None) -> None:
-        """Set the accept ranges."""
+        """Set the `Accept-Ranges` header."""
         self._set_or_pop(HEADER_ACCEPT_RANGES, value)
 
     def set_content_range(
@@ -884,23 +1052,22 @@ class Response:
     @property
     def content_range(self) -> str | None:
         """The raw `Content-Range` header - RFC 9110 Sec. 14.4. `None` if unset."""
-        return self.headers.get(HEADER_CONTENT_RANGE)
+        return header_get(self.headers, HEADER_CONTENT_RANGE)
 
     @property
-    def date(self) -> Any:
+    def date(self) -> datetime | None:
         """The `Date` header as a tz-aware UTC `datetime` - RFC 9110 Sec. 6.6.1.
 
         Returns `None` when unset or unparseable. Assign a `datetime`
         or POSIX timestamp to set it; assign `None` to remove it.
         """
-
-        return parse_date(self.headers.get(HEADER_DATE))
+        return parse_date(header_get(self.headers, HEADER_DATE))
 
     @date.setter
     def date(self, value: Any) -> None:
-        """Set the date."""
+        """Set the `Date` header."""
         if value is None:
-            self.headers.pop(HEADER_DATE, None)
+            header_pop(self.headers, HEADER_DATE)
         else:
             self.headers[HEADER_DATE] = http_date(value)
         self._encoded = None
@@ -908,24 +1075,25 @@ class Response:
     @property
     def location(self) -> str | None:
         """The `Location` header - RFC 9110 Sec. 10.2.2. `None` when unset."""
-        return self.headers.get(HEADER_LOCATION)
+        return header_get(self.headers, HEADER_LOCATION)
 
     @location.setter
     def location(self, value: str | None) -> None:
-        """Set the location."""
+        """Set the `Location` header."""
         self._set_or_pop(HEADER_LOCATION, value)
 
     @property
     def content_location(self) -> str | None:
         """The `Content-Location` header - RFC 9110 Sec. 8.7. `None` when unset."""
-        return self.headers.get(HEADER_CONTENT_LOCATION)
+        return header_get(self.headers, HEADER_CONTENT_LOCATION)
 
     @content_location.setter
     def content_location(self, value: str | None) -> None:
+        """Set the `Content-Location` header, or remove it with `None`."""
         self._set_or_pop(HEADER_CONTENT_LOCATION, value)
 
     @property
-    def retry_after(self) -> Any:
+    def retry_after(self) -> int | datetime | None:
         """The `Retry-After` header - RFC 9110 Sec. 10.2.3.
 
         Returns an `int` (delay in seconds) when the header is numeric,
@@ -933,7 +1101,7 @@ class Response:
         unset. Assign an int / `timedelta` / `datetime` to set it;
         assign `None` to remove it.
         """
-        raw = self.headers.get(HEADER_RETRY_AFTER)
+        raw = header_get(self.headers, HEADER_RETRY_AFTER)
         if not raw:
             return None
         raw = raw.strip()
@@ -944,9 +1112,9 @@ class Response:
 
     @retry_after.setter
     def retry_after(self, value: Any) -> None:
-        """Set the retry after."""
+        """Set the `Retry-After` header."""
         if value is None:
-            self.headers.pop(HEADER_RETRY_AFTER, None)
+            header_pop(self.headers, HEADER_RETRY_AFTER)
         elif isinstance(value, timedelta):
             self.headers[HEADER_RETRY_AFTER] = str(int(value.total_seconds()))
         elif isinstance(value, datetime):
@@ -958,18 +1126,21 @@ class Response:
     @property
     def age(self) -> int | None:
         """The `Age` header in seconds - RFC 9110 Sec. 5.1. `None` when unset."""
-        raw = self.headers.get(HEADER_AGE)
+        raw = header_get(self.headers, HEADER_AGE)
         if not raw or not raw.strip().isdigit():
             return None
         return int(raw.strip())
 
     @age.setter
     def age(self, value: int | None) -> None:
+        """Set the `Age` header in seconds, or remove it with `None`."""
         if value is None:
-            self.headers.pop(HEADER_AGE, None)
+            header_pop(self.headers, HEADER_AGE)
         else:
             self.headers[HEADER_AGE] = str(int(value))
         self._encoded = None
+
+    # ── ETags ─────────────────────────────────────────────────
 
     def set_etag(self, etag: str, weak: bool = False) -> None:
         """Set the `ETag` header from an explicit value.
@@ -1013,7 +1184,7 @@ class Response:
             self.encode()
 
     @property
-    def cache_control(self) -> Any:
+    def cache_control(self) -> CacheControl:
         """Parsed `Cache-Control` header (read-only view).
 
         For setting directives, prefer `set_cache_control(...)` which
@@ -1021,8 +1192,9 @@ class Response:
         introspection: `resp.cache_control.max_age`,
         `resp.cache_control.no_store`, etc.
         """
+        return CacheControl(header_get(self.headers, HEADER_CACHE_CONTROL) or "")
 
-        return CacheControl(self.headers.get(HEADER_CACHE_CONTROL, ""))
+    # ── Iteration ─────────────────────────────────────────────
 
     def iter_encoded(self) -> Any:
         """Yield the response body.
@@ -1048,10 +1220,6 @@ class Response:
                 for chunk in it:
                     ...
 
-        The return shape is mode-dependent: a buffered response yields a
-        synchronous iterator of `bytes`, a streaming response yields the
-        underlying `AsyncIterator[bytes]`. Branch on `response.is_streamed`
-        to drain with the right loop.
         """
         stream = self._stream
         if stream is not None:
@@ -1082,8 +1250,7 @@ class Response:
                 for chunk in it:
                     ...
 
-        `size` must be positive. The return shape is mode-dependent: branch
-        on `response.is_streamed` to drain with the right loop.
+        `size` must be positive.
         """
         if size <= 0:
             raise ValueError("iter_chunked size must be positive")
@@ -1092,6 +1259,39 @@ class Response:
             return stream
         body = self.body
         return (body[i : i + size] for i in range(0, len(body), size))
+
+    if TYPE_CHECKING:  # pragma: no cover
+        # The counterpart to `is_streamed`, which the base already answers.
+        # `StreamingResponse`, `FileResponse` and `EventSourceResponse` define
+        # it; the built-in server reaches it only behind that guard, and cannot
+        # name those types because `serving/` must not import `sse`. Declared
+        # for the type only - no runtime method, so this is not an abstract base
+        # and a buffered response still has no `stream_to` to call by mistake.
+        async def stream_to(
+            self,
+            transport: Any,
+            drain: Callable[[], Awaitable[None]] | None = None,
+            keep_alive: bool = True,
+        ) -> None: ...
+
+    def _encode_streaming_head(self, default_headers: dict[str, str], keep_alive: bool) -> bytes:
+        """Encode a streaming response's head, honouring the bodiless-status rule.
+
+        A bodiless status carries neither a payload nor framing for one: RFC
+        9112 Sec. 6.1 forbids `Transfer-Encoding` on a 204, and a 204 that ships
+        chunks desynchronises a keep-alive connection because the client reads
+        them as the next response. `default_headers` (the content type plus the
+        chunked framing) is therefore dropped for `Content-Length: 0` on such a
+        status. Every streaming subclass encodes its head through here so the
+        rule cannot hold on one of them and not another.
+        """
+        if not status_permits_body(self.status_code):
+            default_headers = {HEADER_CONTENT_LENGTH: "0"}
+        parts = _encode_response_head(
+            self.status_code, default_headers, self.headers, keep_alive=keep_alive
+        )
+        parts.append("\r\n")
+        return "".join(parts).encode("latin-1")
 
     def add_etag(self, weak: bool = False) -> str:
         """Compute and attach an ETag derived from the body.
@@ -1112,11 +1312,14 @@ class Response:
         self._encoded = None
         return etag
 
-    def make_conditional(self, request: Any) -> Response:
-        """Downgrade this response to 304 when the request's preconditions
-        match the response's ETag / Last-Modified.
+    # ── Conditional requests ──────────────────────────────────
 
-        Checks `If-None-Match` first (per RFC 9110 Sec. 13.2 precedence),
+    def make_conditional(self, request: Any) -> Response:
+        """Downgrade this response to 304 on a precondition match.
+
+        The request's preconditions are compared against the response's ETag
+        and Last-Modified. Checks `If-None-Match` first (per RFC 9110
+        Sec. 13.2 precedence),
         then `If-Modified-Since`. On a match, mutates `self` to status
         304 with no body. Returns `self` so callers can use it inline:
         `return resp.make_conditional(request)`.
@@ -1129,28 +1332,21 @@ class Response:
         # Sec. 5.1), so a handler-set `Etag`/`etag` is honored too.
         ours_etag = header_get(self.headers, HEADER_ETAG) or ""
         inm = getattr(request, "if_none_match", ())
-        if inm and ours_etag:
-            if "*" in inm:
+        if inm:
+            # An `If-None-Match` the response cannot answer (no ETag of its own)
+            # is not a match, and per Sec. 13.2 it still supersedes the date.
+            if ours_etag and _preconditions_say_unchanged(inm, None, ours_etag, None):
                 self._downgrade_to_304()
-                return self
-            # Weak comparison per RFC 9110 Sec. 8.8.3.2.
-            for tag in inm:
-                if _etag_matches_weak(ours_etag, tag):
-                    self._downgrade_to_304()
-                    return self
-            # Explicit non-match - caller's other preconditions don't apply.
             return self
 
-        # If-Modified-Since (only consulted when If-None-Match absent).
+        # If-Modified-Since, only consulted when If-None-Match is absent.
         ours_lm = header_get(self.headers, HEADER_LAST_MODIFIED) or ""
         ims = getattr(request, "if_modified_since", None)
         if ims is not None and ours_lm:
             ours_dt = parse_date(ours_lm)
             if ours_dt is None:
                 return self
-            ours_ts = ours_dt.timestamp()
-            # HTTP-date second resolution - integer floor.
-            if int(ours_ts) <= int(ims):
+            if _preconditions_say_unchanged((), ims, ours_etag, ours_dt.timestamp()):
                 self._downgrade_to_304()
         return self
 
@@ -1170,7 +1366,12 @@ class Response:
         """
         if_match = getattr(request, "if_match", ())
         if not if_match:
-            return self
+            # RFC 9110 Sec. 13.2.2: `If-Unmodified-Since` is evaluated only when
+            # `If-Match` is absent. Skipping it left this the lost-update guard
+            # in name only for a client that sent a date rather than an ETag -
+            # `StaticFiles` has always honoured both, so the two doors disagreed
+            # about what a precondition is.
+            return self._check_unmodified_since(request)
         # `If-Match: *` is an existence precondition (RFC 9110 Sec. 13.1.1):
         # the handler producing this response means the resource exists, so it
         # is satisfied regardless of whether an ETag was attached.
@@ -1182,6 +1383,31 @@ class Response:
             if _etag_matches_strong(ours_etag, tag):
                 return self
         from veloce.exceptions import PreconditionFailed  # avoids response <-> exceptions cycle
+
+        raise PreconditionFailed
+
+    def _check_unmodified_since(self, request: Any) -> Response:
+        """Enforce `If-Unmodified-Since` (RFC 9110 Sec. 13.1.4), or return self.
+
+        Compared at HTTP-date resolution: the header carries whole seconds, so a
+        `Last-Modified` with a fractional part must be floored or every
+        comparison of a resource modified within the same second fails.
+        """
+        since = getattr(request, "if_unmodified_since", None)
+        if since is None:
+            return self
+        raw = header_get(self.headers, HEADER_LAST_MODIFIED)
+        if not raw:
+            # No modification date to compare against, so the precondition
+            # cannot be evaluated and is not a reason to refuse.
+            return self
+        parsed = parse_date(raw)
+        # `parse_date` yields a datetime; `request.if_unmodified_since` yields a
+        # Unix timestamp. Compare as whole seconds - an HTTP-date carries no
+        # finer resolution, so anything else fails within the same second.
+        if parsed is None or int(parsed.timestamp()) <= int(since):
+            return self
+        from veloce.exceptions import PreconditionFailed  # response <-> exceptions cycle
 
         raise PreconditionFailed
 
@@ -1200,12 +1426,27 @@ class Response:
         # length with zero.
         if self.status_code == HTTP_304_NOT_MODIFIED:
             return
-        representation_length = str(len(self.body))
+        # A streamed response has an empty `body`, so its length has to come from
+        # the header the producer already set - a `FileResponse` past its
+        # streaming threshold knows its size from the same `stat` that gave it the
+        # validator. A generator-backed stream knows nothing, and an unknown length
+        # is omitted rather than reported as zero: that is the same lie in a
+        # smaller place.
+        declared = header_get(self.headers, HEADER_CONTENT_LENGTH)
+        representation_length = declared if self._stream is not None else str(len(self.body))
         self.status_code = HTTP_304_NOT_MODIFIED
         self.body = b""
-        self.headers.pop("content-length", None)
-        self.headers[HEADER_CONTENT_LENGTH] = representation_length
+        # A 304 carries no content, so the stream is dropped as well as the body.
+        # Clearing only the body left the original chunks queued behind a bodiless
+        # status line, which is why the conditional-GET middleware refused to
+        # downgrade a streamed response at all rather than emit that.
+        self._stream = None
+        header_pop(self.headers, HEADER_CONTENT_LENGTH)
+        if representation_length is not None:
+            self.headers[HEADER_CONTENT_LENGTH] = representation_length
         self._encoded = None
+
+    # ── Content-Disposition and cookie removal ────────────────
 
     def set_content_disposition(
         self, disposition: str = HEADER_VALUE_ATTACHMENT, filename: str | None = None
@@ -1289,7 +1530,13 @@ class JSONResponse(Response):
         background: Any = None,
     ) -> None:
         try:
-            body = orjson.dumps(data, default=orjson_default)
+            # Through the app's provider, not a bare `orjson.dumps`: a
+            # `JSON_SORT_KEYS` or a custom `json_provider_class` reached a
+            # handler returning a dict and silently missed one returning this
+            # class, so one application emitted two dialects. Outside a request
+            # there is no app to ask and the direct encoder applies, which is
+            # what `dumps_current` already resolves.
+            body = dumps_current(data)
         except TypeError as exc:
             raise ValueError(f"JSONResponse data is not JSON-serializable: {exc}") from exc
         super().__init__(
@@ -1299,6 +1546,24 @@ class JSONResponse(Response):
             headers=headers,
             background=background,
         )
+
+    @classmethod
+    def _from_encoded(cls, body: bytes) -> JSONResponse:
+        """Wrap already-encoded JSON bytes, for a caller that resolved the dialect.
+
+        `from_bytes` is the public form and validates its argument; the dispatch
+        path has just produced these bytes itself and has already asked the app
+        which encoder to use, so it needs neither the check nor a second lookup
+        through `__init__`.
+        """
+        resp = cls.__new__(cls)
+        Response.__init__(
+            resp,
+            status_code=HTTP_200_OK,
+            body=body,
+            content_type=cls.default_media_type,
+        )
+        return resp
 
     @classmethod
     def from_bytes(
@@ -1382,7 +1647,7 @@ class UJSONResponse(Response):
             import ujson  # type: ignore[import-untyped]
         except ImportError as err:
             raise ImportError(
-                "UJSONResponse requires the `ujson` package. Install it: pip install ujson"
+                "UJSONResponse requires the `ujson` package. Install it with: pip install ujson"
             ) from err
         body = ujson.dumps(data).encode("utf-8")
         super().__init__(
@@ -1512,21 +1777,21 @@ class StreamingResponse(Response):
         for chunk in iterable:
             yield chunk.encode("utf-8") if isinstance(chunk, str) else chunk
 
-    def encode(self) -> bytes:
+    def encode(self, keep_alive: bool = True) -> bytes:
         """For streaming, encode headers with chunked transfer."""
-        default_headers = {
-            HEADER_CONTENT_TYPE: self.content_type,
-            HEADER_TRANSFER_ENCODING: HEADER_VALUE_CHUNKED,
-            HEADER_CONNECTION: HEADER_VALUE_KEEP_ALIVE,
-        }
-        parts = _encode_response_head(self.status_code, default_headers, self.headers)
-        parts.append("\r\n")
-        return "".join(parts).encode("latin-1")
+        return self._encode_streaming_head(
+            {
+                HEADER_CONTENT_TYPE: self.content_type,
+                HEADER_TRANSFER_ENCODING: HEADER_VALUE_CHUNKED,
+            },
+            keep_alive,
+        )
 
     async def stream_to(
         self,
         transport: Any,
         drain: Callable[[], Awaitable[None]] | None = None,
+        keep_alive: bool = True,
     ) -> None:
         """Stream chunks to transport.
 
@@ -1536,27 +1801,13 @@ class StreamingResponse(Response):
         write buffer without bound. `drain` is a no-op until the buffer crosses
         the high-water mark, so the fast path pays one already-set check.
         """
-        transport.write(self.encode())
-        # `transport.writelines` (where supported) keeps the size-line,
-        # payload, and trailer as separate buffers instead of concatenating
-        # them into a fresh bytes object per chunk; fall back to a single
-        # concatenated `write` for transports / test fakes that only
-        # implement the basic `WriteTransport` API.
-        writelines = getattr(transport, "writelines", None)
-        async for chunk in self._stream:
-            # A zero-length chunk would encode as `0\r\n\r\n`, which RFC 9112
-            # Sec. 7.1 reserves for the last-chunk terminator; emitting it
-            # mid-stream truncates the body and desyncs keep-alive framing.
-            if not chunk:
-                continue
-            size = format(len(chunk), "x").encode("ascii")
-            if writelines is not None:
-                writelines((size, b"\r\n", chunk, b"\r\n"))
-            else:
-                transport.write(size + b"\r\n" + chunk + b"\r\n")
-            if drain is not None:
-                await drain()
-        transport.write(b"0\r\n\r\n")
+        transport.write(self.encode(keep_alive=keep_alive))
+        # A downgrade to 304 drops the stream along with the body: a 304 carries
+        # no content (RFC 9110 Sec. 15.4.5), and this path writes chunks without
+        # consulting the status, so draining anyway would put the representation
+        # on the wire behind a bodiless status line.
+        if self._stream is not None:
+            await _write_chunked(transport, self._stream, drain)
 
 
 # Files at or below this size are read inline on the event loop by
@@ -1674,6 +1925,54 @@ class FileResponse(Response):
             headers=hdrs,
         )
 
+    async def stream_to(
+        self,
+        transport: Any,
+        drain: Callable[[], Awaitable[None]] | None = None,
+        keep_alive: bool = True,
+    ) -> None:
+        """Write the head, then the file's chunks, on the raw transport.
+
+        A file's length is known, so the body is normally length-delimited and
+        not chunk-framed - which is why this does not go through
+        `StreamingResponse.stream_to`.
+
+        That holds only while the head still carries the `Content-Length`
+        `from_path` set. A response middleware may legitimately remove it:
+        `CompressionMiddleware` does for every streamed body, because the
+        compressed length is not the length that was stat'd. `encode()` then
+        falls back to `len(self.body)`, which is `0` here, and the head went out
+        declaring `Content-Length: 0` in front of the body bytes - which a
+        keep-alive client reads as the start of the next response.
+
+        With no declared length there is nothing to delimit the body, so it is
+        chunk-framed, exactly as `StreamingResponse` frames a body whose length
+        it does not know. `drain` throttles a producer outrunning a slow client
+        in both cases.
+        """
+        if header_get(self.headers, HEADER_CONTENT_LENGTH) is None:
+            # Through `_encode_streaming_head`, as every other streaming
+            # response does: `encode()` would default a `Content-Length` from
+            # `len(self.body)` and emit `Content-Length: 0` beside the chunked
+            # framing, which is the same contradiction in a new place.
+            transport.write(
+                self._encode_streaming_head(
+                    {
+                        HEADER_CONTENT_TYPE: self.content_type,
+                        HEADER_TRANSFER_ENCODING: HEADER_VALUE_CHUNKED,
+                    },
+                    keep_alive,
+                )
+            )
+            await _write_chunked(transport, self._stream, drain)
+            return
+
+        transport.write(self.encode(keep_alive=keep_alive))
+        async for chunk in self._stream:
+            transport.write(chunk)
+            if drain is not None:
+                await drain()
+
     @classmethod
     async def from_path(
         cls,
@@ -1694,23 +1993,35 @@ class FileResponse(Response):
 
         st = _stat_regular_file(path)
 
-        if st.st_size <= _INLINE_READ_MAX:
-            # ASYNC230: a bounded inline read is deliberate here - the file is
-            # known to be <= 64 KiB, so this read is microseconds and avoids the
-            # ~100 us thread-pool hop (measured) that dominates serving a small
-            # asset. Files above the threshold take the offloaded branch below,
-            # preserving the no-blocking-large-reads guarantee.
-            with open(path, "rb") as f:  # noqa: ASYNC230
-                body = f.read()
-        else:
-            body = await loop.run_in_executor(None, _read_file_bytes, path)
-
         content_type, hdrs = _build_file_headers(
             path, st, filename, content_type, content_disposition_type, headers
         )
 
+        if st.st_size <= _INLINE_READ_MAX:
+            # ASYNC230: a bounded inline read is deliberate here - the file is
+            # known to be <= 64 KiB, so this read is microseconds and avoids the
+            # ~100 us thread-pool hop (measured) that dominates serving a small
+            # asset.
+            with open(path, "rb") as f:  # noqa: ASYNC230
+                body = f.read()
+            resp = Response.__new__(cls)
+            Response.__init__(
+                resp, status_code=HTTP_200_OK, body=body, content_type=content_type, headers=hdrs
+            )
+            return resp
+
+        # A larger file is streamed off disk rather than read whole. Reading it
+        # whole made resident memory scale with (file size x concurrent
+        # requests) - four concurrent 32 MiB downloads measured at 134 MB RSS -
+        # which needs no malice to hurt, only ordinary traffic. The length is
+        # known from the stat, so the response stays length-delimited: this
+        # streams a known-size body, it does not switch to chunked encoding.
         resp = Response.__new__(cls)
         Response.__init__(
-            resp, status_code=HTTP_200_OK, body=body, content_type=content_type, headers=hdrs
+            resp, status_code=HTTP_200_OK, body=b"", content_type=content_type, headers=hdrs
         )
+        resp.headers[HEADER_CONTENT_LENGTH] = str(st.st_size)
+        # The same size the header declares, so the two cannot disagree if the
+        # file grows between this stat and the reads below.
+        resp._stream = _stream_file(path, loop, st.st_size)
         return resp

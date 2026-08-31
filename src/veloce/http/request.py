@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
+from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
-from urllib.parse import parse_qsl
 
 import orjson
 from multidict import MultiDict
@@ -44,13 +43,17 @@ from veloce._constants import (
     MIME_MULTIPART_FORM_DATA,
 )
 from veloce._header_parsing import parse_media_type_params
-from veloce._internal import _coerce_bool, is_json_mimetype
-from veloce._protocol_constants import URL_SCHEME_HTTPS
+from veloce._internal import (
+    _close_form_uploads,
+    _coerce_bool,
+    _extract_host,
+    is_json_mimetype,
+    json_body_refused,
+)
+from veloce._protocol_constants import SECURE_URL_SCHEMES, URL_SCHEME_HTTPS
 from veloce.exceptions import BadRequest, RequestEntityTooLarge
 from veloce.http.cache_control import CacheControl
 from veloce.http.datastructures import (
-    DEFAULT_MAX_MULTIPART_PART_SIZE,
-    DEFAULT_MAX_MULTIPART_PARTS,
     URL,
     AcceptHeader,
     Address,
@@ -62,9 +65,14 @@ from veloce.http.datastructures import (
     RangeSpec,
     State,
     UploadFile,
-    parse_multipart_form,
+    _parse_qs_pairs,
 )
 from veloce.http.dates import parse_date
+from veloce.http.formparsers import (
+    DEFAULT_MAX_MULTIPART_PART_SIZE,
+    DEFAULT_MAX_MULTIPART_PARTS,
+    parse_multipart_form,
+)
 
 if TYPE_CHECKING:  # pragma: no cover
     from datetime import datetime
@@ -82,11 +90,21 @@ _UNSET: Any = object()
 # `None` instead of looking unparsed and being re-decoded on every access.
 _UNPARSED: Any = object()
 
+# Lower-case wire keys for the headers read through `_peek_header_key`, encoded
+# once here rather than on every request. The `Accept-*` family is read by
+# content negotiation on paths that otherwise never touch the header mapping,
+# so building the whole `CIMultiDict` to look at one value was the cost these
+# avoid.
+_RAW_ACCEPT = HEADER_ACCEPT.lower().encode("latin-1")
+_RAW_ACCEPT_LANGUAGE = HEADER_ACCEPT_LANGUAGE.lower().encode("latin-1")
+_RAW_ACCEPT_ENCODING = HEADER_ACCEPT_ENCODING.lower().encode("latin-1")
+_RAW_ACCEPT_CHARSET = HEADER_ACCEPT_CHARSET.lower().encode("latin-1")
+
 
 def _split_etag_list(value: str) -> tuple[str, ...]:
     """Split an `If-Match`/`If-None-Match` list on commas outside quoted strings.
 
-    RFC 9110 §8.8.3 `etagc = %x21 / %x23-7E / obs-text` permits a comma inside
+    RFC 9110 Sec. 8.8.3 `etagc = %x21 / %x23-7E / obs-text` permits a comma inside
     an opaque-tag's quoted string, so a naive `split(",")` corrupts a valid tag
     like `"abc,def"`. Track whether the scan is inside double quotes and only
     break on a comma seen at the top level. The `W/` weak prefix and the
@@ -148,6 +166,7 @@ class Request:
         "_url",
         "_background_tasks",
         "_parsed_ct",
+        "_subdomain",
         "_accept_mimetypes",
         "_accept_languages",
         "_accept_encodings",
@@ -172,7 +191,7 @@ class Request:
         body: bytes,
         transport: asyncio.Transport | None = None,
         app: Any = None,
-        scope: dict | None = None,
+        scope: dict[str, Any] | None = None,
         body_source: Any = None,
     ) -> None:
         # ASGI servers and `Veloce.add_route` already feed an uppercase
@@ -240,6 +259,7 @@ class Request:
         # `None` means "not yet parsed"; the parse happens at most once
         # per request, on first read of `mimetype` or `mimetype_params`.
         self._parsed_ct: tuple[str, dict[str, str]] | None = None
+        self._subdomain: str | None = None
         self._accept_mimetypes: AcceptHeader | None = None
         self._accept_languages: AcceptHeader | None = None
         self._accept_encodings: AcceptHeader | None = None
@@ -257,6 +277,53 @@ class Request:
         self._if_range: tuple[str, float | None] | None = None
         self._range: Any = _UNSET
         self._auth: Any = _UNSET
+
+    @classmethod
+    def derive_for_mount(
+        cls,
+        parent: Request,
+        sub_path: str,
+        body: bytes,
+        sub_app: Any,
+        prefix: str,
+        body_source: Any = None,
+    ) -> Request:
+        """Build the request a mounted sub-app is dispatched with.
+
+        The sub-app answers the same connection, so everything the connection
+        determined - the scheme, the client address, the server, any ASGI
+        extensions - is carried forward rather than re-declared. Synthesising a
+        scope holding only `root_path` is what left `request.is_secure` reading
+        `False` over TLS and `request.client_host` reading `None` inside a mount,
+        and would have dropped every scope-derived property added later too.
+
+        Only what the mount itself changes is overridden: the path the sub-app
+        sees, the `root_path` that makes its `url_for` build prefix-correct URLs,
+        and the now-stale absolute `raw_path`. This mirrors what `_asgi_app`
+        already does for a mounted raw ASGI app.
+
+        `body_source` hands the live body over instead of bytes, for a sub-app
+        route that streams: only the sub-app knows whether its route does, so
+        the transport cannot decide before dispatch reaches here.
+
+        `_length_enforced` deliberately stays `False`: the sub-app is checked
+        against its own `MAX_CONTENT_LENGTH`, not its parent's.
+        """
+        scope = dict(parent.scope)
+        scope["path"] = sub_path
+        scope["root_path"] = parent.root_path + prefix
+        scope.pop("raw_path", None)
+        return cls(
+            method=parent.method,
+            path=sub_path,
+            query_string=parent.query_string,
+            headers=parent.headers,
+            body=body,
+            transport=parent.transport,
+            app=sub_app,
+            scope=scope,
+            body_source=body_source,
+        )
 
     # ── Method, path and query ────────────────────────────
     @property
@@ -312,6 +379,45 @@ class Request:
     def headers(self, value: Headers | dict[str, str] | list[tuple[str, str]]) -> None:
         self._headers = value if isinstance(value, Headers) else Headers(value)
         self._headers_raw = None
+
+    def _peek_header(self, name: str) -> str | None:
+        """Read one header without building the whole mapping.
+
+        Materialising `headers` decodes every name and value and builds a
+        `CIMultiDict` - measured at ~2.7 us for an eight-header request, of
+        which ~1.8 us is the latin-1 decoding. A route reading a single header
+        paid all of it to look at one value.
+
+        Prefer `_peek_header_key` where the name is fixed at registration:
+        lowercasing and encoding it here costs ~200 ns that a caller holding
+        the bytes key already avoids.
+        """
+        return self._peek_header_key(name.lower().encode("latin-1"))
+
+    def _peek_header_key(self, key: bytes) -> str | None:
+        """`_peek_header` for a caller that already holds the lowercase key.
+
+        Matches the case-insensitive semantics of the `Headers` mapping, so the
+        two never disagree about which value a repeated name resolves to, and
+        answers without decoding the rest of the block. An absent header costs
+        one scan and no mapping build, which is the shape every optional
+        `Header()` and every unauthenticated request takes.
+        """
+        h = self._headers
+        if h is not None:
+            return h.get(key.decode("latin-1"))
+        for name, value in self._headers_raw or ():
+            # `.lower()` costs nothing until the exact comparison fails, and
+            # both transports deliver lowercase - ASGI mandates it, the native
+            # protocol lowercases in `on_header` - so it usually never runs.
+            # It has to be here rather than in a fallback, though: a block
+            # carrying BOTH `Authorization` and `authorization` would otherwise
+            # match the lowercase one while the mapping matches the first,
+            # authenticating one credential while every reader of `.headers`
+            # sees the other. Same shape `content_length` uses for its own name.
+            if name == key or name.lower() == key:
+                return value.decode("latin-1")
+        return None
 
     @property
     def user_agent(self) -> str:
@@ -394,8 +500,12 @@ class Request:
         ct = self.content_type
         if not ct:
             return ("", {})
-        mt, _, rest = ct.partition(";")
+        mt, semi, rest = ct.partition(";")
         mimetype = mt.strip().lower()
+        if not semi:
+            # No parameters to walk: `partition` already said so, and most
+            # content types carry none.
+            return (mimetype, {})
         return (mimetype, dict(parse_media_type_params(rest)))
 
     @property
@@ -473,8 +583,8 @@ class Request:
     def charset(self) -> str:
         """Request body charset, decoded from `Content-Type`.
 
-        Defaults to `utf-8` when no charset is declared (the modern
-        default; the also moved off ISO-8859-1).
+        Defaults to `utf-8` when no charset is declared, which is what the
+        HTTP specifications settled on after moving off ISO-8859-1.
         """
         return self.mimetype_params.get("charset", "utf-8")
 
@@ -495,8 +605,10 @@ class Request:
 
     @property
     def is_form(self) -> bool:
-        """`True` when the body is `application/x-www-form-urlencoded`
-        or `multipart/form-data`."""
+        """`True` when the body is form-encoded or multipart.
+
+        That is, `application/x-www-form-urlencoded` or `multipart/form-data`.
+        """
         m = self.mimetype
         return m == MIME_FORM_URLENCODED or m.startswith("multipart/")
 
@@ -504,14 +616,14 @@ class Request:
     @property
     def accept(self) -> str:
         """Return the raw Accept header value."""
-        return self.headers.get(HEADER_ACCEPT, "")
+        return self._peek_header_key(_RAW_ACCEPT) or ""
 
     @property
     def accept_mimetypes(self) -> AcceptHeader:
         """Parsed `Accept` header with MIME wildcard matching."""
         if self._accept_mimetypes is None:
             self._accept_mimetypes = AcceptHeader.parse(
-                self.headers.get(HEADER_ACCEPT, ""), mime=True
+                self._peek_header_key(_RAW_ACCEPT) or "", mime=True
             )
         return self._accept_mimetypes
 
@@ -520,7 +632,7 @@ class Request:
         """Parsed `Accept-Language` header. q-value ordered."""
         if self._accept_languages is None:
             self._accept_languages = AcceptHeader.parse(
-                self.headers.get(HEADER_ACCEPT_LANGUAGE, "")
+                self._peek_header_key(_RAW_ACCEPT_LANGUAGE) or ""
             )
         return self._accept_languages
 
@@ -529,7 +641,7 @@ class Request:
         """Parsed `Accept-Encoding` header (e.g. gzip, br)."""
         if self._accept_encodings is None:
             self._accept_encodings = AcceptHeader.parse(
-                self.headers.get(HEADER_ACCEPT_ENCODING, "")
+                self._peek_header_key(_RAW_ACCEPT_ENCODING) or ""
             )
         return self._accept_encodings
 
@@ -537,7 +649,9 @@ class Request:
     def accept_charsets(self) -> AcceptHeader:
         """Parsed `Accept-Charset` header."""
         if self._accept_charsets is None:
-            self._accept_charsets = AcceptHeader.parse(self.headers.get(HEADER_ACCEPT_CHARSET, ""))
+            self._accept_charsets = AcceptHeader.parse(
+                self._peek_header_key(_RAW_ACCEPT_CHARSET) or ""
+            )
         return self._accept_charsets
 
     # ── Authorization ─────────────────────────────────────
@@ -703,8 +817,10 @@ class Request:
 
     @property
     def range(self) -> RangeSpec | None:
-        """Parse `Range:` header per RFC 9110 Sec. 14.2. Returns `None` when
-        absent or unparseable."""
+        """Parse the `Range:` header per RFC 9110 Sec. 14.2.
+
+        `None` when the header is absent or unparseable.
+        """
         cached = self._range
         if cached is _UNSET:
             cached = RangeSpec.parse(self.headers.get(HEADER_RANGE, ""))
@@ -713,7 +829,7 @@ class Request:
 
     # ── Caching directives ────────────────────────────────
     @property
-    def cache_control(self) -> Any:
+    def cache_control(self) -> CacheControl:
         """Parsed `Cache-Control` header.
 
         Returns a `CacheControl` view: `req.cache_control.no_cache`
@@ -747,11 +863,10 @@ class Request:
 
     # ── URL and routing ───────────────────────────────────
     @property
-    def url(self) -> Any:
+    def url(self) -> URL:
         """Full URL object - lazy construction."""
         if self._url is None:
-            scope = getattr(self, "scope", None)
-            scope_scheme = scope.get("scheme") if isinstance(scope, dict) else None
+            scope_scheme = self.scope.get("scheme")
             # The raw transport carries no ASGI scope, so nothing else can
             # tell this request it arrived over TLS: `app.run(ssl_context=)`
             # and the gunicorn worker both terminate TLS on the connection
@@ -789,14 +904,18 @@ class Request:
 
     @property
     def full_path(self) -> str:
-        """Path + `?` + query string. Always contains a `?` even when the
-        query string is empty."""
+        """Path + `?` + query string.
+
+        Always contains a `?`, even when the query string is empty.
+        """
         return f"{self.path}?{self.query_string}"
 
     @property
     def url_root(self) -> str:
-        """Root URL of the request: `scheme://host/` (with trailing slash,
-        no path or query string)."""
+        """Root URL of the request: `scheme://host/`.
+
+        Carries the trailing slash, and no path or query string.
+        """
         url = self.url
         return f"{url.scheme}://{url.netloc}/"
 
@@ -807,8 +926,8 @@ class Request:
 
     @property
     def is_secure(self) -> bool:
-        """Return True if the request uses HTTPS."""
-        return self.url.scheme == URL_SCHEME_HTTPS
+        """Return True if the connection is encrypted (`https` or `wss`)."""
+        return self.url.scheme in SECURE_URL_SCHEMES
 
     @property
     def scheme(self) -> str:
@@ -832,16 +951,26 @@ class Request:
 
     @property
     def root_path(self) -> str:
-        """ASGI `scope["root_path"]` - the URL prefix the app is mounted under.
+        """The URL prefix the app is mounted under.
 
-        Comes from the ASGI server (e.g. uvicorn `--root-path /api`) or
-        from `app.mount("/sub", inner_app)`. Used so an app behind a
-        prefix can generate correct external URLs without knowing the
-        prefix at code-time.
+        Comes from the ASGI server (e.g. uvicorn `--root-path /api`) or from
+        `app.mount("/sub", inner_app)`, and falls back to `Veloce(root_path=...)`
+        when neither supplies one. That constructor argument is documented as a
+        way to set the prefix and was read by nothing, so an app configured that
+        way built unprefixed external URLs and unprefixed slash redirects.
+
+        The server wins when it sets one: it knows where the app was actually
+        mounted, and the constructor argument is a declaration made before that
+        is known. The built-in server sets none, which is why the fallback
+        matters there.
 
         Returns the empty string when the app is at root.
         """
-        return self.scope.get("root_path", "") if isinstance(self.scope, dict) else ""
+        scope_root = self.scope.get("root_path", "")
+        if scope_root:
+            return scope_root
+        app = self.app
+        return app.root_path if app is not None else ""
 
     @property
     def script_root(self) -> str:
@@ -861,30 +990,55 @@ class Request:
     def subdomain(self) -> str:
         """Leftmost host label minus `app.config["SERVER_NAME"]`.
 
-        Returns the empty string when the request host equals
-        `SERVER_NAME` exactly (apex), or when `SERVER_NAME` isn't
-        configured and the host has no dots. With `SERVER_NAME` set,
-        the returned value is the prefix that wouldn't match the
-        configured apex; without it, the leftmost label.
+        Returns the empty string when the request host equals `SERVER_NAME`
+        exactly (apex), when `SERVER_NAME` is not configured and the host has no
+        dots, or when the host is an IP literal.
+
+        Cached: a subdomain-routed request asks twice - once by the router to
+        decide the match, once by the handler to read the value - and it is
+        derived from request data that cannot change. The router asks through
+        this property rather than deriving its own answer, because the two used
+        to disagree.
         """
-        host = (self.host or "").split(":", 1)[0].lower()
+        cached = self._subdomain
+        if cached is not None:
+            return cached
+        # Derived inline rather than in a helper: this is on the match path for
+        # every subdomain-routed request, and the extra frame was measurable.
+        #
+        # `_extract_host` is the framework's one host-from-Host-header reader,
+        # and the only one that handles an IPv6 literal: splitting on the first
+        # colon takes `2001` out of `2001:db8::1`, so a bare IPv6 host produced
+        # a nonsense subdomain.
+        host = _extract_host(self.host or "")
         if not host:
+            self._subdomain = ""
             return ""
-        app = getattr(self, "app", None)
-        cfg = getattr(app, "config", None) if app is not None else None
-        server_name = (cfg.get("SERVER_NAME") if cfg else "") or ""
-        server_name = server_name.lower()
+        # An IP literal has no subdomain: its dots and colons are address
+        # structure, not name labels. Splitting on them produced `192` for an
+        # IPv4 host and `::ffff:192` for an IPv4-mapped IPv6 one.
+        # The all-digits test allocates, so it runs only behind a one-character
+        # pre-check: a hostname may legally begin with a digit, but almost none
+        # does, and an IPv4 literal always does.
+        if ":" in host or (host[0].isdigit() and host.replace(".", "").isdigit()):
+            self._subdomain = ""
+            return ""
+        app = self.app
+        cfg = app.config if app is not None else None
+        server_name = ((cfg.get("SERVER_NAME") if cfg else "") or "").lower()
         if server_name:
-            if host == server_name:
-                return ""
             if host.endswith("." + server_name):
-                return host[: -(len(server_name) + 1)]
+                self._subdomain = value = host[: -(len(server_name) + 1)]
+                return value
+            self._subdomain = ""
             return ""
-        # No SERVER_NAME - return the leftmost label only when the host
-        # has more than one label (otherwise it's the apex).
+        # No SERVER_NAME - the leftmost label, but only when the host has more
+        # than one (otherwise it is the apex).
         if "." not in host:
+            self._subdomain = ""
             return ""
-        return host.split(".", 1)[0]
+        self._subdomain = value = host.split(".", 1)[0]
+        return value
 
     @property
     def environ(self) -> dict[str, Any]:
@@ -894,7 +1048,7 @@ class Request:
         scope is the analogue. Returns the live dict so middleware can
         introspect (mutation goes through framework APIs, not this).
         """
-        return self.scope if isinstance(self.scope, dict) else {}
+        return self.scope
 
     # ── Matched route and reverse URLs ─────────────────────
 
@@ -1070,10 +1224,10 @@ class Request:
         """Access to the session dict.
 
         `SessionMiddleware` writes the parsed session into `_state["session"]`
-        during `process_request`. This property surfaces it under the
-        a convenience accessor. Raises `RuntimeError` when the middleware hasn't
-        run - keeps "I forgot to add SessionMiddleware" from showing up
-        as a confusing silent empty-dict.
+        during `process_request`; this property is the accessor for it. Raises
+        `RuntimeError` when the middleware has not run - which keeps "I forgot
+        to add SessionMiddleware" from showing up as a confusing silent
+        empty-dict.
         """
         if "session" not in self._state:
             raise RuntimeError(
@@ -1179,7 +1333,7 @@ class Request:
         return parsed
 
     def on_json_loading_failed(self, error: Exception) -> Any:
-        """Hook invoked when JSON parsing fails on a non-silent body.
+        """Handle a failure to parse the body as JSON on a non-silent request.
 
         Raises `BadRequest` (400) with a stable, body-independent message so a
         malformed body cannot leak decoder internals (byte offsets derived from
@@ -1256,10 +1410,18 @@ class Request:
         with the cached parse. The async signature exists so the
         `await request.json()` idiom does not blow up at runtime.
 
-        The synchronous `request.get_json()` accessor is available for
-        callers that prefer a sync API.
+        A body whose `Content-Type` declares it is not JSON reads as `None`
+        rather than being parsed, which is what stops a cross-origin
+        `text/plain` send from driving a JSON endpoint. An absent header
+        declares nothing and is still parsed.
+
+        The synchronous `request.get_json()` accessor is available for callers
+        that prefer a sync API. It is stricter by default: it requires a
+        positive JSON declaration and takes `force=True` to parse regardless.
         """
         if self._json is _UNPARSED:
+            if json_body_refused(self.mimetype):
+                return None
             body = await self._drain_body()
             if not body:
                 self._json = None
@@ -1298,7 +1460,7 @@ class Request:
         except (LookupError, UnicodeDecodeError):
             return body.decode("latin-1")
 
-    async def form(self) -> Any:
+    async def form(self) -> FormData:
         """Parse form data including file uploads."""
         if self._form is None:
             mt = self.mimetype
@@ -1321,11 +1483,7 @@ class Request:
                 except UnicodeDecodeError as exc:
                     raise BadRequest("form body is not valid UTF-8") from exc
                 try:
-                    items = parse_qsl(
-                        decoded,
-                        keep_blank_values=True,
-                        max_num_fields=max_fields,
-                    )
+                    items = _parse_qs_pairs(decoded, max_fields)
                 except ValueError as exc:
                     raise RequestEntityTooLarge(
                         f"form exceeds the {max_fields}-field limit"
@@ -1334,7 +1492,7 @@ class Request:
             elif mt == MIME_MULTIPART_FORM_DATA:
                 # Per-app multipart caps come from config when an app is
                 # bound; otherwise the module defaults apply.
-                max_parts = DEFAULT_MAX_MULTIPART_PARTS
+                max_parts: int | None = DEFAULT_MAX_MULTIPART_PARTS
                 max_part_size = DEFAULT_MAX_MULTIPART_PART_SIZE
                 mp_max_files: int | None = None
                 mp_max_fields: int | None = None
@@ -1343,9 +1501,11 @@ class Request:
                 mp_max_field_memory: int | None = None
                 cfg = self._config()
                 if cfg is not None:
-                    cfg_parts = cfg.get("MAX_FORM_PARTS", max_parts)
-                    if cfg_parts is not None:
-                        max_parts = cfg_parts
+                    # `None` disables the cap, the same as it does for the
+                    # urlencoded branch above. Reading it as "keep the default"
+                    # meant one config value lifted the limit for one encoding
+                    # and silently kept it for the other.
+                    max_parts = cfg.get("MAX_FORM_PARTS", max_parts)
                     cfg_part_size = cfg.get("MAX_FORM_PART_SIZE", max_part_size)
                     if cfg_part_size is not None:
                         max_part_size = cfg_part_size
@@ -1370,7 +1530,7 @@ class Request:
                 self._form = FormData()
         return self._form
 
-    async def files(self) -> Any:
+    async def files(self) -> FormData:
         """View of uploaded files only - a `FormData` subset.
 
         Parses the form (via `form()`) and returns a `FormData`
@@ -1398,8 +1558,8 @@ class Request:
         self._files = files
         return self._files
 
-    async def values(self) -> Any:
-        """Merged query string + form body - `request.values` shape.
+    async def values(self) -> MultiDict:
+        """Merge the query string and form body - the `request.values` shape.
 
         Returns a fresh `MultiDict` with query-string entries first,
         then form-body entries appended. Both source `MultiDict`s
@@ -1431,14 +1591,7 @@ class Request:
         exhaustion. Called once the request is finished with, which is after
         any background task has run.
         """
-        form = self._form
-        if form is None:
-            return
-        for value in form.values():
-            close = getattr(value, "file", None)
-            if close is not None and not getattr(close, "closed", True):
-                with contextlib.suppress(Exception):
-                    close.close()
+        _close_form_uploads(self._form)
 
     async def is_disconnected(self) -> bool:
         """Whether the client has disconnected.
@@ -1450,27 +1603,31 @@ class Request:
         flag the body source records rather than probing the transport.
         """
         source = self._body_source
-        return bool(source is not None and getattr(source, "_disconnected", False))
+        return source is not None and source.disconnected
 
-    async def stream(self) -> Any:
+    async def stream(self) -> AsyncIterator[bytes]:
         """Async-iterate the request body in chunks - ASGI shape.
 
         Streamed requests (raw HTTP/1.1) yield each chunk as the socket
         delivers it, so `async for chunk in request.stream(): ...` processes
         a large body incrementally without ever buffering it whole. For
-        in-memory requests (TestClient / ASGI), or once a streamed body has
-        already been drained and cached, the buffered bytes are sliced into
-        64 KiB chunks instead.
+        in-memory requests (TestClient / ASGI) the buffered bytes are sliced
+        into 64 KiB chunks instead.
+
+        A streamed body is consume-once: nothing is retained as it passes, so a
+        later `request.body()` on a `stream=True` route sees an empty body
+        rather than a copy the route asked not to keep.
         """
         if self._body_source is not None and not self._body_drained:
-            # Pull live from the source so a streaming handler observes
-            # chunks at the cadence the protocol feeds them. Cache as we go
-            # so a later `.body()` / `.data` still sees the full payload.
-            parts: list[bytes] = []
+            # Pull live from the source so a streaming handler observes chunks at
+            # the cadence the protocol feeds them, and hold nothing. Accumulating
+            # them to back a later `.body()` gave every `stream=True` route the
+            # memory profile of a buffered one - 33.6 MB retained for a 32 MiB
+            # upload the handler had already consumed - which is the property the
+            # route opted in to avoid. A body source is consume-once, as an ASGI
+            # receive channel is, so the bytes are gone once yielded.
             async for chunk in self._body_source:
-                parts.append(chunk)
                 yield chunk
-            self._body = b"".join(parts)
             self._body_drained = True
             return
         body = await self._drain_body()

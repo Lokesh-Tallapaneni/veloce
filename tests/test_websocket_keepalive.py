@@ -9,32 +9,26 @@ behavior; and a smaller per-call `timeout` still wins over the idle window.
 from __future__ import annotations
 
 import asyncio
-import struct
 
 import pytest
 
+from tests._native_ws import deliver, mark_accepted
+from tests._ws_frames import client_frame as _client_frame
+from veloce import Veloce
 from veloce.exceptions import WebSocketDisconnect
 from veloce.status import WS_1001_GOING_AWAY
+from veloce.testclient import TestClient
 from veloce.websocket import WebSocket
 
 
-def _client_frame(opcode: int, payload: bytes, fin: bool = True) -> bytes:
-    """Build one masked client→server WebSocket frame (RFC 6455 §5)."""
-    mask = b"\x12\x34\x56\x78"
-    masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
-    b0 = (0x80 if fin else 0x00) | opcode
-    n = len(payload)
-    if n < 126:
-        header = bytes([b0, 0x80 | n])
-    elif n < 65536:
-        header = bytes([b0, 0x80 | 126]) + struct.pack("!H", n)
-    else:
-        header = bytes([b0, 0x80 | 127]) + struct.pack("!Q", n)
-    return header + mask + masked
-
-
 class _FakeTransport:
-    """Minimal asyncio.Transport stand-in for raw-mode WebSocket tests."""
+    """Minimal asyncio.Transport stand-in for raw-mode WebSocket tests.
+
+    Not `tests/_protocol.py`'s shared transport: this `writelines` records each
+    chunk separately, and the assertions here count writes to tell a heartbeat
+    frame from the close frame that follows it. The shared class inherits
+    `asyncio.Transport.writelines`, which joins them into one.
+    """
 
     def __init__(self) -> None:
         self.writes: list[bytes] = []
@@ -65,7 +59,7 @@ def _asgi_ws(
         send,
         idle_timeout=idle_timeout,
     )
-    ws._accepted = True
+    mark_accepted(ws)
     return ws
 
 
@@ -107,7 +101,6 @@ def test_set_idle_timeout_validates_and_updates():
 # ── Timeout fires on a silent peer (ASGI mode) ───────────────────────
 
 
-@pytest.mark.asyncio
 async def test_idle_timeout_closes_1001_and_raises_disconnect():
     async def never() -> dict:
         # A silent peer: never delivers a frame.
@@ -128,7 +121,6 @@ async def test_idle_timeout_closes_1001_and_raises_disconnect():
     assert ws._closed is True
 
 
-@pytest.mark.asyncio
 async def test_idle_timeout_applies_to_receive_bytes():
     async def never() -> dict:
         await asyncio.sleep(3600)
@@ -143,7 +135,6 @@ async def test_idle_timeout_applies_to_receive_bytes():
     assert sent[-1]["code"] == WS_1001_GOING_AWAY
 
 
-@pytest.mark.asyncio
 async def test_idle_timeout_applies_to_raw_receive():
     async def never() -> dict:
         await asyncio.sleep(3600)
@@ -158,7 +149,6 @@ async def test_idle_timeout_applies_to_raw_receive():
     assert sent[-1]["code"] == WS_1001_GOING_AWAY
 
 
-@pytest.mark.asyncio
 async def test_iter_text_loop_unwinds_cleanly_on_idle_timeout():
     async def never() -> dict:
         await asyncio.sleep(3600)
@@ -178,7 +168,6 @@ async def test_iter_text_loop_unwinds_cleanly_on_idle_timeout():
 # ── Activity resets the window ───────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_activity_resets_idle_window():
     # Three frames arrive each well within the idle window; the timeout
     # must not fire while the peer keeps sending.
@@ -204,7 +193,6 @@ async def test_activity_resets_idle_window():
 # ── idle_timeout=None preserves current behavior ─────────────────────
 
 
-@pytest.mark.asyncio
 async def test_none_idle_timeout_does_not_close_on_slow_peer():
     async def receive() -> dict:
         await asyncio.sleep(0.03)
@@ -219,7 +207,6 @@ async def test_none_idle_timeout_does_not_close_on_slow_peer():
     assert sent == []
 
 
-@pytest.mark.asyncio
 async def test_none_idle_timeout_explicit_timeout_still_raises_timeouterror():
     async def never() -> dict:
         await asyncio.sleep(3600)
@@ -239,7 +226,6 @@ async def test_none_idle_timeout_explicit_timeout_still_raises_timeouterror():
 # ── Interaction between idle_timeout and an explicit per-call timeout ─
 
 
-@pytest.mark.asyncio
 async def test_smaller_per_call_timeout_wins_over_idle_timeout():
     async def never() -> dict:
         await asyncio.sleep(3600)
@@ -257,7 +243,6 @@ async def test_smaller_per_call_timeout_wins_over_idle_timeout():
     assert ws._closed is False
 
 
-@pytest.mark.asyncio
 async def test_idle_timeout_wins_when_smaller_than_per_call_timeout():
     async def never() -> dict:
         await asyncio.sleep(3600)
@@ -276,11 +261,9 @@ async def test_idle_timeout_wins_when_smaller_than_per_call_timeout():
 # ── Raw-transport mode (queue-backed) ────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_raw_mode_idle_timeout_closes_1001():
     transport = _FakeTransport()
-    ws = WebSocket(transport, {"sec-websocket-key": "k"}, idle_timeout=0.02)
-    ws._accepted = True
+    ws = mark_accepted(WebSocket(transport, {"sec-websocket-key": "k"}, idle_timeout=0.02))
 
     # Nothing is ever put on the receive queue: a silent peer.
     with pytest.raises(WebSocketDisconnect):
@@ -298,27 +281,23 @@ async def test_raw_mode_idle_timeout_closes_1001():
     assert transport.closed is True
 
 
-@pytest.mark.asyncio
 async def test_raw_mode_activity_delivers_before_idle_close():
     transport = _FakeTransport()
-    ws = WebSocket(transport, {"sec-websocket-key": "k"}, idle_timeout=0.2)
-    ws._accepted = True
+    ws = mark_accepted(WebSocket(transport, {"sec-websocket-key": "k"}, idle_timeout=0.2))
 
     # Feed a message onto the queue well within the window.
-    ws._receive_queue.put_nowait(b"hello")
+    deliver(ws, b"hello")
     assert await ws.receive_text() == "hello"
     assert transport.closed is False
 
 
-@pytest.mark.asyncio
 async def test_raw_mode_idle_window_is_per_completed_message():
     """In raw-transport mode the idle window bounds each COMPLETE message: a
     fragmented message that fully assembles within the window is delivered.
     Raw transport is not the production path (ASGI delivers complete messages
     and owns ping/pong), so the window is measured per message, not per frame."""
     transport = _FakeTransport()
-    ws = WebSocket(transport, {"sec-websocket-key": "k"}, idle_timeout=0.2)
-    ws._accepted = True
+    ws = mark_accepted(WebSocket(transport, {"sec-websocket-key": "k"}, idle_timeout=0.2))
 
     async def feed() -> None:
         # Both fragments assemble well within the 0.2s idle window.
@@ -335,13 +314,11 @@ async def test_raw_mode_idle_window_is_per_completed_message():
     assert transport.closed is False
 
 
-@pytest.mark.asyncio
 async def test_raw_mode_silent_after_frame_still_idle_closes():
     """Once frames stop arriving the idle window must still fire: a single
     frame followed by silence past the window trips a clean 1001 close."""
     transport = _FakeTransport()
-    ws = WebSocket(transport, {"sec-websocket-key": "k"}, idle_timeout=0.04)
-    ws._accepted = True
+    ws = mark_accepted(WebSocket(transport, {"sec-websocket-key": "k"}, idle_timeout=0.04))
 
     async def feed() -> None:
         await asyncio.sleep(0.02)
@@ -354,3 +331,59 @@ async def test_raw_mode_silent_after_frame_still_idle_closes():
     finally:
         await feeder
     assert transport.closed is True
+
+
+# ── The configured window reaches both transports ────────────────────
+#
+# `WEBSOCKET_IDLE_TIMEOUT` was read only where the native transport builds its
+# socket, so the one config-driven way to reap a silent peer was inert under an
+# ASGI server - the transport most apps deploy. It is applied at
+# `Veloce._run_websocket` instead, the single funnel both transports dispatch
+# through, so a transport added later inherits it.
+
+
+def _observed_timeout(**config) -> float | None:
+    """The idle timeout the socket actually carries once dispatch has begun."""
+
+    seen: dict[str, float | None] = {}
+    app = Veloce(openapi_url=None)
+    app.config.update(config)
+
+    @app.websocket("/ws")
+    async def handler(ws):
+        await ws.accept()
+        seen["timeout"] = ws._idle_timeout
+        await ws.close()
+
+    with TestClient(app).websocket_connect("/ws"):
+        pass
+    return seen.get("timeout")
+
+
+def test_the_configured_window_reaches_an_asgi_socket():
+    """The defect: only the native transport read this key."""
+    assert _observed_timeout(WEBSOCKET_IDLE_TIMEOUT=12.5) == 12.5
+
+
+def test_no_configured_window_leaves_the_socket_unbounded():
+    assert _observed_timeout() is None
+    assert _observed_timeout(WEBSOCKET_IDLE_TIMEOUT=None) is None
+
+
+def test_a_handler_can_still_override_the_configured_window():
+    """`set_idle_timeout` is documented as the handler's own control."""
+
+    seen: dict[str, float | None] = {}
+    app = Veloce(openapi_url=None)
+    app.config["WEBSOCKET_IDLE_TIMEOUT"] = 30.0
+
+    @app.websocket("/ws")
+    async def handler(ws):
+        await ws.accept()
+        ws.set_idle_timeout(1.0)
+        seen["timeout"] = ws._idle_timeout
+        await ws.close()
+
+    with TestClient(app).websocket_connect("/ws"):
+        pass
+    assert seen["timeout"] == 1.0

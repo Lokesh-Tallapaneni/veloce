@@ -21,6 +21,8 @@ import itertools
 import secrets
 from typing import Any
 
+from veloce.contrib.mcp._helpers import META_CLIENT_CAPABILITIES, META_CLIENT_INFO
+
 # Monotonic source of per-session connection ids. A connection id is a stable
 # identity for the session's lifetime and is never reused, unlike `id(session)`
 # (a memory address CPython recycles once the session is freed). Task ownership
@@ -37,12 +39,6 @@ _connection_id_counter = itertools.count(1)
 # clients. Prefixing with a per-process token makes the public identity unique
 # without putting a string on the per-session path.
 _PROCESS_TOKEN = secrets.token_hex(4)
-
-
-# The `_meta` keys a modern request carries its client identity in. Duplicated as
-# module constants rather than imported from `server`, which imports this module.
-_META_CLIENT_INFO = "io.modelcontextprotocol/clientInfo"
-_META_CLIENT_CAPABILITIES = "io.modelcontextprotocol/clientCapabilities"
 
 
 class MCPSession:
@@ -99,12 +95,10 @@ class MCPSession:
         # connection that never does pays one falsy check per listing.
         self.hidden: set[str] = set()
         # Minimum level for `notifications/message`, set by `logging/setLevel`.
-        # The spec scopes this to the connection, and holding it here is what
-        # makes it survive between messages: it previously lived only in a
-        # ContextVar the handler set and never reset, so it persisted by leaking
-        # into whatever context happened to call it - which worked on the serial
-        # stdio loop and silently did nothing over HTTP, where each request runs
-        # in its own context. `None` means the client has not chosen one.
+        # The spec scopes it to the connection, so it lives on the connection:
+        # a ContextVar would be scoped to whichever context happened to set it,
+        # which is the serial stdio loop's context on one transport and a single
+        # request's on the other. `None` means the client has not chosen one.
         self.log_level: str | None = None
 
     @property
@@ -138,10 +132,10 @@ class MCPSession:
         """
         if not isinstance(meta, dict):
             return
-        client_info = meta.get(_META_CLIENT_INFO)
+        client_info = meta.get(META_CLIENT_INFO)
         if isinstance(client_info, dict):
             self.client_info = client_info
-        capabilities = meta.get(_META_CLIENT_CAPABILITIES)
+        capabilities = meta.get(META_CLIENT_CAPABILITIES)
         if isinstance(capabilities, dict):
             self.client_capabilities = capabilities
 

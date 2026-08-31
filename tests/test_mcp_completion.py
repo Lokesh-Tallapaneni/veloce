@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import pytest
 
+from tests._mcp import INVALID_PARAMS, call, greeting_server
 from veloce import Veloce
 from veloce.contrib.mcp import CompletionResult, CompletionsCapability
+from veloce.contrib.mcp.completion import _MAX_CONTEXT_ARGS
 from veloce.contrib.mcp.server import MCPServer
 
 
@@ -24,33 +26,21 @@ async def _complete(server: MCPServer, ref: dict, name: str, value: str, **extra
 # -- Advertisement ----------------------------------------------------
 
 
-def test_completions_not_advertised_without_a_completer():
+async def test_completions_not_advertised_without_a_completer():
     """A server with no registered completer advertises no completions capability."""
-    app = Veloce()
-
-    @app.mcp_prompt(description="A greeting")
-    async def greet(name: str) -> str:
-        return f"Hi {name}"
-
-    server = _server(app)
-    assert "completions" not in server._initialize({})["capabilities"]
+    server = greeting_server()
+    assert "completions" not in (await call(server, "initialize", {}))["capabilities"]
     assert "completion/complete" in server._methods
 
 
-def test_completions_advertised_when_a_completer_exists():
+async def test_completions_advertised_when_a_completer_exists():
     """Registering a completer surfaces the completions capability."""
-    app = Veloce()
 
-    @app.mcp_prompt(description="A greeting")
-    async def greet(name: str) -> str:
-        return f"Hi {name}"
-
-    @app.mcp_completer(prompt="greet", argument="name")
     async def complete_name(value, context):
         return ["ada", "alan"]
 
-    server = _server(app)
-    assert server._initialize({})["capabilities"]["completions"] == {}
+    server = greeting_server(complete_name)
+    assert (await call(server, "initialize", {}))["capabilities"]["completions"] == {}
 
 
 # -- completion/complete on a prompt ----------------------------------
@@ -58,34 +48,22 @@ def test_completions_advertised_when_a_completer_exists():
 
 async def test_prompt_completion_returns_candidate_values():
     """A prompt-argument completer answers completion/complete with its candidates."""
-    app = Veloce()
 
-    @app.mcp_prompt(description="A greeting")
-    async def greet(name: str) -> str:
-        return f"Hi {name}"
-
-    @app.mcp_completer(prompt="greet", argument="name")
     async def complete_name(value, context):
         return [n for n in ("ada", "alan", "grace") if n.startswith(value)]
 
-    server = _server(app)
+    server = greeting_server(complete_name)
     result = await _complete(server, {"type": "ref/prompt", "name": "greet"}, "name", "a")
     assert result == {"completion": {"values": ["ada", "alan"], "total": 2, "hasMore": False}}
 
 
 async def test_sync_completer_is_supported():
     """A sync completer is offloaded and its values returned."""
-    app = Veloce()
 
-    @app.mcp_prompt(description="A greeting")
-    async def greet(name: str) -> str:
-        return f"Hi {name}"
-
-    @app.mcp_completer(prompt="greet", argument="name")
     def complete_name(value, context):
         return ["bob"]
 
-    server = _server(app)
+    server = greeting_server(complete_name)
     result = await _complete(server, {"type": "ref/prompt", "name": "greet"}, "name", "")
     assert result["completion"]["values"] == ["bob"]
 
@@ -119,34 +97,22 @@ async def test_completer_receives_sibling_context_arguments():
 
 async def test_completion_result_carries_explicit_totals():
     """A CompletionResult declares total / hasMore explicitly."""
-    app = Veloce()
 
-    @app.mcp_prompt(description="A greeting")
-    async def greet(name: str) -> str:
-        return f"Hi {name}"
-
-    @app.mcp_completer(prompt="greet", argument="name")
     async def complete_name(value, context):
         return CompletionResult(["x", "y"], total=99, has_more=True)
 
-    server = _server(app)
+    server = greeting_server(complete_name)
     result = await _complete(server, {"type": "ref/prompt", "name": "greet"}, "name", "")
     assert result == {"completion": {"values": ["x", "y"], "total": 99, "hasMore": True}}
 
 
 async def test_over_cap_values_are_truncated_and_flagged():
     """More than 100 candidate values are capped, with total and hasMore reflecting overflow."""
-    app = Veloce()
 
-    @app.mcp_prompt(description="A greeting")
-    async def greet(name: str) -> str:
-        return f"Hi {name}"
-
-    @app.mcp_completer(prompt="greet", argument="name")
     async def complete_name(value, context):
         return [str(i) for i in range(150)]
 
-    server = _server(app)
+    server = greeting_server(complete_name)
     result = await _complete(server, {"type": "ref/prompt", "name": "greet"}, "name", "")
     completion = result["completion"]
     assert len(completion["values"]) == 100
@@ -176,17 +142,11 @@ async def test_argument_without_a_completer_returns_empty():
 
 async def test_unknown_prompt_reference_returns_empty():
     """A reference to an unregistered prompt answers empty, not an error."""
-    app = Veloce()
 
-    @app.mcp_prompt(description="A greeting")
-    async def greet(name: str) -> str:
-        return f"Hi {name}"
-
-    @app.mcp_completer(prompt="greet", argument="name")
     async def complete_name(value, context):
         return ["ada"]
 
-    server = _server(app)
+    server = greeting_server(complete_name)
     result = await _complete(server, {"type": "ref/prompt", "name": "missing"}, "name", "")
     assert result == {"completion": {"values": [], "hasMore": False}}
 
@@ -235,38 +195,24 @@ async def test_resource_template_completion():
 )
 async def test_malformed_request_is_invalid_params(params):
     """A malformed completion request is a JSON-RPC invalid-params error."""
-    app = Veloce()
 
-    @app.mcp_prompt(description="A greeting")
-    async def greet(name: str) -> str:
-        return f"Hi {name}"
-
-    @app.mcp_completer(prompt="greet", argument="name")
     async def complete_name(value, context):
         return ["ada"]
 
-    server = _server(app)
+    server = greeting_server(complete_name)
     out = await server.handle_message(
         {"jsonrpc": "2.0", "id": 1, "method": "completion/complete", "params": params}
     )
-    assert out["error"]["code"] == -32602
+    assert out["error"]["code"] == INVALID_PARAMS
 
 
 async def test_oversized_context_arguments_is_bounded():
     """An oversized client `context.arguments` is rejected, not materialized wholesale."""
-    from veloce.contrib.mcp.completion import _MAX_CONTEXT_ARGS
 
-    app = Veloce()
-
-    @app.mcp_prompt(description="A greeting")
-    async def greet(name: str) -> str:
-        return f"Hi {name}"
-
-    @app.mcp_completer(prompt="greet", argument="name")
     async def complete_name(value, context):
         return ["ada"]
 
-    server = _server(app)
+    server = greeting_server(complete_name)
     oversized = {str(i): "x" for i in range(_MAX_CONTEXT_ARGS + 1)}
     out = await _complete_raw(
         server,
@@ -275,7 +221,7 @@ async def test_oversized_context_arguments_is_bounded():
         "",
         context={"arguments": oversized},
     )
-    assert out["error"]["code"] == -32602
+    assert out["error"]["code"] == INVALID_PARAMS
 
     # A context at the cap is still accepted.
     at_cap = {str(i): "x" for i in range(_MAX_CONTEXT_ARGS)}

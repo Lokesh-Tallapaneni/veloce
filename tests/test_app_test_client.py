@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from veloce import Veloce
+from veloce import Veloce, redirect
 from veloce.testclient import TestClient
 
 
@@ -25,7 +25,6 @@ def test_kwargs_forwarded():
 
     @app.get("/from")
     async def from_(request):
-        from veloce import redirect
 
         return redirect("/to", code=302)
 

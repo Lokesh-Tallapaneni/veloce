@@ -1,11 +1,15 @@
-"""Tests for the pre-built handler plan (D15)."""
+"""Tests for the pre-built handler plan."""
 
 from __future__ import annotations
+
+import functools
+import inspect as _inspect
 
 import pytest
 from pydantic import BaseModel
 
-from veloce import Depends, Query, Request, Veloce
+import veloce.dependency as dep
+from veloce import Depends, Header, Query, Request, Veloce
 from veloce._handler_plan import (
     K_BG_TASKS,
     K_BODY_MODEL,
@@ -15,12 +19,14 @@ from veloce._handler_plan import (
     K_QUERY_LIST,
     K_REQUEST,
     K_UPLOAD_FILE,
+    MK_HEADER,
+    MK_QUERY,
     build_plan,
     build_route_dep_plans,
 )
 from veloce.background import BackgroundTasks
 from veloce.http.datastructures import UploadFile
-from veloce.routing.params import Header
+from veloce.http.response import Response
 
 
 class _Item(BaseModel):
@@ -78,7 +84,7 @@ def test_plan_recognises_param_marker():
     plan = build_plan(h)
     slot = plan.slots[0]
     assert slot.kind == K_PARAM_MARKER
-    assert slot.marker_kind == 0  # MK_QUERY
+    assert slot.marker_kind == MK_QUERY
     assert slot.lookup_name == "search"
 
 
@@ -88,7 +94,7 @@ def test_plan_recognises_header_marker():
 
     slot = build_plan(h).slots[0]
     assert slot.kind == K_PARAM_MARKER
-    assert slot.marker_kind == 2  # MK_HEADER
+    assert slot.marker_kind == MK_HEADER
     assert slot.lookup_name == "X-Token"
 
 
@@ -197,7 +203,6 @@ def _make_request(**kw):
     return Request(**defaults)
 
 
-@pytest.mark.asyncio
 async def test_route_info_carries_plan(app: Veloce):
     @app.get("/x")
     async def x(q: str = Query(default="y")):
@@ -211,7 +216,6 @@ async def test_route_info_carries_plan(app: Veloce):
     assert info.handler_plan.slots[0].kind == K_PARAM_MARKER
 
 
-@pytest.mark.asyncio
 async def test_handler_with_depends_still_resolves(app: Veloce):
     def get_user():
         return {"id": 1}
@@ -225,7 +229,6 @@ async def test_handler_with_depends_still_resolves(app: Veloce):
     assert b'"id":1' in resp.body
 
 
-@pytest.mark.asyncio
 async def test_dependency_overrides_still_work(app: Veloce):
     def real():
         return "real"
@@ -237,12 +240,11 @@ async def test_dependency_overrides_still_work(app: Veloce):
     async def echo(v=Depends(real)):
         return {"v": v}
 
-    app._dependency_overrides[real] = fake
+    app.dependency_overrides[real] = fake
     resp = await app.handle_request(_make_request(path="/echo"))
     assert b'"fake"' in resp.body
 
 
-@pytest.mark.asyncio
 async def test_plan_avoids_inspect_signature_on_hot_path(app: Veloce, monkeypatch):
     # The plan must be consulted; `inspect.signature` should not be called
     # again from inside DependencyResolver during a request.
@@ -252,8 +254,6 @@ async def test_plan_avoids_inspect_signature_on_hot_path(app: Veloce, monkeypatc
 
     # First request triggers any lazy imports — exclude that.
     await app.handle_request(_make_request(path="/fast"))
-
-    import inspect as _inspect
 
     calls = {"n": 0}
     real = _inspect.signature
@@ -287,8 +287,6 @@ def test_class_dependency_resolves_init_annotations():
 
 def test_partial_dependency_resolves_wrapped_annotations():
     """A functools.partial dependency keeps the wrapped function's annotations."""
-    import functools
-
     app = Veloce(openapi_url=None)
 
     def make_pager(page: int = 1, fixed: str = "x"):
@@ -308,8 +306,6 @@ def test_response_import_is_module_level_in_dependency():
     module at import time. The previous inline `from veloce.http.response
     import Response` inside `_resolve_slots` paid an import-system
     lookup on every request whose handler injected a Response."""
-    import veloce.dependency as dep
-    from veloce.http.response import Response
 
     assert hasattr(dep, "Response")
     assert dep.Response is Response

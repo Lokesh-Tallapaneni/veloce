@@ -61,3 +61,7 @@ so the obvious name is unavailable.
 ::: veloce.BadGateway
 ::: veloce.ServiceUnavailable
 ::: veloce.GatewayTimeout
+
+## Warnings
+
+::: veloce.VeloceDeprecationWarning

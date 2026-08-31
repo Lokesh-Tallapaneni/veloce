@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import pytest
+import asyncio
 
+from tests._asgi_drive import http_scope
 from veloce import Request, Veloce
 from veloce.http.datastructures import Headers, QueryParams
 from veloce.testclient import TestClient
@@ -135,7 +136,7 @@ def test_app_headers_case_insensitive_in_handler():
     assert j["title"] == "v"
 
 
-def test_app_duplicate_request_headers_preserved():
+async def test_app_duplicate_request_headers_preserved():
     """When the ASGI scope carries duplicate headers, Request.headers must
     preserve them — `Forwarded` is a common duplicate-carrying header."""
     # Build a synthetic ASGI scope with duplicated headers and dispatch
@@ -150,27 +151,25 @@ def test_app_duplicate_request_headers_preserved():
         return {"ok": True}
 
     # Build the scope by hand to inject duplicates that a dict couldn't carry.
-    scope = {
-        "type": "http",
-        "asgi": {"version": "3.0", "spec_version": "2.3"},
-        "http_version": "1.1",
-        "method": "GET",
-        "scheme": "http",
-        "path": "/d",
-        "raw_path": b"/d",
-        "query_string": b"",
-        "root_path": "",
-        "headers": [
+    scope = http_scope(
+        type="http",
+        asgi={"version": "3.0", "spec_version": "2.3"},
+        http_version="1.1",
+        method="GET",
+        scheme="http",
+        path="/d",
+        raw_path=b"/d",
+        query_string=b"",
+        root_path="",
+        headers=[
             (b"host", b"testserver"),
             (b"x-trace", b"hop1"),
             (b"x-trace", b"hop2"),
             (b"x-trace", b"hop3"),
         ],
-        "client": ("testclient", 50000),
-        "server": ("testserver", 80),
-    }
-
-    import asyncio
+        client=("testclient", 50000),
+        server=("testserver", 80),
+    )
 
     async def drive():
         body_sent = False
@@ -187,13 +186,8 @@ def test_app_duplicate_request_headers_preserved():
 
         await app(scope, receive, send)
 
-    asyncio.new_event_loop().run_until_complete(drive())
+    await drive()
     assert seen["all"] == ["hop1", "hop2", "hop3"]
 
 
 # ── pytest plugin sanity ───────────────────────────────────────────────
-
-
-def test_module_imports():
-    """Smoke test: this file imports cleanly."""
-    assert pytest is not None

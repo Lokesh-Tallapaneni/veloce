@@ -1,13 +1,12 @@
 r"""Header parsing — quoted-string-aware walker for HTTP header parameter lists.
 
-Three different headers in the codebase used to ship near-identical
-ad-hoc tokenizers: `Content-Disposition` (`;`-separated, unescape on),
-RFC 7616 Digest field lists (`,`-separated, unescape on), and the
-fallback `Authorization` param split (`,`-separated, quotes preserved).
-The three drifted: only Content-Disposition and Digest honoured
-backslash escapes, so `name="a\\\"b"` round-tripped correctly for
-multipart parts and Digest credentials but corrupted in
-`Authorization.from_header`.
+Three headers in the codebase need the same walk with different settings:
+`Content-Disposition` (`;`-separated, unescape on), RFC 7616 Digest field lists
+(`,`-separated, unescape on), and the fallback `Authorization` param split
+(`,`-separated, quotes preserved). Parametrising one walker rather than writing
+three keeps them from drifting on the details that are easy to omit - a
+tokenizer that skips backslash escapes reads `name="a\\\"b"` correctly for
+two of the three and corrupts it for the third.
 
 `parse_header_params` is the single walker the three call sites now
 share. Semantics:
@@ -38,8 +37,14 @@ share. Semantics:
   fully unquoted are stripped of surrounding whitespace, matching the
   Digest walker's `value[j:end].strip()` step.
 
-The helper is module-internal (leading underscore on the module name);
-no public re-export.
+Three narrower helpers sit beside it, sharing the same quoted-string rules:
+`parse_media_type_params` walks a media-type parameter list (the portion of a
+`Content-Type` after the bare type), `split_outside_quotes` splits on a
+delimiter that a quoted string may contain, and `unquote_value` trims
+whitespace and one surrounding pair of double quotes.
+
+Everything here is module-internal (leading underscore on the module name); no
+public re-export.
 """
 
 from __future__ import annotations
@@ -51,32 +56,46 @@ def parse_media_type_params(rest: str) -> Iterator[tuple[str, str]]:
     """Yield `(lowercased key, unquoted value)` for a media-type parameter list.
 
     `rest` is the portion of a `Content-Type` / media-range value after the bare
-    media type (everything following the first `;`). Each `;`-separated
-    `key=value` is split on the first `=`, the key lowercased, and a single
-    surrounding double-quote pair removed from the value. Tokens without `=` are
-    skipped. Single source for the `Content-Type` parsers on `Request`,
-    `Response`, and the `Accept` media-range key.
+    media type (everything following the first `;`). Single source for the
+    `Content-Type` parsers on `Request`, `Response`, and the `Accept`
+    media-range key.
+
+    A parameter value may be a quoted-string, and a quoted-string may contain
+    the `;` that otherwise separates parameters (RFC 9110 Sec. 5.6.4-5.6.6). A
+    plain `split(";")` cut such a value short and left the opening quote on
+    what survived, so `profile="a;b"` arrived as `"a` - which also made these
+    accessors disagree with `parse_header_params`, the walker every other
+    header parser in the framework reads a quoted value with.
+
+    With no `"` anywhere there is no quoted region to hide a separator or an
+    escape in, so the split and the walker agree by construction and the split
+    is taken: that is the shape of nearly every `Content-Type`. A value that
+    does carry a quote goes through the walker, which stays the one place
+    quoting and escaping are interpreted.
     """
-    for chunk in rest.split(";"):
-        chunk = chunk.strip()
-        if "=" not in chunk:
-            continue
-        key, _, value = chunk.partition("=")
-        value = value.strip()
-        if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
-            value = value[1:-1]
-        yield key.strip().lower(), value
+    if '"' not in rest:
+        for chunk in rest.split(";"):
+            key, eq, value = chunk.partition("=")
+            if not eq:
+                continue
+            key = key.strip().lower()
+            # An empty parameter name is not a token, so there is no parameter
+            # here to report - the walker drops it too.
+            if key:
+                yield key, value.strip()
+        return
+    _, params = parse_header_params(rest, delimiter=";", unescape=True)
+    yield from params.items()
 
 
 def unquote_value(value: str) -> str:
     """Trim surrounding whitespace then a single pair of double quotes.
 
-    The `.strip().strip('"')` idiom used to recover a header parameter
-    value (cookie value, Cache-Control directive value, a `charset=`/
-    `boundary=` parameter, a `Forwarded` element value). Whitespace is
-    removed first so a quoted value padded with spaces (` "v" `) unquotes
-    to `v`. Single source for the sites that do not need the full
-    quoted-string walker.
+    The `.strip().strip('"')` idiom for recovering a header parameter value
+    (a cookie value, a Cache-Control directive value, a `charset=` or
+    `boundary=` parameter, a `Forwarded` element value). Whitespace is removed
+    first so a quoted value padded with spaces (` "v" `) unquotes to `v`. The
+    single source for the sites that do not need the full quoted-string walker.
     """
     return value.strip().strip('"')
 
@@ -84,11 +103,17 @@ def unquote_value(value: str) -> str:
 def split_outside_quotes(value: str, delimiter: str) -> list[str]:
     """Split `value` on `delimiter`, but never inside a double-quoted string.
 
-    Walks `value` once tracking an `in_quotes` flag; a `\\<char>` escape is
-    skipped so an escaped quote or delimiter never terminates a token. Returns
-    the raw (still-quoted) substrings WITHOUT stripping quotes or whitespace -
-    callers do that. Mirrors `parse_header_params`' inner escape handling so the
-    two walkers stay consistent.
+    Walks `value` once tracking an `in_quotes` flag. A `\\<char>` escape is
+    skipped **only inside a quoted string**, which is the whole of what RFC 9110
+    Sec. 5.6.4 defines `quoted-pair` for: outside one a backslash is an ordinary
+    octet and must not hide the following delimiter. Honouring it everywhere
+    lets a sender suppress a delimiter the rest of the stack still sees, and
+    `Forwarded:` reaches here attacker-supplied.
+
+    Returns the raw (still-quoted) substrings WITHOUT stripping quotes or
+    whitespace - callers do that. `parse_header_params` walks the same grammar
+    with the same rule; `tests/test_header_walker_agreement.py` holds them to it
+    rather than a comment claiming they agree.
     """
     parts: list[str] = []
     buf: list[str] = []
@@ -97,7 +122,7 @@ def split_outside_quotes(value: str, delimiter: str) -> list[str]:
     n = len(value)
     while i < n:
         ch = value[i]
-        if ch == "\\" and i + 1 < n:
+        if in_quotes and ch == "\\" and i + 1 < n:
             buf.append(ch)
             buf.append(value[i + 1])
             i += 2
@@ -132,11 +157,14 @@ def parse_header_params(
     backslash literally while still using it for quoted-string boundary
     detection.
     """
-    # Per token we record (raw, last_quote_close_index_in_raw). Whitespace
-    # after that index is *outside* any quoted region and is safe to rstrip.
-    # `-1` means the token never entered a quoted region.
-    tokens: list[tuple[str, int]] = []
+    # Per token we record (raw, first_quote_open, last_quote_close) as indices
+    # into the raw token. Whitespace before the first index and after the last
+    # is *outside* any quoted region and is safe to trim; whitespace between
+    # them was quoted and is part of the value. `-1` means the token never
+    # entered a quoted region.
+    tokens: list[tuple[str, int, int]] = []
     buf: list[str] = []
+    first_quote_open = -1
     last_quote_close = -1
     in_quotes = False
     i = 0
@@ -162,22 +190,25 @@ def parse_header_params(
             continue
         if ch == '"':
             in_quotes = True
+            if first_quote_open < 0:
+                first_quote_open = len(buf)
             i += 1
             continue
         if ch == delimiter:
-            tokens.append(("".join(buf), last_quote_close))
+            tokens.append(("".join(buf), first_quote_open, last_quote_close))
             buf = []
+            first_quote_open = -1
             last_quote_close = -1
             i += 1
             continue
         buf.append(ch)
         i += 1
-    tokens.append(("".join(buf), last_quote_close))
+    tokens.append(("".join(buf), first_quote_open, last_quote_close))
 
     params: dict[str, str] = {}
     prefix = ""
     first = True
-    for raw_token, quote_close in tokens:
+    for raw_token, quote_open, quote_close in tokens:
         if "=" not in raw_token:
             stripped = raw_token.strip()
             if not stripped:
@@ -197,15 +228,14 @@ def parse_header_params(
             # the original Digest walker's `value[j:end].strip()`.
             params[key] = val.strip()
         else:
-            # The value may have unquoted whitespace before/after the
-            # quoted region. The quoted region (up to `quote_close` in
-            # the raw token) is preserved verbatim; trailing whitespace
-            # added after the closing `"` is unquoted and stripped.
+            # The value may carry unquoted whitespace on either side of the
+            # quoted region. What was quoted (between `quote_open` and
+            # `quote_close` in the raw token) is preserved verbatim; the
+            # whitespace outside it was never part of the value and is
+            # trimmed, symmetrically on both sides.
             offset = len(raw_token) - len(val)
-            tail_start_in_val = quote_close - offset
-            if tail_start_in_val < 0:
-                tail_start_in_val = 0
-            head = val[:tail_start_in_val]
-            tail = val[tail_start_in_val:]
-            params[key] = head + tail.rstrip()
+            head_end = max(quote_open - offset, 0)
+            tail_start = max(quote_close - offset, 0)
+            quoted = val[head_end:tail_start]
+            params[key] = val[:head_end].lstrip() + quoted + val[tail_start:].rstrip()
     return prefix, params

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import Request, Router, TestClient, Veloce
+from veloce import BuildError, Request, Router, TestClient, Veloce
 from veloce import url_for as top_level_url_for
 
 
@@ -96,51 +96,49 @@ def test_preferred_url_scheme_config():
 
 
 def test_missing_path_param_still_raises():
-    from veloce import BuildError
 
     app = _make_app()
     with pytest.raises(BuildError):
         app.url_for("user", _external=True)
 
 
-class TestUrlFor:
-    def test_simple_url_for(self):
-        app = Veloce(openapi_url=None)
+def test_simple_url_for():
+    app = Veloce(openapi_url=None)
 
-        @app.get("/users", name="list_users")
-        async def users(request: Request):
-            return []
+    @app.get("/users", name="list_users")
+    async def users(request: Request):
+        return []
 
-        assert app.url_for("list_users") == "/users"
+    assert app.url_for("list_users") == "/users"
 
-    def test_url_for_with_params(self):
-        app = Veloce(openapi_url=None)
 
-        @app.get("/users/{user_id}/posts/{post_id}")
-        async def get_post(user_id: int, post_id: int):
-            return {}
+def test_url_for_with_params():
+    app = Veloce(openapi_url=None)
 
-        url = app.url_for("get_post", user_id="42", post_id="7")
-        assert url == "/users/42/posts/7"
+    @app.get("/users/{user_id}/posts/{post_id}")
+    async def get_post(user_id: int, post_id: int):
+        return {}
 
-    def test_url_for_missing_param(self):
-        app = Veloce(openapi_url=None)
+    url = app.url_for("get_post", user_id="42", post_id="7")
+    assert url == "/users/42/posts/7"
 
-        @app.get("/users/{id}")
-        async def get_user(id: int):
-            return {}
 
-        from veloce import BuildError
+def test_url_for_missing_param():
+    app = Veloce(openapi_url=None)
 
-        with pytest.raises(BuildError):
-            app.url_for("get_user")
+    @app.get("/users/{id}")
+    async def get_user(id: int):
+        return {}
 
-    def test_url_for_unknown_route(self):
-        from veloce import BuildError
+    with pytest.raises(BuildError):
+        app.url_for("get_user")
 
-        app = Veloce(openapi_url=None)
-        with pytest.raises(BuildError):
-            app.url_for("nonexistent")
+
+def test_url_for_unknown_route():
+
+    app = Veloce(openapi_url=None)
+    with pytest.raises(BuildError):
+        app.url_for("nonexistent")
 
 
 # ── A path parameter may be called `name` ────────────────────────────

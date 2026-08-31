@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import inspect
 
+from tests.conftest import make_request
 from veloce import Request
 
 
 def _req(body: bytes, content_type: str = "text/plain") -> Request:
-    return Request(
+    return make_request(
         method="POST",
         path="/x",
         query_string="",

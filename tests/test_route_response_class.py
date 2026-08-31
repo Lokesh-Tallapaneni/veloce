@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import pytest
-
 from tests.conftest import make_request
 from veloce import HTMLResponse, Request, Veloce
 
 
 class TestResponseClass:
-    @pytest.mark.asyncio
     async def test_html_response_class(self):
         app = Veloce(openapi_url=None)
 

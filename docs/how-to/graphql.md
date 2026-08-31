@@ -21,11 +21,16 @@ This page covers the mount integration; the GraphQL-library specifics are intent
 `app.mount(prefix, app)` attaches any ASGI application at a path prefix. The matched prefix is
 stripped from the request `path` and moved onto `root_path`, so the mounted app sees a normal
 root-relative request. This example uses [Strawberry](https://strawberry.rocks), whose
-`GraphQLRouter` is an ASGI app.
+`strawberry.asgi.GraphQL` is an ASGI app.
 
 ```bash
-pip install veloceframework strawberry-graphql
+pip install veloceframework "strawberry-graphql[asgi]"
 ```
+
+The `[asgi]` extra is what provides `strawberry.asgi.GraphQL`; without it the
+import below fails. That extra pulls in Starlette, which Strawberry's ASGI
+integration is written against — a dependency of the *mounted* app, not of
+Veloce, which does not use it.
 
 ```python title="app.py"
 import strawberry

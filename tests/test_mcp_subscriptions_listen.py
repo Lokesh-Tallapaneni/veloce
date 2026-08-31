@@ -202,11 +202,16 @@ async def test_cancelling_an_unknown_id_is_ignored():
     assert 4 in conn.session.listen_streams
 
 
-# ── Statefulness ─────────────────────────────────────────────────────
+# ── What a stream actually requires ──────────────────────────────────
 
 
-async def test_a_stateless_request_cannot_open_a_stream():
-    """A stream is per-connection state; a stateless POST holds none."""
+@pytest.mark.parametrize("persistent", [True, False])
+async def test_a_request_with_nowhere_to_deliver_cannot_open_a_stream(persistent):
+    """The requirement is somewhere to deliver, and a plain POST has nowhere.
+
+    Neither session below is registered, so neither holds an outbound stream -
+    and persistence makes no difference to that, which is the point.
+    """
     server = _server()
     response = await server.handle_message(
         {
@@ -215,9 +220,131 @@ async def test_a_stateless_request_cannot_open_a_stream():
             "method": "subscriptions/listen",
             "params": {"notifications": {"toolsListChanged": True}, "_meta": MODERN},
         },
-        MCPSession(persistent=False),
+        MCPSession(persistent=persistent),
     )
     assert "error" in response
+
+
+async def test_a_per_request_session_with_an_open_stream_may_listen():
+    """The defect: this is the shape the default HTTP deployment builds.
+
+    The revision that introduced `subscriptions/listen` is the one that removed
+    sessions, so requiring a persistent connection made the method reachable
+    only on the revisions that do not define it.
+    """
+    server = _server()
+    sent: list[dict] = []
+
+    async def send(message: dict) -> None:
+        sent.append(message)
+
+    session = MCPSession(persistent=False)
+    server.set_notifier(send)
+    server.register_connection(session, send)
+
+    response = await server.handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "subscriptions/listen",
+            "params": {"notifications": {"toolsListChanged": True}, "_meta": MODERN},
+        },
+        session,
+    )
+    assert response is None  # deferred: answered when the stream closes
+    assert sent[0]["method"] == "notifications/subscriptions/acknowledged"
+    assert 1 in session.listen_streams
+
+
+async def test_a_per_request_stream_receives_the_fan_out():
+    """Opening it is not enough - it has to actually deliver."""
+    server = _server()
+    sent: list[dict] = []
+
+    async def send(message: dict) -> None:
+        sent.append(message)
+
+    session = MCPSession(persistent=False)
+    server.set_notifier(send)
+    server.register_connection(session, send)
+    await server.handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "subscriptions/listen",
+            "params": {"notifications": {"toolsListChanged": True}, "_meta": MODERN},
+        },
+        session,
+    )
+    sent.clear()
+    await server.notify_tools_list_changed()
+    assert [m["method"] for m in sent] == ["notifications/tools/list_changed"]
+    assert sent[0]["params"]["_meta"][META_SUBSCRIPTION_ID] == 7
+
+
+async def test_a_per_request_stream_still_gets_only_what_it_asked_for():
+    """The filter is not relaxed along with the connection requirement."""
+    server = _server()
+    sent: list[dict] = []
+
+    async def send(message: dict) -> None:
+        sent.append(message)
+
+    session = MCPSession(persistent=False)
+    server.set_notifier(send)
+    server.register_connection(session, send)
+    await server.handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "subscriptions/listen",
+            "params": {"notifications": {"toolsListChanged": True}, "_meta": MODERN},
+        },
+        session,
+    )
+    sent.clear()
+    await server.notify_prompts_list_changed()
+    assert sent == []
+
+
+async def test_the_predicate_separates_a_stream_from_a_persistent_session():
+    """`connection_can_stream` is deliberately weaker than statefulness."""
+    server = _server()
+
+    async def send(message: dict) -> None:
+        return None
+
+    stateless_with_stream = MCPSession(persistent=False)
+    persistent_without_stream = MCPSession(persistent=True)
+    server.register_connection(stateless_with_stream, send)
+    assert server.connection_can_stream(stateless_with_stream) is True
+    assert server.connection_can_stream(persistent_without_stream) is False
+
+
+async def test_the_predicate_is_false_when_subscriptions_are_off():
+    """No registry at all, so a listen has nowhere to go by construction."""
+    app = Veloce(title="Off", openapi_url=None)
+
+    @app.mcp_tool(description="A tool")
+    async def a_tool() -> dict:
+        return {"ok": True}
+
+    server = MCPServer(app)
+    assert server.connection_can_stream(MCPSession()) is False
+
+
+async def test_an_unregistered_connection_stops_being_able_to_listen():
+    """Closing the stream takes the ability to open a new one with it."""
+    server = _server()
+
+    async def send(message: dict) -> None:
+        return None
+
+    session = MCPSession(persistent=False)
+    token = server.register_connection(session, send)
+    assert server.connection_can_stream(session) is True
+    server.unregister_connection(token)
+    assert server.connection_can_stream(session) is False
 
 
 async def test_the_handshake_subscribe_path_still_works():

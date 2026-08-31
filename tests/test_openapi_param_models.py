@@ -22,6 +22,7 @@ documented schema is honoured at request time:
 
 from __future__ import annotations
 
+import json
 import urllib.parse
 import uuid
 from datetime import date, datetime
@@ -29,9 +30,9 @@ from typing import Union  # noqa: UP035 — exercises the typing.Union (not PEP 
 
 from pydantic import BaseModel
 
-from veloce import Query, Request, Veloce
+from tests.conftest import make_request
+from veloce import Body, Cookie, Form, Header, Query, Request, Veloce
 from veloce.contrib.openapi import _python_type_to_schema, get_openapi_schema
-from veloce.routing.params import Form
 
 
 class _Tag(BaseModel):
@@ -43,20 +44,15 @@ class _Other(BaseModel):
 
 
 def _make_request(path: str, query_string: str = "") -> Request:
-    return Request(
-        method="GET",
-        path=path,
-        query_string=query_string,
-        headers={},
-        body=b"",
-    )
+    """A GET, through the shared factory rather than a second spelling of it."""
+    return make_request(path=path, query_string=query_string)
 
 
 def _make_form_request(path: str, body: bytes) -> Request:
-    return Request(
+    """A urlencoded POST; the two headers are what this module varies."""
+    return make_request(
         method="POST",
         path=path,
-        query_string="",
         headers={
             "content-type": "application/x-www-form-urlencoded",
             "content-length": str(len(body)),
@@ -125,7 +121,6 @@ def test_bare_model_param_is_still_a_json_request_body() -> None:
 
 def test_explicit_body_model_is_a_json_request_body() -> None:
     # An explicit `Body()`-marked model is still a JSON request body $ref.
-    from veloce.routing.params import Body
 
     app = Veloce()
 
@@ -141,7 +136,6 @@ def test_explicit_body_model_is_a_json_request_body() -> None:
 def test_header_and_cookie_model_markers_are_string_parameters() -> None:
     # A model carried by Header()/Cookie() is read from that source as a
     # JSON-document string, so it is a string `parameter`, not a requestBody.
-    from veloce.routing.params import Cookie, Header
 
     app = Veloce()
 
@@ -454,4 +448,6 @@ async def test_union_with_str_query_param_text_value_resolves_200() -> None:
 
     resp = await app.handle_request(_make_request("/search", "q=abc"))
     assert resp.status_code == 200
-    assert b'"abc"' in resp.body
+    # Decoded, not matched: `b'"abc"' in body` holds wherever the value lands,
+    # including under a different key than the one the model declares.
+    assert json.loads(resp.body)["q"] == "abc"

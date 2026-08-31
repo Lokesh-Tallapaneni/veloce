@@ -1,10 +1,16 @@
-"""Pure MCP server helpers — module-level shaping functions and marker classes.
+"""Pure MCP server helpers — shaping functions, wire constants and per-call state.
 
 These touch no `MCPServer` instance state: they shape tool / resource / prompt
 values into their MCP wire forms, map HTTP semantics onto MCP annotation hints,
 and carry the small marker objects the invocation path threads back to the
 dispatcher. `server.py` and the `TasksMixin` / `InvocationMixin` mixins import
 what they need from here, keeping the stateful dispatch core focused.
+
+The module also owns the `META_*` keys the modern revision reserves on the wire,
+the dispatch core's per-call ContextVars (the notifier, log level, request id,
+protocol era, in-flight registration and server->client requester), and the
+mutable `_InFlight` holder those vars carry. Being a leaf keeps them reachable
+from `session` and the transports without importing the dispatch core.
 """
 
 from __future__ import annotations
@@ -38,7 +44,6 @@ from veloce.contrib.mcp.content import (
     ResourceLink,
     TextContent,
 )
-from veloce.contrib.mcp.context import MCPContext
 from veloce.contrib.mcp.errors import _InBandError
 from veloce.contrib.mcp.icons import render_icons
 from veloce.encoders import orjson_default
@@ -46,10 +51,33 @@ from veloce.http.response import Response
 from veloce.principal import current_principal
 
 if TYPE_CHECKING:  # pragma: no cover
+    from veloce.contrib.mcp.context import MCPContext
     from veloce.contrib.mcp.prompts import MCPPrompt
     from veloce.contrib.mcp.registry import MCPTool
     from veloce.contrib.mcp.resources import MCPResource
 
+
+# The `_meta` keys the modern revision reserves. Prefixed per the spec's naming
+# rules, so an application's own `_meta` entries cannot collide with them. They
+# live here rather than in `server` because `session` and the HTTP transport
+# read them too, and importing the dispatch core from a leaf for two string
+# constants is the wrong direction for the dependency to run.
+META_PROTOCOL_VERSION = "io.modelcontextprotocol/protocolVersion"
+META_CLIENT_INFO = "io.modelcontextprotocol/clientInfo"
+META_CLIENT_CAPABILITIES = "io.modelcontextprotocol/clientCapabilities"
+# The modern revision sets the log level per request rather than per connection. A
+# request that omits it gets no `notifications/message` at all.
+META_LOG_LEVEL = "io.modelcontextprotocol/logLevel"
+META_SERVER_INFO = "io.modelcontextprotocol/serverInfo"
+
+
+# ── Per-call state ──────────────────────────────────────────
+
+# The per-call state the dispatch core owns. It is held in ContextVars rather
+# than on the server because many concurrent calls share one `MCPServer` on the
+# Streamable HTTP transport. The state a handler reaches through `MCPContext`
+# lives beside that class in `context`, so the two sets are split by who reads
+# them rather than by which module imports which.
 
 # The current call's outbound notification sink, scoped per request so a handler's
 # progress / log notifications reach the right client. A ContextVar (not an
@@ -59,17 +87,6 @@ if TYPE_CHECKING:  # pragma: no cover
 _notifier_var: ContextVar[Callable[[dict[str, Any]], Awaitable[None]] | None] = ContextVar(
     "_mcp_notifier", default=None
 )
-
-
-def _attach_result_meta(result: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
-    """Attach what the handler asked to send back on this call's result.
-
-    An existing `_meta` the result already carries wins: the protocol machinery
-    that put it there (a task marker, a subscription id) is answering the client's
-    own request, and a handler must not be able to displace it.
-    """
-    result["_meta"] = {**meta, **result.get("_meta", {})}
-    return result
 
 
 # The current call's `logging/setLevel` minimum, scoped per request like the
@@ -90,6 +107,19 @@ _inflight_var: ContextVar[_InFlight | None] = ContextVar("_mcp_inflight", defaul
 # handler signature carries only params. Set once per message beside the session.
 _request_id_var: ContextVar[Any] = ContextVar("_mcp_request_id", default=None)
 
+# Whether the message being answered came from a modern client, resolved once by
+# `handle_message` and read by every function that shapes a result. It is a
+# ContextVar rather than an argument threaded through those functions because a
+# `modern=` parameter is one a new call site can be written without: that is how
+# `tasks/cancel` and the task status notification came to emit the handshake
+# field names to a modern client while creation and polling emitted the modern
+# ones. Per message, not per connection - the modern revision negotiates nothing
+# and states its version on every request, so one connection may carry both eras.
+# A detached task runner inherits the era of the request that created it, which
+# is what its notifications should carry. Defaults to the handshake era so a bare
+# `handle_message` call outside a transport still resolves.
+_era_modern_var: ContextVar[bool] = ContextVar("_mcp_era_modern", default=False)
+
 # The current call's server->client request issuer, set by a bidirectional
 # transport so a tool's `MCPContext.sample` / `elicit` / `roots` can call the
 # client and await the correlated reply. `None` off a bidirectional transport (the
@@ -99,13 +129,19 @@ _requester_var: ContextVar[Callable[[str, dict[str, Any]], Awaitable[dict[str, A
     ContextVar("_mcp_requester", default=None)
 )
 
-# Set on a detached task runner (`_run_task`) so the serial stdio transport can
-# refuse a server->client request issued from it. A task-augmented call returns
-# its `CreateTaskResult` immediately, so the stdio serve loop resumes reading
-# stdin while the runner executes; if the runner called `ctx.sample` / `elicit` /
-# `roots` its `request()` would start a second reader of the same stdin, racing
-# the serve loop for inbound lines. `False` on the synchronous call path, where
-# the serve loop is parked in the handler and `request()` is the sole reader.
+
+# ── Result shaping ──────────────────────────────────────────
+
+
+def _attach_result_meta(result: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
+    """Attach what the handler asked to send back on this call's result.
+
+    An existing `_meta` the result already carries wins: the protocol machinery
+    that put it there (a task marker, a subscription id) is answering the client's
+    own request, and a handler must not be able to displace it.
+    """
+    result["_meta"] = {**meta, **result.get("_meta", {})}
+    return result
 
 
 class _InFlight:
@@ -453,7 +489,7 @@ def _user_text_message(text: str) -> dict[str, Any]:
 _PROMPT_ROLES = frozenset({"user", "assistant"})
 
 
-def _normalize_prompt_message(item: Any) -> dict[str, Any]:
+def _normalize_prompt_message(item: Any, dumps: Any = None) -> dict[str, Any]:
     """Normalise one prompt message item into an MCP prompt message.
 
     A string is a user text message; a mapping is read as a ``{"role", "content"}``
@@ -468,10 +504,10 @@ def _normalize_prompt_message(item: Any) -> dict[str, Any]:
         if isinstance(content, str):
             content = TextContent(content).to_payload()
         return {"role": role if role in _PROMPT_ROLES else "user", "content": content}
-    return _user_text_message(_stringify(item))
+    return _user_text_message(_stringify(item, dumps))
 
 
-def _normalize_prompt_messages(result: Any) -> list[dict[str, Any]]:
+def _normalize_prompt_messages(result: Any, dumps: Any = None) -> list[dict[str, Any]]:
     """Normalise a prompt callable's return into MCP prompt messages.
 
     A string becomes a single user text message; a list becomes one message per
@@ -480,8 +516,8 @@ def _normalize_prompt_messages(result: Any) -> list[dict[str, Any]]:
     if isinstance(result, str):
         return [_user_text_message(result)]
     if isinstance(result, list):
-        return [_normalize_prompt_message(item) for item in result]
-    return [_user_text_message(_stringify(result))]
+        return [_normalize_prompt_message(item, dumps) for item in result]
+    return [_user_text_message(_stringify(result, dumps))]
 
 
 # Returned by a handler whose request is answered later rather than now. A
@@ -554,8 +590,21 @@ def _response_body_value(response: Response) -> Any:
     return body.decode("utf-8", "replace")
 
 
-def _stringify(result: Any) -> str:
-    """Serialise a handler return value to the text content of a tool result."""
+def _stringify(result: Any, dumps: Any = None) -> str:
+    """Serialise a handler return value to the text content of a tool result.
+
+    `dumps` is the application's serialiser, or `None` when it configured none
+    and the direct encoder already emits the same bytes. `MCPServer` resolves it
+    once at construction, so this costs an argument rather than a per-call
+    lookup - the reason an earlier attempt was rejected was a `contextvar` read
+    here, 99ns against a 424ns render.
+
+    Without it, a tool declared with `@app.mcp_tool` returned stock JSON while a
+    tool exposed from a route returned the app's dialect - the route-backed one
+    only by accident, because its response body is encoded through the provider
+    and then decoded and re-encoded here. Two tools, one server, one payload,
+    two answers.
+    """
     if isinstance(result, str):
         return result
     # A bare byte string is the text form of the result, not a value inside it,
@@ -569,7 +618,27 @@ def _stringify(result: Any) -> str:
     # refuses outright (a `Secret`) or a structure it cannot represent (a cycle).
     # Emitting a Python repr for either would put the shape this encoder exists
     # to prevent into the model's context; failing the call reports it instead.
+    if dumps is not None:
+        encoded: bytes = dumps(result)
+        return encoded.decode()
     return orjson.dumps(result, default=_orjson_default).decode()
+
+
+def encode_envelope(payload: Any) -> bytes:
+    """Encode a JSON-RPC envelope, or any other MCP protocol document.
+
+    Protocol frames are not the application's to restyle. `json_provider` states
+    the rule for the framework's own wire formats - signed cookies, JWTs,
+    protocol frames - and stdio already followed it; the HTTP and SSE transports
+    did not, so a custom `json_provider_class` injected its keys into the
+    JSON-RPC envelope and `JSONIFY_PRETTYPRINT_REGULAR` inflated every SSE frame
+    into a dozen `data:` lines. The same server framed its protocol two ways
+    depending on which transport carried it.
+
+    The application's dialect still reaches the application's data - a tool
+    result's content - through `_stringify`. This is the envelope around it.
+    """
+    return orjson.dumps(payload, default=_orjson_default)
 
 
 def _orjson_default(value: Any) -> Any:
@@ -613,8 +682,9 @@ class _ShortCircuit:
 
 
 class _RouteResponse:
-    """A route-backed tool's final `Response` (shaped + after_request-rewritten,
-    or built by an exception handler), returned in place of the raw value.
+    """A route-backed tool's final `Response`, returned instead of the raw value.
+
+    Shaped and `after_request`-rewritten, or built by an exception handler.
 
     `model_filtered` records whether the route's `response_model` filter ran over
     the value this response carries: `True` when `_build_response` built it from
@@ -629,3 +699,16 @@ class _RouteResponse:
     def __init__(self, response: Response, model_filtered: bool = False) -> None:
         self.response = response
         self.model_filtered = model_filtered
+
+
+def transport_route_name(base: str, path: str) -> str:
+    """Build a route name unique to one mount of one transport.
+
+    A transport's internal routes took their name from the handler function, so
+    the name was fixed however many times the transport was mounted. Mounting at
+    two paths - which `mount_mcp` supports and the guide documents - therefore
+    left the first mount unreachable by name, with `url_for` silently resolving
+    to the second. These routes carry `include_in_schema=False`; the name exists
+    for `url_for` and diagnostics, so qualifying it by path costs nothing.
+    """
+    return f"{base}:{path}"

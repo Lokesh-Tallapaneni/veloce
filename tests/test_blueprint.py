@@ -2,20 +2,21 @@
 
 from __future__ import annotations
 
+import orjson
 import pytest
 
+from tests.conftest import make_request
 from veloce import Blueprint, Request, Veloce
 from veloce.testclient import TestClient
 
 
 def _req(path: str, method: str = "GET") -> Request:
-    return Request(method=method, path=path, query_string="", headers={}, body=b"")
+    return make_request(method=method, path=path, query_string="", headers={}, body=b"")
 
 
 # ── Basic registration ───────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_blueprint_routes_mount_under_prefix():
     bp = Blueprint("users", url_prefix="/users")
 
@@ -30,8 +31,6 @@ async def test_blueprint_routes_mount_under_prefix():
     app = Veloce(debug=True, openapi_url=None)
     app.register_blueprint(bp)
 
-    import orjson
-
     resp1 = await app.handle_request(_req("/users/"))
     assert orjson.loads(resp1.body) == {"page": "users-index"}
 
@@ -39,7 +38,6 @@ async def test_blueprint_routes_mount_under_prefix():
     assert orjson.loads(resp2.body) == {"uid": "42"}
 
 
-@pytest.mark.asyncio
 async def test_register_blueprint_with_prefix_override():
     """url_prefix passed to register_blueprint takes precedence."""
     bp = Blueprint("api", url_prefix="/v1")
@@ -61,7 +59,6 @@ async def test_register_blueprint_with_prefix_override():
 # ── before_request / after_request gate on blueprint endpoints ───────
 
 
-@pytest.mark.asyncio
 async def test_before_request_only_fires_for_blueprint_routes():
     bp = Blueprint("auth", url_prefix="/auth")
     seen: list[str] = []
@@ -87,7 +84,6 @@ async def test_before_request_only_fires_for_blueprint_routes():
     assert seen == ["/auth/login"]
 
 
-@pytest.mark.asyncio
 async def test_after_request_runs_for_blueprint_endpoint():
     bp = Blueprint("bp1", url_prefix="/bp1")
 
@@ -109,7 +105,6 @@ async def test_after_request_runs_for_blueprint_endpoint():
 # ── Blueprint errorhandler ───────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_blueprint_errorhandler_catches_blueprint_routes():
     bp = Blueprint("api", url_prefix="/api")
 
@@ -128,12 +123,9 @@ async def test_blueprint_errorhandler_catches_blueprint_routes():
     app.register_blueprint(bp)
 
     resp = await app.handle_request(_req("/api/boom"))
-    import orjson
-
     assert orjson.loads(resp.body) == {"caught": "kaboom"}
 
 
-@pytest.mark.asyncio
 async def test_blueprint_errorhandler_is_scoped_to_its_own_routes():
     """A blueprint's errorhandler must not catch an exception raised on a
     sibling blueprint or an app-level route - it is scoped to its own routes."""
@@ -166,8 +158,6 @@ async def test_blueprint_errorhandler_is_scoped_to_its_own_routes():
     async def app_boom():
         raise ScopedError("x")
 
-    import orjson
-
     # a's handler catches a's own route.
     resp_a = await app.handle_request(_req("/a/boom"))
     assert orjson.loads(resp_a.body) == {"by": "a"}
@@ -177,12 +167,9 @@ async def test_blueprint_errorhandler_is_scoped_to_its_own_routes():
     assert (await app.handle_request(_req("/boom"))).status_code == 500
 
 
-@pytest.mark.asyncio
 async def test_blueprint_status_handler_catches_unhandled_exception():
     """A blueprint `@bp.errorhandler(500)` fires for a plain unhandled exception
     on its own route (the unhandled-exception -> 500 path is scoped too)."""
-    import orjson
-
     bp = Blueprint("bp", url_prefix="/bp")
 
     @bp.errorhandler(500)
@@ -208,11 +195,9 @@ async def test_blueprint_status_handler_catches_unhandled_exception():
     }
 
 
-@pytest.mark.asyncio
 async def test_nested_sibling_blueprints_scope_handlers():
     """Two sibling child blueprints under the same parent keep their own
     handlers - a shared exception type does not leak from one child to the other."""
-    import orjson
 
     class E(Exception):
         pass
@@ -273,7 +258,6 @@ def test_error_handler_spec_reports_per_blueprint_subtables():
 # ── Mountable on multiple apps / multiple times ──────────────────────
 
 
-@pytest.mark.asyncio
 async def test_same_blueprint_mounted_on_two_apps():
     bp = Blueprint("hello", url_prefix="/h")
 
@@ -285,8 +269,6 @@ async def test_same_blueprint_mounted_on_two_apps():
     app_a.register_blueprint(bp)
     app_b = Veloce(debug=True, openapi_url=None)
     app_b.register_blueprint(bp, url_prefix="/world")
-
-    import orjson
 
     ra = await app_a.handle_request(_req("/h/"))
     assert orjson.loads(ra.body) == {"x": 1}

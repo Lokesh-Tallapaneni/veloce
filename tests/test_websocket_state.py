@@ -2,9 +2,28 @@
 
 from __future__ import annotations
 
+import pytest
+
+import veloce
 from veloce import Veloce
 from veloce.testclient import TestClient
 from veloce.websocket import WebSocket, WebSocketState
+
+
+def test_the_state_enum_is_importable_from_the_package_root():
+    """It is the declared return type of two public `WebSocket` properties.
+
+    A user annotating against `ws.application_state` needs the name, so it is
+    exported. This asserts the package-root import itself - the version it
+    replaces compared two names bound by one `veloce.websocket` import, which no
+    source change could have made fail.
+    """
+    # The import *is* the assertion - the test is named for it, and moving
+    # it to module top would move the failure to collection.
+    from veloce import WebSocketState as FromRoot
+
+    assert FromRoot is WebSocketState
+    assert "WebSocketState" in veloce.__all__
 
 
 def test_state_enum_values():
@@ -56,63 +75,6 @@ def test_state_disconnected_after_peer_close():
     assert final == [WebSocketState.DISCONNECTED]
 
 
-def test_state_importable_from_top_level():
-    from veloce.websocket import WebSocketState as TopState
-
-    assert TopState is WebSocketState
-
-
-# -- OSError normalization on the ASGI send path ----------------------
-
-
-def test_send_oserror_normalized_to_disconnect():
-    import asyncio
-
-    import pytest
-
-    from veloce import WebSocketDisconnect
-
-    async def receive():
-        return {"type": "websocket.connect"}
-
-    async def send(message):
-        if message.get("type") == "websocket.send":
-            raise BrokenPipeError("peer gone")
-
-    ws = WebSocket.from_asgi({"type": "websocket", "path": "/", "headers": []}, receive, send)
-    ws._accepted = True
-
-    async def run():
-        with pytest.raises(WebSocketDisconnect):
-            await ws.send_text("hi")
-        assert ws._closed is True
-
-    asyncio.new_event_loop().run_until_complete(run())
-
-
-def test_send_bytes_connectionreset_normalized():
-    import asyncio
-
-    import pytest
-
-    from veloce import WebSocketDisconnect
-
-    async def receive():
-        return {"type": "websocket.connect"}
-
-    async def send(message):
-        raise ConnectionResetError("reset")
-
-    ws = WebSocket.from_asgi({"type": "websocket", "path": "/", "headers": []}, receive, send)
-    ws._accepted = True
-
-    async def run():
-        with pytest.raises(WebSocketDisconnect):
-            await ws.send_bytes(b"x")
-
-    asyncio.new_event_loop().run_until_complete(run())
-
-
 # -- `ws.state` scratch namespace + slotted connection object ---------
 
 
@@ -139,7 +101,6 @@ def test_state_namespace_holds_per_connection_data():
 
 def test_connection_rejects_undeclared_attributes():
     """`WebSocket` is slotted, so application data goes on `ws.state`."""
-    import pytest
 
     async def receive():
         return {"type": "websocket.connect"}

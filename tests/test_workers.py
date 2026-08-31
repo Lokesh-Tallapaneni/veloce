@@ -15,11 +15,13 @@ import asyncio
 import functools
 import importlib
 import ssl
+import sys
+import threading
 
 import pytest
 
 from veloce import Veloce
-from veloce.workers import build_protocol_factory, build_ssl_context
+from veloce.workers import VeloceWorker, build_protocol_factory, build_ssl_context
 
 
 def test_import_veloce_succeeds_without_gunicorn() -> None:
@@ -39,7 +41,6 @@ def test_import_workers_module_succeeds_without_gunicorn() -> None:
 def test_worker_class_is_importable_by_path() -> None:
     # `gunicorn ... -k veloce.workers.VeloceWorker` resolves the class by this
     # exact dotted path; assert it imports and is a class.
-    from veloce.workers import VeloceWorker
 
     assert isinstance(VeloceWorker, type)
 
@@ -91,8 +92,6 @@ def test_worker_subclasses_gunicorn_base_when_available() -> None:
     # real gunicorn base class so process supervision plugs in.
     pytest.importorskip("gunicorn")
     from gunicorn.workers.base import Worker
-
-    from veloce.workers import VeloceWorker
 
     assert issubclass(VeloceWorker, Worker)
 
@@ -168,9 +167,20 @@ def _write_self_signed_cert(tmp_path):
     return str(cert_path), str(key_path)
 
 
-def test_build_ssl_context_loads_valid_cert_chain(tmp_path) -> None:
+@pytest.fixture(scope="session")
+def self_signed_cert(tmp_path_factory) -> tuple[str, str]:
+    """One throwaway chain for the five tests that just need a valid one.
+
+    Session-scoped because none of them mutates it, and a fresh RSA-2048 keygen
+    per test was most of what those tests spent their time on. Sync, so the
+    function-scoped fixture loop policy does not apply.
+    """
     pytest.importorskip("cryptography")
-    certfile, keyfile = _write_self_signed_cert(tmp_path)
+    return _write_self_signed_cert(tmp_path_factory.mktemp("tls"))
+
+
+def test_build_ssl_context_loads_valid_cert_chain(self_signed_cert) -> None:
+    certfile, keyfile = self_signed_cert
 
     context = build_ssl_context({"certfile": certfile, "keyfile": keyfile})
 
@@ -179,9 +189,8 @@ def test_build_ssl_context_loads_valid_cert_chain(tmp_path) -> None:
     assert context.verify_mode == ssl.CERT_NONE
 
 
-def test_build_ssl_context_honours_explicit_cert_reqs(tmp_path) -> None:
-    pytest.importorskip("cryptography")
-    certfile, keyfile = _write_self_signed_cert(tmp_path)
+def test_build_ssl_context_honours_explicit_cert_reqs(self_signed_cert) -> None:
+    certfile, keyfile = self_signed_cert
 
     context = build_ssl_context(
         {
@@ -206,48 +215,90 @@ def test_protocol_request_complete_hook_defaults_none() -> None:
     assert HttpProtocol.on_request_complete is None
 
 
-def test_recycling_counter_logic_trips_at_threshold() -> None:
-    # Model VeloceWorker._count_request without instantiating the worker (which
-    # needs gunicorn): nr increments per request and alive clears at the cap.
-    class _Counter:
-        def __init__(self, max_requests: int) -> None:
-            self.nr = 0
-            self.max_requests = max_requests
-            self.alive = True
+class _RecyclingStub:
+    """The state `VeloceWorker._count_request` touches, without gunicorn.
 
-        def count(self) -> None:
-            self.nr += 1
-            if self.max_requests and self.nr >= self.max_requests:
-                self.alive = False
+    The method is called unbound against this. Modelling the *logic* in the test
+    instead - which is what these tests used to do - meant the shipped method was
+    never executed, so `self._stop.set()` was not covered at all and the two
+    copies could disagree without anything failing.
+    """
 
-    c = _Counter(max_requests=3)
-    c.count()
-    c.count()
-    assert c.alive is True
-    assert c.nr == 2
-    c.count()
-    assert c.alive is False
-    assert c.nr == 3
+    def __init__(self, max_requests: int) -> None:
+        self.nr = 0
+        self.max_requests = max_requests
+        self.alive = True
+        self._stop = threading.Event()
+
+    def count(self) -> None:
+        VeloceWorker._count_request(self)
+
+
+def test_recycling_counter_trips_at_threshold() -> None:
+    worker = _RecyclingStub(max_requests=3)
+    worker.count()
+    worker.count()
+    assert worker.alive is True
+    assert worker.nr == 2
+
+    worker.count()
+    assert worker.alive is False
+    assert worker.nr == 3
+
+
+def test_tripping_the_threshold_wakes_the_heartbeat_loop() -> None:
+    """`_stop` is set so the master can replace the worker promptly.
+
+    The re-implemented counter these tests used omitted this line entirely.
+    """
+    worker = _RecyclingStub(max_requests=1)
+    assert not worker._stop.is_set()
+    worker.count()
+    assert worker._stop.is_set()
+
+
+def test_the_counter_keeps_counting_past_the_threshold() -> None:
+    """A request in flight when the cap trips must still be counted."""
+    worker = _RecyclingStub(max_requests=2)
+    for _ in range(5):
+        worker.count()
+    assert worker.nr == 5
+    assert worker.alive is False
 
 
 def test_recycling_disabled_when_max_requests_zero() -> None:
-    # max_requests == 0 (or sys.maxsize for the disabled case) must never trip.
-    class _Counter:
+    worker = _RecyclingStub(max_requests=0)
+    for _ in range(100):
+        worker.count()
+    assert worker.alive is True
+    assert worker.nr == 100
+    assert not worker._stop.is_set()
+
+
+def test_recycling_disabled_when_max_requests_is_maxsize() -> None:
+    """gunicorn uses `sys.maxsize` for the disabled case, not `0`."""
+    worker = _RecyclingStub(max_requests=sys.maxsize)
+    for _ in range(100):
+        worker.count()
+    assert worker.alive is True
+    assert not worker._stop.is_set()
+
+
+def test_a_missing_max_requests_attribute_does_not_recycle() -> None:
+    """The shipped method reads it with a default; a stub without it must not
+    trip - which the modelled copy could not have shown."""
+
+    class _Bare:
         def __init__(self) -> None:
             self.nr = 0
-            self.max_requests = 0
             self.alive = True
+            self._stop = threading.Event()
 
-        def count(self) -> None:
-            self.nr += 1
-            if self.max_requests and self.nr >= self.max_requests:
-                self.alive = False
-
-    c = _Counter()
-    for _ in range(100):
-        c.count()
-    assert c.alive is True
-    assert c.nr == 100
+    bare = _Bare()
+    for _ in range(10):
+        VeloceWorker._count_request(bare)
+    assert bare.alive is True
+    assert bare.nr == 10
 
 
 def test_protocol_keep_serving_hook_defaults_none() -> None:
@@ -263,7 +314,6 @@ def test_keep_serving_reports_alive_flag() -> None:
     # VeloceWorker._keep_serving returns self.alive so the per-connection serve
     # loop stops draining queued/pipelined requests once recycling clears alive.
     # Exercised without gunicorn by binding the unbound method to a stub.
-    from veloce.workers import VeloceWorker
 
     class _Stub:
         alive = True
@@ -315,7 +365,7 @@ class _ServeStub:
 
     def __init__(self, sockets, fail_after: int) -> None:
         self.sockets = sockets
-        self._server = None
+        self._servers: list[_FakeServer] = []
         self.timeout = 30
         self.alive = True
         self.created: list[_FakeServer] = []
@@ -330,13 +380,16 @@ class _ServeStub:
 
 
 async def test_serve_closes_partial_listeners_when_a_later_bind_fails() -> None:
-    from veloce.workers import VeloceWorker
 
     sockets = [_FakeGSock(object()), _FakeGSock(object()), _FakeGSock(object())]
     stub = _ServeStub(sockets, fail_after=1)
 
     class _Loop:
-        async def create_server(self, factory, sock, ssl):
+        async def create_server(self, factory, sock, backlog, ssl):
+            # `backlog` is positionally required here on purpose: asyncio
+            # re-`listen()`s the socket gunicorn already bound, so omitting it
+            # silently replaced the configured depth with asyncio's default.
+            assert backlog >= 512, backlog
             if len(stub.created) >= stub._fail_after:
                 raise OSError("address already in use")
             server = _FakeServer()
@@ -347,11 +400,11 @@ async def test_serve_closes_partial_listeners_when_a_later_bind_fails() -> None:
         await VeloceWorker._serve(stub, _Loop())
 
     # The one listener that bound before the failure must be closed and awaited,
-    # and never published as self._server (which would survive into _shutdown).
+    # and never published on self._servers (which would survive into _shutdown).
     assert len(stub.created) == 1
     assert stub.created[0].closed is True
     assert stub.created[0].waited is True
-    assert stub._server is None
+    assert stub._servers == []
 
 
 class _CfgStub:
@@ -367,17 +420,13 @@ class _WorkerStub:
 
 
 def test_build_ssl_context_returns_none_when_tls_off() -> None:
-    from veloce.workers import VeloceWorker
 
     worker = _WorkerStub(_CfgStub(is_ssl=False, ssl_options={}))
     assert VeloceWorker._build_ssl_context(worker) is None
 
 
-def test_build_ssl_context_uses_default_factory_without_hook(tmp_path) -> None:
-    pytest.importorskip("cryptography")
-    from veloce.workers import VeloceWorker
-
-    certfile, keyfile = _write_self_signed_cert(tmp_path)
+def test_build_ssl_context_uses_default_factory_without_hook(self_signed_cert) -> None:
+    certfile, keyfile = self_signed_cert
     cfg = _CfgStub(
         is_ssl=True,
         ssl_options={"certfile": certfile, "keyfile": keyfile},
@@ -389,11 +438,8 @@ def test_build_ssl_context_uses_default_factory_without_hook(tmp_path) -> None:
     assert isinstance(context, ssl.SSLContext)
 
 
-def test_build_ssl_context_invokes_customization_hook(tmp_path) -> None:
-    pytest.importorskip("cryptography")
-    from veloce.workers import VeloceWorker
-
-    certfile, keyfile = _write_self_signed_cert(tmp_path)
+def test_build_ssl_context_invokes_customization_hook(self_signed_cert) -> None:
+    certfile, keyfile = self_signed_cert
     seen = {}
 
     def hook(config, default_ssl_context_factory):
@@ -417,11 +463,8 @@ def test_build_ssl_context_invokes_customization_hook(tmp_path) -> None:
     assert seen["config"] is cfg
 
 
-def test_build_ssl_context_rejects_non_context_from_hook(tmp_path) -> None:
-    pytest.importorskip("cryptography")
-    from veloce.workers import VeloceWorker
-
-    certfile, keyfile = _write_self_signed_cert(tmp_path)
+def test_build_ssl_context_rejects_non_context_from_hook(self_signed_cert) -> None:
+    certfile, keyfile = self_signed_cert
 
     def bad_hook(config, default_ssl_context_factory):
         return "not a context"
@@ -441,7 +484,6 @@ def test_build_ssl_context_rejects_non_context_from_hook(tmp_path) -> None:
 def test_build_ssl_context_hook_still_fails_fast_on_missing_cert() -> None:
     # The hook receives a factory; if it calls it with no certfile configured,
     # the fail-fast guard inside build_ssl_context still fires (no cleartext).
-    from veloce.workers import VeloceWorker
 
     def hook(config, default_ssl_context_factory):
         return default_ssl_context_factory()

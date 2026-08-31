@@ -86,3 +86,61 @@ def test_an_unknown_gateway_name_still_raises_attribute_error(statement, target)
     )
     assert out.startswith("raised"), out
     assert "definitely_not_exported" in out
+
+
+# ── The version is read only when it is asked for ────────────────────
+#
+# Reading it walks the installed distribution's metadata files, which a cold
+# interpreter pays for in real time - on every CLI invocation and every
+# serverless cold start, to produce a string almost nothing asks for.
+
+
+def test_importing_veloce_does_not_read_the_package_metadata():
+    assert "importlib.metadata" not in _imported_after("import veloce")
+
+
+def test_the_version_still_resolves_on_access():
+    out = _run(
+        "import veloce",
+        "from importlib.metadata import version",
+        "print(veloce.__version__ == version('veloceframework'))",
+    )
+    assert out.strip() == "True"
+
+
+def test_the_version_is_importable_by_name():
+    """`from veloce import __version__` goes through the module `__getattr__`."""
+    out = _run("from veloce import __version__", "print(bool(__version__))")
+    assert out.strip() == "True"
+
+
+def test_reading_the_version_caches_it():
+    """The metadata walk happens once, not on every access."""
+    out = _run(
+        "import veloce",
+        "print('__version__' in vars(veloce))",
+        "veloce.__version__",
+        "print('__version__' in vars(veloce))",
+    )
+    assert out.split() == ["False", "True"]
+
+
+def test_the_cli_and_the_package_report_the_same_version():
+    """Two spellings, one resolver - their fallbacks had drifted apart."""
+    out = _run(
+        "import veloce",
+        "from veloce.cli import _resolve_version",
+        "print(_resolve_version() == veloce.__version__)",
+    )
+    assert out.strip() == "True"
+
+
+def test_an_unreadable_metadata_store_falls_back_rather_than_failing():
+    """A version string is never worth failing an import over."""
+    out = _run(
+        "import importlib.metadata as md",
+        "md.version = lambda name: (_ for _ in ()).throw(md.PackageNotFoundError(name))",
+        "from veloce._version import UNKNOWN_VERSION, resolve_version",
+        "print(resolve_version() == UNKNOWN_VERSION)",
+    )
+    assert out.strip() == "True"

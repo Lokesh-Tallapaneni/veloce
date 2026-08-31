@@ -1,20 +1,20 @@
-"""BaseHTTPMiddleware tests (M9)."""
+"""BaseHTTPMiddleware tests."""
 
 from __future__ import annotations
 
 import pytest
 
+from tests.conftest import make_request
 from veloce import BaseHTTPMiddleware, Request, Veloce
 
 
 def _req(path: str = "/x") -> Request:
-    return Request(method="GET", path=path, query_string="", headers={}, body=b"")
+    return make_request(method="GET", path=path, query_string="", headers={}, body=b"")
 
 
 # ── Subclass-based usage ──────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_subclass_dispatch_runs_around_handler():
     events: list[str] = []
 
@@ -38,7 +38,6 @@ async def test_subclass_dispatch_runs_around_handler():
     assert events == ["before", "handler", "after"]
 
 
-@pytest.mark.asyncio
 async def test_subclass_can_mutate_response_headers():
     class HeaderMW(BaseHTTPMiddleware):
         async def dispatch(self, request, call_next):
@@ -60,7 +59,6 @@ async def test_subclass_can_mutate_response_headers():
 # ── Functional usage via dispatch= ───────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_functional_dispatch_via_init_kwarg():
     """`BaseHTTPMiddleware(dispatch=fn)` binds a bare function as dispatch."""
 
@@ -83,7 +81,6 @@ async def test_functional_dispatch_via_init_kwarg():
 # ── Class registration (auto-instantiation) ──────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_add_http_middleware_accepts_a_class():
     """Passing a class to `add_http_middleware` instantiates it with no args."""
 
@@ -113,7 +110,6 @@ def test_add_http_middleware_rejects_non_callable():
 # ── Composition: multiple middlewares chain ──────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_multiple_class_middlewares_compose_in_registration_order():
     events: list[str] = []
 
@@ -145,7 +141,6 @@ async def test_multiple_class_middlewares_compose_in_registration_order():
     assert events == ["A-in", "B-in", "H", "B-out", "A-out"]
 
 
-@pytest.mark.asyncio
 async def test_class_middleware_composes_with_decorator_middleware():
     """`add_http_middleware` and `@app.middleware("http")` share the same chain."""
     events: list[str] = []
@@ -180,7 +175,6 @@ async def test_class_middleware_composes_with_decorator_middleware():
 # ── Sanity ────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_default_dispatch_is_passthrough():
     """A bare `BaseHTTPMiddleware()` (no override) just calls through."""
     app = Veloce(debug=True, openapi_url=None)

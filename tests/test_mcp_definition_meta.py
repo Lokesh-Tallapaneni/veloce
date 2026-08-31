@@ -12,7 +12,7 @@ than measured — a listing must not have to read every resource to describe it.
 
 from __future__ import annotations
 
-from veloce import Veloce
+from veloce import APIRouter, Veloce
 from veloce.contrib.mcp.registry import build_registry
 from veloce.contrib.mcp.resources import build_resource_registry
 from veloce.contrib.mcp.server import MCPServer
@@ -126,7 +126,6 @@ async def test_a_size_of_zero_is_still_published():
 
 
 async def test_the_declared_fields_survive_a_router_merge():
-    from veloce import APIRouter
 
     router = APIRouter(prefix="/sub")
 

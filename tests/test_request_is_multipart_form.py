@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from tests.conftest import make_request
 from veloce import Request
 
 
@@ -11,7 +12,7 @@ def _req(ct: str = "", encoding: str = "") -> Request:
         headers["content-type"] = ct
     if encoding:
         headers["content-encoding"] = encoding
-    return Request(method="POST", path="/x", query_string="", headers=headers, body=b"")
+    return make_request(method="POST", path="/x", query_string="", headers=headers, body=b"")
 
 
 # ── is_multipart ─────────────────────────────────────────────────────
@@ -61,3 +62,40 @@ def test_content_encoding_lowercased():
 
 def test_content_encoding_stripped():
     assert _req(encoding="  br  ").content_encoding == "br"
+
+
+# ── multipart form parsing preserves duplicates ────────────────
+#
+# Moved here from `test_formdata_multidict.py`, which covered three unrelated
+# subsystems behind opaque tracker tags.
+
+
+def _multipart_body(boundary: str, parts: list[tuple[str, str]]) -> bytes:
+    """Build a minimal multipart body. parts = [(name, value), ...]."""
+    lines = []
+    for name, value in parts:
+        lines.append(f"--{boundary}")
+        lines.append(f'Content-Disposition: form-data; name="{name}"')
+        lines.append("")
+        lines.append(value)
+    lines.append(f"--{boundary}--")
+    lines.append("")
+    return "\r\n".join(lines).encode()
+
+
+async def test_multipart_form_repeated_fields():
+    boundary = "veloceboundary123"
+    body = _multipart_body(
+        boundary,
+        [("tag", "a"), ("tag", "b"), ("name", "alice")],
+    )
+    req = make_request(
+        method="POST",
+        path="/x",
+        query_string="",
+        headers={"content-type": f"multipart/form-data; boundary={boundary}"},
+        body=body,
+    )
+    form = await req.form()
+    assert form.getlist("tag") == ["a", "b"]
+    assert form["name"] == "alice"

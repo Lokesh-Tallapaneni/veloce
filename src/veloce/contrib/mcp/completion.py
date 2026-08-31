@@ -45,6 +45,15 @@ _MAX_COMPLETION_VALUES = 100
 # materializing an arbitrarily large dict.
 _MAX_CONTEXT_ARGS = 1000
 
+# The signature every registered completer satisfies: the partial value the user
+# has typed, plus the sibling argument values already resolved. The return is
+# `Any` because a completer may be sync or async and may answer with either a
+# `CompletionResult` or a bare sequence of strings; `_shape_completion` narrows it.
+_Completer = Callable[[str, dict[str, str]], Any]
+
+
+# ── Completion results ────────────────────────────────────
+
 
 @dataclass(slots=True)
 class CompletionResult:
@@ -57,9 +66,14 @@ class CompletionResult:
     Usage::
 
         @app.mcp_completer(prompt="greet", argument="name")
-        async def complete_name(value: str) -> CompletionResult:
-            matches = await lookup_names(prefix=value)
+        async def complete_name(value: str, siblings: dict[str, str]) -> CompletionResult:
+            matches = await lookup_names(prefix=value, scope=siblings)
             return CompletionResult(matches[:100], total=len(matches))
+
+    A completer is always called with two arguments - the partial value, and the
+    sibling argument values the client has already filled - so it must declare
+    both. Declaring only the value raises at call time and surfaces as an
+    internal error.
     """
 
     values: Sequence[str]
@@ -99,6 +113,9 @@ def _shape_completion(result: Sequence[str] | CompletionResult) -> dict[str, Any
     return {"completion": completion}
 
 
+# ── Registration ──────────────────────────────────────────
+
+
 def attach_completers(app: Any, prompts: PromptRegistry, resources: ResourceRegistry) -> None:
     """Bind every `@app.mcp_completer` registration onto its target descriptor.
 
@@ -108,7 +125,9 @@ def attach_completers(app: Any, prompts: PromptRegistry, resources: ResourceRegi
     the same argument raises at mount time so the misconfiguration surfaces before
     a client connects.
     """
-    for kind, key, argument, completer in getattr(app, "_mcp_completers", ()):
+    for registration in getattr(app, "_mcp_completers", ()):
+        kind, key = registration.kind, registration.key
+        argument, completer = registration.argument, registration.completer
         if kind == "prompt":
             prompt = prompts.get(key)
             if prompt is None:
@@ -130,10 +149,10 @@ def attach_completers(app: Any, prompts: PromptRegistry, resources: ResourceRegi
 
 
 def _attach_one(
-    store: dict[str, Callable],
+    store: dict[str, _Completer],
     key: str,
     argument: str,
-    completer: Callable,
+    completer: _Completer,
     valid_arguments: set[str],
     kind: str,
 ) -> None:
@@ -148,6 +167,9 @@ def _attach_one(
     store[argument] = completer
 
 
+# ── The capability ────────────────────────────────────────
+
+
 class CompletionsCapability(_ServerCapability):
     """The ``completion/complete`` method, advertised when a completer exists.
 
@@ -158,7 +180,7 @@ class CompletionsCapability(_ServerCapability):
 
     __slots__ = ()
 
-    def advertise(self) -> dict[str, Any] | None:
+    def advertise(self, *, modern: bool = False) -> dict[str, Any] | None:
         if not self._has_completers():
             return None
         return {"completions": {}}
@@ -190,7 +212,7 @@ class CompletionsCapability(_ServerCapability):
             result = await offload(completer, value, context)
         return _shape_completion(result)
 
-    def _resolve(self, params: dict[str, Any]) -> tuple[Callable | None, str, dict[str, str]]:
+    def _resolve(self, params: dict[str, Any]) -> tuple[_Completer | None, str, dict[str, str]]:
         """Resolve a request into its completer, partial value, and sibling context.
 
         The completer is `None` when the named argument carries none (the empty
@@ -214,7 +236,7 @@ class CompletionsCapability(_ServerCapability):
         completers = self._completers_for_ref(ref)
         return completers.get(name), value, context
 
-    def _completers_for_ref(self, ref: dict[str, Any]) -> dict[str, Callable]:
+    def _completers_for_ref(self, ref: dict[str, Any]) -> dict[str, _Completer]:
         """Return the completer mapping for a ``ref/prompt`` / ``ref/resource``.
 
         An unknown primitive yields an empty mapping, so the request answers with

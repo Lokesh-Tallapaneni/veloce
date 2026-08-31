@@ -119,7 +119,8 @@ Veloce ships the following middleware, all importable from the top-level
 | Middleware                  | Purpose                                                       |
 |-----------------------------|---------------------------------------------------------------|
 | `CORSMiddleware`            | Cross-Origin Resource Sharing                                 |
-| `GZipMiddleware`            | Response compression                                          |
+| `CompressionMiddleware`     | Response compression, negotiated across zstd / brotli / gzip  |
+| `GZipMiddleware`            | Response compression, gzip only                               |
 | `CSRFMiddleware`            | Double-submit-cookie CSRF protection                          |
 | `SessionMiddleware`         | Signed, timestamped session cookies                           |
 | `ServerSessionMiddleware`   | Server-side sessions; the cookie carries only an opaque id    |
@@ -139,8 +140,15 @@ are also exported, along with the `rotate_csrf_token` helper used with
 `CSRFMiddleware`.
 
 `SessionMiddleware` and `ServerSessionMiddleware` have a dedicated guide —
-see [Sessions](sessions.md). For configuring cookie attributes through
-`app.config`, see [Configuration](configuration.md#built-in-defaults).
+see [Sessions](sessions.md). Cookie attributes are constructor arguments
+(`secure=`, `httponly=`, `samesite=`, `cookie_name=`), not `app.config` keys.
+
+!!! warning "`SESSION_COOKIE_*` keys are retired and stop startup"
+
+    Setting `SESSION_COOKIE_NAME`, `SESSION_COOKIE_SECURE`,
+    `SESSION_COOKIE_HTTPONLY` or `SESSION_COOKIE_SAMESITE` now raises
+    `AuditFailed` at startup rather than being ignored. Pass the value to the
+    middleware instead — see [Sessions](sessions.md).
 
 ### Trusted hosts
 
@@ -226,6 +234,72 @@ app.add_middleware(ConditionalGetMiddleware())
 
 `StreamingResponse` bodies are not buffered for ETag synthesis.
 
+### Choosing a content coding
+
+`GZipMiddleware` offers gzip and nothing else, so a browser sending
+`Accept-Encoding: gzip, deflate, br, zstd` — which every current browser does —
+is served the oldest coding it offered. `CompressionMiddleware` offers the
+newer ones too and picks per response:
+
+```python
+from veloce import CompressionMiddleware, Veloce
+
+app = Veloce()
+app.add_middleware(CompressionMiddleware())
+```
+
+Brotli and zstd each need a package, so install what you want to offer:
+
+```bash
+pip install "veloceframework[brotli]"     # adds br
+pip install "veloceframework[zstd]"       # adds zstd
+```
+
+A coding whose package is missing is simply not offered — the middleware still
+serves gzip. Asking for *only* a missing one raises at startup, naming the
+package, rather than quietly serving every response uncompressed.
+
+On an 18 KB JSON response, measured on the machine this was written on:
+
+| Coding | Level | Size | vs gzip | Encode |
+| --- | --- | --- | --- | --- |
+| gzip | 6 | 1,627 B | — | 149 µs |
+| br | 4 | 735 B | 2.2x smaller | 329 µs |
+| zstd | 3 | 834 B | 2.0x smaller | 34 µs |
+
+Your payloads will differ — compression ratio is a property of the data — so
+treat this as the shape of the trade-off, not a promise.
+
+!!! warning "Brotli's default quality is not a serving default"
+    `brotli` defaults to quality 11. On the response above that costs **81x**
+    the CPU of quality 4 to save a further 1.8% of size — a setting for assets
+    compressed once at build time, not for a response being produced now. The
+    middleware defaults `br` to quality 4. Override per coding with `levels=`,
+    whose scales differ (gzip 1–9, brotli 0–11, zstd 1–22):
+
+    ```python
+    app.add_middleware(CompressionMiddleware(levels={"br": 5, "zstd": 6}))
+    ```
+
+Which coding is chosen follows the client first. `Accept-Encoding` q-values
+rank the candidates (RFC 9110 §12.5.3); among equally-weighted ones the
+`algorithms` order decides, so a deployment states its own preference for the
+clients that express none:
+
+```python
+# Prefer speed: zstd first, gzip as the fallback. No brotli offered at all.
+app.add_middleware(CompressionMiddleware(algorithms=("zstd", "gzip")))
+```
+
+`q=0` is a refusal, and a request refusing everything on offer is served
+uncompressed. Every response carries `Vary: Accept-Encoding` whether or not it
+was compressed, so a cache never serves one client's coding to another.
+
+!!! note "Added in version 0.18.0"
+    `CompressionMiddleware`. `GZipMiddleware` is unchanged — it now subclasses
+    it with the coding pinned to gzip, so existing stacks behave exactly as
+    before.
+
 ### Streaming compression
 
 `GZipMiddleware` also compresses streaming responses chunk-by-chunk
@@ -272,6 +346,15 @@ from veloce import RateLimitMiddleware
 app.add_middleware(RateLimitMiddleware(max_requests=100, window_seconds=60))
 ```
 
+Per-client state is process-local and size-bounded: `max_keys` (default
+`100_000`) caps how many client keys are tracked at once, so a caller cycling
+source addresses cannot grow the limiter's memory without limit. When the cap is
+reached, expired entries are dropped first and then the oldest by arrival — never
+the client that triggered the eviction, which would otherwise be a way to flush
+another client's counter. The same knob applies to the default backend on the
+`strategy=` form below; if you pass your own `backend`, set its `max_keys`
+instead.
+
 Pass a `strategy` to choose the algorithm, and a `backend` to choose where the
 per-client state lives:
 
@@ -309,6 +392,32 @@ Put `@rate_limit` **below** the route decorator so the route registers the tagge
 handler. A decorated route gets its own per-client counter, independent of the
 default budget.
 
+The tag is honoured whichever way the middleware was constructed. It works the
+same above a bare `max_requests`/`window_seconds` limiter as it does above a
+`strategy=`:
+
+```python
+from veloce import FixedWindow, RateLimitMiddleware, rate_limit
+
+app.add_middleware(RateLimitMiddleware(max_requests=1000, window_seconds=60))
+
+
+@app.post("/login")
+@rate_limit(FixedWindow(limit=5, window=60))
+async def login(request):
+    ...
+```
+
+A thousand requests a minute for the app, five a minute for `/login`, counted
+separately — spending the login budget leaves the rest of the app untouched, and
+vice versa.
+
+!!! note "Changed in version 0.18.0"
+    `@rate_limit` above a `max_requests=`/`window_seconds=` limiter used to be
+    collected by nothing and dropped in silence, so the route ran unthrottled.
+    If you have a decorated route on that form of the middleware, it is being
+    enforced from this version on — check the limit is the one you want.
+
 For handlers you cannot decorate, the `overrides` map is the central alternative.
 Its key is the route's **full** path template as matched at runtime (the value of
 `request.url_rule`), so a route on a blueprint with `url_prefix="/api"` uses
@@ -325,8 +434,9 @@ app.add_middleware(
 )
 ```
 
-An override key that matches no registered route raises on the first request, so
-a wrong prefix fails loudly rather than silently doing nothing. An explicit
+An override key that matches no registered route stops **startup** with
+`AuditFailed`, so a wrong prefix fails before any request is served rather than
+silently doing nothing. An explicit
 `overrides` entry wins over a `@rate_limit` tag on the same route.
 
 !!! note "Per-route limits resolve against the entry route"
@@ -443,11 +553,37 @@ works — `CSRFMiddleware`, `RateLimitMiddleware`, `TrustedHostMiddleware`, and
 
 ## Excluding middleware per route
 
-A route can opt out of named middleware with `exclude_middleware`. Each entry
-is matched against a middleware's name, which defaults to its class name; pass
-`name=` to the middleware when two instances of the same class must be
-addressed independently. The opt-out applies to both the request and response
-phases, so a skipped middleware never runs for that route at all.
+A route can opt out of middleware with `exclude_middleware`. Each entry is
+either the middleware **class** or its resolved **name**:
+
+```python
+from veloce import CSRFMiddleware, Veloce
+
+app = Veloce()
+
+
+@app.post("/webhooks/stripe", exclude_middleware=[CSRFMiddleware])
+async def stripe_webhook():
+    return {"ok": True}
+```
+
+Prefer the class. It matches by type, so it covers a subclass of that
+middleware, and it cannot be misspelled — a wrong class is an error where you
+write it, while a wrong name is an exclusion that silently matches nothing and
+leaves the middleware running.
+
+A string matches a middleware's resolved name, which defaults to its class name;
+pass `name=` to the middleware when two instances of the same class must be
+addressed independently, and exclude them by those names. A string entry matches
+that one name exactly and does **not** reach subclasses.
+
+The opt-out applies to both the request and response phases, so a skipped
+middleware never runs for that route at all.
+
+!!! note "Changed in version 0.13"
+    `exclude_middleware` accepts middleware classes. An entry that is neither a
+    class nor a string now raises `TypeError` at registration; it was previously
+    accepted and matched nothing.
 
 The exclusion set is keyed on the route matched at dispatch entry. The same set
 of middleware that runs `process_request` runs `process_response`, so setup and
@@ -499,11 +635,32 @@ This works on `@app.route`/`@app.get`/`@app.post`/… and the imperative
 `add_api_route`, and on `Blueprint` and `Router` routes. Routes that declare no
 exclusions run every registered middleware and pay no extra per-request cost.
 
+## Inspecting the pipeline
+
+`app.middlewares` is the registered `Middleware` instances as a tuple, in the
+order they will run - registration order, or priority order when priorities are
+set. It answers "is this installed?" without reaching into the app:
+
+```python
+from veloce import CORSMiddleware, Veloce
+
+app = Veloce()
+
+if not any(isinstance(m, CORSMiddleware) for m in app.middlewares):
+    app.add_middleware(CORSMiddleware, allow_origins=["https://example.com"])
+```
+
+It is a snapshot, and a tuple: adding middleware must go through
+`add_middleware()`, which is what maintains the ordering and the compiled
+pipeline. Standard ASGI middleware classes do not appear here - they wrap the
+application when the ASGI stack is assembled rather than running in this
+pipeline.
+
 ## See also
 
 - [CORS](cors.md) — the full `CORSMiddleware` parameter reference.
 - [Sessions](sessions.md) — `SessionMiddleware` and `ServerSessionMiddleware`.
-- [Configuration](configuration.md) — the `SESSION_COOKIE_*` keys.
+- [Configuration](configuration.md) — `SECRET_KEY` and the app-level defaults.
 - [Deployment](deployment.md)
 - [Routing](routing.md)
 - [Dependency injection](dependency-injection.md)

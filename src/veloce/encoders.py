@@ -264,6 +264,8 @@ def _encode_seq(
     *,
     include: Any,
     exclude: Any,
+    exclude_unset: bool,
+    exclude_defaults: bool,
     exclude_none: bool,
     custom_encoder: Any,
     _seen: set[int] | None,
@@ -273,14 +275,22 @@ def _encode_seq(
     Shared by the list/tuple/set/deque/generator branches of
     `jsonable_encoder` so the identical per-element recursion lives in one
     place instead of five copies.
+
+    Every recursion site passes the six filters positionally rather than by
+    keyword. They are positional-or-keyword on `jsonable_encoder`, and the
+    positional call skips CPython's per-argument keyword match - worth
+    1-3% on encode-heavy payloads, which is why the spelling is not
+    cosmetic.
     """
     return [
         jsonable_encoder(
             item,
-            include=include,
-            exclude=exclude,
-            exclude_none=exclude_none,
-            custom_encoder=custom_encoder,
+            include,
+            exclude,
+            exclude_unset,
+            exclude_defaults,
+            exclude_none,
+            custom_encoder,
             _seen=_seen,
         )
         for item in items
@@ -303,11 +313,19 @@ def jsonable_encoder(
     Handles Pydantic models, dataclasses, datetime, Decimal, UUID, Enum, Path,
     sets, frozensets, and nested structures.
 
-    `include` / `exclude` apply to dict keys at **every depth** - passing
-    `exclude={"password"}` strips a `password` key wherever it appears
-    in the structure, not only at the top level. `exclude_none` likewise
-    drops `None`-valued keys from plain dicts at every depth, not only from
-    a top-level model's own fields.
+    Every filter applies at **every depth**, not only to the top-level
+    object. `exclude={"password"}` strips a `password` key wherever it
+    appears in the structure; `exclude_none` drops `None`-valued keys at
+    any depth; and `exclude_unset` / `exclude_defaults` reach a model
+    nested inside a dict or list, not just one passed in directly.
+
+    `include` is the same rule read the other way: a whitelist of key names
+    applied at every depth, not a selection of top-level fields. A nesting
+    key must therefore be listed too, or the branch holding the value is
+    dropped - `jsonable_encoder(outer, include={"a"})` gives `{"a": {}}`,
+    while `include={"a", "b"}` keeps `a`'s `b`. This differs from Pydantic's
+    `model_dump(include=...)`, which selects fields at one level; pass the
+    nested key names when you want them.
 
     Raises `ValueError` on a self-referential object graph (a container
     that transitively contains itself) instead of recursing until the
@@ -401,24 +419,32 @@ def jsonable_encoder(
                 kwargs["exclude_defaults"] = True
             if exclude_none:
                 kwargs["exclude_none"] = True
-            # model_dump already honours the filters for the model's own
-            # fields, but a field whose value is itself a plain dict must
-            # still have `exclude_none` applied during re-encoding, so the
-            # filter is forwarded rather than dropped.
+            # `model_dump` already honours the filters for the model's own
+            # fields, but a field whose value is a plain dict or a nested model
+            # is re-encoded here, and the filters must reach it too - that is
+            # what "at every depth" means, and dropping `include`/`exclude` left
+            # a nested `password` in the output. The dataclass branch below
+            # forwards all three; this one now agrees.
             return jsonable_encoder(
                 obj.model_dump(**kwargs),
-                exclude_none=exclude_none,
-                custom_encoder=custom_encoder,
+                include,
+                exclude,
+                exclude_unset,
+                exclude_defaults,
+                exclude_none,
+                custom_encoder,
                 _seen=_seen,
             )
 
         if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
             return jsonable_encoder(
                 dataclasses.asdict(obj),
-                include=include,
-                exclude=exclude,
-                exclude_none=exclude_none,
-                custom_encoder=custom_encoder,
+                include,
+                exclude,
+                exclude_unset,
+                exclude_defaults,
+                exclude_none,
+                custom_encoder,
                 _seen=_seen,
             )
 
@@ -436,10 +462,12 @@ def jsonable_encoder(
                 # honour them too - matches the dataclass branch above.
                 result[str_key] = jsonable_encoder(
                     value,
-                    include=include,
-                    exclude=exclude,
-                    exclude_none=exclude_none,
-                    custom_encoder=custom_encoder,
+                    include,
+                    exclude,
+                    exclude_unset,
+                    exclude_defaults,
+                    exclude_none,
+                    custom_encoder,
                     _seen=_seen,
                 )
             return result
@@ -448,42 +476,22 @@ def jsonable_encoder(
         # iterable form differs (sets sort for deterministic output). They share
         # the module-level `_encode_seq` helper so the shared body costs no
         # per-call closure allocation.
-        if isinstance(obj, (list, tuple)):
+        # Every sequence kind encodes the same way; only a set needs ordering
+        # first, and `sorted(obj, key=str)` is what keeps its output
+        # deterministic across runs.
+        if isinstance(obj, (list, tuple, deque, GeneratorType)):
+            items: Any = obj
+        elif isinstance(obj, (set, frozenset)):
+            items = sorted(obj, key=str)
+        else:
+            items = None
+        if items is not None:
             return _encode_seq(
-                obj,
+                items,
                 include=include,
                 exclude=exclude,
-                exclude_none=exclude_none,
-                custom_encoder=custom_encoder,
-                _seen=_seen,
-            )
-
-        if isinstance(obj, (set, frozenset)):
-            # `sorted(obj, key=str)` keeps set output deterministic.
-            return _encode_seq(
-                sorted(obj, key=str),
-                include=include,
-                exclude=exclude,
-                exclude_none=exclude_none,
-                custom_encoder=custom_encoder,
-                _seen=_seen,
-            )
-
-        if isinstance(obj, deque):
-            return _encode_seq(
-                obj,
-                include=include,
-                exclude=exclude,
-                exclude_none=exclude_none,
-                custom_encoder=custom_encoder,
-                _seen=_seen,
-            )
-
-        if isinstance(obj, GeneratorType):
-            return _encode_seq(
-                obj,
-                include=include,
-                exclude=exclude,
+                exclude_unset=exclude_unset,
+                exclude_defaults=exclude_defaults,
                 exclude_none=exclude_none,
                 custom_encoder=custom_encoder,
                 _seen=_seen,
@@ -493,9 +501,12 @@ def jsonable_encoder(
         try:
             return jsonable_encoder(
                 _public_vars(obj),
-                include=include,
-                exclude=exclude,
-                custom_encoder=custom_encoder,
+                include,
+                exclude,
+                exclude_unset,
+                exclude_defaults,
+                exclude_none,
+                custom_encoder,
                 _seen=_seen,
             )
         except TypeError:

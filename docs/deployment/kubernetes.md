@@ -88,8 +88,11 @@ spec:
             failureThreshold: 30
 ```
 
-`terminationGracePeriodSeconds` must exceed your longest in-flight request plus
-the `preStop` sleep, or Kubernetes `SIGKILL`s the container mid-request.
+`terminationGracePeriodSeconds` must exceed the `preStop` sleep plus both
+shutdown budgets, which run in sequence: `GRACEFUL_DRAIN_TIMEOUT` (default 30 s)
+for in-flight requests, then `GRACEFUL_TASK_TIMEOUT` (default 10 s) for
+`app.spawn(...)` background tasks. Below that sum, Kubernetes `SIGKILL`s the
+container mid-shutdown.
 
 ## Startup probes
 

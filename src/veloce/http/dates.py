@@ -18,9 +18,10 @@ from datetime import date, datetime, timezone
 from email.utils import formatdate, parsedate_to_datetime
 from time import struct_time, time
 
-# `http_date(None)` is the per-response `Date:` header. Formatting that
-# string costs ~3 us on every response but only changes once a second;
-# cache the result keyed by the whole-second bucket.
+# `http_date(None)` formats the current time, which changes only once a second;
+# the result is cached keyed by the whole-second bucket so a caller formatting it
+# repeatedly pays once. Veloce emits no `Date:` header of its own on either
+# transport, so nothing on the response path reaches this.
 _now_cache: tuple[int, str] = (-1, "")
 
 

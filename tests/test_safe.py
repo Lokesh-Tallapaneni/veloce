@@ -7,6 +7,7 @@ import sys
 
 import pytest
 
+from veloce import constant_time_compare as exported
 from veloce.safe import constant_time_compare, safe_join, secure_filename
 
 # ── constant_time_compare (S8) ───────────────────────────────────────
@@ -30,7 +31,6 @@ def test_constant_time_compare_type_mismatch_is_false():
 
 
 def test_constant_time_compare_exported_from_package():
-    from veloce import constant_time_compare as exported
 
     assert exported is constant_time_compare
 
@@ -207,6 +207,31 @@ def test_safe_join_equality_branch_with_no_components(monkeypatch):
     assert safe_join("/srv/uploads") == base
 
 
+def test_safe_join_mixed_case_descendant(monkeypatch):
+    """With case-folding forced, mixed-case base/joined still resolves."""
+    monkeypatch.setattr(os.path, "normcase", str.lower)
+    result = safe_join("/SRV/uploads", "Alice/file.txt")
+    assert result is not None
+    assert result.lower().endswith(os.path.join("uploads", "alice", "file.txt").lower())
+
+
+def test_safe_join_same_directory_returns_base():
+    """No-op join (single empty-relative component) stays inside the base."""
+    result = safe_join("/srv/uploads", "")
+    assert result == os.path.abspath("/srv/uploads")
+
+
+def test_safe_join_sibling_prefix_collision_rejected(monkeypatch):
+    """`/srv/a` must not accept `/srv/abc` even with case-folding active."""
+    monkeypatch.setattr(os.path, "normcase", str.lower)
+    base = os.path.abspath("/srv/a")
+    sibling = os.path.abspath("/srv/abc")
+    # Construct via abspath then re-derive the relative bit so the joined
+    # path actually lands at the sibling directory.
+    rel = os.path.relpath(sibling, base)
+    assert safe_join(base, rel) is None
+
+
 # ── safe_join Windows device-name rejection ──────────────────────────
 
 
@@ -235,3 +260,9 @@ def test_safe_join_device_guard_is_noop_off_windows(monkeypatch):
     # On POSIX (_IS_NT False) device names are passed through untouched.
     monkeypatch.setattr("veloce.safe._IS_NT", False)
     assert safe_join("/srv/static", "COM1") is not None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX root semantics")
+def test_safe_join_root_directory_allows_children() -> None:
+    assert safe_join("/", "etc") == "/etc"
+    assert safe_join("/", "etc", "passwd") == "/etc/passwd"

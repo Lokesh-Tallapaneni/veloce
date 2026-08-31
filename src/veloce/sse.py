@@ -7,21 +7,16 @@ import math
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from typing import Any
 
-import orjson
-
 from veloce._constants import (
     HEADER_CACHE_CONTROL,
-    HEADER_CONNECTION,
     HEADER_CONTENT_TYPE,
     HEADER_TRANSFER_ENCODING,
     HEADER_VALUE_CHUNKED,
-    HEADER_VALUE_KEEP_ALIVE,
     HEADER_VALUE_NO_CACHE,
     HEADER_X_ACCEL_BUFFERING,
     MIME_TEXT_EVENT_STREAM,
 )
-from veloce._internal import _encode_response_head
-from veloce.encoders import orjson_default
+from veloce._internal import _write_chunked, dumps_current
 from veloce.http.response import Response
 from veloce.status import HTTP_200_OK
 
@@ -92,10 +87,9 @@ class ServerSentEvent:
         constructor when the payload is already a formatted string.
         """
         return cls(
-            # Use the same orjson fallback the JSON response stack uses, so a
-            # payload that serialises in `JSONResponse`/`app.json` also works
-            # when streamed over SSE (e.g. Decimal, set, Path).
-            data=orjson.dumps(payload, default=orjson_default).decode("utf-8"),
+            # The shared encoder, so a streamed event carries the same JSON
+            # dialect the application's responses do.
+            data=dumps_current(payload).decode("utf-8"),
             event=event,
             id=id,
             retry=retry,
@@ -187,10 +181,14 @@ class EventSourceResponse(Response):
         else:
             self._ping_frame = _PING_FRAME
         hdrs = dict(headers) if headers else {}
+        # `Connection` is deliberately not set here. It is the transport's
+        # decision, and stating it as a response header made it a user header
+        # that outranked the transport - so a native SSE stream, which the
+        # protocol closes when the generator ends, advertised `keep-alive` on a
+        # socket it was about to close. `encode()` takes the answer instead.
         hdrs.update(
             {
                 HEADER_CACHE_CONTROL: HEADER_VALUE_NO_CACHE,
-                HEADER_CONNECTION: HEADER_VALUE_KEEP_ALIVE,
                 HEADER_X_ACCEL_BUFFERING: "no",
             }
         )
@@ -206,10 +204,34 @@ class EventSourceResponse(Response):
         # `bytes` stream - see `_encode_stream`.
         self._stream = self._encode_stream(content)
 
+    def encode(self, keep_alive: bool = True) -> bytes:
+        """Encode the event-stream head.
+
+        `EventSourceResponse` extends `Response`, not `StreamingResponse`, so it
+        inherited the buffered `encode()` - and the native transport calls
+        `encode()` to answer a HEAD. A HEAD on an SSE route therefore advertised
+        `Content-Length: 0` for a resource whose GET streams indefinitely, which
+        a caching intermediary may act on. RFC 9110 Sec. 9.3.2 requires the
+        header section a GET would have produced.
+
+        `stream_to` writes this same head, so the two cannot come to describe
+        the response differently. The shared encoder also applies the
+        bodiless-status rule every other streaming response is held to.
+        """
+        return self._encode_streaming_head(
+            {
+                HEADER_CONTENT_TYPE: self.content_type,
+                HEADER_CACHE_CONTROL: HEADER_VALUE_NO_CACHE,
+                HEADER_TRANSFER_ENCODING: HEADER_VALUE_CHUNKED,
+            },
+            keep_alive,
+        )
+
     async def stream_to(
         self,
         transport: Any,
         drain: Callable[[], Awaitable[None]] | None = None,
+        keep_alive: bool = True,
     ) -> None:
         """Stream SSE events to transport.
 
@@ -219,27 +241,11 @@ class EventSourceResponse(Response):
         instead of growing it without bound. It is a no-op until the buffer
         crosses the high-water mark.
         """
-        default_headers = {
-            HEADER_CONTENT_TYPE: self.content_type,
-            HEADER_CACHE_CONTROL: HEADER_VALUE_NO_CACHE,
-            HEADER_CONNECTION: HEADER_VALUE_KEEP_ALIVE,
-            HEADER_TRANSFER_ENCODING: HEADER_VALUE_CHUNKED,
-        }
-        parts = _encode_response_head(self.status_code, default_headers, self.headers)
-        parts.append("\r\n")
-        transport.write("".join(parts).encode("latin-1"))
-
-        async for chunk in self._stream:
-            # `_stream` is normalised to bytes by `_encode_stream`.
-            # `writelines` keeps the size-line, payload, and trailer as
-            # separate buffers instead of concatenating them into a fresh
-            # bytes object per chunk.
-            size = format(len(chunk), "x").encode("ascii")
-            transport.writelines((size, b"\r\n", chunk, b"\r\n"))
-            if drain is not None:
-                await drain()
-
-        transport.write(b"0\r\n\r\n")
+        transport.write(self.encode(keep_alive=keep_alive))
+        # `_stream` is normalised to bytes by `_encode_stream`, so the shared
+        # chunk writer sees the same `bytes` stream every other streaming
+        # response hands it.
+        await _write_chunked(transport, self._stream, drain)
 
     def _encode_stream(
         self,
@@ -281,10 +287,10 @@ class EventSourceResponse(Response):
         # letting a non-bytes object fall through and crash the chunk writer.
         # A Mapping serialises to a JSON `data:` field; a scalar uses its text.
         # `bool` is a subclass of `int`, so its `True`/`False` text is fine.
-        if isinstance(item, Mapping):
-            data = orjson.dumps(item, default=orjson_default).decode("utf-8")
-        else:
-            data = str(item)
+        # `ServerSentEvent.json` above already goes through the provider; a bare
+        # yielded Mapping took a different encoder in the same file, so one
+        # stream could carry two dialects.
+        data = dumps_current(item).decode("utf-8") if isinstance(item, Mapping) else str(item)
         return ServerSentEvent(data=data).encode()
 
     @classmethod

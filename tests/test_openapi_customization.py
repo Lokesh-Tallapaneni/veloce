@@ -1,12 +1,27 @@
-"""app.openapi() / app.openapi_schema / app.openapi_version ."""
+"""app.openapi() / app.openapi_schema / app.openapi_version.
+
+The module held two test eras. The first is bare functions on `TestClient` and
+`app.openapi()`; the second was four classes that called the **private**
+`app._setup_openapi()`, dispatched through `handle_request(make_request(...))`
+and hand-decoded the body with `orjson.loads(resp.body)` - each marked
+`@pytest.mark.asyncio`, although `asyncio_mode = "auto"` has made that redundant
+for the whole suite.
+
+None of that was about OpenAPI. `TestClient` runs the startup `_setup_openapi`
+was standing in for, `resp.json()` is the decode, and a test that awaits nothing
+does not need to be `async`. The second era is converted to the first, so both
+halves read the same way and neither reaches into the app.
+"""
 
 from __future__ import annotations
 
-import pytest
 from pydantic import BaseModel
 
-from tests.conftest import make_request
+from tests._openapi import document
 from veloce import Request, Veloce
+from veloce.contrib.openapi import get_openapi_schema
+from veloce.middleware.security import CSPMiddleware
+from veloce.testclient import TestClient
 
 
 class _OpenAPIItem(BaseModel):
@@ -85,9 +100,6 @@ def test_openapi_method_overridable_in_subclass():
 
 def test_openapi_json_endpoint_serves_overridden_schema():
     """Setting `app.openapi_schema` makes /openapi.json return that exact dict."""
-    import orjson
-
-    from veloce.testclient import TestClient
 
     app = Veloce()
 
@@ -99,7 +111,7 @@ def test_openapi_json_endpoint_serves_overridden_schema():
     with TestClient(app) as client:
         resp = client.get("/openapi.json")
         assert resp.status_code == 200
-        assert orjson.loads(resp.body)["info"]["title"] == "override"
+        assert resp.json()["info"]["title"] == "override"
 
 
 def test_openapi_schema_mutation_persists():
@@ -131,155 +143,129 @@ def test_redoc_url_none_disables_redoc_only():
     assert client.get("/docs").status_code == 200
 
 
-class TestOpenAPIMetadata:
-    @pytest.mark.asyncio
-    async def test_openapi_with_metadata(self):
-        app = Veloce(
-            title="My API",
-            version="2.0.0",
-            description="A test API",
-            contact={"name": "Dev", "email": "dev@example.com"},
-            license_info={"name": "MIT"},
-            terms_of_service="https://example.com/tos",
-            servers=[{"url": "https://api.example.com", "description": "Production"}],
-            openapi_tags=[{"name": "users", "description": "User operations"}],
-        )
-        app._setup_openapi()
+def test_openapi_with_metadata():
+    app = Veloce(
+        title="My API",
+        version="2.0.0",
+        description="A test API",
+        contact={"name": "Dev", "email": "dev@example.com"},
+        license_info={"name": "MIT"},
+        terms_of_service="https://example.com/tos",
+        servers=[{"url": "https://api.example.com", "description": "Production"}],
+        openapi_tags=[{"name": "users", "description": "User operations"}],
+    )
+    schema = document(app)
 
-        resp = await app.handle_request(make_request(path="/openapi.json"))
-        import orjson
-
-        schema = orjson.loads(resp.body)
-
-        assert schema["info"]["title"] == "My API"
-        assert schema["info"]["description"] == "A test API"
-        assert schema["info"]["contact"]["name"] == "Dev"
-        assert schema["info"]["license"]["name"] == "MIT"
-        assert schema["info"]["termsOfService"] == "https://example.com/tos"
-        assert schema["servers"][0]["url"] == "https://api.example.com"
-        assert schema["tags"][0]["name"] == "users"
+    assert schema["info"]["title"] == "My API"
+    assert schema["info"]["description"] == "A test API"
+    assert schema["info"]["contact"]["name"] == "Dev"
+    assert schema["info"]["license"]["name"] == "MIT"
+    assert schema["info"]["termsOfService"] == "https://example.com/tos"
+    assert schema["servers"][0]["url"] == "https://api.example.com"
+    assert schema["tags"][0]["name"] == "users"
 
 
-class TestOpenAPI:
-    @pytest.mark.asyncio
-    async def test_openapi_schema_generation(self):
-        app = Veloce(title="Test API", version="1.0.0", openapi_url=None)
+def test_openapi_schema_generation():
+    app = Veloce(title="Test API", version="1.0.0", openapi_url=None)
 
-        @app.get("/items/{item_id}", tags=["items"], summary="Get an item")
-        async def get_item(item_id: int, q: str = ""):
-            return {"id": item_id}
+    @app.get("/items/{item_id}", tags=["items"], summary="Get an item")
+    async def get_item(item_id: int, q: str = ""):
+        return {"id": item_id}
 
-        @app.post("/items", tags=["items"])
-        async def create_item(item: _OpenAPIItem):
-            return item.model_dump()
+    @app.post("/items", tags=["items"])
+    async def create_item(item: _OpenAPIItem):
+        return item.model_dump()
 
-        from veloce.contrib.openapi import get_openapi_schema
+    schema = get_openapi_schema(app)
 
-        schema = get_openapi_schema(app)
+    assert schema["info"]["title"] == "Test API"
+    assert schema["info"]["version"] == "1.0.0"
+    assert "/items/{item_id}" in schema["paths"]
+    assert "/items" in schema["paths"]
+    assert "get" in schema["paths"]["/items/{item_id}"]
 
-        assert schema["info"]["title"] == "Test API"
-        assert schema["info"]["version"] == "1.0.0"
-        assert "/items/{item_id}" in schema["paths"]
-        assert "/items" in schema["paths"]
-        assert "get" in schema["paths"]["/items/{item_id}"]
+    get_op = schema["paths"]["/items/{item_id}"]["get"]
+    assert get_op["summary"] == "Get an item"
+    assert "items" in get_op["tags"]
+    # Should have path param and query param
+    params = get_op["parameters"]
+    param_names = [p["name"] for p in params]
+    assert "item_id" in param_names
+    assert "q" in param_names
 
-        get_op = schema["paths"]["/items/{item_id}"]["get"]
-        assert get_op["summary"] == "Get an item"
-        assert "items" in get_op["tags"]
-        # Should have path param and query param
-        params = get_op["parameters"]
-        param_names = [p["name"] for p in params]
-        assert "item_id" in param_names
-        assert "q" in param_names
+    # POST should have request body
+    post_op = schema["paths"]["/items"]["post"]
+    assert "requestBody" in post_op
 
-        # POST should have request body
-        post_op = schema["paths"]["/items"]["post"]
-        assert "requestBody" in post_op
 
-    @pytest.mark.asyncio
-    async def test_openapi_route(self):
-        app = Veloce(title="Test API")
-        app._setup_openapi()
+def test_openapi_route():
+    app = Veloce(title="Test API")
 
-        @app.get("/hello")
-        async def hello(request: Request):
-            return {"hello": "world"}
+    @app.get("/hello")
+    async def hello(request: Request):
+        return {"hello": "world"}
 
-        resp = await app.handle_request(make_request(path="/openapi.json"))
+    resp = TestClient(app).get("/openapi.json")
+    assert resp.status_code == 200
+    schema = resp.json()
+    assert "paths" in schema
+
+
+def test_swagger_ui():
+    app = Veloce()
+    resp = TestClient(app).get("/docs")
+    assert resp.status_code == 200
+    assert b"swagger-ui" in resp.body
+
+
+def test_redoc_ui():
+    app = Veloce()
+    resp = TestClient(app).get("/redoc")
+    assert resp.status_code == 200
+    assert b"redoc" in resp.body
+
+
+def test_docs_pages_carry_the_csp_nonce():
+    # Under a nonced policy the docs pages must nonce every script, style,
+    # and stylesheet link, using the same nonce the header advertises -
+    # otherwise the inline SwaggerUIBundle boot script cannot execute.
+    import re
+
+    app = Veloce()
+    app.add_middleware(CSPMiddleware, policy="default-src 'self'; script-src {nonce}")
+    client = app.test_client()
+
+    for path in ("/docs", "/redoc"):
+        resp = client.get(path)
         assert resp.status_code == 200
-        import orjson
-
-        schema = orjson.loads(resp.body)
-        assert "paths" in schema
-
-    @pytest.mark.asyncio
-    async def test_swagger_ui(self):
-        app = Veloce()
-        app._setup_openapi()
-
-        resp = await app.handle_request(make_request(path="/docs"))
-        assert resp.status_code == 200
-        assert b"swagger-ui" in resp.body
-
-    @pytest.mark.asyncio
-    async def test_redoc_ui(self):
-        app = Veloce()
-        app._setup_openapi()
-
-        resp = await app.handle_request(make_request(path="/redoc"))
-        assert resp.status_code == 200
-        assert b"redoc" in resp.body
-
-    def test_docs_pages_carry_the_csp_nonce(self):
-        # Under a nonced policy the docs pages must nonce every script, style,
-        # and stylesheet link, using the same nonce the header advertises -
-        # otherwise the inline SwaggerUIBundle boot script cannot execute.
-        import re
-
-        from veloce.middleware.security import CSPMiddleware
-
-        app = Veloce()
-        app.add_middleware(CSPMiddleware, policy="default-src 'self'; script-src {nonce}")
-        client = app.test_client()
-
-        for path in ("/docs", "/redoc"):
-            resp = client.get(path)
-            assert resp.status_code == 200
-            nonces = re.findall(r'nonce="([^"]+)"', resp.text)
-            assert nonces, f"{path} carries no nonce attribute"
-            assert len(set(nonces)) == 1, f"{path} used more than one nonce"
-            header = next(
-                v for k, v in resp.headers.items() if k.lower() == "content-security-policy"
-            )
-            assert f"'nonce-{nonces[0]}'" in header
-
-    def test_docs_pages_omit_nonce_without_csp(self):
-        # No CSP middleware means no nonce is armed; the markup must stay
-        # byte-identical to the pre-nonce output rather than emit `nonce=""`.
-        app = Veloce()
-        page = app.test_client().get("/docs").text
-        assert 'nonce="' not in page
-        assert "SwaggerUIBundle" in page
-
-    @pytest.mark.asyncio
-    async def test_openapi_disabled(self):
-        app = Veloce(openapi_url=None)
-        app._setup_openapi()
-
-        resp = await app.handle_request(make_request(path="/openapi.json"))
-        assert resp.status_code == 404
+        nonces = re.findall(r'nonce="([^"]+)"', resp.text)
+        assert nonces, f"{path} carries no nonce attribute"
+        assert len(set(nonces)) == 1, f"{path} used more than one nonce"
+        header = next(v for k, v in resp.headers.items() if k.lower() == "content-security-policy")
+        assert f"'nonce-{nonces[0]}'" in header
 
 
-class TestRouteMetadata:
-    @pytest.mark.asyncio
-    async def test_deprecated_route(self):
-        app = Veloce(openapi_url=None)
+def test_docs_pages_omit_nonce_without_csp():
+    # No CSP middleware means no nonce is armed; the markup must stay
+    # byte-identical to the pre-nonce output rather than emit `nonce=""`.
+    app = Veloce()
+    page = app.test_client().get("/docs").text
+    assert 'nonce="' not in page
+    assert "SwaggerUIBundle" in page
 
-        @app.get("/old", deprecated=True, summary="Old endpoint")
-        async def old(request: Request):
-            return {"old": True}
 
-        from veloce.contrib.openapi import get_openapi_schema
+def test_openapi_disabled():
+    app = Veloce(openapi_url=None)
+    resp = TestClient(app).get("/openapi.json")
+    assert resp.status_code == 404
 
-        schema = get_openapi_schema(app)
-        assert schema["paths"]["/old"]["get"]["deprecated"] is True
+
+def test_deprecated_route():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/old", deprecated=True, summary="Old endpoint")
+    async def old(request: Request):
+        return {"old": True}
+
+    schema = get_openapi_schema(app)
+    assert schema["paths"]["/old"]["get"]["deprecated"] is True

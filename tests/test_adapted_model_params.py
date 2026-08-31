@@ -10,6 +10,7 @@ runtime agree and match what a `BaseModel` parameter already did.
 
 from __future__ import annotations
 
+import weakref
 from dataclasses import dataclass, field
 from typing import Annotated
 
@@ -17,7 +18,8 @@ import pytest
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
-from veloce import Veloce
+from tests._openapi import document
+from veloce import Veloce, _model_backend
 from veloce._model_backend import ModelBackend, adapter_for, backend_of
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.session import MCPSession
@@ -305,7 +307,7 @@ def test_openapi_documents_a_dataclass_body():
         return {"x": p.x}
 
     with app.test_client() as client:
-        schema = client.get("/openapi.json").json()
+        schema = document(client)
     assert "Point" in schema["components"]["schemas"]
     assert sorted(schema["components"]["schemas"]["Point"]["properties"]) == ["x", "y"]
 
@@ -316,8 +318,4 @@ def test_the_adapter_cache_holds_its_keys_weakly():
     Pydantic keeps its own internal caches, so this asserts the structure Veloce
     controls rather than that a type actually becomes collectable.
     """
-    import weakref
-
-    from veloce import _model_backend
-
     assert isinstance(_model_backend._adapters, weakref.WeakKeyDictionary)

@@ -1,4 +1,11 @@
-"""Helpers — abort, jsonify, make_response, flash, g, current_app, send_from_directory."""
+"""Helpers — the request-scoped proxies and the response and file shortcuts.
+
+`g`, `current_app`, `request` and `session` are the context-local proxies;
+`jsonify`, `make_response`, `redirect` and `abort` build a response; `flash` and
+`get_flashed_messages` carry one-shot messages in the session; `send_file` and
+`send_from_directory` serve a path; and `url_for`, `stream_with_context` and
+`after_this_request` are the remaining per-request conveniences.
+"""
 
 from __future__ import annotations
 
@@ -17,9 +24,9 @@ from veloce._constants import (
 )
 from veloce._internal import (
     MIME_HTML,
-    MIME_OCTET,
     _current_app_var,
     _current_request_var,
+    _unpack_response_tuple,
 )
 from veloce.exceptions import exception_for_status
 from veloce.http.dates import http_date
@@ -213,13 +220,18 @@ class _RequestGlobals:
         return self._get_store().setdefault(name, default)
 
     def _reset(self) -> None:
-        """Reset g for a new request.
+        """Bind a fresh store for a new request.
 
-        Clears the var to `None` rather than binding a fresh dict -
-        `_get_store` allocates lazily on first access, so a request whose
-        handler never touches `g` pays no allocation.
+        Eagerly, not on first access. A sync handler runs in a copied context
+        (`copy_context().run`), so a `set()` performed inside it lands in the
+        copy and is discarded when the thread returns - and lazy binding put
+        that `set()` inside the handler. `g.x = 1` from a `def` handler was
+        therefore dropped, unless something earlier in the request happened to
+        touch `g` and bind the store in the request's own context first.
+        Binding here costs one empty dict per request and makes every write a
+        mutation of an object both contexts share.
         """
-        self._ctx_var.set(None)
+        self._ctx_var.set({})
 
     def _snapshot(self) -> dict[str, Any] | None:
         """Return the bound store so a nested binding can hand it back."""
@@ -285,14 +297,20 @@ def has_app_context() -> bool:
 def has_request_context() -> bool:
     """True iff a request is bound to this task/context.
 
-    Veloce passes the live request through arguments during dispatch,
-    so this only flips True inside `app.test_request_context()` blocks
-    or when application code explicitly sets the contextvar.
+    The dispatcher binds it on every request, so this is True inside any handler,
+    middleware, hook or template render, as well as inside an
+    `app.test_request_context()` block. It is False outside a request - in
+    startup and shutdown handlers, a background task, or a CLI command.
     """
     return _current_request_var.get() is not None
 
 
 # ── abort() ───────────────────────────────────────────────
+
+
+#: The aborter `abort()` uses when no application is bound. It registers no
+#: custom mapping, so it resolves exactly what `exception_for_status` does.
+_default_aborter = Aborter()
 
 
 def abort(status_code: int, detail: str = "", headers: dict[str, str] | None = None) -> NoReturn:
@@ -302,15 +320,19 @@ def abort(status_code: int, detail: str = "", headers: dict[str, str] | None = N
     `Forbidden` for 403) so error handlers registered against a specific
     subclass match. Unknown codes fall back to the bare `HTTPException`.
 
+    Inside an application context the call goes through `app.aborter`, so an
+    app that registered a custom code-to-exception mapping raises its own class
+    here too - `abort(404)` and `app.aborter(404)` are the same call. Outside
+    one, the default lookup applies.
+
     Usage::
 
         abort(404)              # -> raises NotFound
         abort(403, "Forbidden") # -> raises Forbidden
     """
-    if not detail:
-        detail = _default_detail(status_code)
-    cls = exception_for_status(status_code)
-    raise cls(status_code=status_code, detail=detail, headers=headers)
+    app = _current_app_var.get()
+    aborter: Aborter = _default_aborter if app is None else app.aborter
+    aborter(status_code, detail, headers)
 
 
 # ── after_this_request() ──────────────────────────────────
@@ -405,11 +427,11 @@ def send_file(
     etag: bool | str = True,
     max_age: int | None = None,
 ) -> Response:
-    """Serve a file top-level helper.
+    """Serve a file from a filesystem path.
 
-    Accepts a filesystem path (str / PathLike) and returns a `FileResponse`
-    with conditional-GET headers already set (Last-Modified, ETag - both
-    were added by Q40/Q42). Optional knobs:
+    Accepts a `str` or `PathLike` and returns a `FileResponse` with the
+    conditional-GET headers (`Last-Modified` and `ETag`) already set. Optional
+    knobs:
 
     - `mimetype=` overrides the auto-guessed content type.
     - `as_attachment=True` sets `Content-Disposition: attachment;
@@ -513,9 +535,11 @@ def jsonify(*args: Any, **kwargs: Any) -> JSONResponse:
     """Create a JSON response - a concise shorthand.
 
     Honours two app-config flags when called inside a request:
-    - `JSON_SORT_KEYS` (default True) - sort dict keys alphabetically.
+    - `JSON_SORT_KEYS` (default False) - sort dict keys alphabetically.
     - `JSONIFY_PRETTYPRINT_REGULAR` (default False) - indent the output
       with 2 spaces for readability. Often enabled under DEBUG.
+
+    Both reach every JSON response, not only this helper.
 
     Usage::
 
@@ -540,34 +564,85 @@ def jsonify(*args: Any, **kwargs: Any) -> JSONResponse:
 # ── make_response() ───────────────────────────────────────
 
 
+def _apply_to_response(
+    response: Response, status_code: int | None, headers: dict[str, str] | None
+) -> Response:
+    """Overlay an explicit status and headers onto an existing response.
+
+    Shared by the two spellings that reach `make_response` carrying a `Response`
+    - `make_response(resp, 403)` and `make_response((resp, 403))` - which
+    otherwise applied the overlay on one path and not the other, so the same
+    intent answered 403 or 200 depending on how it was written.
+    """
+    if status_code is not None:
+        response.status_code = status_code
+    if headers:
+        response.headers.update(headers)
+    response._encoded = None
+    return response
+
+
 def make_response(
     body: Any = b"",
-    status_code: int = HTTP_200_OK,
+    status_code: int | None = None,
     headers: dict[str, str] | None = None,
     content_type: str | None = None,
 ) -> Response:
     """Create a Response - a convenience wrapper.
 
+    A tuple body is unpacked as `(body, status)` / `(body, status, headers)` /
+    `(body, headers)`, the same shapes a handler may return. A tuple of any other
+    length is not a response tuple and is answered as a plain value. The table is
+    `_unpack_response_tuple`, shared with `Veloce.make_response` and dispatch, so
+    one value cannot answer differently depending on which entry point a caller
+    reached for.
+
+    An omitted `status_code` means 200 for a plain body, and leaves an existing
+    `Response`'s own status alone - `make_response(resp)` is a pass-through, while
+    `make_response(resp, 403)` sets 403. That is why the default is `None` rather
+    than `200`: the two cases are distinguishable only if "unsupplied" has its own
+    value.
+
     Usage::
 
         resp = make_response("Hello", 200)
         resp = make_response({"data": True}, 201)
+        resp = make_response((b"raw", 201))
+        resp = make_response(jsonify({"error": "forbidden"}), 403)
     """
+    if isinstance(body, tuple):
+        unpacked = _unpack_response_tuple(body)
+        if unpacked is not None:
+            inner, code, tuple_headers = unpacked
+            if code is not None:
+                status_code = code
+            if tuple_headers is not None:
+                headers = tuple_headers
+            # A `Response` inside the tuple takes the tuple's status and headers,
+            # the way dispatch applies them to a handler's `return resp, 404`.
+            if isinstance(inner, Response):
+                return _apply_to_response(inner, status_code, headers)
+            return make_response(inner, status_code, headers, content_type)
+    # A `Response` is returned as itself, carrying any status and headers passed
+    # beside it. Without this branch it fell to the JSON one below and was encoded
+    # via its `__str__`, so the body became the object's repr -
+    # `b'"<veloce.http.response.Response object at 0x...>"'`.
+    if isinstance(body, Response):
+        return _apply_to_response(body, status_code, headers)
+    if status_code is None:
+        status_code = HTTP_200_OK
     if isinstance(body, (dict, list)):
         return JSONResponse(body, status_code=status_code, headers=headers)
-    if isinstance(body, str):
+    if isinstance(body, (str, bytes)):
+        # `text/html` for both, matching `Veloce.make_response` and dispatch.
+        # Answering `application/octet-stream` for bytes here would give the
+        # same value a different type depending on which entry point a caller
+        # reached for - the disagreement `Veloce.make_response`'s docstring
+        # says does not exist.
         ct = content_type or MIME_HTML
         return Response(
             status_code=status_code,
-            body=body.encode("utf-8"),
-            content_type=ct,
-            headers=headers,
-        )
-    if isinstance(body, bytes):
-        ct = content_type or MIME_OCTET
-        return Response(
-            status_code=status_code,
-            body=body,
+            body=body.encode("utf-8") if isinstance(body, str) else body,
             content_type=ct,
             headers=headers,
         )
@@ -593,7 +668,6 @@ def send_from_directory(
 
     For async, use send_from_directory_async() instead.
     """
-
     resolved = safe_join(directory, filename)
     if resolved is None:
         abort(HTTP_403_FORBIDDEN, MSG_ACCESS_DENIED)
@@ -617,7 +691,6 @@ async def send_from_directory_async(
 
     Traversal-safe via `safe_join`.
     """
-
     # `safe_join` is pure string arithmetic; the file read happens below.
     resolved = safe_join(directory, filename)  # noqa: ASYNC240
     if resolved is None:

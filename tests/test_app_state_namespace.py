@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import pytest
+import orjson
 
 from tests.conftest import make_request
 from veloce import Request, Veloce
@@ -46,22 +46,19 @@ def test_app_state_isolated_per_app():
     assert "x" not in b.state
 
 
-class TestAppState:
-    @pytest.mark.asyncio
-    async def test_app_state(self):
-        app = Veloce(openapi_url=None)
-        app.state["config"] = {"debug": True}
+async def test_app_state():
+    app = Veloce(openapi_url=None)
+    app.state["config"] = {"debug": True}
 
-        @app.get("/config")
-        async def config(request: Request):
-            return request.app.state["config"]
+    @app.get("/config")
+    async def config(request: Request):
+        return request.app.state["config"]
 
-        resp = await app.handle_request(make_request(path="/config"))
-        import orjson
+    resp = await app.handle_request(make_request(path="/config"))
+    assert orjson.loads(resp.body)["debug"] is True
 
-        assert orjson.loads(resp.body)["debug"] is True
 
-    def test_app_state_dict(self):
-        app = Veloce(openapi_url=None)
-        app.state["db_url"] = "postgres://localhost/mydb"
-        assert app.state["db_url"] == "postgres://localhost/mydb"
+def test_app_state_dict():
+    app = Veloce(openapi_url=None)
+    app.state["db_url"] = "postgres://localhost/mydb"
+    assert app.state["db_url"] == "postgres://localhost/mydb"

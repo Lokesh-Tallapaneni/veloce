@@ -22,6 +22,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TypeVar
 
+from veloce._internal import _require_slots
+
 # Per-client algorithm state persisted between requests. It round-trips through
 # the backend as JSON, so its values are plain numbers (ints widen to float).
 RateLimitState = dict[str, float]
@@ -61,13 +63,42 @@ class RateLimitStrategy:
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
-        if "__slots__" not in cls.__dict__:
-            raise TypeError(f"{cls.__name__} must declare __slots__ (even __slots__ = ())")
+        _require_slots(cls)
 
     def evaluate(
         self, state: RateLimitState | None, now: float
     ) -> tuple[RateLimitResult, RateLimitState, int]:
+        """Decide on this request, returning `(result, next state, TTL seconds)`."""
         raise NotImplementedError
+
+    #: An optional Lua implementation of `evaluate`, run server-side by a backend
+    #: that supports it. `None` - the default, and the only option for a strategy
+    #: defined outside Veloce - means the backend falls back to whatever
+    #: atomicity it can arrange around the Python `evaluate` above.
+    #:
+    #: Opt-in rather than required precisely because this class is public: a
+    #: strategy someone else wrote cannot be expressed in Lua, and must keep
+    #: working. The two implementations of a built-in strategy are held together
+    #: by `test_ratelimit_lua_parity`, which runs both over the same inputs.
+    #:
+    #: The script receives the state key as `KEYS[1]` and `lua_argv(now)` as
+    #: `ARGV`, and returns a flat array:
+    #: ``{allowed, limit, remaining, retry_after, reset}`` - integers, `allowed`
+    #: as 0 or 1. It is responsible for writing the new state and its TTL.
+    lua_script: str | None = None
+
+    def lua_argv(self, now: float) -> list[str]:
+        """Build the `ARGV` for `lua_script`. Unused when it is `None`."""
+        raise NotImplementedError
+
+
+#: Shared preamble: read the stored state, or `nil`. Kept in one place so the
+#: three scripts cannot drift on how state is loaded.
+_LUA_LOAD_STATE = """
+local raw = redis.call('GET', KEYS[1])
+local state = nil
+if raw then state = cjson.decode(raw) end
+"""
 
 
 class FixedWindow(RateLimitStrategy):
@@ -91,6 +122,7 @@ class FixedWindow(RateLimitStrategy):
     def evaluate(
         self, state: RateLimitState | None, now: float
     ) -> tuple[RateLimitResult, RateLimitState, int]:
+        """Count this request against the fixed window `now` falls in."""
         window = int(now // self.window)
         count = int(state["count"]) + 1 if state is not None and state["window"] == window else 1
         allowed = count <= self.limit
@@ -99,6 +131,30 @@ class FixedWindow(RateLimitStrategy):
         retry_after = 0 if allowed else reset
         result = RateLimitResult(allowed, self.limit, remaining, retry_after, reset)
         return result, {"window": window, "count": count}, self.window
+
+    lua_script = (
+        _LUA_LOAD_STATE
+        + """
+local now = tonumber(ARGV[1])
+local limit = tonumber(ARGV[2])
+local width = tonumber(ARGV[3])
+local window = math.floor(now / width)
+local count = 1
+if state and state.window == window then count = state.count + 1 end
+local allowed = count <= limit
+local remaining = math.max(0, limit - count)
+local reset = width - (math.floor(now) % width)
+local retry_after = 0
+if not allowed then retry_after = reset end
+redis.call('SET', KEYS[1],
+           cjson.encode({window = window, count = count}), 'EX', width)
+return {allowed and 1 or 0, limit, remaining, retry_after, reset}
+"""
+    )
+
+    def lua_argv(self, now: float) -> list[str]:
+        """Build the `ARGV` the fixed-window Lua script reads."""
+        return [repr(now), str(self.limit), str(self.window)]
 
 
 class SlidingWindow(RateLimitStrategy):
@@ -122,6 +178,7 @@ class SlidingWindow(RateLimitStrategy):
     def evaluate(
         self, state: RateLimitState | None, now: float
     ) -> tuple[RateLimitResult, RateLimitState, int]:
+        """Weight the previous window's count by how much of it still overlaps."""
         window = int(now // self.window)
         fraction = (now % self.window) / self.window
         if state is not None and state["window"] == window:
@@ -140,6 +197,37 @@ class SlidingWindow(RateLimitStrategy):
         result = RateLimitResult(allowed, self.limit, remaining, retry_after, reset)
         # Keep the previous window's count available into the next window.
         return result, {"window": window, "prev": prev, "curr": curr}, self.window * 2
+
+    lua_script = (
+        _LUA_LOAD_STATE
+        + """
+local now = tonumber(ARGV[1])
+local limit = tonumber(ARGV[2])
+local width = tonumber(ARGV[3])
+local window = math.floor(now / width)
+local fraction = (now % width) / width
+local prev, curr = 0, 0
+if state and state.window == window then
+  prev, curr = state.prev, state.curr
+elseif state and state.window == window - 1 then
+  prev, curr = state.curr, 0
+end
+local estimate = prev * (1 - fraction) + curr
+local allowed = estimate < limit
+if allowed then curr = curr + 1 end
+local remaining = math.max(0, math.floor(limit - (prev * (1 - fraction) + curr)))
+local reset = width - (math.floor(now) % width)
+local retry_after = 0
+if not allowed then retry_after = math.max(1, reset) end
+redis.call('SET', KEYS[1],
+           cjson.encode({window = window, prev = prev, curr = curr}), 'EX', width * 2)
+return {allowed and 1 or 0, limit, remaining, retry_after, reset}
+"""
+    )
+
+    def lua_argv(self, now: float) -> list[str]:
+        """Build the `ARGV` the sliding-window Lua script reads."""
+        return [repr(now), str(self.limit), str(self.window)]
 
 
 class TokenBucket(RateLimitStrategy):
@@ -168,6 +256,7 @@ class TokenBucket(RateLimitStrategy):
     def evaluate(
         self, state: RateLimitState | None, now: float
     ) -> tuple[RateLimitResult, RateLimitState, int]:
+        """Refill the bucket for the elapsed time, then spend one token."""
         if state is not None:
             tokens = min(self.burst, state["tokens"] + (now - state["ts"]) * self._refill)
         else:
@@ -185,6 +274,36 @@ class TokenBucket(RateLimitStrategy):
         ttl = math.ceil(self.burst / self._refill) + 1
         return result, {"tokens": tokens, "ts": now}, ttl
 
+    lua_script = (
+        _LUA_LOAD_STATE
+        + """
+local now = tonumber(ARGV[1])
+local burst = tonumber(ARGV[2])
+local refill = tonumber(ARGV[3])
+local tokens = burst
+if state then
+  tokens = math.min(burst, state.tokens + (now - state.ts) * refill)
+end
+local allowed = tokens >= 1
+local retry_after = 0
+if allowed then
+  tokens = tokens - 1
+else
+  retry_after = math.max(1, math.ceil((1 - tokens) / refill))
+end
+local reset = 0
+if tokens < burst then reset = math.ceil((burst - tokens) / refill) end
+local ttl = math.ceil(burst / refill) + 1
+redis.call('SET', KEYS[1],
+           cjson.encode({tokens = tokens, ts = now}), 'EX', ttl)
+return {allowed and 1 or 0, burst, math.floor(tokens), retry_after, reset}
+"""
+    )
+
+    def lua_argv(self, now: float) -> list[str]:
+        """Build the `ARGV` the token-bucket Lua script reads."""
+        return [repr(now), str(self.burst), repr(self._refill)]
+
 
 class RateLimitBackend:
     """Where per-client rate-limit state lives, and the atomic read-modify-write.
@@ -200,10 +319,10 @@ class RateLimitBackend:
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
-        if "__slots__" not in cls.__dict__:
-            raise TypeError(f"{cls.__name__} must declare __slots__ (even __slots__ = ())")
+        _require_slots(cls)
 
     async def evaluate(self, key: str, strategy: RateLimitStrategy, now: float) -> RateLimitResult:
+        """Load, run `strategy.evaluate` and persist for `key`, atomically."""
         raise NotImplementedError
 
 
@@ -225,6 +344,7 @@ class InMemoryRateLimitBackend(RateLimitBackend):
         self._max_keys = max_keys
 
     async def evaluate(self, key: str, strategy: RateLimitStrategy, now: float) -> RateLimitResult:
+        """Load, run `strategy.evaluate` and persist for `key` in this process."""
         # No `await` between read and write, so single-loop asyncio makes this an
         # atomic read-modify-write - two concurrent requests cannot interleave.
         entry = self._states.get(key)

@@ -1,17 +1,18 @@
-"""R4 — nested Blueprint support."""
+"""Nested Blueprint support."""
 
 from __future__ import annotations
 
+import orjson
 import pytest
 
+from tests.conftest import make_request
 from veloce import Blueprint, Request, Veloce
 
 
 def _req(path: str) -> Request:
-    return Request(method="GET", path=path, query_string="", headers={}, body=b"")
+    return make_request(method="GET", path=path, query_string="", headers={}, body=b"")
 
 
-@pytest.mark.asyncio
 async def test_nested_blueprint_combines_prefixes():
     api = Blueprint("api", url_prefix="/api")
     users = Blueprint("users", url_prefix="/users")
@@ -25,13 +26,10 @@ async def test_nested_blueprint_combines_prefixes():
     app = Veloce(debug=True, openapi_url=None)
     app.register_blueprint(api)
 
-    import orjson
-
     resp = await app.handle_request(_req("/api/users/42"))
     assert orjson.loads(resp.body) == {"uid": "42"}
 
 
-@pytest.mark.asyncio
 async def test_nested_prefix_override():
     """url_prefix passed to register_blueprint(child, ...) takes precedence."""
     parent = Blueprint("p", url_prefix="/p")
@@ -54,7 +52,6 @@ async def test_nested_prefix_override():
     assert r2.status_code == 404
 
 
-@pytest.mark.asyncio
 async def test_child_hooks_fire_under_parent_gate():
     """A hook on the child blueprint runs for the nested path."""
     parent = Blueprint("p", url_prefix="/p")
@@ -78,7 +75,6 @@ async def test_child_hooks_fire_under_parent_gate():
     assert seen == ["/p/c/x"]
 
 
-@pytest.mark.asyncio
 async def test_child_errorhandler_inherited():
     """An errorhandler on the child catches exceptions on nested routes."""
     parent = Blueprint("p", url_prefix="/p")
@@ -99,8 +95,6 @@ async def test_child_errorhandler_inherited():
 
     app = Veloce(debug=True, openapi_url=None)
     app.register_blueprint(parent)
-
-    import orjson
 
     resp = await app.handle_request(_req("/p/c/boom"))
     assert orjson.loads(resp.body) == {"caught": "kaboom"}

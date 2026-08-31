@@ -4,9 +4,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from veloce import Veloce
+from veloce import File, Form, Veloce
 from veloce.contrib.openapi import get_openapi_schema
-from veloce.routing.params import File, Form
 
 
 def _operation(app: Veloce, path: str, method: str = "post") -> dict:

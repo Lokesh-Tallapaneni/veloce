@@ -9,10 +9,9 @@ revision keeps everything it had.
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 
+from tests._mcp import METHOD_NOT_FOUND, await_tasks, task_by_id
 from veloce import Veloce
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.session import MCPSession
@@ -143,7 +142,7 @@ async def test_a_handshake_task_keeps_the_names_its_revision_defined():
 @pytest.mark.parametrize("method", ["tasks/list", "tasks/result"])
 async def test_a_retired_method_is_not_found_for_a_modern_client(method: str):
     response = await _send(MCPServer(_app()), method, {"taskId": "x"}, MODERN_WITH_TASKS)
-    assert response["error"]["code"] == -32601
+    assert response["error"]["code"] == METHOD_NOT_FOUND
 
 
 @pytest.mark.parametrize("method", ["tasks/list", "tasks/result"])
@@ -174,11 +173,8 @@ async def test_a_completed_task_carries_its_result_when_polled():
     session = MCPSession()
     created = await _create(server, MODERN_WITH_TASKS, session)
     task_id = created["result"]["task"]["taskId"]
-    for _ in range(50):
-        await asyncio.sleep(0.01)
-        polled = await _send(server, "tasks/get", {"taskId": task_id}, MODERN_WITH_TASKS, session)
-        if polled["result"]["status"] == "completed":
-            break
+    await await_tasks(server)
+    polled = await _send(server, "tasks/get", {"taskId": task_id}, MODERN_WITH_TASKS, session)
     assert polled["result"]["status"] == "completed"
     assert "42" in str(polled["result"]["result"])
 
@@ -213,7 +209,7 @@ async def test_tasks_update_records_the_responses_on_the_task():
         MODERN_WITH_TASKS,
         session,
     )
-    task = server._tasks.get(task_id)
+    task = task_by_id(server, task_id)
     assert task.input_responses["who"] == {"action": "accept"}
 
 

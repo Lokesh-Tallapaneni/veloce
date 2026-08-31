@@ -97,27 +97,36 @@ verbs the view does support.
 
 ## Path and query parameters
 
-The verb methods receive path parameters as keyword arguments, the same
-way function handlers do. Declarative parameter markers and dependency
-injection work too — annotate the method parameters as you would on a
-function handler.
+The verb methods receive the request and any path parameters as keyword
+arguments. Read query parameters, headers and cookies off the request:
 
 ```python
-from veloce import MethodView, Query, Request, Veloce
+from veloce import MethodView, Request, Veloce
 
 app = Veloce()
 
 
 class SearchView(MethodView):
-    async def get(self, request: Request, q: str = Query(default="")):
-        return {"query": q}
+    async def get(self, request: Request):
+        return {"query": request.query_params.get("q", "")}
 
 
 app.add_url_rule("/search", view_func=SearchView.as_view("search"))
 ```
 
+!!! warning "Parameter markers and `Depends()` do not work on verb methods"
+
+    A `MethodView` is **one** route serving several verbs, so the route has one
+    handler plan and there is nothing to resolve a per-verb marker against.
+    Writing `q: str = Query(default="")` on a verb method raises `TypeError` at
+    class-definition time — on import, not on request — so the mistake cannot
+    reach production as a view returning the repr of a `Query` object.
+
+    When you want declarative parameters, validation and injection, use a
+    function handler; it is the same router either way.
+
 See [Parameters](parameters.md) and
-[Dependency injection](dependency-injection.md) for the full set of
+[Dependency injection](dependency-injection.md) — on function handlers — for the full set of
 options available on these method parameters.
 
 ## Instance lifetime

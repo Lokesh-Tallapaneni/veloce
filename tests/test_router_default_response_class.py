@@ -1,17 +1,15 @@
-"""Router.default_response_class (D10)."""
+"""Router.default_response_class."""
 
 from __future__ import annotations
 
-import pytest
-
+from tests.conftest import make_request
 from veloce import JSONResponse, ORJSONResponse, Request, Veloce
 
 
 def _req(path: str = "/") -> Request:
-    return Request(method="GET", path=path, query_string="", headers={}, body=b"")
+    return make_request(method="GET", path=path, query_string="", headers={}, body=b"")
 
 
-@pytest.mark.asyncio
 async def test_default_response_class_used_when_route_has_none():
     app = Veloce(debug=True, openapi_url=None, default_response_class=ORJSONResponse)
 
@@ -23,7 +21,6 @@ async def test_default_response_class_used_when_route_has_none():
     assert isinstance(resp, ORJSONResponse)
 
 
-@pytest.mark.asyncio
 async def test_route_response_class_overrides_default():
     app = Veloce(debug=True, openapi_url=None, default_response_class=ORJSONResponse)
 
@@ -36,7 +33,6 @@ async def test_route_response_class_overrides_default():
     assert type(resp) is JSONResponse
 
 
-@pytest.mark.asyncio
 async def test_no_default_falls_back_to_jsonresponse():
     """Without default_response_class, dict returns get JSONResponse as before."""
     app = Veloce(debug=True, openapi_url=None)
@@ -49,7 +45,6 @@ async def test_no_default_falls_back_to_jsonresponse():
     assert isinstance(resp, JSONResponse)
 
 
-@pytest.mark.asyncio
 async def test_default_propagates_to_decorator_kwargless_route():
     """The default applies even when the @get decorator gets no kwargs."""
     app = Veloce(debug=True, openapi_url=None, default_response_class=ORJSONResponse)

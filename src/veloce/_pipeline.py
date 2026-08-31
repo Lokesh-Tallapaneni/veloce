@@ -23,6 +23,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from veloce.middleware.base import Middleware
+
 if TYPE_CHECKING:  # pragma: no cover
     from collections.abc import Callable
 
@@ -47,6 +49,11 @@ PH_HTTP_AROUND = 2  # wraps dispatch (`call_next`) - `@app.middleware("http")`
 PH_HTTP_FINISH = 3  # post-response observation (instrumentation timing + metrics)
 PH_WS_HANDSHAKE = 4  # ws connect gate (host / origin allow-lists)
 PH_ASGI_WRAP = 5  # outermost ASGI wrapper (ASGI middleware, live-otel span)
+
+# `order` for the live-otel ASGI wrapper - larger than the default `order` of
+# the standard `_asgi_middleware` spec so it sorts first within PH_ASGI_WRAP and
+# composes OUTERMOST, mirroring the historical `_asgi_middleware.insert(0, ...)`.
+WRAP_ORDER_OTEL = 100
 
 # Number of phases - the compiler buckets over `range(_PH_COUNT)`.
 _PH_COUNT = 6
@@ -81,9 +88,11 @@ class FeatureSpec:
 class CompiledPipeline:
     """Frozen per-app compile output: one fused slot per phase plus route flags.
 
-    Each phase slot is `None` (no enabled feature), a bare callable / artifact
-    (one feature), or a tuple (several). The three `has_*` booleans precompute
-    the route-resolution mount/static scans so route matching can gate on a flag
+    Each HTTP phase slot holds the built chain as a tuple, or `None` when no
+    enabled feature contributes to that phase. `asgi_wrap` is the exception: it
+    may hold several specs' lists, so it is typed `object` and normalised by
+    `flatten_asgi_wrap`. The three `has_*` booleans precompute the
+    route-resolution mount/static scans so route matching can gate on a flag
     instead of probing the live lists.
     """
 
@@ -99,6 +108,7 @@ class CompiledPipeline:
         "has_static_handlers",
         "has_asgi_mounts",
         "is_bare",
+        "bp_url_procs",
     )
 
     # Slot annotations (no runtime cost - `__slots__` owns storage). Each HTTP
@@ -122,6 +132,7 @@ class CompiledPipeline:
     # url-value preprocessors, no middleware. Rides the same generation counter,
     # so hook/middleware registration must bump `_gen` to keep it fresh.
     is_bare: bool
+    bp_url_procs: dict[str, list[Any]] | None
 
 
 # Phase id -> the `CompiledPipeline` slot it fuses into. Kept beside the phase
@@ -176,6 +187,9 @@ def compile_pipeline(app: Veloce) -> CompiledPipeline:
     # Straight-line dispatch eligibility for the whole app: every feature the
     # fast path would skip must be absent. Computed here so dispatch reads one
     # boolean instead of probing each list per request.
+    # `None` when no blueprint registered one, so the fast path tests an
+    # attribute rather than walking a dict that is empty on almost every app.
+    cp.bp_url_procs = app._bp_url_value_preprocessors or None
     cp.is_bare = (
         cp.http_pre is None
         and cp.http_post is None
@@ -195,12 +209,6 @@ def compile_pipeline(app: Veloce) -> CompiledPipeline:
         and not app._middlewares
     )
     return cp
-
-
-# `order` for the live-otel ASGI wrapper - larger than the default `order` of
-# the standard `_asgi_middleware` spec so it sorts first within PH_ASGI_WRAP and
-# composes OUTERMOST, mirroring the historical `_asgi_middleware.insert(0, ...)`.
-WRAP_ORDER_OTEL = 100
 
 
 def flatten_asgi_wrap(slot: object) -> list[AsgiWrapPair]:
@@ -224,6 +232,20 @@ def flatten_asgi_wrap(slot: object) -> list[AsgiWrapPair]:
     return flat
 
 
+def _implements(mw: Any, hook: str) -> bool:
+    """True when `mw` supplies `hook` rather than inheriting `Middleware`'s no-op.
+
+    The base hooks exist so a middleware can implement one phase and ignore the
+    other. Left in the compiled chain they are an awaited coroutine per request
+    that returns `None` - and most middleware implements one phase: compression
+    and conditional-GET are response-only, `ProxyFix` and the rate limiter are
+    request-only. Filtering here is registration-time work removing per-request
+    work, and is behaviour-preserving because what is dropped is exactly the
+    no-op.
+    """
+    return getattr(type(mw), hook, None) is not getattr(Middleware, hook)
+
+
 def build_response_middleware(app: Veloce) -> tuple[Callable, ...]:
     """Build the response-phase chain: `process_response` bound methods, reversed.
 
@@ -232,7 +254,11 @@ def build_response_middleware(app: Veloce) -> tuple[Callable, ...]:
     response. Used only when a request carries no per-route exclusion chain; a
     route with `exclude_middleware` falls back to the dynamic filtered walk.
     """
-    return tuple(mw.process_response for mw in reversed(app._middlewares))
+    return tuple(
+        mw.process_response
+        for mw in reversed(app._middlewares)
+        if _implements(mw, "process_response")
+    )
 
 
 def build_request_middleware(app: Veloce) -> tuple[Callable, ...]:
@@ -242,7 +268,9 @@ def build_request_middleware(app: Veloce) -> tuple[Callable, ...]:
     same sequence as before. Used only when a request carries no per-route
     exclusion chain; an excluded route uses the dynamic filtered chain.
     """
-    return tuple(mw.process_request for mw in app._middlewares)
+    return tuple(
+        mw.process_request for mw in app._middlewares if _implements(mw, "process_request")
+    )
 
 
 def build_ws_handshake_checks(app: Veloce) -> WsHandshakeChecks:

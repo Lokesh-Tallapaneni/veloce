@@ -21,6 +21,8 @@ import sys
 
 import pytest
 
+import veloce
+from tests.conftest import make_request
 from veloce import (
     ConfigurationError,
     Depends,
@@ -34,13 +36,12 @@ from veloce.dependency import DependencyResolver
 
 
 def _req(path: str = "/", query: str = "") -> Request:
-    return Request(method="GET", path=path, query_string=query, headers={}, body=b"")
+    return make_request(path=path, query_string=query)
 
 
 # ── Finding 13: scope-aware dependency cache ───────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_scope_sensitive_dependency_not_collapsed_across_scope_sets():
     """The canonical repro: the same auth callable referenced with two scope
     sets in one request resolves twice, each with the right scopes."""
@@ -63,7 +64,6 @@ async def test_scope_sensitive_dependency_not_collapsed_across_scope_sets():
     assert resp.body == b'{"a":["read"],"b":["read","write"]}'
 
 
-@pytest.mark.asyncio
 async def test_same_scope_set_still_cached_once():
     """Two references with the SAME scope set still collapse to one call."""
     app = Veloce(debug=True, openapi_url=None)
@@ -84,7 +84,6 @@ async def test_same_scope_set_still_cached_once():
     assert len(calls) == 1
 
 
-@pytest.mark.asyncio
 async def test_security_not_reading_scopes_still_cached_once():
     """A Security() dep that never reads `SecurityScopes` is scope-insensitive:
     different scope sets keep the cheap identity cache, so it runs once."""
@@ -106,7 +105,6 @@ async def test_security_not_reading_scopes_still_cached_once():
     assert len(calls) == 1
 
 
-@pytest.mark.asyncio
 async def test_plain_depends_still_cached_once():
     """Plain `Depends` (no scopes) keeps the single-call cache untouched."""
     app = Veloce(debug=True, openapi_url=None)
@@ -125,7 +123,6 @@ async def test_plain_depends_still_cached_once():
     assert resp.body == b'{"a":42,"b":42}'
 
 
-@pytest.mark.asyncio
 async def test_use_cache_false_security_runs_each_time():
     """`use_cache=False` is independent of scope sensitivity."""
     app = Veloce(debug=True, openapi_url=None)
@@ -149,7 +146,6 @@ async def test_use_cache_false_security_runs_each_time():
 # ── Finding 14: teardown exception aggregation ─────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_run_teardowns_runs_all_then_raises():
     """Every teardown runs in reverse order even when earlier ones fail; the
     failures are re-raised together instead of being swallowed."""
@@ -181,7 +177,11 @@ async def test_run_teardowns_runs_all_then_raises():
         next(gen)
         r._teardowns.append(("sync", gen))
 
-    with pytest.raises(BaseException) as ei:
+    # Broad by necessity: 3.11+ aggregates several teardown failures into a
+    # `BaseExceptionGroup` and 3.10 raises the first with the rest chained,
+    # so the type differs by interpreter. The assertions below pin the
+    # content on both.
+    with pytest.raises(BaseException) as ei:  # noqa: B017 - see above
         await r.run_teardowns()
 
     # Reverse order, and every teardown ran despite the failures.
@@ -198,7 +198,6 @@ async def test_run_teardowns_runs_all_then_raises():
         assert isinstance(raised, RuntimeError)
 
 
-@pytest.mark.asyncio
 async def test_run_teardowns_clean_does_not_raise():
     """A clean teardown chain returns normally - no allocation, no raise."""
     r = DependencyResolver()
@@ -216,7 +215,6 @@ async def test_run_teardowns_clean_does_not_raise():
     assert order == ["done"]
 
 
-@pytest.mark.asyncio
 async def test_run_teardowns_does_not_double_count_request_error():
     """The request exception thrown into a teardown re-emerging unchanged is
     not aggregated as a teardown failure."""
@@ -235,7 +233,6 @@ async def test_run_teardowns_does_not_double_count_request_error():
     await r.run_teardowns(req_exc)
 
 
-@pytest.mark.asyncio
 async def test_run_teardowns_chains_from_request_error():
     """A genuine teardown failure during error handling chains from the
     original request exception."""
@@ -252,12 +249,13 @@ async def test_run_teardowns_chains_from_request_error():
     next(gen)
     r._teardowns.append(("sync", gen))
 
-    with pytest.raises(BaseException) as ei:
+    # Broad by necessity, as above: the aggregate's type differs by
+    # interpreter. The `__cause__` assertion below is the contract.
+    with pytest.raises(BaseException) as ei:  # noqa: B017 - see above
         await r.run_teardowns(req_exc)
     assert ei.value.__cause__ is req_exc
 
 
-@pytest.mark.asyncio
 async def test_yield_dependency_teardown_failure_does_not_break_response():
     """End to end: a failing teardown is logged at the dispatcher and the
     response is still delivered intact."""
@@ -330,7 +328,7 @@ def test_request_typed_request_is_valid():
     async def a(request: Request):
         return {}
 
-    assert _registered(a)
+    assert _registered(app, "/a")
 
 
 def test_ordinary_query_param_is_valid():
@@ -340,7 +338,7 @@ def test_ordinary_query_param_is_valid():
     async def b(q: str = Query()):
         return {}
 
-    assert _registered(b)
+    assert _registered(app, "/b")
 
 
 def test_request_named_depends_is_allowed():
@@ -355,7 +353,7 @@ def test_request_named_depends_is_allowed():
     async def c(request=Depends(dep)):
         return {}
 
-    assert _registered(c)
+    assert _registered(app, "/c")
 
 
 def test_ws_name_in_http_plan_is_valid():
@@ -366,25 +364,30 @@ def test_ws_name_in_http_plan_is_valid():
     async def d(ws: str = Query()):
         return {}
 
-    assert _registered(d)
+    assert _registered(app, "/d")
 
 
-def _registered(handler) -> bool:
-    """Registration succeeded if we reached here without ConfigurationError."""
-    return handler is not None
+def _registered(app: Veloce, path: str) -> bool:
+    """True when `path` is on the app's route table and reaches a handler.
+
+    The version this replaces took the decorated function and returned
+    `handler is not None`, which is true of any function - so the four tests
+    below ended in an assertion that could not fail. Reaching the decorator
+    without a `ConfigurationError` is most of what they mean, but "the route is
+    actually there" is the part worth asserting.
+    """
+    return any(route == path for _method, route, _info in app.iter_routes())
 
 
 def test_configuration_error_in_exports():
-    from veloce import ConfigurationError as CE
 
-    assert CE is ConfigurationError
+    assert "ConfigurationError" in veloce.__all__
 
 
 async def test_nested_scope_reader_behind_plain_depends_not_collapsed():
     """A scope-reading helper reached through a plain `Depends` inside a
     `Security()` wrapper must still resolve per scope set (the wrapper inherits
     the scopes; the helper below reads them), not collapse by callable identity."""
-    from veloce import Depends
 
     app = Veloce(debug=True, openapi_url=None)
     seen: list[list[str]] = []

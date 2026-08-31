@@ -1,7 +1,8 @@
-"""Route-level callbacks → OpenAPI emission (R27)."""
+"""Route-level callbacks → OpenAPI emission."""
 
 from __future__ import annotations
 
+from tests._routes import route_at
 from veloce import Veloce
 from veloce.contrib.openapi import get_openapi_schema
 
@@ -47,12 +48,7 @@ def test_callbacks_stored_on_route_info():
     async def x():
         return {}
 
-    for _m, path, info in app._collect_all_routes():
-        if path == "/x":
-            assert info.callbacks == _CALLBACK
-            break
-    else:
-        raise AssertionError("route not found")
+    assert route_at(app, "/x").callbacks == _CALLBACK
 
 
 def test_callbacks_default_none():
@@ -62,9 +58,4 @@ def test_callbacks_default_none():
     async def y():
         return {}
 
-    for _m, path, info in app._collect_all_routes():
-        if path == "/y":
-            assert info.callbacks is None
-            break
-    else:
-        raise AssertionError("route not found")
+    assert route_at(app, "/y").callbacks is None

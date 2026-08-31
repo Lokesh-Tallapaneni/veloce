@@ -1,4 +1,11 @@
-"""@app.context_processor invoked by templating (TP6)."""
+"""@app.context_processor invoked by templating.
+
+One test reads `app._context_processors` to check registration; the rest assert
+through a render, which is what a user observes. The private read is white-box
+by intent - `middlewares` (app/middleware.py) is the only introspection property
+in `app/`, and mirroring it for this would add public surface no user has asked
+for.
+"""
 
 from __future__ import annotations
 
@@ -6,8 +13,9 @@ from pathlib import Path
 
 import pytest
 
-from veloce import Veloce
+from veloce import HTMLResponse, Veloce
 from veloce.contrib.templating import Jinja2Templates
+from veloce.testclient import TestClient
 
 
 @pytest.fixture
@@ -28,8 +36,6 @@ def test_context_processor_merged_into_template_context(tmpl_dir: Path):
     async def index():
         return templates.TemplateResponse("hello.html", {"name": "alice"})
 
-    from veloce.testclient import TestClient
-
     resp = TestClient(app).get("/")
     assert resp.status_code == 200
     assert resp.body == b"Hello, alice (vanilla)!"
@@ -48,8 +54,6 @@ def test_explicit_context_wins_over_processor(tmpl_dir: Path):
     @app.get("/")
     async def index():
         return templates.TemplateResponse("hello.html", {"name": "alice", "flavor": "explicit"})
-
-    from veloce.testclient import TestClient
 
     resp = TestClient(app).get("/")
     assert b"explicit" in resp.body
@@ -72,8 +76,6 @@ def test_multiple_context_processors_all_merge(tmpl_dir: Path):
     @app.get("/")
     async def index():
         return templates.TemplateResponse("multi.html", {"c": "gamma"})
-
-    from veloce.testclient import TestClient
 
     resp = TestClient(app).get("/")
     assert resp.body == b"alpha beta gamma"
@@ -108,8 +110,6 @@ def test_async_context_processor_skipped_in_sync_template_path(tmpl_dir: Path):
     async def index():
         return templates.TemplateResponse("sync.html", {})
 
-    from veloce.testclient import TestClient
-
     resp = TestClient(app).get("/")
     # Async processor was skipped; sync processor's value is used.
     assert resp.body == b"from-sync"
@@ -130,8 +130,6 @@ def test_context_processor_returning_non_dict_ignored(tmpl_dir: Path):
     async def index():
         return templates.TemplateResponse("x.html", {"x": "world"})
 
-    from veloce.testclient import TestClient
-
     resp = TestClient(app).get("/")
     assert resp.body == b"hello world"
 
@@ -148,23 +146,19 @@ def test_render_string_also_picks_up_processors(tmpl_dir: Path):
     @app.get("/")
     async def index():
         # render_string doesn't return an HTMLResponse — wrap manually.
-        from veloce import HTMLResponse
 
         out = templates.render_string("Welcome to {{ brand }}", {})
         return HTMLResponse(out)
-
-    from veloce.testclient import TestClient
 
     resp = TestClient(app).get("/")
     assert resp.body == b"Welcome to Veloce"
 
 
-class TestContextProcessor:
-    def test_context_processor_registration(self):
-        app = Veloce(openapi_url=None)
+def test_context_processor_registration():
+    app = Veloce(openapi_url=None)
 
-        @app.context_processor
-        def inject_version():
-            return {"app_version": "1.0.0"}
+    @app.context_processor
+    def inject_version():
+        return {"app_version": "1.0.0"}
 
-        assert len(app._context_processors) == 1
+    assert len(app._context_processors) == 1

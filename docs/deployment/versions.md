@@ -88,15 +88,72 @@ pip install "veloceframework>=1.0,<2.0"
     whatever is newest at build time. The range in `pyproject.toml` says what is
     *allowed*; the lockfile says what actually ships.
 
+## How Veloce pins its own dependencies
+
+Veloce declares a **floor and no ceiling** for each dependency:
+
+```toml
+dependencies = [
+    "orjson>=3.11.5",
+    "pydantic>=2.4.0",
+    "jinja2>=3.1.6",
+]
+```
+
+An upper bound is added only for a *known* incompatibility, never pre-emptively.
+A speculative `<4` propagates into every downstream resolution and can block an
+application from taking a fix, which costs more than it protects.
+
+The floor is the oldest release Veloce is willing to be installed with, and it
+moves for two reasons:
+
+- **A security fix.** The floor is raised to the first release carrying it, so
+  an install resolving at the minimum is not a vulnerable one. This is why the
+  floors are higher than the oldest version that would technically work.
+- **A feature Veloce depends on.** Raising the floor is the alternative to
+  version-sniffing at runtime.
+
+A floor is raised in a **minor** release and noted in the changelog, since it can
+change what resolves for an application that pins loosely.
+
+!!! note
+    The floors are what a fresh `pip install veloceframework` may resolve to, not
+    what Veloce is tested against. CI runs the locked versions in `uv.lock`,
+    which track current releases.
+
 ## Surfacing deprecations early
 
 Before a public symbol is removed it keeps working for at least one minor
-release and raises a `DeprecationWarning` that names its replacement. Turn those
-warnings into test failures so an upgrade surfaces them before production:
+release and raises a `VeloceDeprecationWarning` that names its replacement.
+
+That category is rooted at `UserWarning`, not at `DeprecationWarning`, and
+deliberately so: Python's default filter shows a `DeprecationWarning` only when
+it is raised from `__main__`. Every application served by uvicorn or gunicorn
+reaches Veloce from an application module instead, so a deprecation would have
+been silent there and the removal would have arrived unannounced.
+
+Turn the warnings into test failures so an upgrade surfaces them before
+production:
 
 ```bash
-python -W error::DeprecationWarning -m pytest
+python -W error::UserWarning -m pytest
 ```
+
+To be precise about the category rather than promoting every `UserWarning`:
+
+```python
+import warnings
+
+from veloce import VeloceDeprecationWarning
+
+warnings.filterwarnings("error", category=VeloceDeprecationWarning)
+```
+
+The same call with `"ignore"` silences them once you have read them.
+
+!!! warning
+    `python -W error::DeprecationWarning` does **not** catch these. Veloce's
+    deprecations are not `DeprecationWarning` subclasses, for the reason above.
 
 ## Next steps
 

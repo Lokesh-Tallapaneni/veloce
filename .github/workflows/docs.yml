@@ -1,6 +1,16 @@
 name: docs
 
 on:
+  pull_request:
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - "mkdocs_hooks.py"
+      - "overrides/**"
+      - "src/veloce/**"
+      - "CHANGELOG.md"
+      - "pyproject.toml"
+      - ".github/workflows/docs.yml"
   push:
     branches: [main]
     paths:
@@ -48,6 +58,9 @@ jobs:
           path: site
 
   deploy:
+    # A pull request builds the site to verify it, and stops there; only a push
+    # to main publishes.
+    if: github.event_name != 'pull_request'
     timeout-minutes: 20
     needs: build
     runs-on: ubuntu-latest

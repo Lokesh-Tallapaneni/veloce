@@ -9,9 +9,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from veloce import Veloce
+from veloce import Form, Path, Query, Veloce
 from veloce.http.datastructures import UploadFile
-from veloce.routing.params import Form, Path, Query
 
 
 class _Item(BaseModel):

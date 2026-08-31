@@ -11,34 +11,15 @@ from __future__ import annotations
 import gzip
 import zlib
 
+from tests._asgi_drive import drive
+from tests.conftest import make_request
 from veloce import EventSourceResponse, GZipMiddleware, Request, Veloce
 from veloce.http.response import StreamingResponse
 
 
 async def _drive(app: Veloce, headers: list[tuple[bytes, bytes]]):
     """Run one GET / through the ASGI app and capture the emitted messages."""
-    scope = {
-        "type": "http",
-        "method": "GET",
-        "path": "/",
-        "raw_path": b"/",
-        "query_string": b"",
-        "headers": headers,
-        "client": ("127.0.0.1", 12345),
-        "server": ("testserver", 80),
-        "scheme": "http",
-    }
-
-    async def receive():
-        return {"type": "http.request", "body": b"", "more_body": False}
-
-    messages: list[dict] = []
-
-    async def send(message):
-        messages.append(message)
-
-    await app(scope, receive, send)
-    return messages
+    return await drive(app, headers=headers)
 
 
 def _start_headers(messages: list[dict]) -> list[tuple[bytes, bytes]]:
@@ -175,13 +156,7 @@ async def test_streaming_delivers_decodable_frame_per_chunk():
     # compressor directly and assert each yielded output advances a streaming
     # decompressor by the corresponding plaintext chunk - i.e. data is
     # deliverable before the final Z_FINISH trailer is written.
-    request = Request(
-        method="GET",
-        path="/",
-        query_string="",
-        headers=[(b"accept-encoding", b"gzip")],
-        body=b"",
-    )
+    request = make_request(headers={"accept-encoding": "gzip"})
 
     chunks = [b'{"line": %d}\n' % i for i in range(8)]
 
@@ -197,15 +172,24 @@ async def test_streaming_delivers_decodable_frame_per_chunk():
 
     decompressor = zlib.decompressobj(zlib.MAX_WBITS | 16)
     delivered = bytearray()
-    frames = 0
+    recovered_after_each_frame: list[bytes] = []
     async for out in response._stream:
         assert out, "every yielded frame must carry bytes"
         delivered += decompressor.decompress(out)
-        frames += 1
-        # Before the stream ends, each input chunk's plaintext is recoverable
-        # from the frames seen so far - proving incremental delivery.
-        if frames <= len(chunks):
-            assert delivered == b"".join(chunks[:frames])
+        recovered_after_each_frame.append(bytes(delivered))
+
+    # Recorded rather than asserted inside the loop: the check used to sit
+    # behind `if frames <= len(chunks)`, so a middleware that coalesced
+    # everything into one frame ran the loop once, satisfied the guard, and
+    # passed - the outcome the test exists to rule out.
+    assert len(recovered_after_each_frame) > len(chunks) // 2, (
+        f"{len(recovered_after_each_frame)} frames for {len(chunks)} chunks - "
+        "the stream was coalesced rather than delivered incrementally"
+    )
+    for index, recovered in enumerate(recovered_after_each_frame[: len(chunks)], start=1):
+        assert recovered == b"".join(chunks[:index]), (
+            f"after frame {index} the recoverable plaintext was {recovered!r}"
+        )
 
     # The final frame carries the gzip trailer; the full plaintext round-trips.
     assert delivered == b"".join(chunks)

@@ -31,24 +31,25 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
+import os
 import sys
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from itertools import count
-from typing import TYPE_CHECKING, Any
+from typing import IO, TYPE_CHECKING, Any
 
 import orjson
 
+from veloce.contrib.mcp._helpers import encode_envelope
 from veloce.contrib.mcp.context import _transport_var
-from veloce.contrib.mcp.errors import _JSONRPC_INVALID_REQUEST
+from veloce.contrib.mcp.errors import internal_error, invalid_request_error, parse_error
 from veloce.contrib.mcp.session import MCPSession
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.server import MCPServer
     from veloce.contrib.mcp.transports.base import BidirectionalTransport
 
-# JSON-RPC 2.0 Sec. 5.1 parse error - returned for a line that is not valid
-# JSON. The id is null because the request could not be read.
-_JSONRPC_PARSE_ERROR = -32700
+_logger = logging.getLogger(__name__)
 
 # Prefix for server-issued request ids so a server->client request never collides
 # with a client-issued id (the client owns its own id space; the server owns this).
@@ -59,6 +60,9 @@ _SERVER_ID_PREFIX = "srv-"
 # force - but these two exist to reach a request that is ALREADY running, so
 # queueing them behind it defeats them entirely.
 _CONTROL_METHODS = frozenset({"ping", "notifications/cancelled"})
+
+
+# ── The transport ─────────────────────────────────────────
 
 
 class StdioTransport:
@@ -215,15 +219,30 @@ class StdioTransport:
         self._pending.clear()
 
     async def _emit(self, payload: dict[str, Any]) -> None:
-        """Write one JSON line, serialised against every other writer."""
+        """Write one JSON line, serialised against every other writer.
+
+        `default=` is the same fallback the HTTP path uses, so one handler
+        answering both doors produces the same JSON either way. Without it a
+        `Decimal`, a `set`, a `Path` or a registered encoder - all of which
+        `ctx.result_meta` puts straight into the envelope - raised here instead.
+        """
         async with self._write_lock:
-            await self._write_line(orjson.dumps(payload))
+            await self._write_line(encode_envelope(payload))
 
     async def _dispatch(self, message: dict[str, Any], session: MCPSession) -> None:
         """Answer one request off the read loop, so the loop keeps reading."""
         response = await self.server.handle_message(message, session)
-        if response is not None:
+        if response is None:
+            return
+        try:
             await self._emit(response)
+        except TypeError:
+            # A value no encoder can represent must not cost the client its
+            # reply. This runs in a task nothing awaits, so the exception would
+            # otherwise be the whole of the diagnostic: no bytes written, no
+            # error, and a client waiting for the lifetime of the process.
+            _logger.exception("MCP stdio reply could not be encoded")
+            await self._emit(internal_error(message.get("id"), "Response could not be serialised"))
 
     async def _dispatch_in_order(
         self,
@@ -240,8 +259,28 @@ class StdioTransport:
         business and must not stop this one.
         """
         if previous is not None and not previous.done():
-            with contextlib.suppress(BaseException):
+            # `Exception`, not `BaseException`: the intent is to ignore the
+            # *predecessor's* failure, and `asyncio.CancelledError` is
+            # `BaseException`-derived, so the wider catch also absorbed a cancel
+            # delivered to *this* task while parked on the shield. `serve`
+            # cancels every in-flight task as it unwinds and then evicts the
+            # session, so an absorbed cancel dispatched afterwards against a
+            # reclaimed session with nowhere to send its notifications. A
+            # predecessor that was itself cancelled still raises
+            # `CancelledError` here, and that one is caught explicitly - it is a
+            # failed predecessor, not a cancel of us.
+            try:
                 await asyncio.shield(previous)
+            except asyncio.CancelledError:
+                # Which task was cancelled, read off the shield: a cancelled
+                # predecessor is `cancelled()`, while a cancel of *this* task
+                # leaves the shielded predecessor running. `Task.cancelling()`
+                # would say the same thing but only from 3.11, and this supports
+                # 3.10.
+                if not previous.cancelled():
+                    raise
+            except Exception:
+                pass
         await self._dispatch(message, session)
 
     async def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -251,17 +290,26 @@ class StdioTransport:
         when the correlated reply arrives. Returns the reply's `result`; an error
         reply raises `MCPRequestError`.
 
-        This does not read the stream itself. It used to, which made the serve
-        loop and the calling handler two readers of one blocking stream - so it
-        had to be refused from a task-augmented call, where both are live at
-        once. The loop is now the sole reader, so there is nothing to refuse and
-        a task-augmented tool may sample, elicit and list roots like any other.
+        This does not read the stream itself: the serve loop is the sole
+        reader. Reading here would make the loop and the calling handler two
+        readers of one blocking stream, which cannot both be live - and both
+        are live during a task-augmented call. Because there is only one
+        reader, a task-augmented tool may sample, elicit and list roots like
+        any other.
         """
         request_id = f"{_SERVER_ID_PREFIX}{next(self._server_ids)}"
         future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         self._pending[request_id] = future
-        await self._emit({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
+        # The emit is inside the `finally`'s reach: `encode_envelope` raises
+        # `TypeError` for a value no encoder can represent, and `ctx.elicit()` /
+        # `ctx.sample()` put author-supplied `params` straight into that
+        # envelope. Registering before the emit and opening the `try` after left
+        # one entry per failed issue for the process lifetime, which `_fail_pending`
+        # at EOF then settled for nobody.
         try:
+            await self._emit(
+                {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
+            )
             return await future
         except asyncio.CancelledError:
             raise MCPRequestError("connection closed before reply") from None
@@ -280,13 +328,13 @@ class StdioTransport:
         try:
             message = orjson.loads(stripped)
         except orjson.JSONDecodeError:
-            return None, self._parse_error()
+            return None, parse_error()
         if not isinstance(message, dict):
             # It parsed, so the failure is the shape, not the JSON. JSON-RPC keeps
             # these apart: -32700 says the text could not be read, -32600 says what
             # was read is not a Request object. A batch array lands here too, since
             # the revisions this server speaks do not carry batches.
-            return None, self._invalid_request()
+            return None, invalid_request_error()
         return message, None
 
     def _resolve_reply(self, message: dict[str, Any]) -> None:
@@ -302,37 +350,144 @@ class StdioTransport:
             result = message.get("result")
             future.set_result(result if isinstance(result, dict) else {})
 
-    @staticmethod
-    def _parse_error() -> dict[str, Any]:
-        return {
-            "jsonrpc": "2.0",
-            "id": None,
-            "error": {"code": _JSONRPC_PARSE_ERROR, "message": "Parse error"},
-        }
 
-    @staticmethod
-    def _invalid_request() -> dict[str, Any]:
-        return {
-            "jsonrpc": "2.0",
-            "id": None,
-            "error": {"code": _JSONRPC_INVALID_REQUEST, "message": "Invalid Request"},
-        }
+# ── Errors ────────────────────────────────────────────────
 
 
 class MCPRequestError(Exception):
     """A server->client request failed (the client replied with an error or closed)."""
 
 
+_STDIN_FD = 0
+_STDOUT_FD = 1
+_STDERR_FD = 2
+
+# Set while a stdio server holds the process wire. Two servers on one process
+# would each divert the other's descriptors, so the second is refused instead.
+_wire_claimed = False
+
+
+# ── Wire isolation ────────────────────────────────────────
+
+
+def _descriptor_is_open(fd: int) -> bool:
+    """Whether `fd` refers to something this process can still write to."""
+    try:
+        os.fstat(fd)
+    except OSError:
+        return False
+    return True
+
+
+def _restore_wire(wire_in: int, wire_out: int) -> None:
+    """Point the standard descriptors back at the pipes they started on."""
+    for source, target in ((wire_in, _STDIN_FD), (wire_out, _STDOUT_FD)):
+        with contextlib.suppress(OSError):
+            os.dup2(source, target)
+
+
+@contextlib.contextmanager
+def _isolated_wire() -> Iterator[tuple[IO[bytes], IO[bytes]]]:
+    """Yield the protocol (reader, writer) with descriptors 0 and 1 pointed away.
+
+    While a stdio server is running the process's standard output *is* the
+    protocol pipe, so anything else written there - a `print` left in a handler,
+    a library that logs to stdout, a subprocess a tool spawns - lands in the
+    newline-delimited JSON stream as a line the client cannot parse. The client
+    reports malformed JSON, which points at everything except the write that
+    caused it.
+
+    The isolation has to be at the descriptor level: a child process inherits
+    descriptors rather than Python file objects, so rebinding `sys.stdout` would
+    not cover a tool that shells out. The wire is duplicated onto private
+    descriptors (not inherited, per PEP 446), descriptor 0 is pointed at the null
+    device and descriptor 1 at stderr, and both are restored on the way out. A
+    stray write then shows up as diagnostics on stderr instead of corrupting the
+    protocol, and a child no longer inherits the server's end of either pipe -
+    which on Windows is also what stops it blocking in interpreter startup behind
+    the server's pending read (CPython gh-78961).
+
+    Every failure path degrades to serving the streams as they are, because a
+    half-diverted wire is worse than an unisolated one.
+    """
+    sys.stdout.flush()
+    try:
+        wire_in = os.dup(_STDIN_FD)
+        wire_out = os.dup(_STDOUT_FD)
+    except OSError:
+        # Nothing to duplicate: an embedded interpreter, or a standard stream
+        # already closed. Serve on the streams as they are rather than not at all.
+        yield sys.stdin.buffer, sys.stdout.buffer
+        return
+
+    null_fd = -1
+    diverted = False
+    try:
+        try:
+            null_fd = os.open(os.devnull, os.O_RDWR)
+            os.dup2(null_fd, _STDIN_FD)
+            # Stderr is where a stray write belongs; with no stderr to divert to,
+            # the null device at least keeps it off the wire.
+            os.dup2(_STDERR_FD if _descriptor_is_open(_STDERR_FD) else null_fd, _STDOUT_FD)
+            diverted = True
+        except OSError:
+            _restore_wire(wire_in, wire_out)
+        if not diverted:
+            yield sys.stdin.buffer, sys.stdout.buffer
+            return
+        with (
+            os.fdopen(wire_in, "rb", closefd=False) as reader,
+            os.fdopen(wire_out, "wb", closefd=False) as writer,
+        ):
+            yield reader, writer
+    finally:
+        if diverted:
+            # `sys.stdout` buffers, and its buffer is flushed to whatever
+            # descriptor 1 points at when the flush happens - so a `print` left
+            # unflushed by a handler would be written to the wire the moment it
+            # is restored, or at interpreter exit. Drain it while it still
+            # drains to stderr.
+            with contextlib.suppress(Exception):
+                sys.stdout.flush()
+            _restore_wire(wire_in, wire_out)
+        for fd in (wire_in, wire_out, null_fd):
+            if fd >= 0:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+
+
 async def serve_stdio(server: MCPServer) -> None:
     """Serve `server` over the real process stdin / stdout.
+
+    The wire is isolated from the rest of the process for the duration: the
+    protocol is carried on private duplicates of descriptors 0 and 1 while the
+    standard ones point at the null device and at stderr, so a handler that
+    prints, logs to stdout or spawns a child cannot corrupt the JSON-RPC stream.
 
     Blocking stdin reads are offloaded to the default thread executor so the
     event loop stays responsive; stdout writes are flushed per line so a
     client reading the pipe sees each response immediately.
     """
+    global _wire_claimed
+    if _wire_claimed:
+        raise RuntimeError(
+            "a stdio MCP server is already serving this process; the standard "
+            "descriptors carry one protocol stream and cannot carry two."
+        )
+
     loop = asyncio.get_running_loop()
-    stdin = sys.stdin.buffer
-    stdout = sys.stdout.buffer
+    _wire_claimed = True
+    try:
+        with _isolated_wire() as (stdin, stdout):
+            await _serve_on(server, loop, stdin, stdout)
+    finally:
+        _wire_claimed = False
+
+
+async def _serve_on(
+    server: MCPServer, loop: asyncio.AbstractEventLoop, stdin: IO[bytes], stdout: IO[bytes]
+) -> None:
+    """Run the transport's read / write loop over one pair of byte streams."""
 
     async def read_line() -> bytes | None:
         line = await loop.run_in_executor(None, stdin.readline)

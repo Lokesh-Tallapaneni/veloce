@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from tests.conftest import make_request
 from veloce import Request, Veloce
 from veloce.blueprints import Blueprint
 from veloce.testclient import TestClient
 
 
 def _req() -> Request:
-    return Request(method="GET", path="/", query_string="", headers={}, body=b"")
+    return make_request(method="GET", path="/", query_string="", headers={}, body=b"")
 
 
 # ── synthetic Request defaults ───────────────────────────────────────

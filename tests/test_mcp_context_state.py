@@ -12,6 +12,7 @@ never see different data.
 
 from __future__ import annotations
 
+import orjson
 import pytest
 
 from veloce import Depends, MCPContext, Request, Veloce
@@ -31,8 +32,6 @@ async def _call(app: Veloce, name: str, arguments: dict | None = None) -> dict:
     )
     result = response["result"]
     assert not result.get("isError"), result["content"][0]["text"]
-    import orjson
-
     return orjson.loads(result["content"][0]["text"])
 
 

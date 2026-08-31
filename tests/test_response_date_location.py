@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from veloce import Request, Response
+from tests.conftest import make_request
+from veloce import Response
 
 # ── Response.date ───────────────────────────────────────────────────
 
@@ -73,7 +74,7 @@ def test_content_location_set_and_read():
 
 
 def test_request_date_parses_header():
-    req = Request(
+    req = make_request(
         method="GET",
         path="/",
         query_string="",
@@ -84,12 +85,12 @@ def test_request_date_parses_header():
 
 
 def test_request_date_none_when_absent():
-    req = Request(method="GET", path="/", query_string="", headers={}, body=b"")
+    req = make_request(method="GET", path="/", query_string="", headers={}, body=b"")
     assert req.date is None
 
 
 def test_request_date_none_when_garbage():
-    req = Request(
+    req = make_request(
         method="GET",
         path="/",
         query_string="",

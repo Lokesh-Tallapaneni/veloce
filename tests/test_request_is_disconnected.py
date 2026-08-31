@@ -9,33 +9,29 @@ and the method reported otherwise.
 
 from __future__ import annotations
 
-import pytest
+import inspect
 
+from tests.conftest import make_request
 from veloce import Request
 from veloce.http._body import ASGIBodySource
 
 
-def _req() -> Request:
-    return Request(method="GET", path="/", query_string="", headers={}, body=b"")
-
-
-@pytest.mark.asyncio
 async def test_is_disconnected_returns_false():
-    # Body is fully buffered before dispatch — never disconnected.
-    assert await _req().is_disconnected() is False
+    """A buffered request's body is complete before dispatch, so never disconnected.
+
+    Also the awaitability check: `is_disconnected` is `async def`, so calling it
+    returns a coroutine that has to be awaited - a caller who forgets gets a
+    truthy coroutine object and reads every request as disconnected. A separate
+    test asserting the same `False` did not add that, so it is asserted here.
+    """
+    coro = make_request().is_disconnected()
+    assert inspect.iscoroutine(coro), "is_disconnected must be awaited, not read"
+    assert await coro is False
 
 
-@pytest.mark.asyncio
-async def test_is_disconnected_is_awaitable():
-    coro = _req().is_disconnected()
-    result = await coro
-    assert result is False
-
-
-@pytest.mark.asyncio
 async def test_is_disconnected_usable_in_handler_poll_pattern():
     """the ASGI convention handlers poll it in a loop — must terminate immediately."""
-    req = _req()
+    req = make_request()
     polls = 0
     while not await req.is_disconnected() and polls < 3:
         polls += 1
@@ -52,13 +48,12 @@ def _streaming_req(messages: list[dict]) -> tuple[ASGIBodySource, Request]:
         return next(stream)
 
     source = ASGIBodySource(receive)
-    request = Request(
+    request = make_request(
         method="POST", path="/", query_string="", headers={}, body=b"", body_source=source
     )
     return source, request
 
 
-@pytest.mark.asyncio
 async def test_a_streaming_request_reports_a_disconnect():
     """The client vanished mid-upload and the method still answered False."""
     source, request = _streaming_req(
@@ -72,7 +67,6 @@ async def test_a_streaming_request_reports_a_disconnect():
     assert await request.is_disconnected() is True
 
 
-@pytest.mark.asyncio
 async def test_a_streaming_request_is_connected_before_the_disconnect_arrives():
     source, request = _streaming_req(
         [
@@ -83,7 +77,6 @@ async def test_a_streaming_request_is_connected_before_the_disconnect_arrives():
     assert await request.is_disconnected() is False
 
 
-@pytest.mark.asyncio
 async def test_a_cleanly_completed_stream_is_not_a_disconnect():
     """`_done` covers both endings; only one of them is a disconnect."""
     source, request = _streaming_req([{"type": "http.request", "body": b"ab", "more_body": False}])
@@ -92,7 +85,6 @@ async def test_a_cleanly_completed_stream_is_not_a_disconnect():
     assert await request.is_disconnected() is False
 
 
-@pytest.mark.asyncio
 async def test_a_disconnect_seen_by_read_is_reported_too():
     """`read()` and `__anext__` are separate consumers of the same messages."""
     source, request = _streaming_req(

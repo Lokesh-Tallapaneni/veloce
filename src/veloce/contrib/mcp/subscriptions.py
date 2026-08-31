@@ -35,25 +35,6 @@ if TYPE_CHECKING:  # pragma: no cover
 
 _logger = logging.getLogger(__name__)
 
-# An outbound one-way sink: the connection's `Transport.send`, which delivers a
-# server-initiated JSON-RPC notification to that one client.
-Sink = Callable[[dict[str, Any]], Awaitable[None]]
-
-
-def resource_updated_notification(uri: str) -> dict[str, Any]:
-    """Build the `notifications/resources/updated` message for a changed resource."""
-    return {
-        "jsonrpc": "2.0",
-        "method": "notifications/resources/updated",
-        "params": {"uri": uri},
-    }
-
-
-def resources_list_changed_notification() -> dict[str, Any]:
-    """Build the `notifications/resources/list_changed` message."""
-    return {"jsonrpc": "2.0", "method": "notifications/resources/list_changed"}
-
-
 # The `_meta` key every message on a listen stream carries, identifying which
 # `subscriptions/listen` request it belongs to. On stdio all streams share one
 # channel, so this is how a client demultiplexes them.
@@ -68,6 +49,27 @@ LISTEN_TOPICS = {
     "resourcesListChanged": "notifications/resources/list_changed",
 }
 RESOURCE_SUBSCRIPTIONS = "resourceSubscriptions"
+
+# An outbound one-way sink: the connection's `Transport.send`, which delivers a
+# server-initiated JSON-RPC notification to that one client.
+Sink = Callable[[dict[str, Any]], Awaitable[None]]
+
+
+# ── Notification shapes ───────────────────────────────────
+
+
+def resource_updated_notification(uri: str) -> dict[str, Any]:
+    """Build the `notifications/resources/updated` message for a changed resource."""
+    return {
+        "jsonrpc": "2.0",
+        "method": "notifications/resources/updated",
+        "params": {"uri": uri},
+    }
+
+
+def resources_list_changed_notification() -> dict[str, Any]:
+    """Build the `notifications/resources/list_changed` message."""
+    return {"jsonrpc": "2.0", "method": "notifications/resources/list_changed"}
 
 
 def _stamp(message: dict[str, Any], subscription_id: Any) -> dict[str, Any]:
@@ -115,6 +117,9 @@ def subscription_closed_response(subscription_id: Any) -> dict[str, Any]:
     }
 
 
+# ── The connection registry ───────────────────────────────
+
+
 class ConnectionRegistry:
     """The live MCP connections, each pairing its session with its outbound sink.
 
@@ -156,6 +161,10 @@ class ConnectionRegistry:
         """Drop every connection a session holds (used when the session is evicted)."""
         for token in self._by_session.pop(session, ()):
             self._sinks.pop(token, None)
+
+    def holds(self, session: MCPSession) -> bool:
+        """Whether this session has an open outbound stream to deliver on."""
+        return session in self._by_session
 
     async def notify_updated(self, uri: str) -> None:
         """Send `notifications/resources/updated` to whoever asked for this URI.
@@ -229,6 +238,9 @@ class ConnectionRegistry:
             _logger.exception("MCP resource notification delivery failed")
 
 
+# ── The capability ────────────────────────────────────────
+
+
 class SubscriptionsCapability(_ServerCapability):
     """The `resources/subscribe` / `resources/unsubscribe` methods, opt-in.
 
@@ -242,7 +254,7 @@ class SubscriptionsCapability(_ServerCapability):
 
     __slots__ = ()
 
-    def advertise(self) -> dict[str, Any] | None:
+    def advertise(self, *, modern: bool = False) -> dict[str, Any] | None:
         return None
 
     def handlers(self) -> dict[str, MethodHandler]:
@@ -263,7 +275,7 @@ class SubscriptionsCapability(_ServerCapability):
         No response is produced now: this request is answered only when the stream
         ends, so the caller defers it.
         """
-        session = self._require_session("subscriptions/listen")
+        session = self._require_open_stream()
         subscription_id = self._server.current_request_id()
         if subscription_id is None:
             raise InvalidParamsError(
@@ -279,17 +291,36 @@ class SubscriptionsCapability(_ServerCapability):
 
     async def _subscribe(self, params: dict[str, Any]) -> dict[str, Any]:
         """Record this connection's interest in a resource URI (`resources/subscribe`)."""
-        session = self._require_session()
+        session = self._require_session("resources/subscribe")
         session.subscriptions.add(_subscription_uri(params))
         return {}
 
     async def _unsubscribe(self, params: dict[str, Any]) -> dict[str, Any]:
         """Drop this connection's interest in a resource URI (`resources/unsubscribe`)."""
-        session = self._require_session()
+        session = self._require_session("resources/unsubscribe")
         session.subscriptions.discard(_subscription_uri(params))
         return {}
 
-    def _require_session(self, method: str = "resources/subscribe") -> MCPSession:
+    def _require_open_stream(self) -> MCPSession:
+        """Return the session that will hold this `subscriptions/listen` stream.
+
+        What a listen stream needs is somewhere to deliver, not a session that
+        outlives the request: the open stream *is* the subscription, and it ends
+        when the request does. The revision that introduced this method is also
+        the one that removed sessions, so requiring a persistent connection made
+        it reachable only where it is not defined - in particular it refused the
+        default HTTP deployment, which opens a real SSE stream over a session
+        built for the one request.
+        """
+        session = self._server.current_session()
+        if session is None or not self._server.connection_can_stream(session):
+            raise InvalidParamsError(
+                "subscriptions/listen requires an open stream to deliver on; "
+                "send it on a connection the server can push messages down."
+            )
+        return session
+
+    def _require_session(self, method: str) -> MCPSession:
         """Return the dispatching connection's session, or reject a sessionless call.
 
         Subscriptions are per-connection state, so a subscribe / unsubscribe is
@@ -304,6 +335,9 @@ class SubscriptionsCapability(_ServerCapability):
                 "supported on a stateless request."
             )
         return session
+
+
+# ── Parameter parsing ─────────────────────────────────────
 
 
 def _agreed_filter(requested: Any) -> dict[str, Any]:

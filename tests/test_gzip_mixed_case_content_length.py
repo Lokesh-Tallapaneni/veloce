@@ -12,18 +12,13 @@ from __future__ import annotations
 
 import gzip
 
+from tests.conftest import make_request
 from veloce import GZipMiddleware, Request
 from veloce.http.response import JSONResponse, StreamingResponse, header_key
 
 
 def _make_request() -> Request:
-    return Request(
-        method="GET",
-        path="/",
-        query_string="",
-        headers={"accept-encoding": "gzip"},
-        body=b"",
-    )
+    return make_request(headers={"accept-encoding": "gzip"})
 
 
 async def test_buffered_strips_stale_mixed_case_content_length():

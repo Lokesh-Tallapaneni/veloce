@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import pytest
+import orjson
 
 from tests.conftest import make_request
 from veloce import Cookie, Header, Path, Query, Veloce
 
 
 class TestParamClasses:
-    @pytest.mark.asyncio
     async def test_query_with_validation(self):
         app = Veloce(openapi_url=None)
 
@@ -18,13 +17,10 @@ class TestParamClasses:
             return {"page": page, "limit": limit}
 
         resp = await app.handle_request(make_request(path="/items", query_string="page=3&limit=20"))
-        import orjson
-
         data = orjson.loads(resp.body)
         assert data["page"] == 3
         assert data["limit"] == 20
 
-    @pytest.mark.asyncio
     async def test_query_default(self):
         app = Veloce(openapi_url=None)
 
@@ -33,11 +29,8 @@ class TestParamClasses:
             return {"q": q}
 
         resp = await app.handle_request(make_request(path="/search"))
-        import orjson
-
         assert orjson.loads(resp.body)["q"] == ""
 
-    @pytest.mark.asyncio
     async def test_query_validation_error(self):
         app = Veloce(openapi_url=None)
 
@@ -48,7 +41,6 @@ class TestParamClasses:
         resp = await app.handle_request(make_request(path="/items", query_string="page=0"))
         assert resp.status_code == 422
 
-    @pytest.mark.asyncio
     async def test_header_param(self):
         app = Veloce(openapi_url=None)
 
@@ -59,11 +51,8 @@ class TestParamClasses:
         resp = await app.handle_request(
             make_request(path="/check", headers={"x-token": "secret123"})
         )
-        import orjson
-
         assert orjson.loads(resp.body)["token"] == "secret123"
 
-    @pytest.mark.asyncio
     async def test_header_missing_required(self):
         app = Veloce(openapi_url=None)
 
@@ -74,7 +63,6 @@ class TestParamClasses:
         resp = await app.handle_request(make_request(path="/check"))
         assert resp.status_code == 422
 
-    @pytest.mark.asyncio
     async def test_cookie_param(self):
         app = Veloce(openapi_url=None)
 
@@ -85,11 +73,8 @@ class TestParamClasses:
         resp = await app.handle_request(
             make_request(path="/me", headers={"cookie": "session_id=abc123"})
         )
-        import orjson
-
         assert orjson.loads(resp.body)["session"] == "abc123"
 
-    @pytest.mark.asyncio
     async def test_path_param_class(self):
         app = Veloce(openapi_url=None)
 
@@ -98,11 +83,8 @@ class TestParamClasses:
             return {"id": item_id}
 
         resp = await app.handle_request(make_request(path="/items/42"))
-        import orjson
-
         assert orjson.loads(resp.body)["id"] == 42
 
-    @pytest.mark.asyncio
     async def test_string_length_validation(self):
         app = Veloce(openapi_url=None)
 
@@ -118,7 +100,6 @@ class TestParamClasses:
 
 
 class TestOptionalParams:
-    @pytest.mark.asyncio
     async def test_optional_query(self):
         app = Veloce(openapi_url=None)
 
@@ -127,8 +108,6 @@ class TestOptionalParams:
             return {"q": q}
 
         resp = await app.handle_request(make_request(path="/search"))
-        import orjson
-
         assert orjson.loads(resp.body)["q"] is None
 
         resp = await app.handle_request(make_request(path="/search", query_string="q=test"))

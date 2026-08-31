@@ -47,6 +47,8 @@ def test_get_json_none_for_empty_body():
 
 
 def test_get_json_raises_on_invalid_json():
+    """`ValueError`, not merely "something" - `pytest.raises(Exception)` here
+    would be satisfied by a `TypeError` from a signature change."""
     resp = Response(body=b"not json")
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         resp.get_json()

@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
+from tests.conftest import make_request
 from veloce import Request, Veloce
 from veloce.testclient import TestClient
 
 
 def test_view_args_empty_by_default():
-    req = Request(method="GET", path="/", query_string="", headers={}, body=b"")
+    req = make_request(method="GET", path="/", query_string="", headers={}, body=b"")
     assert req.view_args == {}
 
 
 def test_view_args_aliases_path_params():
-    req = Request(method="GET", path="/", query_string="", headers={}, body=b"")
+    req = make_request(method="GET", path="/", query_string="", headers={}, body=b"")
     req.path_params = {"id": "7"}
     assert req.view_args == {"id": "7"}
     assert req.view_args is req.path_params

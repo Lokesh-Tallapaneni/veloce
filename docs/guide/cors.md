@@ -98,10 +98,33 @@ To let the browser send cookies or `Authorization` on cross-origin requests, set
 a wildcard, so Veloce echoes the exact request `Origin` (never `*`) and adds
 `Vary: Origin` so caches key the response per origin.
 
+!!! note "`Vary: Origin` is emitted on every response, including refusals"
+    Whenever the allowed origin *could* depend on the request — an explicit
+    allow-list, an `allow_origin_regex`, or `allow_credentials=True` — every
+    response carries `Vary: Origin`, not only the ones that were granted an
+    `Access-Control-Allow-Origin`.
+
+    That matters because a refused origin, and a request with no `Origin` at
+    all, produce a response with no CORS header for a cache to key on. Without
+    `Vary` a shared cache stores it under an unkeyed entry and can later serve
+    it to an *allowed* origin, whose browser then blocks a request that should
+    have succeeded.
+
+    A bare `allow_origins=["*"]` without credentials is the exception: it
+    answers every caller with the same `*`, so nothing depends on the origin and
+    no `Vary` is added — adding one would fragment caches for no benefit.
+
+    !!! note "Fixed in version 0.18.0"
+        `Vary: Origin` was previously emitted only when an origin was allowed.
+
 ```python
+from veloce import CORSMiddleware, Veloce
+
+app = Veloce()
 app.add_middleware(
     CORSMiddleware(
         allow_origins=["https://app.example.com"],
+        allow_headers=["Authorization", "Content-Type"],
         allow_credentials=True,
     )
 )
@@ -110,8 +133,11 @@ app.add_middleware(
 !!! warning "Credentials cannot be combined with a wildcard"
     `allow_credentials=True` with `allow_origins=["*"]`, `allow_headers=["*"]`,
     or a wildcard `allow_origin_regex` (`.*` and equivalents) raises a
-    `ValueError` at construction (Fetch CORS spec Sec. 3.2.4). List the concrete
-    origins you trust instead.
+    `ValueError` at construction (Fetch CORS spec Sec. 3.2.4).
+
+    `allow_headers` defaults to `["*"]`, so **omitting it is a wildcard** and
+    credentials will not construct. List concrete origins *and* concrete headers,
+    as the example above does.
 
 ## How preflight is answered
 

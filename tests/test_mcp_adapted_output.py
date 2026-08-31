@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from typing_extensions import TypedDict
 
 from veloce import Veloce
@@ -172,7 +172,7 @@ def test_the_shaper_coerces_onto_the_declared_shape():
 
 
 def test_the_shaper_rejects_a_value_that_does_not_conform():
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         shape_through_model({"rows": 1}, Report)
 
 

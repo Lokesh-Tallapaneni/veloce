@@ -59,14 +59,14 @@ are all inherited.
 
 ## APIRouter
 
-If you come from FastAPI, `APIRouter` is available as an alias for
-`Blueprint` — it is the exact same class, exported under both names.
+If you come from FastAPI, `APIRouter` is available as an alias for `Router`. It
+takes `prefix=` and no name, matching FastAPI's own signature:
 
 ```python
 from veloce import APIRouter, Request, Veloce
 
 app = Veloce()
-router = APIRouter("items", url_prefix="/items")
+router = APIRouter(prefix="/items")
 
 
 @router.get("/")
@@ -74,8 +74,14 @@ async def list_items(request: Request):
     return {"items": []}
 
 
-app.register_blueprint(router)
+app.include_router(router)
 ```
+
+!!! note "Changed in version 0.6"
+
+    `APIRouter` aliased `Blueprint` before 0.6. Construct a `Blueprint` when you
+    want a *named* route group — the name is what `url_for("items.list_items")`
+    resolves against, and it is what `register_blueprint` expects.
 
 ## URL prefixes
 
@@ -201,6 +207,19 @@ cannot be registered as a child of itself — doing so raises `ValueError`.
     the parent's `register_blueprint`, just as you can when registering onto
     an app.
 
+Everything registered on a blueprint — `before_request`, `after_request`,
+`teardown_request`, `url_value_preprocessor`, `url_defaults` and error handlers
+— applies to that blueprint's own routes and to its descendants', never to a
+sibling's. A parent's hooks still run for a child's routes, outermost first, and
+`after_request` hooks unwind innermost first.
+
+!!! warning "Changed in version 0.18"
+    A nested child's hooks and URL processors previously ran on **every** route
+    under the parent, siblings included. If you relied on that — a guard
+    declared on one child protecting its siblings — move the registration to the
+    parent blueprint, where it covers the whole subtree by design. Error
+    handlers were already scoped this way and are unchanged.
+
 ## Inspecting registered blueprints
 
 After registration, [`app.blueprints`](../reference/application.md#veloce.Veloce.blueprints)
@@ -220,8 +239,14 @@ for bp in app.iter_blueprints():
 ```
 
 The returned dictionary is a copy, so mutating it does not affect the
-application. Re-registering a blueprint under an existing name overwrites the
-previous entry in this map.
+application.
+
+The same blueprint may be registered more than once, to mount it at a second
+prefix; its entry here is unchanged and its hooks still run once per request. A
+*different* blueprint under a name already registered is refused with a
+`ValueError`: both would give their routes the same `<name>.` endpoint prefix, so
+`url_for` could not tell them apart and one blueprint's hooks would run on the
+other's routes.
 
 ## Sharing dependencies across a blueprint
 

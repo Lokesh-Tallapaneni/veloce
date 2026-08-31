@@ -18,12 +18,13 @@ from veloce._protocol_constants import HTTP_METHOD_GET
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.app.contexts import _AppContext, _TestRequestContext
     from veloce.app.core import Veloce
+    from veloce.testclient import AsyncTestClient, TestClient
 
 
 class TestingMixin:
     """In-memory test-client and outside-request context factories."""
 
-    def test_client(self, **kwargs: Any) -> Any:
+    def test_client(self, **kwargs: Any) -> TestClient:
         """Return an in-memory `TestClient` for this app.
 
         `app.test_client()` is the factory API; the kwargs (e.g.
@@ -35,7 +36,7 @@ class TestingMixin:
 
         return TestClient(self, **kwargs)
 
-    def async_test_client(self, **kwargs: Any) -> Any:
+    def async_test_client(self, **kwargs: Any) -> AsyncTestClient:
         """Return an `AsyncTestClient` for this app.
 
         The async counterpart of `test_client()` - used as
@@ -56,8 +57,9 @@ class TestingMixin:
         write into `g` without going through `handle_request`. Nestable:
         the previous binding (if any) is restored on exit.
         """
-        # Lazy import: `veloce.app.contexts` transitively pulls `veloce.http`, which
-        # is not yet importable at app module-load time (app -> _contexts -> http).
+        # Lazy for the reason the module docstring gives - keeping the context
+        # machinery off `import veloce` - not for a cycle: nothing under
+        # `veloce.http` imports `veloce.app`, and hoisting this imports cleanly.
         from veloce.app.contexts import _AppContext
 
         return _AppContext(cast("Veloce", self))
@@ -78,9 +80,10 @@ class TestingMixin:
         dispatch pipeline. Strict subset of what `handle_request` does:
         no middleware, no DI, no handler.
         """
-        from veloce.app.contexts import (
-            _TestRequestContext,  # lazy: breaks app->_contexts->http cycle
-        )
+        # Lazy for the reason the module docstring gives - keeping the context
+        # machinery off `import veloce` - not for a cycle: hoisting it was
+        # measured to import cleanly in every ordering.
+        from veloce.app.contexts import _TestRequestContext
 
         return _TestRequestContext(
             cast("Veloce", self),

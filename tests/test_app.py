@@ -1,8 +1,24 @@
-"""Tests for the Veloce application — full integration tests."""
+"""The application, exercised end to end.
 
+This is the integration smoke suite: one small pass over each thing an app
+does - routing, path and query parameters, bodies, dependency injection,
+middleware, error handlers, sub-routers, response types, sync handlers - to
+catch a break in the wiring between them. Each of those has its own module
+with the depth; this one is about the seams.
+
+It used to carry a bare-function tail as well, three sections labelled by
+internal batch id and covering the security preset, executor classification
+and `config["DEBUG"]` binding, none of which is about the seams. Those moved
+to the modules named for them.
+"""
+
+import json
+
+import orjson
 import pytest
 from pydantic import BaseModel
 
+from tests.conftest import make_request
 from veloce import Depends, HTMLResponse, HTTPException, JSONResponse, Request, Router, Veloce
 from veloce.http.response import RedirectResponse, Response
 from veloce.middleware import CORSMiddleware
@@ -13,18 +29,7 @@ def app():
     return Veloce(debug=True)
 
 
-def make_request(method="GET", path="/", headers=None, body=b"", query_string="") -> Request:
-    return Request(
-        method=method,
-        path=path,
-        query_string=query_string,
-        headers=headers or {},
-        body=body,
-    )
-
-
 class TestBasicRoutes:
-    @pytest.mark.asyncio
     async def test_get_dict_response(self, app):
         @app.get("/")
         async def index(request: Request):
@@ -34,7 +39,6 @@ class TestBasicRoutes:
         assert response.status_code == 200
         assert b'"hello"' in response.body
 
-    @pytest.mark.asyncio
     async def test_get_string_response(self, app):
         @app.get("/text")
         async def text(request: Request):
@@ -44,7 +48,6 @@ class TestBasicRoutes:
         assert response.status_code == 200
         assert response.body == b"hello"
 
-    @pytest.mark.asyncio
     async def test_html_response(self, app):
         @app.get("/html")
         async def html(request: Request):
@@ -54,12 +57,10 @@ class TestBasicRoutes:
         assert response.status_code == 200
         assert b"<h1>Hi</h1>" in response.body
 
-    @pytest.mark.asyncio
     async def test_404(self, app):
         response = await app.handle_request(make_request(path="/nope"))
         assert response.status_code == 404
 
-    @pytest.mark.asyncio
     async def test_method_not_allowed(self, app):
         @app.get("/only-get")
         async def only_get(request: Request):
@@ -70,7 +71,6 @@ class TestBasicRoutes:
 
 
 class TestPathParams:
-    @pytest.mark.asyncio
     async def test_string_param(self, app):
         @app.get("/hello/{name}")
         async def hello(name: str):
@@ -79,7 +79,6 @@ class TestPathParams:
         response = await app.handle_request(make_request(path="/hello/alice"))
         assert b"alice" in response.body
 
-    @pytest.mark.asyncio
     async def test_int_param(self, app):
         @app.get("/items/{item_id}")
         async def get_item(item_id: int):
@@ -87,11 +86,12 @@ class TestPathParams:
 
         response = await app.handle_request(make_request(path="/items/42"))
         assert response.status_code == 200
-        assert b"42" in response.body
+        # The handler returns `type` for exactly this: `b"42" in body` is
+        # satisfied by the string `"42"`, which is the coercion failing.
+        assert json.loads(response.body) == {"id": 42, "type": "int"}
 
 
 class TestQueryParams:
-    @pytest.mark.asyncio
     async def test_query_params(self, app):
         @app.get("/search")
         async def search(q: str = "", page: int = 1):
@@ -103,7 +103,6 @@ class TestQueryParams:
         assert response.status_code == 200
         assert b"test" in response.body
 
-    @pytest.mark.asyncio
     async def test_default_query_params(self, app):
         @app.get("/list")
         async def list_items(limit: int = 10):
@@ -115,7 +114,6 @@ class TestQueryParams:
 
 
 class TestRequestBody:
-    @pytest.mark.asyncio
     async def test_pydantic_body(self, app):
         class Item(BaseModel):
             name: str
@@ -124,8 +122,6 @@ class TestRequestBody:
         @app.post("/items")
         async def create_item(item: Item):
             return {"name": item.name, "price": item.price}
-
-        import orjson
 
         body = orjson.dumps({"name": "Widget", "price": 9.99})
         response = await app.handle_request(
@@ -139,7 +135,6 @@ class TestRequestBody:
         assert response.status_code == 200
         assert b"Widget" in response.body
 
-    @pytest.mark.asyncio
     async def test_invalid_body_validation(self, app):
         class Item(BaseModel):
             name: str
@@ -161,7 +156,6 @@ class TestRequestBody:
 
 
 class TestDependencyInjection:
-    @pytest.mark.asyncio
     async def test_sync_dependency(self, app):
         def get_db():
             return {"connected": True}
@@ -174,7 +168,6 @@ class TestDependencyInjection:
         assert response.status_code == 200
         assert b"true" in response.body
 
-    @pytest.mark.asyncio
     async def test_async_dependency(self, app):
         async def get_user(request: Request):
             return {"user": "admin"}
@@ -186,7 +179,6 @@ class TestDependencyInjection:
         response = await app.handle_request(make_request(path="/user"))
         assert b"admin" in response.body
 
-    @pytest.mark.asyncio
     async def test_dependency_raises(self, app):
         def auth_required(request: Request):
             raise HTTPException(401, "Unauthorized")
@@ -200,7 +192,6 @@ class TestDependencyInjection:
 
 
 class TestMiddleware:
-    @pytest.mark.asyncio
     async def test_cors_preflight(self, app):
         app.add_middleware(CORSMiddleware(allow_origins=["*"]))
 
@@ -218,7 +209,6 @@ class TestMiddleware:
         assert response.status_code == 204
         assert "Access-Control-Allow-Origin" in response.headers
 
-    @pytest.mark.asyncio
     async def test_cors_response_headers(self, app):
         app.add_middleware(CORSMiddleware(allow_origins=["http://localhost:3000"]))
 
@@ -236,7 +226,6 @@ class TestMiddleware:
 
 
 class TestExceptionHandlers:
-    @pytest.mark.asyncio
     async def test_custom_exception_handler(self, app):
         @app.exception_handler(HTTPException)
         async def custom_handler(request: Request, exc: HTTPException):
@@ -250,7 +239,6 @@ class TestExceptionHandlers:
         assert response.status_code == 418
         assert b"custom_error" in response.body
 
-    @pytest.mark.asyncio
     async def test_unhandled_exception_debug(self, app):
         @app.get("/crash")
         async def crash(request: Request):
@@ -262,7 +250,6 @@ class TestExceptionHandlers:
 
 
 class TestRouterInclusion:
-    @pytest.mark.asyncio
     async def test_included_router(self, app):
         api = Router(prefix="/api/v1")
 
@@ -277,7 +264,6 @@ class TestRouterInclusion:
 
 
 class TestResponseTypes:
-    @pytest.mark.asyncio
     async def test_redirect(self, app):
         @app.get("/old")
         async def old(request: Request):
@@ -287,7 +273,6 @@ class TestResponseTypes:
         assert response.status_code == 307
         assert response.headers["Location"] == "/new"
 
-    @pytest.mark.asyncio
     async def test_pydantic_model_response(self, app):
         class Item(BaseModel):
             name: str
@@ -316,7 +301,6 @@ class TestResponseTypes:
 
 
 class TestSyncHandlers:
-    @pytest.mark.asyncio
     async def test_sync_handler(self, app):
         @app.get("/sync")
         def sync_handler(request: Request):
@@ -325,197 +309,3 @@ class TestSyncHandlers:
         response = await app.handle_request(make_request(path="/sync"))
         assert response.status_code == 200
         assert b"sync" in response.body
-
-
-# ── S7: secure-by-default preset + security audit ─────────────────────
-
-
-def test_use_secure_defaults_sets_cookie_flags_and_middleware():
-    from veloce import SecurityHeadersMiddleware
-
-    secured = Veloce(openapi_url=None)
-    secured.use_secure_defaults()
-    assert secured.config["SESSION_COOKIE_SECURE"] is True
-    assert secured.config["SESSION_COOKIE_HTTPONLY"] is True
-    assert secured.config["SESSION_COOKIE_SAMESITE"] == "Lax"
-    assert any(isinstance(m, SecurityHeadersMiddleware) for m in secured._middlewares)
-
-
-def test_use_secure_defaults_is_idempotent():
-    from veloce import SecurityHeadersMiddleware
-
-    secured = Veloce(openapi_url=None)
-    secured.use_secure_defaults()
-    secured.use_secure_defaults()
-    count = sum(isinstance(m, SecurityHeadersMiddleware) for m in secured._middlewares)
-    assert count == 1
-
-
-def test_security_audit_flags_insecure_app():
-    insecure = Veloce(debug=True, openapi_url=None)
-    warnings = insecure.security_audit()
-    assert any("DEBUG" in w for w in warnings)
-    assert any("SECRET_KEY" in w for w in warnings)
-
-
-def test_security_audit_clean_after_hardening():
-    secured = Veloce(openapi_url=None)
-    secured.config["SECRET_KEY"] = "a-real-secret"
-    secured.use_secure_defaults()
-    assert secured.security_audit() == []
-
-
-# ── P-6: trivial-route executor classification ───────────────────────
-
-
-async def test_trivial_route_classified_and_dispatches():
-    """A handler with no injected parameters is classified trivial and is
-    dispatched without entering the dependency resolver."""
-    app = Veloce(debug=True, openapi_url=None)
-
-    @app.get("/trivial")
-    async def trivial():
-        return {"ok": True}
-
-    @app.get("/with-request")
-    async def with_request(request: Request):
-        return {"seen": request.path}
-
-    @app.get("/with-param/{n}")
-    async def with_param(n: int):
-        return {"n": n}
-
-    assert app.match("GET", "/trivial").route_info.is_trivial_plan is True
-    assert app.match("GET", "/with-request").route_info.is_trivial_plan is False
-    assert app.match("GET", "/with-param/5").route_info.is_trivial_plan is False
-
-    # All three still dispatch correctly.
-    assert (await app.handle_request(make_request(path="/trivial"))).status_code == 200
-    assert (await app.handle_request(make_request(path="/with-request"))).status_code == 200
-    param_resp = await app.handle_request(make_request(path="/with-param/5"))
-    assert param_resp.status_code == 200
-    assert b'"n":5' in param_resp.body or b'"n": 5' in param_resp.body
-
-
-async def test_route_with_dependency_is_not_trivial():
-    """A route-level dependency keeps the route on the full resolve path."""
-
-    async def dep():
-        return "x"
-
-    app = Veloce(debug=True, openapi_url=None)
-
-    @app.get("/d", dependencies=[Depends(dep)])
-    async def d():
-        return {"ok": True}
-
-    assert app.match("GET", "/d").route_info.is_trivial_plan is False
-    assert (await app.handle_request(make_request(path="/d"))).status_code == 200
-
-
-async def test_paramless_route_under_app_level_dependency_is_not_trivial():
-    """An app-level `Veloce(dependencies=...)` keeps even a parameter-less
-    handler on the full resolve path, so the dependency still runs."""
-    ran: list[bool] = []
-
-    async def dep():
-        ran.append(True)
-        return "x"
-
-    app = Veloce(debug=True, openapi_url=None, dependencies=[Depends(dep)])
-
-    @app.get("/d")
-    async def d():
-        return {"ok": True}
-
-    assert app.match("GET", "/d").route_info.is_trivial_plan is False
-    resp = await app.handle_request(make_request(path="/d"))
-    assert resp.status_code == 200
-    assert ran == [True]  # the app-level dependency actually executed
-
-
-# ── debug bound to config["DEBUG"] (single source of truth) ──────────
-
-
-def test_debug_attr_writes_config():
-    from veloce import Veloce
-
-    app = Veloce(openapi_url=None)
-    app.debug = True
-    assert app.config["DEBUG"] is True
-
-
-def test_config_debug_reflected_in_attr():
-    from veloce import Veloce
-
-    app = Veloce(openapi_url=None)
-    app.config["DEBUG"] = True
-    assert app.debug is True
-
-
-def test_debug_constructor_seeds_config():
-    from veloce import Veloce
-
-    assert Veloce(debug=True, openapi_url=None).config["DEBUG"] is True
-    assert Veloce(openapi_url=None).config["DEBUG"] is False
-
-
-def test_post_construction_debug_enables_html_traceback():
-    from veloce import Veloce
-    from veloce.testclient import TestClient
-
-    app = Veloce(openapi_url=None)
-
-    @app.get("/boom")
-    async def boom():
-        raise RuntimeError("kaboom")
-
-    app.config["DEBUG"] = True  # flip AFTER construction
-    with TestClient(app) as client:
-        resp = client.get("/boom", headers={"accept": "text/html"})
-    # Flipping config["DEBUG"] after construction now serves the HTML debug
-    # traceback page (the path that reads self.debug, now bound to the config
-    # key) instead of the production JSON error.
-    assert resp.status_code == 500
-    assert "text/html" in resp.content_type
-    assert "RuntimeError" in resp.text
-
-
-def test_debug_string_false_is_falsey():
-    # A dotenv-loaded `DEBUG=false` is the string "false"; it must read as False,
-    # not truthy. Guards the bool("false") regression on string-based config.
-    from veloce import Veloce
-
-    app = Veloce(openapi_url=None)
-    app.config["DEBUG"] = "false"
-    assert app.debug is False
-    app.config["DEBUG"] = "true"
-    assert app.debug is True
-
-
-def test_debug_setter_coerces_string():
-    # `app.debug = "false"` (string from an env source) must store False.
-    from veloce import Veloce
-
-    app = Veloce(openapi_url=None)
-    app.debug = "false"
-    assert app.debug is False and app.config["DEBUG"] is False
-    app.debug = "true"
-    assert app.debug is True
-
-
-def test_run_rejects_multiple_workers():
-    """The built-in server is single-process; run(workers>1) fails loudly."""
-    app = Veloce()
-    with pytest.raises(ValueError, match="runs a single process"):
-        app.run(workers=4)
-
-
-def test_app_still_works():
-    app = Veloce(openapi_url=None)
-
-    @app.get("/")
-    async def index():
-        return {"ok": True}
-
-    assert app.test_client().get("/").json() == {"ok": True}

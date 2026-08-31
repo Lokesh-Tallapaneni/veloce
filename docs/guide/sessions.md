@@ -193,14 +193,25 @@ keyword arguments:
 | `chunked`            | `False`        | Split an oversized signed value across numbered cookies and reassemble it. |
 | `max_chunks`         | `8`            | Upper bound on chunk cookies; larger sessions are dropped with a warning. |
 
-Arguments left out fall back to `app.config` on the first request:
-`secret_key` to `SECRET_KEY` (also settable as `app.secret_key`),
-`cookie_name` to `SESSION_COOKIE_NAME`, `path` to `APPLICATION_ROOT`,
-`httponly` / `secure` / `samesite` to the matching `SESSION_COOKIE_*` keys,
-`permanent_lifetime` to `PERMANENT_SESSION_LIFETIME`, and `max_cookie_size`
-to `MAX_COOKIE_SIZE`. An explicit argument always wins over config, and a
-config key left at its default keeps the middleware default shown above. So
-the shortest complete setup is:
+The constructor is the only source for these. An argument left out takes the
+default shown above and does not change again — `app.config` is not consulted,
+so what you read here is what the cookie carries, and two session middlewares
+can carry different cookies.
+
+`secret_key` is the exception: left out, it is taken from `SECRET_KEY` (also
+settable as `app.secret_key`) on the first request. It is the application's
+signing key rather than an attribute of this cookie, and `app.secret_key` is
+already its only home.
+
+!!! warning "Cookie settings moved out of config"
+
+    `SESSION_COOKIE_SECURE`, `SESSION_COOKIE_NAME`, `SESSION_COOKIE_HTTPONLY`
+    and `SESSION_COOKIE_SAMESITE` no longer configure anything. Setting one
+    stops the app at startup with an `AuditFailed` naming it, rather than
+    letting a cookie you believe is `Secure` quietly travel over plain HTTP.
+    Pass `secure=True` to the middleware instead.
+
+So the shortest complete setup is:
 
 ```python
 app = Veloce()
@@ -208,8 +219,10 @@ app.secret_key = "change-me-in-production"
 app.add_middleware(SessionMiddleware)
 ```
 
-Without either a `secret_key=` argument or a configured `SECRET_KEY`, the
-first request raises `RuntimeError`.
+Without either a `secret_key=` argument or a configured `SECRET_KEY`, **startup**
+fails with `AuditFailed` — before any request is served, so the misconfiguration
+cannot reach production. `AuditFailed` subclasses `ValueError`, not
+`RuntimeError`.
 
 `cookie_prefix` enforces the [RFC 6265bis](https://datatracker.ietf.org/doc/html/draft-ietf-httpbis-rfc6265bis)
 name-prefix invariants: both prefixes require `secure=True`, and `"host"`
@@ -314,9 +327,20 @@ Install the backend with `pip install veloceframework[redis]`.
 
 `ServerSessionMiddleware` takes the same cookie options as
 `SessionMiddleware` (`cookie_name`, `max_age`, `path`, `httponly`,
-`secure`, `samesite`) plus a `store` argument. It has no `secret_key`
-(the cookie carries no signed payload to protect) and no
-`permanent_lifetime`.
+`secure`, `samesite`, `permanent_lifetime`) plus a `store` argument. It has no
+`secret_key` — the cookie carries no signed payload to protect.
+
+`session.permanent = True` works the same way it does on the cookie backend: the
+cookie's `Max-Age` **and** the store entry's TTL both switch to
+`permanent_lifetime` (31 days by default), so the
+entry never expires out from under a cookie the client still holds.
+
+!!! warning "Changed in version 0.18"
+    `ServerSessionMiddleware` previously ignored `session.permanent` and used
+    `max_age` for every session, so "remember me" silently did nothing and users
+    were logged out after 14 days however the lifetime was configured.
+    Permanent sessions now live longer than before — pass `permanent_lifetime=`
+    to cap it explicitly if that is not what you want.
 
 ### Revoking a session
 
@@ -350,7 +374,22 @@ defence](https://owasp.org/www-community/attacks/Session_fixation).
 To back sessions with Redis or a database, subclass
 [`SessionStore`](../reference/sessions.md#veloce.SessionStore) and implement its async
 methods. The interface is async so a network-backed store does not block the
-event loop:
+event loop.
+
+`read`, `write` and `delete` are all required, and a store that omits one is
+refused where it is written rather than on the request that first needs it:
+
+```python
+class MyStore(SessionStore):
+    async def read(self, session_id): ...
+    async def write(self, session_id, data, max_age): ...
+    # `delete` forgotten
+
+# TypeError: MyStore does not implement SessionStore: delete missing
+```
+
+!!! note "Added in version 0.18.0"
+    The subclass check. A store that already implements all three is unaffected.
 
 ```python
 from typing import Any
@@ -359,6 +398,11 @@ from veloce import ServerSessionMiddleware, SessionStore, Veloce
 
 
 class RedisSessionStore(SessionStore):
+    # `SessionStore` is slotted, so declare the store's own attributes rather
+    # than letting the subclass fall back to a `__dict__`. The shipped
+    # `veloce.contrib.redis` backends do the same.
+    __slots__ = ("_client",)
+
     def __init__(self, client: Any) -> None:
         self._client = client
 
@@ -425,6 +469,53 @@ async def whoami():
 
 See the [Flask-style helpers](helpers.md) guide for the full set of
 request-scoped proxies.
+
+## Minting and reading a cookie outside a request
+
+Sometimes there is no request to hang a session on: a fixture that should start
+logged in, a script that hands someone a pre-authenticated link, a test that
+wants to see what a response actually set. `SessionMiddleware` exposes the two
+halves of its cookie handling for that:
+
+```python
+from veloce.middleware.sessions import SessionMiddleware
+
+middleware = SessionMiddleware(secret_key="change-me-in-production")
+
+value = middleware.encode_cookie({"user_id": 7})   # signed cookie value
+middleware.decode_cookie(value)                    # {"user_id": 7}
+middleware.decode_cookie("forged")                 # None
+```
+
+`decode_cookie` returns `None` for a bad signature, a tampered payload, or a
+token older than the middleware would accept - it does not raise. It is the
+same code the request path runs, including the age ceiling that depends on
+whether the session was marked permanent, so a cookie it accepts is a cookie a
+request accepts. Building a `Signer` by hand with the same secret does **not**
+reproduce that: the salt and the two-tier age check are part of the contract.
+
+## Inspecting an in-memory store
+
+`InMemorySessionStore` reads as well as writes, which is what a session count or
+an idle-timeout check needs:
+
+```python
+from veloce.sessions import InMemorySessionStore
+
+store = InMemorySessionStore()
+await store.write("abc", {"user_id": 7}, max_age=3600)
+
+len(store)                  # 1 - live sessions
+"abc" in store              # True
+store.expires_at("abc")     # Unix timestamp, or None
+list(store)                 # ["abc"]
+store.clear()               # revoke everything; returns how many went
+```
+
+All of these agree with `read` about what "present" means: an entry past its
+expiry is absent whether or not the store has swept it yet, and none of them
+evict as a side effect. `expires_at` is the only way to observe a sliding-expiry
+refresh, since `touch` deliberately leaves the payload alone.
 
 ## Next steps
 

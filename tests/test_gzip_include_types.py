@@ -1,16 +1,15 @@
-"""GZipMiddleware include_types / exclude_types filtering (M11)."""
+"""GZipMiddleware include_types / exclude_types filtering."""
 
 from __future__ import annotations
 
 import gzip
 
-import pytest
-
+from tests.conftest import make_request
 from veloce import GZipMiddleware, Request, Response
 
 
 def _req() -> Request:
-    return Request(
+    return make_request(
         method="GET",
         path="/x",
         query_string="",
@@ -19,7 +18,6 @@ def _req() -> Request:
     )
 
 
-@pytest.mark.asyncio
 async def test_compresses_text_content_type():
     mw = GZipMiddleware(minimum_size=0)
     resp = Response(
@@ -31,7 +29,6 @@ async def test_compresses_text_content_type():
     assert gzip.decompress(out.body) == b"x" * 5000
 
 
-@pytest.mark.asyncio
 async def test_compresses_application_json():
     mw = GZipMiddleware(minimum_size=0)
     resp = Response(
@@ -42,7 +39,6 @@ async def test_compresses_application_json():
     assert out.headers.get("Content-Encoding") == "gzip"
 
 
-@pytest.mark.asyncio
 async def test_skips_image_jpeg_by_default():
     mw = GZipMiddleware(minimum_size=0)
     resp = Response(
@@ -54,7 +50,6 @@ async def test_skips_image_jpeg_by_default():
     assert "Content-Encoding" not in out.headers
 
 
-@pytest.mark.asyncio
 async def test_skips_zip_by_default():
     mw = GZipMiddleware(minimum_size=0)
     resp = Response(body=b"x" * 5000, content_type="application/zip")
@@ -62,7 +57,6 @@ async def test_skips_zip_by_default():
     assert "Content-Encoding" not in out.headers
 
 
-@pytest.mark.asyncio
 async def test_custom_include_types_overrides_default():
     mw = GZipMiddleware(minimum_size=0, include_types=("application/octet-stream",))
     resp = Response(body=b"x" * 5000, content_type="application/octet-stream")
@@ -70,7 +64,6 @@ async def test_custom_include_types_overrides_default():
     assert out.headers.get("Content-Encoding") == "gzip"
 
 
-@pytest.mark.asyncio
 async def test_exclude_types_blocks_otherwise_compressible():
     """A type in both lists ends up excluded — exclude wins."""
     mw = GZipMiddleware(minimum_size=0, exclude_types=("text/event-stream",))
@@ -79,7 +72,6 @@ async def test_exclude_types_blocks_otherwise_compressible():
     assert "Content-Encoding" not in out.headers
 
 
-@pytest.mark.asyncio
 async def test_compresslevel_passed_through():
     """Higher compresslevel should produce smaller output than default."""
     payload = b"abcdef" * 1000
@@ -91,5 +83,7 @@ async def test_compresslevel_passed_through():
     high = (
         await mw_high.process_response(_req(), Response(body=payload, content_type="text/plain"))
     ).body
-    # gzip output is highly compressible for this repeating payload — level 9 ≤ level 1.
-    assert len(high) <= len(low)
+    # Strictly smaller, not `<=`: for this repeating payload level 1 gives 68
+    # bytes and level 9 gives 49, so `<=` would also hold if `compresslevel`
+    # were ignored entirely and both emitted identical bytes.
+    assert len(high) < len(low)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from veloce import Response
+from veloce.http.response import StreamingResponse
 
 # ── set_etag / get_etag ──────────────────────────────────────────────
 
@@ -59,7 +60,6 @@ def test_freeze_pre_computes_encode():
 
 
 def test_freeze_streaming_is_noop():
-    from veloce.http.response import StreamingResponse
 
     async def gen():
         yield b"x"
@@ -86,7 +86,6 @@ def test_iter_encoded_empty_body():
 
 
 def test_iter_encoded_streaming_returns_stream():
-    from veloce.http.response import StreamingResponse
 
     async def gen():
         yield b"x"

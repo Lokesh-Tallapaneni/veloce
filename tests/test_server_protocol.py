@@ -1,13 +1,26 @@
-"""Built-in development server (HttpProtocol) — slowloris read timeout (R7)."""
+"""The built-in development server's `HttpProtocol`: reading a request off
+the wire and writing a response back.
+
+Covers the read timeout, connection lifecycle and reuse, request-line and
+header limits, `Expect: 100-continue`, chunked and declared bodies, pipelining,
+HEAD framing, and the streaming write path.
+
+Write-side backpressure and TCP keepalive were split out to
+`test_server_write_backpressure.py` and `test_server_tcp_keepalive.py`; the
+docstring here used to name only the slowloris timeout, one of a dozen things
+the module actually covers.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 
+from tests._loops import close_drained
+from tests._protocol import _drain_loop, _FakeTransport, _run_until
 from veloce import Veloce
+from veloce.config import Config
 from veloce.http._body import DEFAULT_HIGH_WATER_CHUNKS
 from veloce.serving.protocol import (
     MAX_HEADER_SIZE,
@@ -16,36 +29,7 @@ from veloce.serving.protocol import (
     HttpProtocol,
 )
 
-
-class _FakeTransport(asyncio.Transport):
-    """Minimal asyncio.Transport stand-in for protocol unit tests."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.writes: list[bytes] = []
-        self.closed = False
-        # Flow-control state + call tallies so backpressure tests can assert
-        # pause_reading / resume_reading actually fired.
-        self.reading_paused = False
-        self.pause_reading_calls = 0
-        self.resume_reading_calls = 0
-
-    def write(self, data: bytes) -> None:
-        self.writes.append(data)
-
-    def close(self) -> None:
-        self.closed = True
-
-    def is_closing(self) -> bool:
-        return self.closed
-
-    def pause_reading(self) -> None:
-        self.reading_paused = True
-        self.pause_reading_calls += 1
-
-    def resume_reading(self) -> None:
-        self.reading_paused = False
-        self.resume_reading_calls += 1
+# ── Request timers ─────────────────────────────────────────────────
 
 
 def test_request_timer_arms_on_first_data():
@@ -65,7 +49,7 @@ def test_request_timer_arms_on_first_data():
         assert proto._request_timer is not None
         assert proto._keep_alive_handle is None
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_request_timeout_emits_408_and_closes():
@@ -85,7 +69,10 @@ def test_request_timeout_emits_408_and_closes():
         assert b"408" in emitted
         assert proto._request_timer is None
     finally:
-        loop.close()
+        close_drained(loop)
+
+
+# ── Oversize request-line and header limits ────────────────────────
 
 
 def test_oversized_url_emits_414_and_closes():
@@ -100,14 +87,16 @@ def test_oversized_url_emits_414_and_closes():
         proto.data_received(b"GET " + long_path + b" HTTP/1.1\r\nHost: x\r\n\r\n")
 
         emitted = b"".join(transport.writes)
-        assert b"414" in emitted
+        # `startswith` rather than `in`: the status must be the status line, not
+        # a substring anywhere in the response.
+        assert emitted.startswith(b"HTTP/1.1 414 "), emitted[:64]
         assert b"URI Too Long" in emitted
         assert b"Connection: close" in emitted
         assert b"Content-Length: 0" in emitted
         assert transport.closed is True
         assert proto._oversized is True
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_oversized_single_header_emits_431_and_closes():
@@ -122,12 +111,12 @@ def test_oversized_single_header_emits_431_and_closes():
         proto.data_received(b"GET / HTTP/1.1\r\nHost: x\r\nX-Huge: " + big_value + b"\r\n\r\n")
 
         emitted = b"".join(transport.writes)
-        assert b"431" in emitted
+        assert emitted.startswith(b"HTTP/1.1 431 "), emitted[:64]
         assert b"Request Header Fields Too Large" in emitted
         assert b"Connection: close" in emitted
         assert transport.closed is True
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_cumulative_headers_exceeds_total_cap_emits_431():
@@ -148,11 +137,11 @@ def test_cumulative_headers_exceeds_total_cap_emits_431():
         proto.data_received(b"GET / HTTP/1.1\r\nHost: x\r\n" + headers + b"\r\n")
 
         emitted = b"".join(transport.writes)
-        assert b"431" in emitted
+        assert emitted.startswith(b"HTTP/1.1 431 "), emitted[:64]
         assert transport.closed is True
         assert proto._header_bytes_total <= MAX_TOTAL_HEADERS_SIZE
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_normal_small_request_is_not_rejected():
@@ -175,7 +164,7 @@ def test_normal_small_request_is_not_rejected():
         # (Request, body_source, keep_alive, route_match).
         assert any(req.path == "/hello" for req, _src, _ka, _m in proto._request_queue)
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_connection_closed_after_oversized_rejection():
@@ -196,7 +185,7 @@ def test_connection_closed_after_oversized_rejection():
         proto.data_received(b"more junk")
         assert len(transport.writes) == writes_before
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_connection_lost_cancels_request_timer():
@@ -210,32 +199,10 @@ def test_connection_lost_cancels_request_timer():
         proto.connection_lost(None)
         assert proto._request_timer is None
     finally:
-        loop.close()
+        close_drained(loop)
 
 
-def _drain_loop(loop: asyncio.AbstractEventLoop, proto: HttpProtocol) -> None:
-    """Run the event loop until the connection's server loop finishes."""
-    task = proto._server_loop
-    if task is not None:
-        loop.run_until_complete(task)
-
-
-def _run_until(
-    loop: asyncio.AbstractEventLoop,
-    predicate: Callable[[], bool],
-    *,
-    max_turns: int = 100,
-) -> None:
-    """Drive the loop one scheduling turn at a time until `predicate` holds.
-
-    Lets a parked continuation make progress without depending on the exact
-    number of turns a given Python version needs — the loop advances until the
-    observable condition is reached (or `max_turns` is exhausted, which fails
-    the caller's subsequent assertion rather than hanging)."""
-    for _ in range(max_turns):
-        if predicate():
-            return
-        loop.run_until_complete(asyncio.sleep(0))
+# ── Pipelining and request order ───────────────────────────────────
 
 
 def test_pipelined_responses_preserve_request_order():
@@ -279,7 +246,7 @@ def test_pipelined_responses_preserve_request_order():
         assert b_status > a_pos
         assert b_status < b_pos
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_chunked_trailers_do_not_leak_into_next_pipelined_request():
@@ -318,7 +285,7 @@ def test_chunked_trailers_do_not_leak_into_next_pipelined_request():
         assert b'"got":5' in emitted
         assert b'"trailer":null' in emitted, "trailer field leaked into the next request"
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_split_packet_pipelined_followup_dispatches_with_real_url():
@@ -379,7 +346,7 @@ def test_split_packet_pipelined_followup_dispatches_with_real_url():
         assert b"500" not in emitted
         assert b"504" not in emitted
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_split_packet_followup_does_not_double_arm_timers():
@@ -425,7 +392,10 @@ def test_split_packet_followup_does_not_double_arm_timers():
         proto.data_received(b"\r\n")
         _drain_loop(loop, proto)
     finally:
-        loop.close()
+        close_drained(loop)
+
+
+# ── Keep-alive and connection close ────────────────────────────────
 
 
 def test_single_request_dispatches_and_keeps_alive():
@@ -452,7 +422,7 @@ def test_single_request_dispatches_and_keeps_alive():
         assert transport.closed is False
         assert not proto._request_queue
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_head_response_omits_body_keeps_content_length():
@@ -482,7 +452,7 @@ def test_head_response_omits_body_keeps_content_length():
         # But no body bytes follow the header terminator.
         assert body == b""
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_keep_alive_serves_second_sequential_request():
@@ -517,7 +487,7 @@ def test_keep_alive_serves_second_sequential_request():
         assert emitted.find(b'"r":"a"') < emitted.find(b'"r":"b"')
         assert transport.closed is False
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_connection_close_header_closes_after_response():
@@ -543,7 +513,7 @@ def test_connection_close_header_closes_after_response():
         assert transport.closed is True
         assert not proto._request_queue
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_connection_lost_mid_pipeline_cancels_server_loop():
@@ -584,7 +554,10 @@ def test_connection_lost_mid_pipeline_cancels_server_loop():
             loop.run_until_complete(server_loop)
         assert server_loop.done()
     finally:
-        loop.close()
+        close_drained(loop)
+
+
+# ── Streaming bodies and draining ──────────────────────────────────
 
 
 def test_streaming_handler_receives_chunks_as_fed():
@@ -633,7 +606,7 @@ def test_streaming_handler_receives_chunks_as_fed():
         emitted = b"".join(transport.writes)
         assert b'"n":2' in emitted
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_body_ignoring_handler_does_not_wedge_next_pipelined_request():
@@ -675,7 +648,7 @@ def test_body_ignoring_handler_does_not_wedge_next_pipelined_request():
         assert b"500" not in emitted
         assert transport.closed is False
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_body_ignoring_handler_blocks_in_drain_until_eof_then_serves_next_fifo():
@@ -736,7 +709,7 @@ def test_body_ignoring_handler_blocks_in_drain_until_eof_then_serves_next_fifo()
         assert b"500" not in emitted
         assert transport.closed is False
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_connection_lost_unblocks_a_drain_awaiting_eof():
@@ -774,7 +747,10 @@ def test_connection_lost_unblocks_a_drain_awaiting_eof():
             loop.run_until_complete(server_loop)
         assert server_loop.done()
     finally:
-        loop.close()
+        close_drained(loop)
+
+
+# ── Body size limits ───────────────────────────────────────────────
 
 
 def test_oversized_streamed_body_rejected_413_mid_stream():
@@ -809,7 +785,7 @@ def test_oversized_streamed_body_rejected_413_mid_stream():
         assert b"Content Too Large" in emitted
         assert transport.closed is True
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_declared_content_length_over_limit_rejected_413_before_body():
@@ -836,7 +812,7 @@ def test_declared_content_length_over_limit_rejected_413_before_body():
         # Rejected before dispatch — no request was queued for the server loop.
         assert not proto._request_queue
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_slowloris_timer_arms_across_body_window():
@@ -882,7 +858,10 @@ def test_slowloris_timer_arms_across_body_window():
             with contextlib.suppress(asyncio.CancelledError):
                 loop.run_until_complete(server_loop)
     finally:
-        loop.close()
+        close_drained(loop)
+
+
+# ── Backpressure: pause and resume ─────────────────────────────────
 
 
 def test_slow_consumer_triggers_pause_then_resume_across_reads():
@@ -949,7 +928,7 @@ def test_slow_consumer_triggers_pause_then_resume_across_reads():
         emitted = b"".join(transport.writes)
         assert b"200" in emitted
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_single_segment_burst_exceeds_chunk_bound_but_byte_cap_holds():
@@ -1006,7 +985,7 @@ def test_single_segment_burst_exceeds_chunk_bound_but_byte_cap_holds():
         emitted = b"".join(transport.writes)
         assert b"413" in emitted
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_drain_resumes_then_second_burst_repauses_still_reaches_eof():
@@ -1091,7 +1070,7 @@ def test_drain_resumes_then_second_burst_repauses_still_reaches_eof():
         assert b"500" not in emitted
         assert transport.closed is False
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_paused_connection_with_body_ignoring_handler_resumes_and_drains():
@@ -1164,7 +1143,7 @@ def test_paused_connection_with_body_ignoring_handler_resumes_and_drains():
         assert b"500" not in emitted
         assert transport.closed is False
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_connection_lost_while_paused_unblocks_drain():
@@ -1211,7 +1190,7 @@ def test_connection_lost_while_paused_unblocks_drain():
             loop.run_until_complete(server_loop)
         assert server_loop.done()
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_streaming_handler_timeout_does_not_race_drain_with_live_consumer():
@@ -1289,13 +1268,16 @@ def test_streaming_handler_timeout_does_not_race_drain_with_live_consumer():
         assert seen == [b"abc"]
         assert b"500" not in emitted
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def _reset_connection_counter() -> None:
     """Pin the class counter to 0 so test ordering doesn't leak state."""
     with HttpProtocol._connections_lock:
         HttpProtocol._active_connections = 0
+
+
+# ── The connection cap ─────────────────────────────────────────────
 
 
 def test_connection_limit_emits_503():
@@ -1328,7 +1310,7 @@ def test_connection_limit_emits_503():
     finally:
         proto1.connection_lost(None)
         _reset_connection_counter()
-        loop.close()
+        close_drained(loop)
 
 
 def test_connection_limit_releases_on_disconnect():
@@ -1362,7 +1344,10 @@ def test_connection_limit_releases_on_disconnect():
     finally:
         proto2.connection_lost(None)
         _reset_connection_counter()
-        loop.close()
+        close_drained(loop)
+
+
+# ── The serve loop's exit ──────────────────────────────────────────
 
 
 def test_serve_loop_stops_at_boundary_when_keep_serving_false():
@@ -1408,7 +1393,7 @@ def test_serve_loop_stops_at_boundary_when_keep_serving_false():
         finally:
             HttpProtocol.should_keep_serving = None
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_serve_loop_continues_when_keep_serving_true():
@@ -1444,7 +1429,7 @@ def test_serve_loop_continues_when_keep_serving_true():
         finally:
             HttpProtocol.should_keep_serving = None
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_connection_count_is_thread_safe():
@@ -1479,7 +1464,10 @@ def test_connection_count_is_thread_safe():
             if p._counted:
                 p.connection_lost(None)
         _reset_connection_counter()
-        loop.close()
+        close_drained(loop)
+
+
+# ── Expect: 100-continue ───────────────────────────────────────────
 
 
 def test_expect_100_continue_emits_interim_before_response():
@@ -1520,7 +1508,7 @@ def test_expect_100_continue_emits_interim_before_response():
         assert interim_pos < final_pos, "interim must precede the final response"
         assert b'"len":3' in emitted
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_no_expect_header_does_not_emit_interim():
@@ -1544,7 +1532,7 @@ def test_no_expect_header_does_not_emit_interim():
         assert b"100 Continue" not in emitted
         assert b"200" in emitted
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_expect_100_continue_not_sent_to_http_10_client():
@@ -1570,7 +1558,7 @@ def test_expect_100_continue_not_sent_to_http_10_client():
         emitted = b"".join(transport.writes)
         assert b"100 Continue" not in emitted
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_expect_100_continue_over_limit_yields_413_not_interim():
@@ -1599,7 +1587,10 @@ def test_expect_100_continue_over_limit_yields_413_not_interim():
         assert transport.closed is True
         assert not proto._request_queue
     finally:
-        loop.close()
+        close_drained(loop)
+
+
+# ── Timeouts from config ───────────────────────────────────────────
 
 
 def test_request_timeout_honours_config_override():
@@ -1626,7 +1617,7 @@ def test_request_timeout_honours_config_override():
         assert b"408" in emitted
         assert proto._request_timer is None
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_keep_alive_timeout_honours_config_override():
@@ -1649,13 +1640,12 @@ def test_keep_alive_timeout_honours_config_override():
 
         assert transport.closed is True
     finally:
-        loop.close()
+        close_drained(loop)
 
 
 def test_timeout_defaults_unchanged():
     """The class-attribute defaults and the seeded config keys both stay at the
     documented 75s / 30s, so an app that sets neither override is unaffected."""
-    from veloce.config import Config
 
     assert HttpProtocol.KEEP_ALIVE_TIMEOUT == 75
     assert HttpProtocol.REQUEST_TIMEOUT == 30
@@ -1663,386 +1653,3 @@ def test_timeout_defaults_unchanged():
     defaults = Config.default_config()
     assert defaults["KEEP_ALIVE_TIMEOUT"] == 75
     assert defaults["REQUEST_TIMEOUT"] == 30
-
-
-# -- write-side backpressure (drain) ------------------------------
-
-
-class _LimitTransport(_FakeTransport):
-    """Fake transport that records the write-buffer limit handed to it."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.high_limit: int | None = None
-
-    def set_write_buffer_limits(self, high: int | None = None, low: int | None = None) -> None:
-        self.high_limit = high
-
-
-def test_connection_made_arms_write_buffer_limit():
-    """connection_made hands a high-water mark to the transport so asyncio
-    fires pause_writing / resume_writing for the streaming path to await on."""
-    from veloce.serving.protocol import WRITE_BUFFER_HIGH_WATER
-
-    loop = asyncio.new_event_loop()
-    try:
-        proto = HttpProtocol(Veloce(openapi_url=None), loop)
-        transport = _LimitTransport()
-        proto.connection_made(transport)
-
-        assert transport.high_limit == WRITE_BUFFER_HIGH_WATER
-        # The write gate starts open so the common path never blocks.
-        assert proto._can_write.is_set() is True
-    finally:
-        loop.close()
-
-
-class _UvloopLikeTransport:
-    """A full-duplex transport that is NOT an `asyncio.Transport` subclass.
-
-    Mirrors uvloop's `TCPTransport`, which implements the transport interface
-    without inheriting `asyncio.Transport`. The capability check must accept it.
-    """
-
-    def __init__(self) -> None:
-        self.writes: list[bytes] = []
-        self.closed = False
-
-    def write(self, data: bytes) -> None:
-        self.writes.append(data)
-
-    def pause_reading(self) -> None:
-        pass
-
-    def resume_reading(self) -> None:
-        pass
-
-    def is_closing(self) -> bool:
-        return self.closed
-
-    def close(self) -> None:
-        self.closed = True
-
-
-class _WriteOnlyTransport:
-    """Half-duplex: write side only, no `pause_reading` — must be rejected."""
-
-    def write(self, data: bytes) -> None:
-        pass
-
-
-def test_connection_made_accepts_uvloop_like_transport():
-    """A capability-compatible transport that is not an `asyncio.Transport`
-    subclass (e.g. uvloop's) is accepted, so `Veloce.run()` works under uvloop."""
-    loop = asyncio.new_event_loop()
-    try:
-        proto = HttpProtocol(Veloce(openapi_url=None), loop)
-        transport = _UvloopLikeTransport()
-        assert not isinstance(transport, asyncio.Transport)
-        proto.connection_made(transport)
-        assert proto.transport is transport
-        proto.connection_lost(None)
-    finally:
-        loop.close()
-
-
-def test_write_buffer_limit_honours_config_override():
-    """A WRITE_BUFFER_HIGH_WATER config override is passed through verbatim."""
-    loop = asyncio.new_event_loop()
-    try:
-        app = Veloce(openapi_url=None)
-        app.config["WRITE_BUFFER_HIGH_WATER"] = 4096
-        proto = HttpProtocol(app, loop)
-        transport = _LimitTransport()
-        proto.connection_made(transport)
-
-        assert transport.high_limit == 4096
-    finally:
-        loop.close()
-
-
-def test_drain_returns_immediately_when_writable():
-    """The fast path: drain() does not block while the gate is set."""
-    loop = asyncio.new_event_loop()
-    try:
-        proto = HttpProtocol(Veloce(openapi_url=None), loop)
-        proto.connection_made(_LimitTransport())
-
-        # Should complete without ever scheduling a wait.
-        loop.run_until_complete(asyncio.wait_for(proto.drain(), timeout=0.1))
-    finally:
-        loop.close()
-
-
-def test_pause_writing_blocks_drain_until_resume():
-    """pause_writing parks drain(); resume_writing releases it."""
-    loop = asyncio.new_event_loop()
-    try:
-        proto = HttpProtocol(Veloce(openapi_url=None), loop)
-        proto.connection_made(_LimitTransport())
-
-        proto.pause_writing()
-        assert proto._can_write.is_set() is False
-
-        async def _scenario() -> bool:
-            waiter = asyncio.ensure_future(proto.drain())
-            # Give the waiter a tick to park on the cleared gate.
-            await asyncio.sleep(0)
-            assert not waiter.done()
-            proto.resume_writing()
-            await asyncio.wait_for(waiter, timeout=0.1)
-            return waiter.done()
-
-        assert loop.run_until_complete(_scenario()) is True
-    finally:
-        loop.close()
-
-
-def test_connection_lost_releases_parked_writer():
-    """A stream parked in drain() is released when the client disconnects so
-    it fails fast on its next write instead of hanging forever."""
-    loop = asyncio.new_event_loop()
-    try:
-        proto = HttpProtocol(Veloce(openapi_url=None), loop)
-        transport = _LimitTransport()
-        proto.connection_made(transport)
-
-        proto.pause_writing()
-
-        async def _scenario() -> None:
-            waiter = asyncio.ensure_future(proto.drain())
-            await asyncio.sleep(0)
-            assert not waiter.done()
-            proto.connection_lost(None)
-            await asyncio.wait_for(waiter, timeout=0.1)
-
-        loop.run_until_complete(_scenario())
-    finally:
-        loop.close()
-
-
-def test_streaming_response_awaits_drain_per_chunk():
-    """StreamingResponse.stream_to awaits the supplied drain after every chunk
-    so a fast producer is throttled at the transport buffer."""
-    from veloce.http.response import StreamingResponse
-
-    loop = asyncio.new_event_loop()
-    try:
-
-        async def _gen():
-            yield b"a"
-            yield b"b"
-            yield b"c"
-
-        drained = 0
-
-        async def _drain() -> None:
-            nonlocal drained
-            drained += 1
-
-        resp = StreamingResponse(_gen())
-        transport = _FakeTransport()
-        loop.run_until_complete(resp.stream_to(transport, drain=_drain))
-
-        # One drain per yielded chunk (not for head or terminating zero-chunk).
-        assert drained == 3
-        emitted = b"".join(transport.writes)
-        assert b"1\r\na\r\n" in emitted
-        assert emitted.endswith(b"0\r\n\r\n")
-    finally:
-        loop.close()
-
-
-def test_streaming_response_without_drain_unchanged():
-    """Omitting drain (the ASGI path) preserves the original chunk output."""
-    from veloce.http.response import StreamingResponse
-
-    loop = asyncio.new_event_loop()
-    try:
-
-        async def _gen():
-            yield b"x"
-
-        resp = StreamingResponse(_gen())
-        transport = _FakeTransport()
-        loop.run_until_complete(resp.stream_to(transport))
-
-        emitted = b"".join(transport.writes)
-        assert b"1\r\nx\r\n" in emitted
-        assert emitted.endswith(b"0\r\n\r\n")
-    finally:
-        loop.close()
-
-
-def test_connection_made_rejects_half_duplex_transport():
-    """A write-only (half-duplex) transport is still rejected."""
-    import pytest
-
-    loop = asyncio.new_event_loop()
-    try:
-        proto = HttpProtocol(Veloce(openapi_url=None), loop)
-        with pytest.raises(RuntimeError, match="full-duplex"):
-            proto.connection_made(_WriteOnlyTransport())
-    finally:
-        loop.close()
-
-
-# -- OS-level TCP keepalive (SO_KEEPALIVE) ------------------------
-
-
-class _FakeSocket:
-    """Records setsockopt calls so keepalive tests can assert what was set."""
-
-    def __init__(self) -> None:
-        self.opts: list[tuple[int, int, int]] = []
-
-    def setsockopt(self, level: int, optname: int, value: int) -> None:
-        self.opts.append((level, optname, value))
-
-
-class _KeepAliveTransport(_FakeTransport):
-    """Full-duplex transport that surfaces a fake socket via get_extra_info."""
-
-    def __init__(self, sock: object) -> None:
-        super().__init__()
-        self._sock = sock
-
-    def get_extra_info(self, name: str, default: object = None) -> object:
-        if name == "socket":
-            return self._sock
-        return default
-
-
-def test_connection_made_sets_so_keepalive():
-    """On the native path SO_KEEPALIVE is enabled on the accepted socket."""
-    import socket
-
-    loop = asyncio.new_event_loop()
-    try:
-        proto = HttpProtocol(Veloce(openapi_url=None), loop)
-        sock = _FakeSocket()
-        proto.connection_made(_KeepAliveTransport(sock))
-
-        assert (socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1) in sock.opts
-    finally:
-        loop.close()
-
-
-def test_keepalive_disabled_by_config():
-    """TCP_KEEPALIVE=False leaves the socket untouched."""
-    loop = asyncio.new_event_loop()
-    try:
-        app = Veloce(openapi_url=None)
-        app.config["TCP_KEEPALIVE"] = False
-        proto = HttpProtocol(app, loop)
-        sock = _FakeSocket()
-        proto.connection_made(_KeepAliveTransport(sock))
-
-        assert sock.opts == []
-    finally:
-        loop.close()
-
-
-def test_keepalive_tuning_options_are_platform_guarded():
-    """Idle/interval/count are applied only where the platform exposes them.
-
-    The values configured here are asserted against whichever of
-    TCP_KEEPIDLE/TCP_KEEPALIVE, TCP_KEEPINTVL and TCP_KEEPCNT this build
-    defines. On Windows none exist, so only SO_KEEPALIVE is set - the native
-    run() path must not crash there.
-    """
-    import socket
-
-    loop = asyncio.new_event_loop()
-    try:
-        app = Veloce(openapi_url=None)
-        app.config["TCP_KEEPALIVE_IDLE"] = 120
-        app.config["TCP_KEEPALIVE_INTERVAL"] = 30
-        app.config["TCP_KEEPALIVE_COUNT"] = 5
-        proto = HttpProtocol(app, loop)
-        sock = _FakeSocket()
-        proto.connection_made(_KeepAliveTransport(sock))
-
-        assert (socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1) in sock.opts
-
-        idle_opt = getattr(socket, "TCP_KEEPIDLE", None) or getattr(socket, "TCP_KEEPALIVE", None)
-        if idle_opt is not None:
-            assert (socket.IPPROTO_TCP, idle_opt, 120) in sock.opts
-        if hasattr(socket, "TCP_KEEPINTVL"):
-            assert (socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 30) in sock.opts
-        if hasattr(socket, "TCP_KEEPCNT"):
-            assert (socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 5) in sock.opts
-
-        # Whatever the platform, no tuning option is set unless it exists.
-        tcp_opts = {opt for level, opt, _ in sock.opts if level == socket.IPPROTO_TCP}
-        available = {
-            getattr(socket, name)
-            for name in ("TCP_KEEPIDLE", "TCP_KEEPALIVE", "TCP_KEEPINTVL", "TCP_KEEPCNT")
-            if hasattr(socket, name)
-        }
-        assert tcp_opts <= available
-    finally:
-        loop.close()
-
-
-def test_keepalive_skipped_when_no_socket():
-    """A transport without a backing socket (TLS/test) does not error."""
-    loop = asyncio.new_event_loop()
-    try:
-        proto = HttpProtocol(Veloce(openapi_url=None), loop)
-        # _FakeTransport.get_extra_info returns None for "socket".
-        proto.connection_made(_FakeTransport())
-
-        assert proto.transport is not None
-        assert proto._counted is True
-    finally:
-        loop.close()
-
-
-def test_keepalive_setsockopt_failure_is_swallowed():
-    """A socket that raises on setsockopt does not break connection setup."""
-    loop = asyncio.new_event_loop()
-    try:
-
-        class _RaisingSocket(_FakeSocket):
-            def setsockopt(self, level: int, optname: int, value: int) -> None:
-                raise OSError("nope")
-
-        proto = HttpProtocol(Veloce(openapi_url=None), loop)
-        proto.connection_made(_KeepAliveTransport(_RaisingSocket()))
-
-        assert proto.transport is not None
-        assert proto._counted is True
-    finally:
-        loop.close()
-
-
-def test_native_server_serves_query_method_with_body():
-    """The native HttpProtocol parses the QUERY method (RFC 10008) and delivers
-    its body to the handler, returning the handler's response."""
-    loop = asyncio.new_event_loop()
-    try:
-        app = Veloce(openapi_url=None)
-
-        @app.query("/search")
-        async def search(request):  # noqa: ANN001, ANN202
-            payload = await request.json()
-            return {"term": payload["term"]}
-
-        proto = HttpProtocol(app, loop)
-        transport = _FakeTransport()
-        proto.connection_made(transport)
-
-        body = b'{"term":"veloce"}'
-        proto.data_received(
-            b"QUERY /search HTTP/1.1\r\nHost: x\r\n"
-            b"Content-Type: application/json\r\n"
-            b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body
-        )
-        _drain_loop(loop, proto)
-
-        emitted = b"".join(transport.writes)
-        assert emitted.startswith(b"HTTP/1.1 200")
-        assert b'"term":"veloce"' in emitted
-    finally:
-        loop.close()

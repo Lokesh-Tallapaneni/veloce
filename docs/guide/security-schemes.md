@@ -388,7 +388,8 @@ from veloce import Depends, Veloce, current_principal
 from veloce.middleware.sessions import SessionMiddleware
 from veloce.security import SessionAuth, login_session, logout_session
 
-app = Veloce(secret_key="change-me")
+app = Veloce()
+app.config["SECRET_KEY"] = "change-me"
 app.add_middleware(SessionMiddleware, secret_key="change-me")
 session_auth = SessionAuth()
 
@@ -420,10 +421,26 @@ Pass `auto_error=False` for pages that render differently when signed in, and
 `loader=` to build a richer principal from the stored subject (a database
 lookup) or to reject a session whose user has since been deleted.
 
+In the OpenAPI document the scheme is published as an `apiKey` credential read
+from the session cookie, so a session-guarded route declares a security
+requirement like any other. If `SessionMiddleware` is configured with a cookie
+name other than the default `session`, pass the same name to `SessionAuth` so
+the document names the cookie a client actually has to send:
+
+```python
+app.add_middleware(SessionMiddleware, secret_key="...", cookie_name="sid")
+session_auth = SessionAuth(cookie_name="sid")
+```
+
 !!! note "Added in version 0.15"
     `SessionAuth`, `login_session`, `logout_session`. Earlier versions left the
     session and the `Principal` unconnected, so a session-logged-in user
     resolved to `current_principal() is None`.
+
+!!! note "Changed in version 0.18"
+    `SessionAuth` describes itself in the OpenAPI document. A session-guarded
+    route previously published with no security requirement, which asserts the
+    endpoint is open.
 
 ## Optional authentication
 
@@ -505,7 +522,20 @@ distinct subclass of [`JWTError`](../reference/security.md#veloce.JWTError):
 | `UnsupportedAlgorithmError` |
 | `InvalidTokenError` |
 
-`InvalidTokenError` covers a malformed token.
+`InvalidTokenError` covers a malformed token — including one whose segments
+carry a byte outside ASCII, which the base64url alphabet does not contain
+(RFC 7515 §2).
+
+!!! note "Every rejection is a `JWTError`"
+    `decode_jwt` raises nothing outside this hierarchy for a malformed token, so
+    the `except JWTError` shown below is sufficient — it does not need a bare
+    `except Exception` behind it to be safe against a hostile token.
+
+    !!! note "Fixed in version 0.18.0"
+        A token with a non-ASCII byte in one of its segments previously raised
+        `UnicodeEncodeError`, which is not a `JWTError`, so an auth dependency
+        written this way did not catch it and the route answered `500` instead
+        of `401`.
 
 A successful decode returns a read-only
 [`Claims`](../reference/security.md#veloce.Claims) mapping.

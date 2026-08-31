@@ -50,35 +50,38 @@ The defaults are:
 | `TESTING` | `False` | Mark the app as under test. |
 | `SECRET_KEY` | `None` | Key for signing sessions and tokens. |
 | `SERVER_NAME` | `None` | Host (and optional port) used for URL building. |
-| `APPLICATION_ROOT` | `"/"` | Mount path of the application; also the default `Path` of the session cookie. |
 | `PREFERRED_URL_SCHEME` | `"http"` | Scheme used when generating external URLs. |
 | `MAX_CONTENT_LENGTH` | `104857600` (100 MiB) | Maximum request body size in bytes. The body is buffered in memory, so the default bounds a large-request OOM; raise it for large-upload endpoints, or set `None` for unlimited. |
-| `MAX_FORM_PARTS` | `1000` | Maximum number of multipart form parts. |
+| `MAX_FORM_PARTS` | `1000` | Maximum number of form parts (multipart) or fields (urlencoded). `None` lifts the cap for both. |
 | `MAX_FORM_PART_SIZE` | `10485760` | Maximum size of a single form part in bytes (applies to both file and text parts unless overridden below). |
 | `MAX_FORM_FILES` | `None` | Maximum number of file parts (`None` = only bounded by `MAX_FORM_PARTS`). |
 | `MAX_FORM_FIELDS` | `None` | Maximum number of text-field parts (`None` = only bounded by `MAX_FORM_PARTS`). |
 | `MAX_FORM_FILE_SIZE` | `None` | Per-file size limit in bytes; overrides `MAX_FORM_PART_SIZE` for file parts. |
 | `MAX_FORM_FIELD_SIZE` | `None` | Per-text-field size limit in bytes; overrides `MAX_FORM_PART_SIZE` for text parts. |
 | `MAX_FORM_FIELD_MEMORY` | `None` | Cumulative resident-memory ceiling (bytes) across all text fields, including field-name bytes. |
-| `MAX_COOKIE_SIZE` | `4093` | Size ceiling for the emitted session cookie. |
-| `SESSION_COOKIE_NAME` | `"session"` | Name of the session cookie. |
-| `SESSION_COOKIE_HTTPONLY` | `True` | Set `HttpOnly` on the session cookie. |
-| `SESSION_COOKIE_SECURE` | `False` | Set `Secure` on the session cookie. |
-| `SESSION_COOKIE_SAMESITE` | `None` | `SameSite` attribute for the session cookie (`None` keeps the middleware default, `lax`). |
-| `PERMANENT_SESSION_LIFETIME` | `2678400` | Lifetime of a permanent session in seconds (31 days). |
-| `JSON_SORT_KEYS` | `True` | Sort keys when serialising JSON. |
+| `JSON_SORT_KEYS` | `False` | Sort keys when serialising JSON responses. |
 | `JSONIFY_PRETTYPRINT_REGULAR` | `False` | Pretty-print JSON responses. |
 | `PROPAGATE_EXCEPTIONS` | `None` | Re-raise unhandled exceptions out of dispatch. |
 | `SEND_FILE_MAX_AGE_DEFAULT` | `None` | Default `Cache-Control: max-age` for `send_file` / `async_send_file` when the caller passes no `max_age=`. |
-| `REQUEST_HANDLER_TIMEOUT` | `30` | Per-handler timeout in seconds. |
-| `KEEP_ALIVE_TIMEOUT` | `75` | Keep-alive timeout in seconds. |
-| `REQUEST_TIMEOUT` | `30` | Request read timeout in seconds. |
+| `REQUEST_HANDLER_TIMEOUT` | `30` | Per-handler timeout in seconds, on the built-in serving path. Under an ASGI server the handler is not bounded by Veloce; use the server's own timeout. |
+| `KEEP_ALIVE_TIMEOUT` | `75` | Keep-alive timeout in seconds, on the built-in serving path. |
+| `REQUEST_TIMEOUT` | `30` | Request read timeout in seconds, on the built-in serving path. |
+| `MAX_PIPELINED_REQUESTS` | `64` | How many pipelined requests a connection queues before it stops reading, on the built-in serving path. |
 | `TCP_KEEPALIVE` | `True` | Enable OS-level TCP keepalive (`SO_KEEPALIVE`) on the built-in serving path. |
 | `TCP_KEEPALIVE_IDLE` | `None` | Idle seconds before the first keepalive probe (`TCP_KEEPIDLE`); Linux/macOS only. |
 | `TCP_KEEPALIVE_INTERVAL` | `None` | Seconds between keepalive probes (`TCP_KEEPINTVL`); Linux only. |
 | `TCP_KEEPALIVE_COUNT` | `None` | Failed probes before the connection is dropped (`TCP_KEEPCNT`); Linux only. |
 | `JSON_ERRORS_VERBOSE` | `False` | Include parser detail in JSON body-parse error responses. |
 | `GRACEFUL_TASK_TIMEOUT` | `10` | Seconds to wait for background tasks to finish cancelling on shutdown. |
+| `MAX_CONCURRENT_CONNECTIONS` | `1000` | Cap on simultaneous connections on the built-in serving path; the connection past the cap is refused with `503`. Set `None` for unlimited. |
+| `WRITE_BUFFER_HIGH_WATER` | `262144` | Bytes buffered before the built-in server applies write back-pressure. |
+| `EVENT_LOOP_WATCHDOG` | `None` | Truthy enables the event-loop stall watchdog; a mapping tunes it (`interval`, `stall_threshold`). |
+| `SILENCED_AUDIT_IDS` | `()` | Finding ids `security_audit` drops. Accepts a comma-separated list from an env file. |
+| `MCP_CALL_TIMEOUT` | `None` | Per-call wall-clock budget in seconds for an MCP tool; `None` is unbounded. |
+| `MCP_ENFORCE_LIFECYCLE` | `False` | Require the MCP `initialize` handshake before any other request on a stateful connection. |
+| `MCP_RESOURCE_SUBSCRIPTIONS` | `False` | Advertise and serve MCP resource subscriptions. |
+| `GRACEFUL_DRAIN_TIMEOUT` | `30` | Seconds shutdown waits for in-flight requests to finish. Runs before `GRACEFUL_TASK_TIMEOUT`, so a container's termination grace period must cover both. |
+| `WEBSOCKET_IDLE_TIMEOUT` | `None` | Seconds a WebSocket may sit idle before it is closed with `1001 Going Away`. `None` disables it. A handler's `set_idle_timeout()` overrides it. |
 
 A few of these keys drive framework behaviour directly. `MAX_CONTENT_LENGTH`
 bounds the request body the server will read. `PROPAGATE_EXCEPTIONS`
@@ -86,12 +89,13 @@ controls whether unhandled exceptions re-raise: when it is left at `None`,
 exceptions propagate only if both `DEBUG` and `TESTING` are `True` (useful
 so test runs surface the real traceback). Boolean keys loaded from an env
 file arrive as strings and are coerced (`"false"`, `"0"`, `"off"` read as
-off). `JSON_SORT_KEYS` affects the ordering of keys in JSON responses.
+off). `JSON_SORT_KEYS` orders the keys of every JSON response, whatever the
+handler returned - a `dict`, a `list`, a model, or `jsonify(...)`.
 
-The `SECRET_KEY`, `SESSION_COOKIE_*`, `PERMANENT_SESSION_LIFETIME`,
-`MAX_COOKIE_SIZE`, and `APPLICATION_ROOT` keys are consumed by the session
-middlewares: any setting not passed explicitly to `SessionMiddleware` /
-`ServerSessionMiddleware` resolves from config on the first request, so
+`SECRET_KEY` is the one key the session middlewares read: a middleware
+constructed without `secret_key=` signs with it. Every **cookie** setting -
+name, path, `Secure`, `HttpOnly`, `SameSite`, lifetime - comes from the
+middleware's own constructor and from nowhere else, so
 `app.secret_key = "..."` plus a bare `app.add_middleware(SessionMiddleware)`
 is a complete setup. Explicit constructor arguments always win over config.
 
@@ -301,7 +305,7 @@ app = Veloce()
 app.config.from_mapping(
     {"DEBUG": False},
     SECRET_KEY="from-mapping",
-    MAX_COOKIE_SIZE=8192,
+    PREFERRED_URL_SCHEME="https",
 )
 ```
 
@@ -353,7 +357,7 @@ precedence order.
   `PROPAGATE_EXCEPTIONS` into the right behaviour for failed requests, and
   register custom error responses.
 - [Sessions](sessions.md) and [Middleware](middleware.md) — the
-  `SESSION_COOKIE_*` and `SECRET_KEY` keys drive session signing and cookie
+  `SECRET_KEY` drives session signing; cookie
   attributes.
 - The [API reference](../reference/index.md) documents the public `veloce`
   surface; `Config` and its loader methods live in `veloce.config`.

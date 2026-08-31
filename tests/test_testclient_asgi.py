@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import pytest
-
 from veloce import Request, Veloce
+from veloce.http.response import Response
 from veloce.testclient import TestClient
 
 
@@ -50,7 +49,6 @@ def test_client_preserves_cookies_across_requests():
 
     @app.get("/set")
     async def set_cookie():
-        from veloce.http.response import Response
 
         r = Response(body=b"ok", content_type="text/plain")
         r.set_cookie("session", "abc123")
@@ -80,14 +78,15 @@ def test_client_constructs_full_asgi_scope():
     client = TestClient(app)
     client.get("/probe?x=1&y=2", headers={"X-Custom": "val"})
 
-    # Note: Veloce currently doesn't surface the scope onto Request.scope
-    # under the ASGI path — `Request` is built in __call__ but `scope` isn't
-    # passed through. This is a known gap (M1 territory). We assert the
-    # request succeeded and trust the round-trip; deeper scope-shape
-    # assertions land with the M1 refactor.
-    # If a future change does propagate scope, this will start picking it up.
-    if "scope" in captured and captured["scope"]:
-        assert captured["scope"]["type"] == "http"
+    scope = captured["scope"]
+    assert scope, "the ASGI scope did not reach the handler"
+    assert scope["type"] == "http"
+    assert scope["asgi"]["version"] == "3.0"
+    assert scope["method"] == "GET"
+    assert scope["path"] == "/probe"
+    assert scope["query_string"] == b"x=1&y=2"
+    # ASGI 3.0 carries headers as lower-cased raw byte pairs, not a mapping.
+    assert (b"x-custom", b"val") in scope["headers"]
 
 
 def test_client_extracts_multiple_set_cookies():
@@ -97,23 +96,21 @@ def test_client_extracts_multiple_set_cookies():
 
     @app.get("/multi")
     async def multi():
-        from veloce.http.response import Response
 
         r = Response(body=b"ok", content_type="text/plain")
         r.set_cookie("a", "1")
         r.set_cookie("b", "2")
         return r
 
-    # `pytest` import is now unused in this test body; keep at module top.
-    assert pytest is not None
-
     client = TestClient(app)
     resp = client.get("/multi")
+    # Both, not just the first. This asserted only `a` behind a note saying `b`
+    # "may or may not survive" because `set_cookie` joins into one header -
+    # which the ASGI emit path splits back out, so the hedge outlived the bug
+    # that motivated it. A no-op `assert pytest is not None` stood where the
+    # second assertion belonged.
     assert resp.cookies.get("a") == "1"
-    # `b` may or may not survive depending on whether Set-Cookie is one
-    # header value vs two; the current Response.set_cookie joins via
-    # `\r\nSet-Cookie:` literal in one header, which is wrong on ASGI.
-    # M1 will fix this. For now assert at least the first cookie is parsed.
+    assert resp.cookies.get("b") == "2"
 
 
 # ── The client decodes the path like a real ASGI server ──────────────

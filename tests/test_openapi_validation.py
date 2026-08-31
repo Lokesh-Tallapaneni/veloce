@@ -7,21 +7,26 @@ import pytest
 from veloce import Veloce
 from veloce.contrib.openapi import _validate_document
 
+#: The component this points at is never registered, which is the whole subject
+#: of the module - so it is written once. Pasted per test, a change to the shape
+#: reaches some tests and not others, and the ones it misses stop testing a
+#: dangling ref while still passing.
+_GHOST_REF = "#/components/schemas/Ghost"
+
+
+def _dangling_ref() -> dict:
+    """A route's `openapi_extra` declaring a response schema that does not exist."""
+    return {
+        "responses": {"200": {"content": {"application/json": {"schema": {"$ref": _GHOST_REF}}}}}
+    }
+
 
 def test_validation_off_by_default_in_production() -> None:
     app = Veloce()  # debug=False, validate_openapi=None
 
     @app.get(
         "/bad",
-        openapi_extra={
-            "responses": {
-                "200": {
-                    "content": {
-                        "application/json": {"schema": {"$ref": "#/components/schemas/Ghost"}}
-                    }
-                }
-            }
-        },
+        openapi_extra=_dangling_ref(),
     )
     async def bad(request):
         return {}
@@ -36,15 +41,7 @@ def test_validation_follows_debug_flag() -> None:
 
     @app.get(
         "/bad",
-        openapi_extra={
-            "responses": {
-                "200": {
-                    "content": {
-                        "application/json": {"schema": {"$ref": "#/components/schemas/Ghost"}}
-                    }
-                }
-            }
-        },
+        openapi_extra=_dangling_ref(),
     )
     async def bad(request):
         return {}
@@ -58,15 +55,7 @@ def test_validation_explicit_opt_in() -> None:
 
     @app.get(
         "/bad",
-        openapi_extra={
-            "responses": {
-                "200": {
-                    "content": {
-                        "application/json": {"schema": {"$ref": "#/components/schemas/Ghost"}}
-                    }
-                }
-            }
-        },
+        openapi_extra=_dangling_ref(),
     )
     async def bad(request):
         return {}
@@ -79,6 +68,9 @@ def test_validation_rejects_missing_responses() -> None:
     # The structural checker rejects an operation with no responses, a malformed
     # parameter, or a non-object operations container.
     doc = {
+        # `info` is required, and the checker now says so - supply a valid one so
+        # this test still exercises the responses check it was written for.
+        "info": {"title": "t", "version": "1"},
         "paths": {"/x": {"get": {"summary": "x", "responses": {}}}},
         "components": {"schemas": {}},
     }
@@ -88,6 +80,7 @@ def test_validation_rejects_missing_responses() -> None:
 
 def test_validation_rejects_parameter_without_name_or_location() -> None:
     doc = {
+        "info": {"title": "t", "version": "1"},
         "paths": {
             "/x": {
                 "get": {
@@ -119,15 +112,7 @@ def test_validation_explicit_false_overrides_debug() -> None:
 
     @app.get(
         "/bad",
-        openapi_extra={
-            "responses": {
-                "200": {
-                    "content": {
-                        "application/json": {"schema": {"$ref": "#/components/schemas/Ghost"}}
-                    }
-                }
-            }
-        },
+        openapi_extra=_dangling_ref(),
     )
     async def bad(request):
         return {}

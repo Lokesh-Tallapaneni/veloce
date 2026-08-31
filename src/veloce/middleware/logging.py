@@ -25,12 +25,11 @@ class LoggingMiddleware(Middleware):
     """
 
     # Stash the start timestamp on the request itself rather than in a
-    # middleware-owned dict keyed by id(request). A handler exception
-    # used to leave the entry in the dict forever (memory leak), and
-    # CPython can recycle id()s of GC'd requests for unrelated objects
-    # - a future request could read a stale timestamp and log
-    # nonsensical durations. Tying the start time to the request's
-    # lifetime sidesteps both problems.
+    # middleware-owned dict keyed by id(request). Such a dict leaks an entry
+    # for every request whose handler raises, and CPython recycles the id() of
+    # a collected request for unrelated objects - so a later request reads a
+    # stale timestamp and logs a nonsensical duration. Tying the start time to
+    # the request's own lifetime sidesteps both.
     _START_KEY = "__veloce_logging_start"
 
     def __init__(self, logger: logging.Logger | None = None, *, name: str | None = None) -> None:

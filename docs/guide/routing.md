@@ -113,7 +113,25 @@ async def report(day):
     return {"weekday": day.weekday()}   # "/reports/2026-06-03" -> date(2026, 6, 3)
 ```
 
-Use `register_converter` to add your own.
+!!! tip "Optional: faster `{ts:datetime}` matching"
+    Installing [`ciso8601`](https://pypi.org/project/ciso8601/) speeds the
+    `datetime` converter up by roughly 1.4–1.7x on values without a numeric
+    offset — the common `2026-08-26T12:30:00` and `...Z` shapes:
+
+    ```bash
+    pip install "veloceframework[ciso8601]"
+    ```
+
+    It changes nothing about what matches or what the handler receives. Only
+    the values the two parsers handle identically take the faster path; one
+    carrying a numeric offset (`+05:30`) keeps the standard-library parse,
+    because `ciso8601` would hand back a different `tzinfo` type for it.
+    Without the package the converter behaves exactly as it does with it.
+
+Use `register_converter` to add your own, and `unregister_converter` to remove it
+again -- the registry is process-global, so a test or a plugin that registers one
+should take it back out. Routes already registered keep the converter they were
+built with; only later registrations are affected.
 
 ### Static segments win over parameters
 
@@ -409,6 +427,43 @@ async def download(name: str):
 
 app.url_for("download", name="report.pdf")   # "/files/report.pdf"
 ```
+
+## Inspecting the route table
+
+`app.routes` is a summary: a list of dicts with `path`, `method`, `name`,
+`summary`, `tags` and `deprecated`. It is what you want to render a route table
+and nothing more.
+
+```python
+for route in app.routes:
+    print(route["method"], route["path"], route["name"])
+```
+
+To inspect the routes themselves - their response models, dependencies, security
+requirements, and everything else the registration recorded - use
+`app.iter_routes()`, which returns the `RouteInfo` records:
+
+```python
+from veloce import Veloce
+
+app = Veloce()
+
+for method, path, info in app.iter_routes():
+    if info.response_model is not None:
+        print(method, path, "->", info.response_model.__name__)
+```
+
+WebSocket routes and routes registered with `include_in_schema=False` are left
+out by default, matching what the OpenAPI document describes. Pass
+`include_hidden=True` for the complete table:
+
+```python
+for method, path, info in app.iter_routes(include_hidden=True):
+    print(method, path)
+```
+
+`iter_routes()` is defined on `Router`, so a `Blueprint` or a stand-alone
+`Router` answers the same way about its own routes.
 
 ## See also
 

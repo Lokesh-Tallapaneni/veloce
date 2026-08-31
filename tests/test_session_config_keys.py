@@ -1,11 +1,12 @@
-"""Session middleware settings resolved from app.config (SECRET_KEY, SESSION_COOKIE_*)."""
+"""The signing key both session middlewares still take from `app.config`."""
 
 from __future__ import annotations
 
 import pytest
 
 from veloce import Request, Veloce
-from veloce.middleware.sessions import ServerSessionMiddleware, SessionMiddleware
+from veloce.audit import AuditFailed
+from veloce.middleware.sessions import SessionMiddleware
 from veloce.testclient import TestClient
 
 
@@ -41,138 +42,13 @@ def test_secret_key_from_app_config_signs_sessions():
         assert client.get("/get").json() == {"who": "alice"}
 
 
-def test_missing_secret_key_raises_on_first_request():
+def test_missing_secret_key_refuses_the_boot():
+    """It used to raise on the first request: startup succeeded, health checks
+    passed, and then every request through the middleware failed."""
+
     app = Veloce(openapi_url=None)
-    app.config["PROPAGATE_EXCEPTIONS"] = True
     app.add_middleware(SessionMiddleware)
     _add_session_routes(app)
 
-    with TestClient(app) as client, pytest.raises(RuntimeError, match="secret key"):
-        client.get("/set")
-
-
-def test_session_cookie_name_from_config():
-    app = Veloce(openapi_url=None)
-    app.secret_key = "k" * 32
-    app.config["SESSION_COOKIE_NAME"] = "sid"
-    app.add_middleware(SessionMiddleware)
-    _add_session_routes(app)
-
-    with TestClient(app) as client:
-        resp = client.get("/set")
-        assert resp.headers.get("set-cookie", "").startswith("sid=")
-        # The configured name round-trips on the read side too.
-        assert client.get("/get").json() == {"who": "alice"}
-
-
-def test_explicit_constructor_args_beat_config():
-    app = Veloce(openapi_url=None)
-    app.secret_key = "k" * 32
-    app.config["SESSION_COOKIE_NAME"] = "sid"
-    app.add_middleware(SessionMiddleware, cookie_name="explicit")
-    _add_session_routes(app)
-
-    with TestClient(app) as client:
-        resp = client.get("/set")
-        assert resp.headers.get("set-cookie", "").startswith("explicit=")
-
-
-def test_session_cookie_flags_from_config():
-    app = Veloce(openapi_url=None)
-    app.secret_key = "k" * 32
-    app.config["SESSION_COOKIE_SECURE"] = True
-    app.config["SESSION_COOKIE_SAMESITE"] = "strict"
-    app.add_middleware(SessionMiddleware)
-    _add_session_routes(app)
-
-    with TestClient(app) as client:
-        cookie = client.get("/set").headers.get("set-cookie", "")
-    assert "Secure" in cookie
-    assert "SameSite=Strict" in cookie
-
-
-def test_use_secure_defaults_flows_into_session_cookie():
-    """`use_secure_defaults()` writes the SESSION_COOKIE_* keys; a config-backed
-    session middleware actually honours them."""
-    app = Veloce(openapi_url=None)
-    app.secret_key = "k" * 32
-    app.use_secure_defaults()
-    app.add_middleware(SessionMiddleware)
-    _add_session_routes(app)
-
-    with TestClient(app) as client:
-        cookie = client.get("/set").headers.get("set-cookie", "")
-    assert "Secure" in cookie
-    assert "HttpOnly" in cookie
-    assert "SameSite=Lax" in cookie
-
-
-def test_application_root_sets_cookie_path():
-    app = Veloce(openapi_url=None)
-    app.secret_key = "k" * 32
-    app.config["APPLICATION_ROOT"] = "/app"
-    app.add_middleware(SessionMiddleware)
-    _add_session_routes(app)
-
-    with TestClient(app) as client:
-        cookie = client.get("/set").headers.get("set-cookie", "")
-    assert "Path=/app" in cookie
-
-
-def test_permanent_lifetime_from_config():
-    app = Veloce(openapi_url=None)
-    app.secret_key = "k" * 32
-    app.config["PERMANENT_SESSION_LIFETIME"] = 3600
-    app.add_middleware(SessionMiddleware)
-
-    @app.get("/x")
-    async def x(request: Request):
-        request.session.permanent = True
-        request.session["user"] = "alice"
-        return {}
-
-    with TestClient(app) as client:
-        cookie = client.get("/x").headers.get("set-cookie", "")
-    assert "Max-Age=3600" in cookie
-
-
-def test_server_session_cookie_name_from_config():
-    app = Veloce(openapi_url=None)
-    app.config["SESSION_COOKIE_NAME"] = "srv"
-    app.add_middleware(ServerSessionMiddleware)
-    _add_session_routes(app)
-
-    with TestClient(app) as client:
-        resp = client.get("/set")
-        assert resp.headers.get("set-cookie", "").startswith("srv=")
-        assert client.get("/get").json() == {"who": "alice"}
-
-
-def test_session_cookie_secure_false_string_is_not_secure():
-    """A dotenv-style `SESSION_COOKIE_SECURE=false` (string) reads as False, not a
-    truthy "false" that would wrongly emit a `Secure` cookie."""
-    app = Veloce(openapi_url=None)
-    app.secret_key = "k" * 32
-    app.config["SESSION_COOKIE_SECURE"] = "false"
-    app.add_middleware(SessionMiddleware)
-    _add_session_routes(app)
-
-    with TestClient(app) as client:
-        cookie = client.get("/set").headers.get("set-cookie", "")
-        assert "session=" in cookie
-        assert "Secure" not in cookie
-
-
-def test_session_numeric_config_strings_are_coerced():
-    """String `MAX_COOKIE_SIZE` / `PERMANENT_SESSION_LIFETIME` (as a dotenv stores
-    them) coerce to int instead of crashing on `<=` / `max()` at request time."""
-    app = Veloce(openapi_url=None)
-    app.secret_key = "k" * 32
-    app.config["MAX_COOKIE_SIZE"] = "2048"
-    app.config["PERMANENT_SESSION_LIFETIME"] = "3600"
-    app.add_middleware(SessionMiddleware)
-    _add_session_routes(app)
-
-    with TestClient(app) as client:
-        assert client.get("/set").status_code == 200
-        assert client.get("/get").json() == {"who": "alice"}
+    with pytest.raises(AuditFailed, match="signing key"):
+        TestClient(app)

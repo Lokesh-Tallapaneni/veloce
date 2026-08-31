@@ -11,8 +11,8 @@ invocation of a shared cached dependency, and no scope-stack corruption.
 from __future__ import annotations
 
 import asyncio
-import time
 
+from tests._dep_rendezvous import rendezvous_pair
 from veloce import Depends, Query, Security, Veloce
 from veloce._handler_plan import build_plan, compute_dep_waves
 from veloce.dependency import SecurityScopes
@@ -21,7 +21,6 @@ from veloce.testclient import TestClient
 #: How long each probe dependency sleeps. A sequential resolver makes the
 #: second dependency start a whole delay behind the first; a concurrent one
 #: starts both at once.
-_DEP_DELAY = 0.05
 
 # ── Wave computation (registration-time) ──────────────────────────────
 
@@ -40,9 +39,9 @@ def test_deps_separated_by_query_still_batch():
 
     plan = build_plan(h)
     # Slots: 0=Depends(a), 1=Query, 2=Depends(b). The two deps batch despite
-    # the Query slot between them; the legacy contiguous map cannot.
+    # the Query slot between them, which is what makes these waves rather than
+    # a contiguous run.
     assert plan.dep_waves == [[0, 2]]
-    assert plan.parallel_groups == {}
 
 
 def test_three_independent_deps_one_wave():
@@ -172,19 +171,17 @@ def test_compute_dep_waves_pure_function_of_slots():
 
 
 def test_interleaved_deps_run_concurrently():
-    """Two deps separated by a Query slot start within a tiny window."""
+    """Two deps separated by a Query slot still start concurrently.
+
+    Proven structurally, not by a clock: the two dependencies meet at a
+    rendezvous, so a resolver that ran them in sequence would park the first
+    waiting for a sibling that had not begun, and the request would fail on the
+    bounded wait instead of merely being slow. The wall-clock start-delta this
+    replaces was a timing threshold in the default suite - the class this
+    project excludes behind the `perf` marker.
+    """
     app = Veloce(openapi_url=None)
-    starts: list[float] = []
-
-    async def slow_a() -> str:
-        starts.append(time.monotonic())
-        await asyncio.sleep(_DEP_DELAY)
-        return "a"
-
-    async def slow_b() -> str:
-        starts.append(time.monotonic())
-        await asyncio.sleep(_DEP_DELAY)
-        return "b"
+    slow_a, slow_b, arrived, both_here = rendezvous_pair()
 
     @app.get("/interleaved")
     async def handler(
@@ -197,13 +194,8 @@ def test_interleaved_deps_run_concurrently():
     resp = TestClient(app).get("/interleaved")
     assert resp.status_code == 200
     assert resp.json() == {"a": "a", "b": "b", "q": "q"}
-    assert len(starts) == 2
-    # Concurrent start: the second begins promptly, not a whole `_DEP_DELAY`
-    # later. Half that delay still fails a sequential implementation by a wide
-    # margin while tolerating a loaded scheduler.
-    assert abs(starts[1] - starts[0]) < _DEP_DELAY / 2, (
-        f"interleaved deps did not start concurrently: delta={starts[1] - starts[0]:.4f}s"
-    )
+    assert sorted(arrived) == ["a", "b"]
+    assert both_here.is_set(), "the two deps never overlapped"
 
 
 def test_shared_cached_dep_invoked_once_across_waves():

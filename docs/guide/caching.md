@@ -27,6 +27,48 @@ within the next 60 seconds return the cached value without re-running it. Put
 `@cached` **below** the route decorator so the route registers the wrapped
 handler.
 
+!!! warning "`cached` deduplicates in time, not across concurrent callers"
+    A second call *after* the first has stored its result is served from the
+    cache. Calls that arrive while the first is still running are not: each one
+    misses, and each one runs the function.
+
+    ```python
+    # Ten requests arriving together on a cold key run `build` ten times.
+    await asyncio.gather(*[build(1) for _ in range(10)])
+    ```
+
+    Every caller still gets a correct value and the cache converges on one
+    entry — but if the work behind the cache is expensive enough that a burst of
+    concurrent misses matters (a "stampede"), do the lookup yourself and
+    re-check inside the lock:
+
+    ```python
+    lock = asyncio.Lock()
+
+
+    async def build(n: int) -> dict:
+        key = f"build:{n}"
+        hit = await cache.get(key)
+        if hit is not None:
+            return hit
+        async with lock:
+            # Re-check: another task may have filled it while we queued.
+            hit = await cache.get(key)
+            if hit is not None:
+                return hit
+            value = await expensive(n)
+            await cache.set(key, value, ttl=60)
+            return value
+    ```
+
+    Ten concurrent callers run `expensive` once. Note the re-check is what does
+    the work — wrapping a `@cached` function's *body* in a lock only serialises
+    the callers, because the cache lookup has already happened by then, and all
+    ten still run.
+
+    Single-flight is not built in because it would put a lock acquisition on
+    every lookup, including the hits, which is the common case.
+
 ## Cache keys
 
 By default the key is the function's qualified name plus a digest of its
@@ -89,6 +131,27 @@ async def report(report_id: int) -> dict:
 Both backends satisfy the same `Cache` interface, so swapping one for the other
 never changes behaviour — write your own backend by subclassing `Cache` and
 implementing `get` / `set` / `delete`.
+
+All three are required, and a subclass that omits one is refused where it is
+written rather than on the request that first needs it:
+
+```python
+class MyCache(Cache):
+    async def get(self, key: str) -> bytes | None: ...
+    async def set(self, key: str, value: bytes, ttl: int) -> None: ...
+    # `delete` forgotten
+
+# TypeError: MyCache does not implement Cache: delete missing
+```
+
+Subclassing a *concrete* backend is the usual way to specialise one, and
+inherits real implementations, so `class Instrumented(InMemoryCache)` needs
+override nothing. `SessionStore` enforces its `read` / `write` / `delete` the
+same way — see [Sessions](sessions.md).
+
+!!! note "Added in version 0.18.0"
+    The subclass check. A backend that already implements all three is
+    unaffected.
 
 !!! note "Caching is opt-in and zero-cost when unused"
     Nothing in the request dispatch path references the cache. Adding the

@@ -25,6 +25,9 @@ from veloce._protocol_constants import (
     LIFECYCLE_STARTUP,
 )
 from veloce._warnings import VeloceDeprecationWarning
+from veloce.app._host import AppHost
+from veloce.audit import AuditFailed
+from veloce.audit import run as audit_run
 
 if TYPE_CHECKING:  # pragma: no cover
     from types import CodeType, FrameType
@@ -39,9 +42,10 @@ def _collect_chained(exc: BaseException) -> list[BaseException]:
 
     `AsyncExitStack.aclose()` runs every teardown, chaining each failure onto
     the previous through `__context__` and re-raising the last. Walking that
-    chain recovers all teardown failures (oldest last), and an interior
-    `BaseExceptionGroup` is expanded so its members are surfaced individually.
-    A cycle guard keeps the walk bounded even on a self-referential chain.
+    chain recovers all teardown failures, and an interior `BaseExceptionGroup`
+    is expanded so its members are surfaced individually and in their own order.
+    The result is in run order - the first teardown that failed leads. A cycle
+    guard keeps the walk bounded even on a self-referential chain.
     """
     out: list[BaseException] = []
     seen: set[int] = set()
@@ -49,7 +53,11 @@ def _collect_chained(exc: BaseException) -> list[BaseException]:
     while current is not None and id(current) not in seen:
         seen.add(id(current))
         if _BaseExceptionGroup is not None and isinstance(current, _BaseExceptionGroup):
-            out.extend(current.exceptions)  # type: ignore[attr-defined]
+            # Reversed, because the whole list is reversed at the end to turn
+            # the `__context__` walk (newest first) into run order. A group's
+            # members are siblings rather than a chain, so without this they
+            # come out backwards relative to each other.
+            out.extend(reversed(current.exceptions))  # type: ignore[attr-defined]
         else:
             out.append(current)
         current = current.__context__
@@ -65,7 +73,7 @@ def _raise_unwind_errors(errors: list[BaseException]) -> None:
     A single failure is re-raised as-is so its traceback is preserved
     verbatim. Several failures are combined into a `BaseExceptionGroup`
     (Python 3.11+) so none is masked; on 3.10, where groups are unavailable,
-    the first failure is raised with the rest chained as a note.
+    the first failure is raised with the rest attached as notes.
     """
     if not errors:
         return
@@ -75,11 +83,35 @@ def _raise_unwind_errors(errors: list[BaseException]) -> None:
         raise _BaseExceptionGroup("lifespan shutdown failed", errors)
     first = errors[0]
     for extra in errors[1:]:
-        with contextlib.suppress(Exception):
-            first.add_note(  # type: ignore[attr-defined]
-                f"+ also raised during lifespan unwind: {extra!r}"
-            )
+        _attach_note(first, f"+ also raised during lifespan unwind: {extra!r}")
     raise first
+
+
+def _attach_note(error: BaseException, note: str) -> None:
+    """Record `note` on `error`, on interpreters with and without `add_note`.
+
+    `BaseException.add_note` is PEP 678, so it arrived in 3.11 - the same
+    release as `BaseExceptionGroup`. The 3.10 branch above is reached precisely
+    when groups are unavailable, which is exactly when `add_note` is unavailable
+    too, so the fallback could never run: the `AttributeError` was swallowed and
+    every failure but the first was dropped. A shutdown that failed twice
+    reported once.
+
+    `add_note` appends to `__notes__`, so writing that list directly is the same
+    record by the same name; 3.10 will not render it in a traceback (that is
+    PEP 678 too), but the failures stay attached to the exception that is raised
+    rather than being discarded.
+    """
+    add_note = getattr(error, "add_note", None)
+    if add_note is not None:
+        add_note(note)
+        return
+    notes = getattr(error, "__notes__", None)
+    if not isinstance(notes, list):
+        notes = []
+        with contextlib.suppress(AttributeError):
+            error.__notes__ = notes  # type: ignore[attr-defined]
+    notes.append(note)
 
 
 def _build_watchdog_attributor(app: Veloce) -> Callable[[FrameType], str | None]:
@@ -142,34 +174,15 @@ def _build_watchdog_attributor(app: Veloce) -> Callable[[FrameType], str | None]
     return attributor
 
 
-class LifecycleMixin:
-    """Request hooks and application lifespan, mixed into `Veloce`."""
+def _unknown_event_error(event: str) -> ValueError:
+    """Build the refusal both lifecycle-event entry points raise for an unknown name."""
+    return ValueError(
+        f"event must be {LIFECYCLE_STARTUP!r} or {LIFECYCLE_SHUTDOWN!r}, got {event!r}"
+    )
 
-    if TYPE_CHECKING:  # pragma: no cover
-        # Attributes / methods the host application (Veloce) provides.
-        config: Any
-        logger: Any
-        _assert_mutable: Callable[..., Any]
-        _gen: int
-        _before_request_hooks: Any
-        _after_request_hooks: Any
-        _before_first_request_hooks: Any
-        _teardown_request_hooks: Any
-        _teardown_appcontext_hooks: Any
-        _bp_teardown_hooks: Any
-        _on_startup: Any
-        _on_shutdown: Any
-        _lifespan: Any
-        _extra_lifespans: Any
-        _lifespan_cm: Any
-        _lifespan_stack: Any
-        _started_subapps: Any
-        _mounted_apps: Any
-        _middlewares: Any
-        debug: Any
-        response_contract_audit: Callable[[], list[str]]
-        _watchdog: Any
-        _drain_spawned_tasks: Callable[..., Any]
+
+class LifecycleMixin(AppHost):
+    """Request hooks and application lifespan, mixed into `Veloce`."""
 
     # ── Before/After request hooks ────────────────────────
 
@@ -202,7 +215,10 @@ class LifecycleMixin:
 
     def teardown_request(self, func: Callable) -> Callable:
         """Register a function to run after request teardown.
-        Called with an optional exception argument, even if an exception occurred."""
+
+        Called with an optional exception argument, even if an exception
+        occurred.
+        """
         self._assert_mutable()
         self._teardown_request_hooks.append(func)
         self._gen += 1
@@ -268,21 +284,6 @@ class LifecycleMixin:
 
     # ── Lifecycle events ──────────────────────────────────
 
-    def _register_lifecycle_event(self, event: str, func: Callable) -> None:
-        """Validate an event name and append the handler to its bucket.
-
-        Shared by `on_event` and `add_event_handler` so the two register
-        identically; raises the same `ValueError` for an unknown event name.
-        """
-        if event == LIFECYCLE_STARTUP:
-            self._on_startup.append(func)
-        elif event == LIFECYCLE_SHUTDOWN:
-            self._on_shutdown.append(func)
-        else:
-            raise ValueError(
-                f"event must be {LIFECYCLE_STARTUP!r} or {LIFECYCLE_SHUTDOWN!r}, got {event!r}"
-            )
-
     def on_event(self, event: str) -> Callable:
         """Register startup/shutdown event handlers.
 
@@ -290,9 +291,7 @@ class LifecycleMixin:
         Scheduled for removal in v1.0.0.
         """
         if event not in (LIFECYCLE_STARTUP, LIFECYCLE_SHUTDOWN):
-            raise ValueError(
-                f"event must be {LIFECYCLE_STARTUP!r} or {LIFECYCLE_SHUTDOWN!r}, got {event!r}"
-            )
+            raise _unknown_event_error(event)
         warnings.warn(
             "Veloce.on_event() is deprecated and will be removed in v1.0.0; "
             "use @app.on_startup / @app.on_shutdown instead.",
@@ -371,16 +370,42 @@ class LifecycleMixin:
     # semantically equivalent to `on_startup` / `on_shutdown`; both name
     # pairs are accepted so either reads naturally at the call site.
     def before_serving(self, func: Callable) -> Callable:
-        """Register a coroutine to run once at app startup."""
-        self._on_startup.append(func)
-        return func
+        """Register a coroutine to run once at app startup. Alias of `on_startup`."""
+        return self.on_startup(func)
 
     def after_serving(self, func: Callable) -> Callable:
-        """Register a coroutine to run once at app shutdown."""
-        self._on_shutdown.append(func)
-        return func
+        """Register a coroutine to run once at app shutdown. Alias of `on_shutdown`."""
+        return self.on_shutdown(func)
+
+    def _register_lifecycle_event(self, event: str, func: Callable) -> None:
+        """Validate an event name and append the handler to its bucket.
+
+        Shared by `on_event` and `add_event_handler` so the two register
+        identically; raises the same `ValueError` for an unknown event name.
+        """
+        if event == LIFECYCLE_STARTUP:
+            self._on_startup.append(func)
+        elif event == LIFECYCLE_SHUTDOWN:
+            self._on_shutdown.append(func)
+        else:
+            raise _unknown_event_error(event)
 
     # ── Lifespan engine ───────────────────────────────────
+
+    def lifespan_context(self) -> _LifespanManager:
+        """Return an async context manager driving the lifespan cycle.
+
+        `async with app.lifespan_context(): ...` runs the full startup
+        sequence (lifespan CM enter + `on_startup` handlers) on entry
+        and the shutdown sequence on exit - independent of any request.
+        Useful for tests and for embedding the app where you want
+        startup/shutdown without an ASGI server in the loop.
+        """
+        # Lazy to keep the context machinery off `import veloce`; there is no
+        # app->_contexts->http cycle, and hoisting this imports cleanly.
+        from veloce.app.contexts import _LifespanManager
+
+        return _LifespanManager(cast("Veloce", self))
 
     async def _run_handler(self, handler: Callable[..., Any]) -> None:
         """Invoke a lifecycle handler, offloading sync ones to a thread.
@@ -396,154 +421,169 @@ class LifecycleMixin:
             await offload(handler)
 
     async def _run_lifecycle(self, event: str) -> None:
-        """Run lifecycle event handlers, including the lifespan context manager.
+        """Run the startup or shutdown sequence.
 
-        Startup acquires the user lifespan CM and the dev watchdog onto a single
-        `AsyncExitStack` stored on the app. A startup handler that raises mid-way
-        unwinds exactly what was already acquired (the stack closes in reverse)
-        before the error propagates, so a partially-started app leaves no
-        orphaned resources. Shutdown drains any `app.spawn(...)` tasks, runs
-        every `on_shutdown` handler (one raising never skips the rest), then
-        closes the stack to exit the CM and stop the watchdog - collecting every
-        failure and re-raising them grouped, so no teardown error is masked.
+        Two unrelated algorithms selected by a string - acquisition and unwind -
+        which is why each has its own method. This is the entry point every
+        caller already uses; the string is the transport's own vocabulary
+        (`lifespan.startup` / `lifespan.shutdown`), so it is translated here
+        rather than pushed onto ten call sites.
         """
         if event == LIFECYCLE_STARTUP:
-            stack = contextlib.AsyncExitStack()
-            try:
-                # The lifespan CM is entered first so it exits last, after every
-                # on_shutdown handler has run - resources it provides outlive the
-                # handlers that use them.
-                if self._lifespan is not None:
-                    self._lifespan_cm = self._lifespan(self)
-                    await stack.enter_async_context(self._lifespan_cm)
-
-                # Registered after the app's own lifespan so they exit before
-                # it: a plugin resource may depend on what `lifespan=` provided,
-                # never the other way round.
-                for factory in self._extra_lifespans:
-                    await stack.enter_async_context(factory(self))
-
-                for handler in self._on_startup:
-                    await self._run_handler(handler)
-
-                # Fan startup out to every mounted Veloce sub-app. A mounted
-                # child is dispatched through the parent pipeline and never
-                # receives its own ASGI lifespan, so without this its
-                # `on_startup` / lifespan resources would never initialise. Each
-                # child's startup runs after the parent's own; the started
-                # children are recorded so shutdown can tear them down
-                # newest-first BEFORE the parent's on_shutdown handlers (and so a
-                # mid-fan-out failure unwinds the already-started ones). A
-                # non-Veloce ASGI mount owns its own lifecycle and is skipped -
-                # `LifecycleMixin` is the marker that identifies a Veloce sub-app.
-                # The same child instance mounted under multiple prefixes is
-                # started and shut down only once (deduped by identity).
-                self._started_subapps = []
-                _seen_subs: set[int] = set()
-                for _prefix, _prefix_slash, _sub in self._mounted_apps:
-                    if isinstance(_sub, LifecycleMixin) and id(_sub) not in _seen_subs:
-                        _seen_subs.add(id(_sub))
-                        await _sub._run_lifecycle(LIFECYCLE_STARTUP)
-                        self._started_subapps.append(_sub)
-
-                # Dev-mode event-loop blocking watchdog - opt-in, so an app
-                # that does not set the config key never builds one. The key
-                # may be a plain truthy value, or a mapping of watchdog kwargs
-                # (`interval`, `stall_threshold`) for tuning. Registered on the
-                # stack so it is always stopped, even on partial-startup failure.
-                _wd_config = self.config.get("EVENT_LOOP_WATCHDOG")
-                if _wd_config and self._watchdog is None:
-                    from veloce.watchdog import EventLoopWatchdog
-
-                    _wd_kwargs = dict(_wd_config) if isinstance(_wd_config, Mapping) else {}
-                    self._watchdog = EventLoopWatchdog(
-                        asyncio.get_running_loop(),
-                        attributor=_build_watchdog_attributor(cast("Veloce", self)),
-                        **_wd_kwargs,
-                    )
-                    self._watchdog.start()
-                    stack.push_async_callback(self._stop_watchdog)
-
-                # Middleware whose configuration references the route table can
-                # only be checked once every route exists, which is here - after
-                # the startup handlers and the sub-app fan-out have registered
-                # theirs. A middleware validates by exposing `_validate_config`;
-                # raising from it fails the boot, so a misconfiguration surfaces
-                # at startup instead of as an error on every later request.
-                for _mw in self._middlewares:
-                    _validate = getattr(_mw, "_validate_config", None)
-                    if _validate is not None:
-                        _validate(self)
-
-                # In debug, surface response contracts at first boot: a route
-                # that publishes no schema, or whose `response_model` disagrees
-                # with its return annotation, otherwise degrades silently and is
-                # only noticed by reading the rendered docs.
-                if self.debug:
-                    for _finding in self.response_contract_audit():
-                        self.logger.warning("response contract: %s", _finding)
-            except BaseException:
-                # Unwind whatever startup acquired before the failure, then let
-                # the original error propagate so the ASGI/native caller emits
-                # the startup-failed signal. Unwind errors must not mask the
-                # startup failure itself. Already-started children come down
-                # first (newest-first), then the parent's acquired-resource stack.
-                with contextlib.suppress(Exception):
-                    await self._shutdown_subapps()
-                with contextlib.suppress(Exception):
-                    await stack.aclose()
-                self._lifespan_cm = None
-                raise
-            self._lifespan_stack = stack
+            await self._run_startup()
         else:
-            shutdown_stack = self._lifespan_stack
-            self._lifespan_stack = None
-            errors: list[BaseException] = []
-            try:
-                # Cancel and drain parent-owned spawned / supervised background
-                # tasks FIRST, before mounted children tear down, so a parent
-                # background loop cannot keep touching child-owned state after the
-                # child has closed. The `finally` drain below still catches any
-                # task a teardown handler spawns (the registries are cleared, so
-                # this early drain and the late one do not double-cancel).
-                await self._drain_spawned_tasks()
-                # Tear mounted sub-apps down next (newest-first), before the
-                # parent's own on_shutdown handlers run - reverse of the
-                # parent-then-children startup order, so a shared resource a
-                # parent shutdown handler closes is still available while each
-                # child releases work against it.
-                errors.extend(await self._shutdown_subapps())
-                # Run every on_shutdown handler, newest first (symmetric to the
-                # startup order), collecting failures so one raising teardown
-                # does not abort the rest - unlike a bare loop that stops on
-                # first error.
-                for handler in reversed(self._on_shutdown):
-                    try:
-                        await self._run_handler(handler)
-                    except BaseException as exc:  # noqa: BLE001 - aggregated below
-                        errors.append(exc)
-                # Close the acquired-resource stack (lifespan CM exit + watchdog
-                # stop). When no startup ran (standalone or repeat shutdown) the
-                # stack is absent; fall back to stopping the watchdog and exiting
-                # an open CM directly so standalone shutdown still tears
-                # everything down.
-                self._lifespan_cm = None
-                if shutdown_stack is not None:
-                    try:
-                        await shutdown_stack.aclose()
-                    except BaseException as exc:  # noqa: BLE001 - aggregated below
-                        errors.extend(_collect_chained(exc))
-                else:
-                    await self._stop_watchdog()
-            finally:
-                # Drain spawned tasks LAST, after the on_shutdown handlers and
-                # lifespan teardown have completed, so any task a teardown
-                # callback spawned via `app.spawn(...)` is also drained instead
-                # of surviving past shutdown. In a `finally` so the drain still
-                # runs (with the same timeout/cancel behavior) even when a
-                # teardown raised above.
-                await self._drain_spawned_tasks()
-            _raise_unwind_errors(errors)
+            await self._run_shutdown()
+
+    async def _run_startup(self) -> None:
+        """Acquire the lifespan CM, the watchdog and every `on_startup` handler.
+
+        All of it onto a single `AsyncExitStack` stored on the app. A handler
+        that raises mid-way unwinds exactly what was already acquired - the
+        stack closes in reverse - before the error propagates, so a partially
+        started app leaves no orphaned resources.
+        """
+        stack = contextlib.AsyncExitStack()
+        try:
+            # The lifespan CM is entered first so it exits last, after every
+            # on_shutdown handler has run - resources it provides outlive the
+            # handlers that use them.
+            if self._lifespan is not None:
+                self._lifespan_cm = self._lifespan(self)
+                await stack.enter_async_context(self._lifespan_cm)
+
+            # Registered after the app's own lifespan so they exit before
+            # it: a plugin resource may depend on what `lifespan=` provided,
+            # never the other way round.
+            for factory in self._extra_lifespans:
+                await stack.enter_async_context(factory(self))
+
+            for handler in self._on_startup:
+                await self._run_handler(handler)
+
+            # Fan startup out to every mounted Veloce sub-app. A mounted
+            # child is dispatched through the parent pipeline and never
+            # receives its own ASGI lifespan, so without this its
+            # `on_startup` / lifespan resources would never initialise. Each
+            # child's startup runs after the parent's own; the started
+            # children are recorded so shutdown can tear them down
+            # newest-first BEFORE the parent's on_shutdown handlers (and so a
+            # mid-fan-out failure unwinds the already-started ones). A
+            # non-Veloce ASGI mount owns its own lifecycle and is skipped -
+            # `LifecycleMixin` is the marker that identifies a Veloce sub-app.
+            # The same child instance mounted under multiple prefixes is
+            # started and shut down only once (deduped by identity).
+            self._started_subapps = []
+            seen_subs: set[int] = set()
+            for _prefix, _prefix_slash, sub in self._mounted_apps:
+                if isinstance(sub, LifecycleMixin) and id(sub) not in seen_subs:
+                    seen_subs.add(id(sub))
+                    await sub._run_lifecycle(LIFECYCLE_STARTUP)
+                    self._started_subapps.append(sub)
+
+            # Dev-mode event-loop blocking watchdog - opt-in, so an app
+            # that does not set the config key never builds one. The key
+            # may be a plain truthy value, or a mapping of watchdog kwargs
+            # (`interval`, `stall_threshold`) for tuning. Registered on the
+            # stack so it is always stopped, even on partial-startup failure.
+            watchdog_config = self.config.get("EVENT_LOOP_WATCHDOG")
+            if watchdog_config and self._watchdog is None:
+                from veloce.watchdog import EventLoopWatchdog
+
+                watchdog_kwargs = (
+                    dict(watchdog_config) if isinstance(watchdog_config, Mapping) else {}
+                )
+                self._watchdog = EventLoopWatchdog(
+                    asyncio.get_running_loop(),
+                    attributor=_build_watchdog_attributor(cast("Veloce", self)),
+                    **watchdog_kwargs,
+                )
+                self._watchdog.start()
+                stack.push_async_callback(self._stop_watchdog)
+
+            # The route table is final here - after the startup handlers
+            # and the sub-app fan-out have registered theirs - so this is
+            # the first moment a route-reading check can run. An `error`
+            # finding fails the boot, which is what a misconfiguration
+            # should do rather than surfacing as a 500 on every later
+            # request. Everything below `error` is reported in debug and
+            # left alone in production, where `veloce check` is the gate
+            # and startup should not spend the time or the log lines.
+            _findings = audit_run(cast("Veloce", self), routes_final=True)
+            _fatal = [f for f in _findings if f.severity == "error"]
+            if _fatal:
+                raise AuditFailed(_fatal)
+            if self.debug:
+                for _audit_finding in _findings:
+                    self.logger.warning("audit: %s", _audit_finding)
+
+        except BaseException:
+            # Unwind whatever startup acquired before the failure, then let
+            # the original error propagate so the ASGI/native caller emits
+            # the startup-failed signal. Unwind errors must not mask the
+            # startup failure itself. Already-started children come down
+            # first (newest-first), then the parent's acquired-resource stack.
+            with contextlib.suppress(Exception):
+                await self._shutdown_subapps()
+            with contextlib.suppress(Exception):
+                await stack.aclose()
+            self._lifespan_cm = None
+            raise
+        self._lifespan_stack = stack
+
+    async def _run_shutdown(self) -> None:
+        """Drain spawned tasks, run every `on_shutdown` handler, close the stack.
+
+        One handler raising never skips the rest: every failure is collected and
+        re-raised grouped, so no teardown error is masked by a later one.
+        """
+        shutdown_stack = self._lifespan_stack
+        self._lifespan_stack = None
+        errors: list[BaseException] = []
+        try:
+            # Cancel and drain parent-owned spawned / supervised background
+            # tasks FIRST, before mounted children tear down, so a parent
+            # background loop cannot keep touching child-owned state after the
+            # child has closed. The `finally` drain below still catches any
+            # task a teardown handler spawns (the registries are cleared, so
+            # this early drain and the late one do not double-cancel).
+            await self._drain_spawned_tasks()
+            # Tear mounted sub-apps down next (newest-first), before the
+            # parent's own on_shutdown handlers run - reverse of the
+            # parent-then-children startup order, so a shared resource a
+            # parent shutdown handler closes is still available while each
+            # child releases work against it.
+            errors.extend(await self._shutdown_subapps())
+            # Run every on_shutdown handler, newest first (symmetric to the
+            # startup order), collecting failures so one raising teardown
+            # does not abort the rest - unlike a bare loop that stops on
+            # first error.
+            for handler in reversed(self._on_shutdown):
+                try:
+                    await self._run_handler(handler)
+                except BaseException as exc:  # noqa: BLE001 - aggregated below
+                    errors.append(exc)
+            # Close the acquired-resource stack (lifespan CM exit + watchdog
+            # stop). When no startup ran (standalone or repeat shutdown) the
+            # stack is absent; fall back to stopping the watchdog and exiting
+            # an open CM directly so standalone shutdown still tears
+            # everything down.
+            self._lifespan_cm = None
+            if shutdown_stack is not None:
+                try:
+                    await shutdown_stack.aclose()
+                except BaseException as exc:  # noqa: BLE001 - aggregated below
+                    errors.extend(_collect_chained(exc))
+            else:
+                await self._stop_watchdog()
+        finally:
+            # Drain spawned tasks LAST, after the on_shutdown handlers and
+            # lifespan teardown have completed, so any task a teardown
+            # callback spawned via `app.spawn(...)` is also drained instead
+            # of surviving past shutdown. In a `finally` so the drain still
+            # runs (with the same timeout/cancel behavior) even when a
+            # teardown raised above.
+            await self._drain_spawned_tasks()
+        _raise_unwind_errors(errors)
 
     async def _shutdown_subapps(self) -> list[BaseException]:
         """Shut down started mounted sub-apps newest-first; return any errors.
@@ -566,16 +606,3 @@ class LifecycleMixin:
         if self._watchdog is not None:
             self._watchdog.stop()
             self._watchdog = None
-
-    def lifespan_context(self) -> _LifespanManager:
-        """Return an async context manager driving the lifespan cycle.
-
-        `async with app.lifespan_context(): ...` runs the full startup
-        sequence (lifespan CM enter + `on_startup` handlers) on entry
-        and the shutdown sequence on exit - independent of any request.
-        Useful for tests and for embedding the app where you want
-        startup/shutdown without an ASGI server in the loop.
-        """
-        from veloce.app.contexts import _LifespanManager  # lazy: breaks app->_contexts->http cycle
-
-        return _LifespanManager(cast("Veloce", self))

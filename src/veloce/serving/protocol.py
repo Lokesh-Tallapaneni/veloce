@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import logging
 import socket as _socket
 import threading
@@ -15,16 +16,18 @@ import weakref
 from collections import deque
 from collections.abc import Callable
 from typing import TYPE_CHECKING, cast
+from urllib.parse import unquote
 
 import httptools
 
-from veloce import status
+import veloce.status as status
 from veloce._constants import (
+    MIME_JSON,
     MIME_TEXT_PLAIN,
     MSG_ERROR_RESPONSE_EMISSION,
     MSG_INTERNAL_SERVER_ERROR,
 )
-from veloce._internal import _extract_host, _ws_handshake_rejection
+from veloce._internal import _extract_host, _ws_handshake_rejection, dumps_for
 from veloce._protocol_constants import (
     HTTP_METHOD_HEAD,
     RAW_HEADER_CONTENT_LENGTH,
@@ -34,10 +37,11 @@ from veloce.config import (
     DEFAULT_MAX_CONCURRENT_CONNECTIONS,
     DEFAULT_WRITE_BUFFER_HIGH_WATER,
 )
+from veloce.config import Config as _Config
 from veloce.exceptions import RequestEntityTooLarge, WebSocketDisconnect
-from veloce.http._body import RequestBodySource
+from veloce.http._body import RequestBodySource, too_large_payload
 from veloce.http.request import Request
-from veloce.http.response import Response, StreamingResponse
+from veloce.http.response import Response
 from veloce.websocket import WebSocket, compute_accept
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -67,6 +71,11 @@ WRITE_BUFFER_HIGH_WATER = DEFAULT_WRITE_BUFFER_HIGH_WATER
 # process - but the helper that clears it exists for the test suite, which
 # drives shutdown repeatedly within one interpreter.
 _SHUTTING_DOWN = False
+
+# Reasons a connection has stopped reading its socket, held as a bitmask so a
+# resume for one cannot cancel the other's pause.
+_PAUSE_BODY = 1
+_PAUSE_DEPTH = 2
 
 
 def _enable_tcp_keepalive(
@@ -128,8 +137,20 @@ _WS_HEADER_KEY = b"sec-websocket-key"
 _WS_HEADER_VERSION = b"sec-websocket-version"
 _WS_HEADER_HOST = b"host"
 _WS_HEADER_ORIGIN = b"origin"
+
+# The one extra header line a bare-framed JSON refusal carries.
+CONTENT_TYPE_JSON_LINE = b"Content-Type: application/json\r\n"
+
+
 # RFC 6455 Sec. 4.2.2: the only WebSocket protocol version Veloce speaks.
 _WS_SUPPORTED_VERSION = b"13"
+
+
+#: `%` as an int, for the percent-escape test on the request target. Membership
+#: of an int in `bytes` is a memchr; membership of a one-byte `bytes` is a
+#: substring search, an order of magnitude dearer on a path this runs on for
+#: every request.
+_PERCENT_BYTE = 0x25
 
 
 class HttpProtocol(asyncio.Protocol):
@@ -149,6 +170,8 @@ class HttpProtocol(asyncio.Protocol):
         "_oversized",
         "_counted",
         "_request_queue",
+        "_pause_reasons",
+        "_max_pipelined",
         "_server_loop",
         "_closing",
         "_draining",
@@ -198,12 +221,23 @@ class HttpProtocol(asyncio.Protocol):
     _active_connections: int = 0
     _connections_lock: threading.Lock = threading.Lock()
 
-    KEEP_ALIVE_TIMEOUT = 75  # seconds (matches nginx default)
+    # Fallback for a protocol built without an app config. The shipped
+    # default lives in `Config.default_config()`; declaring the number in
+    # both places left two lines to keep in step for one value.
+    KEEP_ALIVE_TIMEOUT = _Config.default_config()["KEEP_ALIVE_TIMEOUT"]
     # Slowloris guard: once a request's bytes start arriving, the whole
     # request line + headers + body must complete within this budget,
     # otherwise the connection is dropped with 408. Bounds how long a
     # deliberately slow client can pin a connection open.
-    REQUEST_TIMEOUT = 30  # seconds
+    REQUEST_TIMEOUT = _Config.default_config()["REQUEST_TIMEOUT"]
+
+    # How many parsed-but-unserved pipelined requests a connection will hold
+    # before it stops reading the socket. Transport flow control is otherwise
+    # driven by the request *body* source, and a pipelined bodiless GET has no
+    # body - so without this bound a peer could queue one `Request`,
+    # `RequestBodySource` and `RouteMatch` per 27 bytes it wrote. Overridable
+    # per-app via `MAX_PIPELINED_REQUESTS` in `app.config`.
+    MAX_PIPELINED_REQUESTS = 64
 
     def __init__(self, app: Veloce, loop: asyncio.AbstractEventLoop) -> None:
         self.app = app
@@ -216,7 +250,7 @@ class HttpProtocol(asyncio.Protocol):
         self._request_timer: asyncio.TimerHandle | None = None
         self._header_bytes_total: int = 0
         # True between headers-complete and message-complete. Chunked trailer
-        # fields (RFC 9112 section 7.1.2) arrive through the same `on_header`
+        # fields (RFC 9112 Sec. 7.1.2) arrive through the same `on_header`
         # callback as ordinary headers; this flag marks them as belonging to
         # the in-flight message so they are never appended to the cleared
         # header buffer that the *next* pipelined request will fill.
@@ -236,6 +270,10 @@ class HttpProtocol(asyncio.Protocol):
         # response written first. The tuple carries the Request, its body
         # source (the protocol feeds body chunks into it), and the keep-alive
         # flag snapshotted at headers-complete.
+        self._pause_reasons = 0
+        self._max_pipelined: int = app.config.get(
+            "MAX_PIPELINED_REQUESTS", HttpProtocol.MAX_PIPELINED_REQUESTS
+        )
         self._request_queue: deque[tuple[Request, RequestBodySource, bool, RouteMatch | None]] = (
             deque()
         )
@@ -283,14 +321,25 @@ class HttpProtocol(asyncio.Protocol):
     # ── httptools callbacks ───────────────────────────────
 
     def on_url(self, url: bytes) -> None:
+        """Accumulate the request target, which httptools may deliver in pieces."""
         if self._oversized:
             return
-        if len(url) > MAX_URL_SIZE:
+        # Appended, not assigned. `on_url` is an incremental callback like
+        # `on_body`: when the request target spans two reads httptools delivers
+        # it in two calls, and the second is `b""` when the split falls right
+        # after the target. Assigning replaced the accumulated target with the
+        # tail - so a target split from the version that follows it left the
+        # URL empty and the request was answered `400`. A target split across a
+        # TCP segment boundary is ordinary, not adversarial.
+        self.url += url
+        # Measured on the accumulated target for the same reason: the per-call
+        # length is only the fragment this read carried.
+        if len(self.url) > MAX_URL_SIZE:
             self._reject_oversized(status.HTTP_414_REQUEST_URI_TOO_LONG, b"URI Too Long")
             return
-        self.url = url
 
     def on_header(self, name: bytes, value: bytes) -> None:
+        """Record one header, refusing the request once the size budget is spent."""
         if self._oversized:
             return
         field_size = len(name) + len(value)
@@ -316,7 +365,7 @@ class HttpProtocol(asyncio.Protocol):
         # Capture the two headers the dispatch path needs so headers-complete
         # reads a slot instead of rescanning the list. `Content-Length` is kept
         # raw and parsed lazily; `Expect: 100-continue` is a case-insensitive
-        # token (RFC 9110 section 10.1.1). On a (malformed) duplicate
+        # token (RFC 9110 Sec. 10.1.1). On a (malformed) duplicate
         # `Content-Length`, the first value wins for the early-413 size guard.
         if name == RAW_HEADER_CONTENT_LENGTH:
             if self._raw_content_length is None:
@@ -324,6 +373,22 @@ class HttpProtocol(asyncio.Protocol):
         elif name == b"expect" and value.strip().lower() == b"100-continue":
             self._has_expect_continue = True
         self.headers.append((name, value))
+
+    def _reset_header_state(self) -> None:
+        """Clear the per-message header-parse buffers and their derived flags.
+
+        The parser keeps advancing through pipelined bytes, so a follow-up
+        request's `on_url` / `on_header` would append into the live lists.
+        Clears `url`, `headers`, `_header_bytes_total`, `_raw_content_length`
+        and `_has_expect_continue`. `_headers_done` is not one of them, and
+        `on_message_complete` re-zeroes `_header_bytes_total` itself because
+        chunked trailers keep charging that budget after this helper has run.
+        """
+        self.url = b""
+        self.headers = []
+        self._header_bytes_total = 0
+        self._raw_content_length = None
+        self._has_expect_continue = False
 
     def on_headers_complete(self) -> None:
         """Headers are fully parsed - build the Request and dispatch it now.
@@ -363,12 +428,17 @@ class HttpProtocol(asyncio.Protocol):
         if max_len is not None:
             declared = self._declared_content_length()
             if declared is not None and declared > max_len:
-                self._reject_413()
+                # Built before the refusal so the response phase has a request
+                # to run against - a cross-origin upload that trips the limit
+                # must not reach the client as an opaque CORS failure, which is
+                # the reason `app/asgi.py` routes its own 413 through
+                # `_body_too_large_response`.
+                self._reject_413(self._refusal_request())
                 return
 
         # Clear an `Expect: 100-continue` client to send its body. The early
         # 413 above already rejected an over-limit declared Content-Length, so
-        # we never invite a body we are about to refuse. RFC 9110 section
+        # we never invite a body we are about to refuse. RFC 9110 Sec.
         # 10.1.1 forbids the interim to an HTTP/1.0 client, so it is gated on
         # the request being HTTP/1.1.
         # `transport` is already non-None here (guarded at method entry, and
@@ -406,18 +476,19 @@ class HttpProtocol(asyncio.Protocol):
         # on_header would otherwise append into the same live lists. The
         # already-built Request holds its own copies.
         self._current_source = source
-        self.url = b""
-        self.headers = []
-        self._header_bytes_total = 0
+        self._reset_header_state()
         self._headers_done = True
-        self._raw_content_length = None
-        self._has_expect_continue = False
         # Match ONCE here and thread the result into `handle_request`, exactly
         # as `_asgi_app` does, so the radix tree is not walked twice. `_dispatch`
         # also needs the match before the handler starts, to know whether this
         # route streams its body or wants it buffered.
         match = self.app.match(request.method, request.path)
         self._request_queue.append((request, source, keep_alive, match))
+        # A pipelined bodiless request never fills a body buffer, so depth is the
+        # only backpressure signal this shape has. Stop reading here; `_serve`
+        # resumes once it has drained the queue.
+        if len(self._request_queue) >= self._max_pipelined:
+            self._pause_reading_depth()
         # Start the per-connection server loop on the first queued request; it
         # runs until the queue drains, guaranteeing FIFO response ordering.
         if self._server_loop is None or self._server_loop.done():
@@ -443,38 +514,9 @@ class HttpProtocol(asyncio.Protocol):
         # protocol switch with a 400 like any other non-WebSocket upgrade.
         if self.parser.get_method() != b"GET":
             return False
-        # Detect the upgrade triplet (RFC 6455 Sec. 4.2.1). `connection` may be a
-        # comma list ("keep-alive, Upgrade"); the others are single tokens. All
-        # header names are already lowercased by `on_header`.
-        has_upgrade_token = False
-        upgrade_is_ws = False
-        ws_key: bytes | None = None
-        ws_version: bytes | None = None
-        host = b""
-        origin: bytes | None = None
-        for name, value in self.headers:
-            if name == _WS_HEADER_CONNECTION:
-                # Case-insensitive, comma-list aware: any "upgrade" token counts.
-                for token in value.split(b","):
-                    if token.strip().lower() == _WS_HEADER_UPGRADE:
-                        has_upgrade_token = True
-                        break
-            elif name == _WS_HEADER_UPGRADE:
-                if value.strip().lower() == b"websocket":
-                    upgrade_is_ws = True
-            elif name == _WS_HEADER_KEY:
-                if value:
-                    ws_key = value
-            elif name == _WS_HEADER_VERSION:
-                ws_version = value.strip()
-            elif name == _WS_HEADER_HOST and not host:
-                host = value
-            elif name == _WS_HEADER_ORIGIN and origin is None:
-                origin = value
-
-        # Not a WebSocket handshake at all - fall through to HTTP. Short-circuit
-        # on the first missing element so an ordinary GET pays almost nothing.
-        if not (has_upgrade_token and upgrade_is_ws):
+        is_ws_upgrade, ws_key, ws_version, host, origin = self._scan_ws_headers()
+        # Not a WebSocket handshake at all - fall through to HTTP.
+        if not is_ws_upgrade:
             return False
 
         transport = self.transport
@@ -499,6 +541,20 @@ class HttpProtocol(asyncio.Protocol):
 
         path, query_bytes = self._parse_request_target()
 
+        # Host / Origin allow-lists first, before the route table is consulted.
+        # An HTTP middleware's `process_request` never sees a handshake, so the
+        # allow-lists are applied here. Matching first told an origin the app has
+        # already decided not to trust whether a path exists - a 404 for an
+        # unknown one, a 403 for a known one - and the ASGI path gated first, so
+        # the two transports also disagreed about which refusal a request drew.
+        # A rejection here precedes the 101 (the upgrade has not completed), so
+        # it is an HTTP 403, not a close frame.
+        host_str = _extract_host(host.decode("latin-1")) if host else ""
+        origin_str = origin.decode("latin-1") if origin is not None else ""
+        if _ws_handshake_rejection(self.app._middlewares, host_str, origin_str):
+            self._write_ws_http_error(status.HTTP_403_FORBIDDEN, b"Forbidden")
+            return True
+
         # Match BEFORE sending the 101 so we never switch protocols on a path
         # with no handler. No handler -> 404 (RFC-correct: the upgrade has not
         # completed, so the refusal is an ordinary HTTP response, not a close
@@ -506,16 +562,6 @@ class HttpProtocol(asyncio.Protocol):
         ws_match = self.app.match(ROUTE_METHOD_WEBSOCKET, path)
         if ws_match is None:
             self._write_ws_http_error(status.HTTP_404_NOT_FOUND, b"Not Found")
-            return True
-
-        # Host / Origin allow-lists. An HTTP middleware's `process_request`
-        # never sees a handshake, so consult the public predicates directly. A
-        # rejection here precedes the 101 (the upgrade has not completed), so it
-        # is an HTTP 403, not a close frame.
-        host_str = _extract_host(host.decode("latin-1")) if host else ""
-        origin_str = origin.decode("latin-1") if origin is not None else ""
-        if _ws_handshake_rejection(self.app._middlewares, host_str, origin_str):
-            self._write_ws_http_error(status.HTTP_403_FORBIDDEN, b"Forbidden")
             return True
 
         # Send the 101 (RFC 6455 Sec. 4.2.2) synchronously to switch the byte
@@ -564,19 +610,51 @@ class HttpProtocol(asyncio.Protocol):
         if self._request_timer is not None:
             self._request_timer.cancel()
             self._request_timer = None
-        self.url = b""
-        self.headers = []
-        self._header_bytes_total = 0
-        self._raw_content_length = None
-        self._has_expect_continue = False
+        self._reset_header_state()
 
         # Dispatch the handler through the shared core. Tracked in `_active_tasks`
         # with the generic done-callback (logs unhandled errors) and held in
         # `_ws_task` so connection_lost can cancel it if the client drops.
         self._ws_task = self.loop.create_task(self.app._run_websocket(ws, ws_match.route_info))
         HttpProtocol._active_tasks.add(self._ws_task)
-        self._ws_task.add_done_callback(self._task_done)
+        self._ws_task.add_done_callback(functools.partial(self._ws_task_done, ws))
         return True
+
+    def _scan_ws_headers(self) -> tuple[bool, bytes | None, bytes | None, bytes, bytes | None]:
+        """Read the handshake fields off the parsed headers (RFC 6455 Sec. 4.2.1).
+
+        Returns `(is_ws_upgrade, key, version, host, origin)`, where
+        `is_ws_upgrade` is True only when both halves of the upgrade triplet
+        are present. `connection` may be a comma list ("keep-alive, Upgrade")
+        while the rest are single tokens; all header names arrive lowercased
+        from `on_header`.
+        """
+        has_upgrade_token = False
+        upgrade_is_ws = False
+        ws_key: bytes | None = None
+        ws_version: bytes | None = None
+        host = b""
+        origin: bytes | None = None
+        for name, value in self.headers:
+            if name == _WS_HEADER_CONNECTION:
+                # Case-insensitive, comma-list aware: any "upgrade" token counts.
+                for token in value.split(b","):
+                    if token.strip().lower() == _WS_HEADER_UPGRADE:
+                        has_upgrade_token = True
+                        break
+            elif name == _WS_HEADER_UPGRADE:
+                if value.strip().lower() == b"websocket":
+                    upgrade_is_ws = True
+            elif name == _WS_HEADER_KEY:
+                if value:
+                    ws_key = value
+            elif name == _WS_HEADER_VERSION:
+                ws_version = value.strip()
+            elif name == _WS_HEADER_HOST and not host:
+                host = value
+            elif name == _WS_HEADER_ORIGIN and origin is None:
+                origin = value
+        return has_upgrade_token and upgrade_is_ws, ws_key, ws_version, host, origin
 
     def _write_ws_http_error(self, status_code: int, reason: bytes, extra: bytes = b"") -> None:
         """Refuse a handshake with a plain HTTP response, then close.
@@ -591,6 +669,7 @@ class HttpProtocol(asyncio.Protocol):
         self._emit_http_error(status_code, reason, extra=extra)
 
     def on_body(self, body: bytes) -> None:
+        """Feed a body chunk to the in-flight request's source."""
         # Feed the in-flight request's body source. The source is the single
         # source of truth for the running byte total: `feed` tracks it and
         # flips an overflow latch past MAX_CONTENT_LENGTH, so the handler's
@@ -605,6 +684,7 @@ class HttpProtocol(asyncio.Protocol):
             self._reject_413()
 
     def on_message_complete(self) -> None:
+        """Close out the message and reopen the header phase for a pipelined one."""
         # The message (incl. any chunked trailers) is over: the next on_url /
         # on_header callbacks belong to a pipelined follow-up, so reopen the
         # header phase and zero the size budget that trailers counted against.
@@ -624,6 +704,7 @@ class HttpProtocol(asyncio.Protocol):
     # ── asyncio.Protocol callbacks ────────────────────────
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
+        """Take the transport, admitting the connection against the concurrency cap."""
         # HTTP/WebSocket runs over a full-duplex transport; the Liskov-correct
         # signature widens to `BaseTransport`, so narrow back here. Check by
         # capability, not `isinstance(asyncio.Transport)`: uvloop's transport
@@ -701,6 +782,7 @@ class HttpProtocol(asyncio.Protocol):
         self._start_keep_alive_timer()
 
     def connection_lost(self, exc: Exception | None) -> None:
+        """Release everything the connection held and unwind any live handler."""
         if self._counted:
             with HttpProtocol._connections_lock:
                 HttpProtocol._active_connections -= 1
@@ -729,7 +811,7 @@ class HttpProtocol(asyncio.Protocol):
         # loop is cancelled below; signalling EOF here makes a streaming read
         # end cleanly even on the cancellation race.
         if self._current_source is not None:
-            self._current_source.feed_eof()
+            self._current_source.feed_eof(disconnected=True)
             self._current_source = None
         if self._server_loop is not None and not self._server_loop.done():
             self._server_loop.cancel()
@@ -785,36 +867,61 @@ class HttpProtocol(asyncio.Protocol):
         _SHUTTING_DOWN = False
 
     def _arm_request_timer(self) -> None:
-        """Start the slowloris read budget when a request's bytes begin
-        arriving. The connection is no longer idle, so the keep-alive
-        timer is stood down in favour of the (shorter) request timer."""
+        """Start the slowloris read budget as a request's bytes begin arriving.
+
+        The connection is no longer idle, so the keep-alive timer is stood down
+        in favour of the (shorter) request timer.
+        """
         if self._keep_alive_handle is not None:
             self._keep_alive_handle.cancel()
             self._keep_alive_handle = None
         timeout = self.app.config.get("REQUEST_TIMEOUT", self.REQUEST_TIMEOUT)
         self._request_timer = self.loop.call_later(timeout, self._request_timeout)
 
+    def _set_pause_reason(self, bit: int, paused: bool) -> None:
+        """Add or clear one reason to stop reading, pausing the transport once.
+
+        Two independent things want the socket quiet: a full request-body buffer
+        and a full pipelining queue. Reference-counting them means a resume for
+        one reason cannot cancel the other's pause. A guard keeps this safe after
+        teardown: a closing or absent transport simply ignores the request.
+        """
+        before = self._pause_reasons
+        self._pause_reasons = after = (before | bit) if paused else (before & ~bit)
+        if (before == 0) == (after == 0):
+            return
+        transport = self.transport
+        if transport is None or transport.is_closing():
+            return
+        if after:
+            transport.pause_reading()
+        else:
+            transport.resume_reading()
+
     def _pause_reading(self) -> None:
         """Stop pulling bytes off the socket - the body buffer is full.
 
         Invoked by the in-flight `RequestBodySource` when its buffer reaches
-        the high-water mark. A guard keeps it safe after teardown: a closing or
-        absent transport simply ignores the request.
+        the high-water mark.
         """
-        transport = self.transport
-        if transport is not None and not transport.is_closing():
-            transport.pause_reading()
+        self._set_pause_reason(_PAUSE_BODY, True)
 
     def _resume_reading(self) -> None:
         """Resume pulling bytes once the consumer drains below the low mark."""
-        transport = self.transport
-        if transport is not None and not transport.is_closing():
-            transport.resume_reading()
+        self._set_pause_reason(_PAUSE_BODY, False)
+
+    def _pause_reading_depth(self) -> None:
+        """Stop reading - the pipelining queue is at its depth limit."""
+        self._set_pause_reason(_PAUSE_DEPTH, True)
+
+    def _resume_reading_depth(self) -> None:
+        """Resume reading once the pipelining queue has drained."""
+        self._set_pause_reason(_PAUSE_DEPTH, False)
 
     # ── write-side flow control ───────────────────────────
 
     def pause_writing(self) -> None:
-        """asyncio callback: the transport write buffer crossed the high mark.
+        """Asyncio callback: the transport write buffer crossed the high mark.
 
         Clearing the gate makes the next `drain()` block, throttling a
         producer (a streaming/SSE response or the native WebSocket send path)
@@ -825,7 +932,7 @@ class HttpProtocol(asyncio.Protocol):
         self._can_write.clear()
 
     def resume_writing(self) -> None:
-        """asyncio callback: the write buffer drained below the low mark."""
+        """Asyncio callback: the write buffer drained below the low mark."""
         self._can_write.set()
 
     async def drain(self) -> None:
@@ -881,14 +988,28 @@ class HttpProtocol(asyncio.Protocol):
     def _parse_request_target(self) -> tuple[str, bytes]:
         """Split the parsed request line into `(path, raw_query_bytes)`.
 
-        `path` is ascii-decoded (defaulting to `/` when absent); the query is
-        returned raw so the WebSocket scope can carry the bytes verbatim while
-        the HTTP path decodes them. Shared by the HTTP dispatch and the
-        WebSocket upgrade so the request-target split lives in one place.
+        `path` is percent-decoded, as the ASGI scope's `path` is, so
+        `/items/a%20b` binds `"a b"` on this transport too - it bound the raw
+        `"a%20b"` before, and the same app answered differently depending on
+        how it was served. The decode is skipped when the target carries no
+        `%`, which is almost every request, so the common path pays one
+        C-level scan of the raw bytes and no allocation.
+
+        The query is returned raw so the WebSocket scope can carry the bytes
+        verbatim while the HTTP path decodes them. Shared by the HTTP dispatch
+        and the WebSocket upgrade so the request-target split lives in one
+        place.
         """
         parsed = httptools.parse_url(self.url)
-        path = parsed.path.decode("ascii") if parsed.path else "/"
-        return path, parsed.query or b""
+        raw_path = parsed.path
+        if not raw_path:
+            return "/", parsed.query or b""
+        if _PERCENT_BYTE in raw_path:
+            # `unquote` on the decoded text, matching what an ASGI server puts
+            # in `scope["path"]`; a malformed escape is left as written rather
+            # than raising, which is also what that path does.
+            return unquote(raw_path.decode("ascii")), parsed.query or b""
+        return raw_path.decode("ascii"), parsed.query or b""
 
     def _declared_content_length(self) -> int | None:
         """Parse the just-parsed request's `Content-Length` header, or None.
@@ -923,23 +1044,95 @@ class HttpProtocol(asyncio.Protocol):
             return False
         return self._has_expect_continue
 
-    def _reject_413(self) -> None:
+    def _refusal_request(self) -> Request | None:
+        """Build a body-less `Request` for a pre-dispatch refusal, or `None`.
+
+        The request line and headers are parsed by the time a declared
+        `Content-Length` is checked, so a refusal at that point can carry the
+        same request the response phase would have seen. There is deliberately
+        no body source: the body is what is being refused.
+        """
+        transport = self.transport
+        if transport is None or transport.is_closing():
+            return None
+        try:
+            path, query_bytes = self._parse_request_target()
+            return Request(
+                method=self.parser.get_method().decode("ascii"),
+                path=path,
+                query_string=query_bytes.decode("ascii"),
+                headers=list(self.headers),
+                body=b"",
+                transport=transport,
+            )
+        except Exception:
+            # A refusal must never fail to be sent because building a request
+            # from its headers failed; fall back to the bare framing.
+            return None
+
+    def _reject_413(self, request: Request | None = None) -> None:
         """Emit a 413 and close - the body exceeds MAX_CONTENT_LENGTH.
 
         Marks `_oversized` so any buffered follow-up parser callbacks
         short-circuit; the connection is terminated rather than trusted to
         resynchronise after a partially-read over-limit body.
+
+        With a `request`, the refusal runs through the app's response phase so it
+        carries the CORS and security headers a served response would - the same
+        guarantee `app/asgi.py` gives. Without one there is nothing to run
+        middleware against, and the bare framing is written directly.
         """
         self._oversized = True
         if self._current_source is not None:
             self._current_source.feed_eof()
             self._current_source = None
-        self._emit_http_error(
-            status.HTTP_413_CONTENT_TOO_LARGE, b"Content Too Large", b"Content Too Large"
+        # The same body the ASGI path answers with, so one app does not describe
+        # the same refusal two ways depending on how it is served.
+        body = dumps_for(self.app, too_large_payload(self.app.config.get("MAX_CONTENT_LENGTH")))
+        post = None
+        if request is not None:
+            cp = self.app._ensure_pipeline()
+            post = cp.http_post if cp is not None else None
+        if post is None:
+            # No request, or no response phase to run: the refusal is written
+            # synchronously, before this callback returns, exactly as it always
+            # was. An app with no response middleware pays nothing for this.
+            self._emit_http_error(
+                status.HTTP_413_CONTENT_TOO_LARGE,
+                b"Content Too Large",
+                body,
+                extra=CONTENT_TYPE_JSON_LINE,
+            )
+            return
+        response = Response(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            body=body,
+            content_type=MIME_JSON,
         )
+        # A middleware may await, and this is a synchronous parser callback, so
+        # the write is deferred to a task. `_oversized` is already latched, so
+        # nothing further is parsed off this connection in the meantime.
+        task = self.loop.create_task(self._emit_refusal(post, cast("Request", request), response))
+        HttpProtocol._active_tasks.add(task)
+        task.add_done_callback(HttpProtocol._active_tasks.discard)
+
+    async def _emit_refusal(
+        self, post: tuple[Callable, ...], request: Request, response: Response
+    ) -> None:
+        """Run the response phase over a refusal, then frame it and close."""
+        try:
+            response = await self.app._run_response_phase(post, request, response, False)
+        except Exception:
+            # A middleware failure must not swallow the refusal: send what was
+            # built, and record why its headers are missing.
+            _logger.exception("response middleware raised while building a refusal")
+        transport = self.transport
+        if transport is not None and not transport.is_closing():
+            transport.write(response.encode(keep_alive=False))
+            transport.close()
 
     def _request_timeout(self) -> None:
-        """A client took too long to send a complete request - drop it."""
+        """Drop a connection whose client took too long to send a full request."""
         self._request_timer = None
         self._emit_http_error(
             status.HTTP_408_REQUEST_TIMEOUT, b"Request Timeout", b"Request Timeout"
@@ -959,7 +1152,7 @@ class HttpProtocol(asyncio.Protocol):
 
     @staticmethod
     def _task_done(task: asyncio.Task) -> None:
-        """Callback for completed dispatch tasks - log errors, remove reference."""
+        """Log any error from a completed dispatch task and drop the reference."""
         HttpProtocol._active_tasks.discard(task)
         if task.cancelled():
             return
@@ -967,7 +1160,24 @@ class HttpProtocol(asyncio.Protocol):
         if exc is not None:
             _logger.error("Unhandled error in request dispatch: %s", exc, exc_info=exc)
 
+    @staticmethod
+    def _ws_task_done(ws: WebSocket, task: asyncio.Task) -> None:
+        """Retire a completed WebSocket dispatch task.
+
+        A handler that raises closes with 1011 first, and that close awaits. A
+        peer that has already gone brings `connection_lost` in to cancel this
+        task mid-handshake, so the task ends *cancelled* and its exception is
+        gone - the failure would be reported nowhere. `_run_websocket` records
+        it on the socket before the close for exactly this case, so read it back
+        rather than treating a cancellation as nothing to report.
+        """
+        HttpProtocol._active_tasks.discard(task)
+        exc = ws._handler_exc if task.cancelled() else task.exception()
+        if exc is not None:
+            _logger.error("Unhandled error in websocket handler: %s", exc, exc_info=exc)
+
     def data_received(self, data: bytes) -> None:
+        """Feed inbound bytes to the HTTP parser, or to the frame parser once upgraded."""
         # Once the connection has diverted to WebSocket mode, every byte is a
         # frame (or part of one) - feed the frame parser, never the HTTP parser.
         # A close frame inside the buffer sets `_closed`, wakes any parked
@@ -1027,6 +1237,13 @@ class HttpProtocol(asyncio.Protocol):
         """
         while self._request_queue and not self._closing:
             request, source, keep_alive, match = self._request_queue.popleft()
+            # Resume at half the limit rather than at the limit, so a connection
+            # serving a steady pipeline does not pause and resume on every
+            # request.
+            if self._pause_reasons & _PAUSE_DEPTH and (
+                len(self._request_queue) <= self._max_pipelined >> 1
+            ):
+                self._resume_reading_depth()
             should_continue = await self._dispatch(request, source, keep_alive, match)
             # Notify the optional per-request hook (gunicorn max_requests
             # recycling) once the request has been fully dispatched, regardless
@@ -1203,26 +1420,35 @@ class HttpProtocol(asyncio.Protocol):
         # bytes as the start of the next response.
         is_head = request.method == HTTP_METHOD_HEAD
         try:
-            if getattr(response, "is_event_source", False):
+            if response.is_event_source:
+                # The stream owns the connection and this path closes it when
+                # the generator ends, so the head must say so rather than
+                # advertising a socket the client may reuse.
                 if is_head:
-                    self.transport.write(response.encode())
+                    self.transport.write(response.encode(keep_alive=False))
                 else:
-                    await response.stream_to(self.transport, drain=self.drain)
+                    await response.stream_to(self.transport, drain=self.drain, keep_alive=False)
                 self.transport.close()
                 return False
-            if isinstance(response, StreamingResponse):
+            # `is_streamed`, not a class test: a response that produces
+            # chunks must be emitted as one whatever type it is, and testing
+            # for `StreamingResponse` is what let `EventSourceResponse` and
+            # then a streamed `FileResponse` fall to the buffered encoder.
+            if response.is_streamed:
                 if is_head:
                     # The encoded head advertises the (would-be) representation;
                     # a HEAD response stops there - no chunks, no chunked
                     # terminator (HEAD bodies are forbidden regardless of
                     # Transfer-Encoding).
-                    self.transport.write(response.encode())
+                    self.transport.write(response.encode(keep_alive=keep_alive))
                 else:
-                    await response.stream_to(self.transport, drain=self.drain)
+                    await response.stream_to(
+                        self.transport, drain=self.drain, keep_alive=keep_alive
+                    )
             elif is_head:
-                self.transport.write(_strip_response_body(response.encode()))
+                self.transport.write(_strip_response_body(response.encode(keep_alive=keep_alive)))
             else:
-                self.transport.write(response.encode())
+                self.transport.write(response.encode(keep_alive=keep_alive))
         except Exception:
             _logger.exception(MSG_ERROR_RESPONSE_EMISSION)
             self.transport.close()
@@ -1246,7 +1472,7 @@ class HttpProtocol(asyncio.Protocol):
         transport = self.transport
         if transport is not None and not transport.is_closing():
             try:
-                transport.write(response.encode())
+                transport.write(response.encode(keep_alive=False))
             except Exception:
                 _logger.exception(MSG_ERROR_RESPONSE_EMISSION)
             transport.close()

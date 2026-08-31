@@ -13,6 +13,13 @@ from datetime import datetime, timedelta
 from typing import Literal
 from urllib.parse import quote, unquote
 
+from veloce._constants import (
+    MSG_LABEL_COOKIE_DOMAIN,
+    MSG_LABEL_COOKIE_NAME,
+    MSG_LABEL_COOKIE_PATH,
+    MSG_LABEL_COOKIE_SAMESITE,
+    MSG_LABEL_COOKIE_VALUE,
+)
 from veloce._header_parsing import unquote_value
 from veloce._internal import _reject_header_crlf
 from veloce.http.dates import http_date
@@ -41,15 +48,23 @@ def iter_cookies(header: str | None) -> Iterator[tuple[str, str]]:
         return
     seen: set[str] = set()
     for chunk in header.split(";"):
-        chunk = chunk.strip()
-        if "=" not in chunk:
+        # `partition` already reports whether a separator was there, so the
+        # separate membership test - a second scan of every chunk - is not
+        # needed to skip a segment that carries none.
+        name, eq, value = chunk.partition("=")
+        if not eq:
             continue
-        name, _, value = chunk.partition("=")
         name = name.strip()
         if name in seen:
             continue
         seen.add(name)
-        yield name, unquote(unquote_value(value))
+        value = value.strip()
+        # `dump_cookie` percent-encodes and optionally quotes; a value carrying
+        # neither marker is already what it decodes to. The strip above has to
+        # stay for this branch, since `unquote_value` is what does it otherwise.
+        if "%" in value or '"' in value:
+            value = unquote(unquote_value(value))
+        yield name, value
 
 
 def parse_cookie(header: str | None) -> dict[str, str]:
@@ -111,7 +126,7 @@ def dump_cookie(
             raise ValueError("cookie prefix must be 'host', 'secure', or None")
     else:
         wire_key = key
-    _reject_header_crlf(key, "cookie name")
+    _reject_header_crlf(key, MSG_LABEL_COOKIE_NAME)
     # The name must be a valid RFC 6265 token (no spaces/separators/CTLs) and
     # must not collide with a cookie-attribute keyword - both prevent a
     # malformed or attribute-injecting Set-Cookie header.
@@ -122,7 +137,7 @@ def dump_cookie(
         )
     if key.lower() in _RESERVED_COOKIE_NAMES:
         raise ValueError(f"cookie name {key!r} collides with a reserved cookie-attribute keyword")
-    _reject_header_crlf(value, "cookie value")
+    _reject_header_crlf(value, MSG_LABEL_COOKIE_VALUE)
     # `%` must NOT be in the safe set: it is the percent-encoding marker, and
     # `parse_cookie` percent-decodes the value. Leaving a literal `%` unescaped
     # makes a value like "100%" decode back to garbage (e.g. "%00" -> NUL), so
@@ -139,18 +154,28 @@ def dump_cookie(
         parts.append(f"Expires={http_date(expires)}")
 
     if path:
-        _reject_header_crlf(path, "cookie path")
+        _reject_header_crlf(path, MSG_LABEL_COOKIE_PATH)
         parts.append(f"Path={path}")
     if domain:
-        _reject_header_crlf(domain, "cookie domain")
+        _reject_header_crlf(domain, MSG_LABEL_COOKIE_DOMAIN)
         parts.append(f"Domain={domain}")
     if secure:
         parts.append("Secure")
     if httponly:
         parts.append("HttpOnly")
     if samesite is not None:
-        _reject_header_crlf(samesite, "cookie samesite")
+        _reject_header_crlf(samesite, MSG_LABEL_COOKIE_SAMESITE)
+        # The whole rule lives here, in the one function that renders a
+        # `Set-Cookie`, so there is no "on the way in" for callers to disagree
+        # about. Fixing the value up per caller means a value this rejects
+        # reaches it from one caller and not another - one dropping a
+        # whitespace-only value, one capitalising, one passing the raw string
+        # through - and `samesite="  "` then raises on every response through
+        # one session backend while shipping a cookie with no `SameSite` at all
+        # through the next.
         normalised = samesite.strip().capitalize()
+        if not normalised:
+            return "; ".join(parts)
         if normalised not in ("Strict", "Lax", "None"):
             raise ValueError("samesite must be 'Strict', 'Lax', or 'None'")
         parts.append(f"SameSite={normalised}")

@@ -1,13 +1,14 @@
-"""Request scheme / is_secure derived from ASGI scope (Q-URL-scheme)."""
+"""Request scheme / is_secure derived from the ASGI scope."""
 
 from __future__ import annotations
 
+from tests.conftest import make_request
 from veloce import Request
 
 
 def _req(headers: dict | None = None, scope_scheme: str | None = None) -> Request:
     scope = {"scheme": scope_scheme} if scope_scheme is not None else None
-    return Request(
+    return make_request(
         method="GET",
         path="/",
         query_string="",

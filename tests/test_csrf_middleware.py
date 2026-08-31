@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
-import pytest
+from urllib.parse import urlencode
 
+import orjson
+
+from tests.conftest import make_request
 from veloce import CSRFMiddleware, Request, Veloce
+from veloce.testclient import TestClient
 
 
 def _req(method: str, path: str = "/x", headers: dict | None = None, body: bytes = b"") -> Request:
-    return Request(
+    return make_request(
         method=method,
         path=path,
         query_string="",
@@ -20,7 +24,6 @@ def _req(method: str, path: str = "/x", headers: dict | None = None, body: bytes
 # ── Safe methods bypass the check ────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_safe_method_no_cookie_passes_and_mints_cookie():
     app = Veloce(debug=True, openapi_url=None)
     app.add_middleware(CSRFMiddleware(token_factory=lambda: "DETERMINISTIC"))
@@ -35,7 +38,6 @@ async def test_safe_method_no_cookie_passes_and_mints_cookie():
     assert "csrf_token=DETERMINISTIC" in set_cookie
 
 
-@pytest.mark.asyncio
 async def test_query_is_safe_and_bypasses_csrf():
     # QUERY is safe (RFC 10008), so the default safe-method set exempts it from
     # the token check the same way GET is exempted.
@@ -53,7 +55,6 @@ async def test_query_is_safe_and_bypasses_csrf():
 # ── State-changing methods require matching token ────────────────────
 
 
-@pytest.mark.asyncio
 async def test_post_without_cookie_is_refused():
     app = Veloce(debug=True, openapi_url=None)
     app.add_middleware(CSRFMiddleware())
@@ -64,12 +65,9 @@ async def test_post_without_cookie_is_refused():
 
     resp = await app.handle_request(_req("POST"))
     assert resp.status_code == 403
-    import orjson
-
     assert orjson.loads(resp.body) == {"detail": "CSRF cookie missing"}
 
 
-@pytest.mark.asyncio
 async def test_post_with_matching_header_passes():
     app = Veloce(debug=True, openapi_url=None)
     app.add_middleware(CSRFMiddleware())
@@ -90,7 +88,6 @@ async def test_post_with_matching_header_passes():
     assert resp.status_code == 200
 
 
-@pytest.mark.asyncio
 async def test_post_with_mismatched_header_refused():
     app = Veloce(debug=True, openapi_url=None)
     app.add_middleware(CSRFMiddleware())
@@ -114,7 +111,6 @@ async def test_post_with_mismatched_header_refused():
 # ── Form-field fallback ──────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_post_with_matching_form_field_passes():
     app = Veloce(debug=True, openapi_url=None)
     app.add_middleware(CSRFMiddleware())
@@ -139,7 +135,6 @@ async def test_post_with_matching_form_field_passes():
 # ── Cookie-mint idempotency ──────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_existing_cookie_not_overwritten():
     app = Veloce(debug=True, openapi_url=None)
     app.add_middleware(CSRFMiddleware(token_factory=lambda: "NEW"))
@@ -156,7 +151,6 @@ async def test_existing_cookie_not_overwritten():
 # ── Custom header / form-field names ─────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_custom_header_name_honored():
     app = Veloce(debug=True, openapi_url=None)
     app.add_middleware(CSRFMiddleware(header_name="X-XSRF-TOKEN"))
@@ -313,8 +307,6 @@ async def test_origin_first_foreign_origin_refused_before_token():
         )
     )
     assert resp.status_code == 403
-    import orjson
-
     assert orjson.loads(resp.body) == {"detail": "CSRF origin mismatch"}
 
 
@@ -406,8 +398,6 @@ async def test_origin_first_https_missing_origin_requires_referer():
     )
     resp = await app.handle_request(req)
     assert resp.status_code == 403
-    import orjson
-
     assert orjson.loads(resp.body) == {"detail": "CSRF referer missing"}
 
     # https scope, no Origin, matching Referer -> passes.
@@ -494,8 +484,6 @@ def test_post_with_csrf_form_field_as_uploadfile_is_refused():
     # If the `csrf_token` multipart part arrives as a file upload, `form.get`
     # returns an UploadFile; compare_digest would crash on it. Middleware must
     # treat the non-string value as a missing token and refuse with 403.
-    from veloce.testclient import TestClient
-
     app = Veloce(debug=True, openapi_url=None)
     app.add_middleware(CSRFMiddleware())
 
@@ -513,7 +501,6 @@ def test_post_with_csrf_form_field_as_uploadfile_is_refused():
     assert resp.json() == {"detail": "CSRF token mismatch"}
 
 
-@pytest.mark.asyncio
 async def test_csrf_header_and_form_paths_use_same_check():
     """Header and form branches must accept and reject the same shapes.
 
@@ -524,8 +511,6 @@ async def test_csrf_header_and_form_paths_use_same_check():
     pin the equivalence with a single test that runs both branches
     through identical inputs.
     """
-    from urllib.parse import urlencode
-
     app = Veloce(debug=True, openapi_url=None)
     app.add_middleware(CSRFMiddleware())
 
@@ -565,3 +550,87 @@ async def test_csrf_header_and_form_paths_use_same_check():
         )
     )
     assert resp.status_code == 403
+
+
+def test_csrf_header_path_accepts_matching_token() -> None:
+    app = Veloce()
+    app.add_middleware(CSRFMiddleware(cookie_secure=False))
+
+    @app.get("/seed")
+    async def seed() -> dict:
+        return {"ok": True}
+
+    @app.post("/submit")
+    async def submit() -> dict:
+        return {"ok": True}
+
+    with TestClient(app) as client:
+        client.get("/seed")
+        token = client.cookies.get("csrf_token")
+        assert token, "CSRF cookie should have been minted"
+        resp = client.post("/submit", headers={"X-CSRF-Token": token})
+        assert resp.status_code == 200, resp.body
+        assert resp.json() == {"ok": True}
+
+
+# ── end to end through a client ───────────────────────────────
+#
+# Moved here from `test_security_middleware_e2e.py`, which covered three
+# unrelated middleware subsystems end to end. These are that subsystem's.
+
+
+def _csrf_app() -> Veloce:
+    """An app with a POST under CSRF and a GET to seed the token cookie from.
+
+    The seeding request used to be `GET /echo`, on a route registered for POST
+    only: it answered 405, which no test asserted, and the cookie arrived
+    because the middleware runs ahead of routing. That works, but it means the
+    token these tests submit was minted by a request none of them checked - so
+    a change that stopped setting the cookie on a refusal would surface as a
+    `KeyError` on `cookies["csrf_token"]` several lines later.
+    """
+    app = Veloce(openapi_url=None)
+    app.add_middleware(CSRFMiddleware(cookie_secure=False))
+
+    @app.get("/seed")
+    async def seed(request):
+        return {"seeded": True}
+
+    @app.post("/echo")
+    async def echo(request):
+        return {"ok": True}
+
+    return app
+
+
+def test_csrf_upload_file_in_token_field_returns_403_not_500():
+    """A multipart submission whose csrf_token field is a file part must
+    be refused with 403 — the middleware must treat the non-string value
+    as a missing token rather than crash."""
+    app = _csrf_app()
+    with TestClient(app) as client:
+        seed = client.get("/seed")
+        assert seed.status_code == 200
+        token = seed.cookies["csrf_token"]
+
+        resp = client.post(
+            "/echo",
+            files={"csrf_token": ("token.bin", token.encode(), "application/octet-stream")},
+            headers={"X-CSRF-Token": "wrong-header-value"},
+        )
+
+    assert resp.status_code == 403
+    assert resp.json() == {"detail": "CSRF token mismatch"}
+
+
+def test_csrf_matching_cookie_and_header_passes():
+    """The double-submit happy path: cookie + matching header → 200."""
+    app = _csrf_app()
+    with TestClient(app) as client:
+        seed = client.get("/seed")
+        assert seed.status_code == 200
+        token = seed.cookies["csrf_token"]
+        resp = client.post("/echo", json={}, headers={"X-CSRF-Token": token})
+
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True}

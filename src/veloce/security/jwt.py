@@ -139,6 +139,65 @@ def encode_jwt(
     return f"{header_b64}.{payload_b64}.{_b64encode(sig)}"
 
 
+def _validate_claims(
+    payload: dict[str, Any],
+    *,
+    audience: str | Sequence[str] | None,
+    issuer: str | None,
+    require: Sequence[str],
+    leeway: float,
+    now: float | None,
+) -> None:
+    """Apply the RFC 7519 Sec. 4.1 registered-claim rules to a verified payload.
+
+    A pure function of the payload and the caller's expectations, so the claim
+    rules can be read - and extended - without re-reading the crypto path that
+    produced the payload. `decode_jwt` calls it only after the signature has
+    been verified.
+    """
+    current = time.time() if now is None else now
+
+    exp = payload.get("exp")
+    if exp is not None:
+        if not isinstance(exp, (int, float)) or isinstance(exp, bool):
+            raise InvalidTokenError("exp claim is not numeric")
+        if exp <= current - leeway:
+            raise ExpiredSignatureError("token has expired")
+
+    nbf = payload.get("nbf")
+    if nbf is not None:
+        if not isinstance(nbf, (int, float)) or isinstance(nbf, bool):
+            raise InvalidTokenError("nbf claim is not numeric")
+        if nbf > current + leeway:
+            raise ImmatureSignatureError("token is not yet valid")
+
+    if issuer is not None and payload.get("iss") != issuer:
+        raise InvalidIssuerError("issuer mismatch")
+
+    if audience is not None:
+        accepted = {audience} if isinstance(audience, str) else set(audience)
+        claim_aud = payload.get("aud")
+        if claim_aud is None:
+            raise InvalidAudienceError("audience claim is missing")
+        # RFC 7519 Sec. 4.1.3: `aud` is either a single StringOrURI or an array
+        # of them. A malformed claim (number, object, list of non-strings) must
+        # fail as a clean auth error, not crash `set(...)` with a raw TypeError
+        # that would surface as a 500 in an auth dependency. Validate the shape
+        # before coercion.
+        if isinstance(claim_aud, str):
+            present = {claim_aud}
+        elif isinstance(claim_aud, Sequence) and all(isinstance(a, str) for a in claim_aud):
+            present = set(claim_aud)
+        else:
+            raise InvalidAudienceError("audience claim is not a string or list of strings")
+        if accepted.isdisjoint(present):
+            raise InvalidAudienceError("audience mismatch")
+
+    for name in require:
+        if name not in payload:
+            raise MissingClaimError(f"missing required claim {name!r}")
+
+
 def decode_jwt(
     token: str,
     secret: str | bytes,
@@ -185,7 +244,17 @@ def decode_jwt(
     except (ValueError, OSError) as err:
         raise InvalidTokenError("malformed signature segment") from err
 
-    signing_input = f"{header_b64}.{payload_b64}".encode("ascii")
+    # The base64url segments are ASCII (RFC 7515 Sec. 2); a non-ASCII character
+    # means a malformed token, not an `ascii`-codec crash. `_b64decode` runs in
+    # binascii's relaxed mode and drops characters outside the alphabet, so a
+    # token carrying a stray non-ASCII byte still parses a valid header and
+    # reaches here - and `UnicodeEncodeError` is not a `JWTError`, so the
+    # documented `except JWTError` around an auth dependency did not catch it
+    # and the route answered 500 instead of 401. Mirrors `signing.py`.
+    try:
+        signing_input = f"{header_b64}.{payload_b64}".encode("ascii")
+    except UnicodeEncodeError as err:
+        raise InvalidTokenError("token segments must be ASCII") from err
     expected = hmac.new(secret_bytes, signing_input, _ALGORITHMS[alg]).digest()
     # Signature verified BEFORE decoding the payload: never drive the JSON
     # parser with unauthenticated bytes.
@@ -199,46 +268,7 @@ def decode_jwt(
     if not isinstance(payload, dict):
         raise InvalidTokenError("payload is not a JSON object")
 
-    current = time.time() if now is None else now
-
-    exp = payload.get("exp")
-    if exp is not None:
-        if not isinstance(exp, (int, float)) or isinstance(exp, bool):
-            raise InvalidTokenError("exp claim is not numeric")
-        if exp <= current - leeway:
-            raise ExpiredSignatureError("token has expired")
-
-    nbf = payload.get("nbf")
-    if nbf is not None:
-        if not isinstance(nbf, (int, float)) or isinstance(nbf, bool):
-            raise InvalidTokenError("nbf claim is not numeric")
-        if nbf > current + leeway:
-            raise ImmatureSignatureError("token is not yet valid")
-
-    if issuer is not None and payload.get("iss") != issuer:
-        raise InvalidIssuerError("issuer mismatch")
-
-    if audience is not None:
-        accepted = {audience} if isinstance(audience, str) else set(audience)
-        claim_aud = payload.get("aud")
-        if claim_aud is None:
-            raise InvalidAudienceError("audience claim is missing")
-        # RFC 7519 Sec. 4.1.3: `aud` is either a single StringOrURI or an array
-        # of them. A malformed claim (number, object, list of non-strings) must
-        # fail as a clean auth error, not crash `set(...)` with a raw TypeError
-        # that would surface as a 500 in an auth dependency. Validate the shape
-        # before coercion.
-        if isinstance(claim_aud, str):
-            present = {claim_aud}
-        elif isinstance(claim_aud, Sequence) and all(isinstance(a, str) for a in claim_aud):
-            present = set(claim_aud)
-        else:
-            raise InvalidAudienceError("audience claim is not a string or list of strings")
-        if accepted.isdisjoint(present):
-            raise InvalidAudienceError("audience mismatch")
-
-    for name in require:
-        if name not in payload:
-            raise MissingClaimError(f"missing required claim {name!r}")
-
+    _validate_claims(
+        payload, audience=audience, issuer=issuer, require=require, leeway=leeway, now=now
+    )
     return Claims(payload)

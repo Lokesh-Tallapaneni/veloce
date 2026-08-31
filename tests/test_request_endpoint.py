@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import pytest
-
+from tests.conftest import make_request
 from veloce import Request, Veloce
 
 
 def _req(path: str, method: str = "GET") -> Request:
-    return Request(method=method, path=path, query_string="", headers={}, body=b"")
+    return make_request(method=method, path=path, query_string="", headers={}, body=b"")
 
 
 def test_synthetic_request_endpoint_is_none():
@@ -16,7 +15,6 @@ def test_synthetic_request_endpoint_is_none():
     assert req.endpoint is None
 
 
-@pytest.mark.asyncio
 async def test_endpoint_set_to_route_name():
     app = Veloce(debug=True, openapi_url=None)
     seen: dict = {}
@@ -30,7 +28,6 @@ async def test_endpoint_set_to_route_name():
     assert seen["ep"] == "say_hi"
 
 
-@pytest.mark.asyncio
 async def test_endpoint_defaults_to_handler_name():
     """When no explicit `name=` is set, the handler's __name__ is used."""
     app = Veloce(debug=True, openapi_url=None)
@@ -45,7 +42,6 @@ async def test_endpoint_defaults_to_handler_name():
     assert seen["ep"] == "my_handler"
 
 
-@pytest.mark.asyncio
 async def test_endpoint_available_in_before_request_hook():
     """`endpoint` is set before before_request runs."""
     app = Veloce(debug=True, openapi_url=None)

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Annotated
 
 import orjson
 
 from veloce import Body, Query, Veloce
 from veloce.contrib.mcp.server import MCPServer
+from veloce.testclient import TestClient
 
 
 def _tool_app() -> Veloce:
@@ -96,3 +98,57 @@ async def test_marker_without_a_default_stays_required():
     schema = (await _tools(MCPServer(app)))["inputSchema"]
     assert schema.get("required") == ["name"]
     assert "default" not in schema["properties"]["name"]
+
+
+# ── A plain mutable default is fresh on every door ───────────────────
+#
+# `_guard_plain_mutable_default` wraps a bare `tags: list = []` in a copying
+# factory so one request's `.append` cannot reach the next, and leaves the raw
+# field pointing at the original object. Every binder reading that field had to
+# remember to check the factory first - and the MCP binder did not, so a mutable
+# default was shared across tool calls while HTTP requests each got their own.
+#
+# `slot.default`, the obvious spelling, now returns the fresh value; the shared
+# object is reachable only as `_static_default`, which is a deliberate act.
+
+
+def _accumulating_app() -> Veloce:
+    app = Veloce(title="probe", openapi_url=None)
+
+    @app.get("/acc", expose_as_mcp_tool=True, mcp_description="Accumulate a tag")
+    async def accumulate(tags: list = []):  # noqa: B006 - the defect under test
+        tags.append("x")
+        return {"len": len(tags)}
+
+    return app
+
+
+async def _call_len(server: MCPServer, ident: int) -> int:
+    out = await server.handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": ident,
+            "method": "tools/call",
+            "params": {"name": "accumulate", "arguments": {}},
+        }
+    )
+    return orjson.loads(out["result"]["content"][0]["text"])["len"]
+
+
+async def test_a_mutable_default_is_not_shared_between_tool_calls():
+    """The defect: the list grew 1, 2, 3 across calls, leaking one call into the next."""
+    server = MCPServer(_accumulating_app())
+    assert [await _call_len(server, i) for i in range(3)] == [1, 1, 1]
+
+
+def test_both_doors_give_the_handler_its_own_value():
+    """One handler, two doors: neither may see the other's mutations."""
+    app = _accumulating_app()
+    server = MCPServer(app)
+
+    async def over_mcp() -> list[int]:
+        return [await _call_len(server, i) for i in range(2)]
+
+    assert asyncio.run(over_mcp()) == [1, 1]
+    client = TestClient(app)
+    assert [client.get("/acc").json()["len"] for _ in range(2)] == [1, 1]

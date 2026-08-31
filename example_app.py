@@ -29,13 +29,13 @@ app.add_middleware(
 db: dict = {}
 
 
-@app.on_event("startup")
+@app.on_startup
 async def startup():
     db["users"] = {}
     print("Database initialized")
 
 
-@app.on_event("shutdown")
+@app.on_shutdown
 async def shutdown():
     print("Shutting down...")
 

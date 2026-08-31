@@ -109,7 +109,7 @@ async def legacy_startup():
 
 !!! warning "Deprecated"
     `on_event(...)` and `add_event_handler(...)` are deprecated and scheduled
-    for removal in v1.0.0. They emit a `DeprecationWarning`. Use `@app.on_startup`
+    for removal in v1.0.0. They emit a `VeloceDeprecationWarning`. Use `@app.on_startup`
     / `@app.on_shutdown` instead.
 
 ## Partial-startup unwinding

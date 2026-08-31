@@ -14,8 +14,8 @@ The base owns the optional `annotations` field (audience / priority /
 lastModified per the MCP spec) and merges it into every block's payload, so the
 metadata is added in one place rather than re-threaded through each call site.
 `annotations` defaults to `None` and is omitted from the payload when unset, so a
-block built without annotations serialises to exactly the dict the call sites
-built by hand before this family existed.
+block built without annotations serialises to exactly the bare tagged dict the
+wire format calls for - the family adds a field, never a wrapper.
 
 Each block is slotted with an `__init_subclass__` guard so a subclass that
 forgets `__slots__` fails loudly instead of silently regaining a `__dict__`.
@@ -24,6 +24,8 @@ forgets `__slots__` fails loudly instead of silently regaining a `__dict__`.
 from __future__ import annotations
 
 from typing import Any
+
+from veloce._internal import _require_slots
 
 
 class ContentBlock:
@@ -35,8 +37,7 @@ class ContentBlock:
         # A subclass without its own __slots__ silently regains a per-instance
         # __dict__, defeating the slotted base; fail at class creation instead.
         super().__init_subclass__(**kwargs)
-        if "__slots__" not in cls.__dict__:
-            raise TypeError(f"{cls.__name__} must declare __slots__")
+        _require_slots(cls)
 
     def __init__(self, *, annotations: dict[str, Any] | None = None) -> None:
         self.annotations = annotations

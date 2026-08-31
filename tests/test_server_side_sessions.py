@@ -294,7 +294,7 @@ def test_session_revoked_mid_request_is_not_resurrected():
         # Mutate the session, then simulate a concurrent revocation by
         # deleting the underlying store entry before the response runs.
         request.session["count"] = 1
-        await store.delete(request._state["_session_id"])
+        await store.delete(request.state["_session_id"])
         return {"ok": True}
 
     @app.get("/whoami")

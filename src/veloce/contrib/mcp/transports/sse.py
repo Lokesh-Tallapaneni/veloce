@@ -25,13 +25,19 @@ carries them.
 from __future__ import annotations
 
 import asyncio
+import logging
 import secrets
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
-from veloce import status
+import veloce.status as status
 from veloce._protocol_constants import HTTP_METHOD_GET, HTTP_METHOD_POST
-from veloce.contrib.mcp._helpers import _notifier_var
+from veloce.contrib.mcp._helpers import (
+    _notifier_var,
+    encode_envelope,
+    transport_route_name,
+)
+from veloce.contrib.mcp._posture import record_endpoint
 from veloce.contrib.mcp.context import _transport_var
 from veloce.contrib.mcp.errors import (
     _JSONRPC_INTERNAL_ERROR,
@@ -39,10 +45,19 @@ from veloce.contrib.mcp.errors import (
     SessionNotFoundError,
     SessionRequiredError,
     _error,
+    invalid_request_error,
+    parse_error,
 )
 from veloce.contrib.mcp.session import MCPSession
-from veloce.contrib.mcp.transports.http import _authenticate, _logger, _validate_origin
-from veloce.http.response import JSONResponse, Response
+from veloce.contrib.mcp.transports._common import (
+    _SESSION_ID_ENTROPY_BYTES,
+    _SSE_RETRY_MS,
+    _authenticate,
+    _protocol_response,
+    _validate_origin,
+    register_metadata_route,
+)
+from veloce.http.response import Response
 from veloce.principal import Principal, current_principal, set_principal
 from veloce.sse import EventSourceResponse, ServerSentEvent
 
@@ -53,10 +68,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.server import MCPServer
     from veloce.http.request import Request
 
-# Bytes of entropy in a session id. The id appears in the endpoint URL the client
-# is told to POST to, and it is the only thing tying a POST to the stream that
-# will answer it, so it is unguessable rather than sequential.
-_SESSION_ID_ENTROPY_BYTES = 24
+_logger = logging.getLogger(__name__)
 
 # The event naming the URL to POST to. The 2024-11-05 transport defines exactly
 # this name; a client waits for it before sending anything.
@@ -65,11 +77,8 @@ _ENDPOINT_EVENT = "endpoint"
 # The event carrying a JSON-RPC message from server to client.
 _MESSAGE_EVENT = "message"
 
-# Reconnect hint, in milliseconds, sent when a stream closes.
-_SSE_RETRY_MS = 3000
 
-# Queued by the POST half to tell a stream generator to finish.
-_STREAM_END = object()
+# ── Open connections ──────────────────────────────────────
 
 
 class _SSEConnection:
@@ -86,8 +95,11 @@ class _SSEConnection:
         self.principal = principal
 
     async def send(self, message: dict[str, Any]) -> None:
-        """The `Transport.send` for this connection: queue a message for the stream."""
+        """Queue a message for this connection's stream - the `Transport.send`."""
         await self.queue.put(message)
+
+
+# ── Route registration ────────────────────────────────────
 
 
 def register_sse_transport(
@@ -115,7 +127,7 @@ def register_sse_transport(
         try:
             _validate_origin(request, allowed_origins)
         except MCPError as exc:
-            return JSONResponse(exc.to_error(None), status_code=exc.http_status)
+            return _protocol_response(exc.to_error(None), status_code=exc.http_status)
         principal = None
         if auth is not None:
             principal, challenge = await _authenticate(auth, request)
@@ -133,28 +145,37 @@ def register_sse_transport(
         try:
             _validate_origin(request, allowed_origins)
         except MCPError as exc:
-            return JSONResponse(exc.to_error(None), status_code=exc.http_status)
+            return _protocol_response(exc.to_error(None), status_code=exc.http_status)
         if auth is not None:
-            _principal, challenge = await _authenticate(auth, request)
+            principal, challenge = await _authenticate(auth, request)
             if challenge is not None:
                 return challenge
+            # Publish the identity this POST authenticated as, so the dispatch
+            # below carries it to the runner. Discarding it left
+            # `current_principal()` unset and the tool ran under the identity
+            # that opened the GET stream - a validated token for one caller
+            # executing as another.
+            set_principal(principal)
 
         session_id = request.query_params.get("sessionId")
         try:
             connection = _resolve(connections, session_id)
         except MCPError as exc:
-            return JSONResponse(exc.to_error(None), status_code=exc.http_status)
+            return _protocol_response(exc.to_error(None), status_code=exc.http_status)
 
+        # There is no stream frame to carry a failure for a message whose id could
+        # not be read, so it is reported on the POST - with the code the other two
+        # transports use. Answering -32603 for both failures made a client with
+        # per-code retry logic behave differently purely by which wire it used.
         try:
             message = await request.json()
         except Exception:
-            message = None
+            return _protocol_response(parse_error(), status_code=status.HTTP_400_BAD_REQUEST)
+        if message is None:
+            return _protocol_response(parse_error(), status_code=status.HTTP_400_BAD_REQUEST)
         if not isinstance(message, dict):
-            # There is no stream frame to carry a parse error for a message whose
-            # id could not be read, so this one failure is reported on the POST.
-            return JSONResponse(
-                _error(None, _JSONRPC_INTERNAL_ERROR, "request body must be a JSON-RPC object"),
-                status_code=status.HTTP_400_BAD_REQUEST,
+            return _protocol_response(
+                invalid_request_error(), status_code=status.HTTP_400_BAD_REQUEST
             )
 
         # The answer travels on the stream, not on this response, so the dispatch
@@ -169,6 +190,7 @@ def register_sse_transport(
         methods=[HTTP_METHOD_GET],
         include_in_schema=False,
         exclude_middleware=exclude_middleware,
+        name=transport_route_name("open_stream", path),
     )
     app.add_route(
         message_path,
@@ -176,7 +198,13 @@ def register_sse_transport(
         methods=[HTTP_METHOD_POST],
         include_in_schema=False,
         exclude_middleware=exclude_middleware,
+        name=transport_route_name("receive_message", message_path),
     )
+    register_metadata_route(app, auth, exclude_middleware)
+    record_endpoint(app, "sse", path, auth, allowed_origins)
+
+
+# ── Message dispatch ──────────────────────────────────────
 
 
 class _Dispatch:
@@ -213,22 +241,23 @@ async def _stream(
     same channel its response will use - the ordering a client relies on.
     """
     endpoint = f"{message_path}?sessionId={quote(session_id, safe='')}"
-    # The client cannot speak until it has this, so it is the first frame.
-    yield ServerSentEvent(data=endpoint, event=_ENDPOINT_EVENT)
+    # The client cannot speak until it has this, so it is the first frame. It
+    # also carries the reconnect hint: WHATWG SSE applies `retry` as soon as it
+    # is parsed, and this stream only ends when the client is already gone, so
+    # a closing frame would never arrive.
+    yield ServerSentEvent(data=endpoint, event=_ENDPOINT_EVENT, retry=_SSE_RETRY_MS)
 
     conn_token = server.register_connection(connection.session, connection.send)
     pending: set[asyncio.Task[None]] = set()
     try:
         while True:
             item = await connection.queue.get()
-            if item is _STREAM_END:
-                break
             if isinstance(item, _Dispatch):
                 task = asyncio.ensure_future(_run(server, connection, item))
                 pending.add(task)
                 task.add_done_callback(pending.discard)
                 continue
-            yield ServerSentEvent.json(item, event=_MESSAGE_EVENT)
+            yield ServerSentEvent(data=encode_envelope(item).decode(), event=_MESSAGE_EVENT)
     finally:
         # The client is gone: drop the session so a later POST naming it is told
         # so, rather than queueing an answer nothing will read.
@@ -236,7 +265,15 @@ async def _stream(
         server.unregister_connection(conn_token)
         for task in pending:
             task.cancel()
-    yield ServerSentEvent(retry=_SSE_RETRY_MS)
+        # Reclaim what the connection owned, the same way stdio does on EOF and
+        # the HTTP session store does on eviction. Unregistering alone drops the
+        # notification sink and the listen streams but leaves the session's tasks
+        # registered, and `TaskRegistry.evict_expired` deliberately never reaps a
+        # task that has not settled - so a never-settling task created on this
+        # stream outlived it, with its running asyncio runner, for the lifetime
+        # of the process. The session is minted per stream here, so it has no
+        # life beyond this point to protect.
+        server.evict_session(connection.session)
 
 
 async def _run(server: MCPServer, connection: _SSEConnection, dispatch: _Dispatch) -> None:

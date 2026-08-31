@@ -138,6 +138,56 @@ def test_token_bucket_over_redis(client):
         assert tc.get("/", headers=_UA).status_code == 429
 
 
+class _NoLuaFixedWindow(FixedWindow):
+    """`FixedWindow` with its Lua form removed.
+
+    The `WATCH`/`MULTI` path is the one a strategy defined outside Veloce takes -
+    a built-in runs as a Lua script in one round trip instead. These two tests
+    are about that machinery, so they drive it with a strategy that has no script.
+    """
+
+    __slots__ = ()
+
+    lua_script = None
+
+
+class _ConflictingPipe:
+    """A pipeline proxy that mutates the watched key just before EXEC.
+
+    Redis aborts a transaction whose watched key changed, so this is how a
+    `WatchError` is provoked deterministically. `on_execute` is what varies
+    between the retry and the exhaustion tests; everything else is pass-through,
+    and was previously two byte-identical six-method copies.
+    """
+
+    def __init__(self, inner, on_execute):
+        self._inner = inner
+        self._on_execute = on_execute
+
+    async def __aenter__(self):
+        await self._inner.__aenter__()
+        return self
+
+    async def __aexit__(self, *exc):
+        return await self._inner.__aexit__(*exc)
+
+    async def watch(self, *a):
+        return await self._inner.watch(*a)
+
+    async def get(self, *a):
+        return await self._inner.get(*a)
+
+    def multi(self):
+        return self._inner.multi()
+
+    def set(self, *a, **k):
+        return self._inner.set(*a, **k)
+
+    async def execute(self):
+        await self._on_execute()
+        return await self._inner.execute()
+
+
 async def test_backend_retries_on_watch_conflict(client):
     # Force the first EXEC to abort with a WatchError by mutating the watched
     # key mid-transaction; the backend must re-read and retry, not error.
@@ -145,37 +195,13 @@ async def test_backend_retries_on_watch_conflict(client):
     real_pipeline = client.pipeline
     state = {"first": True}
 
-    class RetryPipe:
-        def __init__(self, inner):
-            self._inner = inner
+    async def conflict_once():
+        if state["first"]:
+            state["first"] = False
+            await client.set("veloce:ratelimit:c", b'{"window": 0, "count": 1}')
 
-        async def __aenter__(self):
-            await self._inner.__aenter__()
-            return self
-
-        async def __aexit__(self, *exc):
-            return await self._inner.__aexit__(*exc)
-
-        async def watch(self, *a):
-            return await self._inner.watch(*a)
-
-        async def get(self, *a):
-            return await self._inner.get(*a)
-
-        def multi(self):
-            return self._inner.multi()
-
-        def set(self, *a, **k):
-            return self._inner.set(*a, **k)
-
-        async def execute(self):
-            if state["first"]:
-                state["first"] = False
-                await client.set("veloce:ratelimit:c", b'{"window": 0, "count": 1}')
-            return await self._inner.execute()
-
-    client.pipeline = lambda *a, **k: RetryPipe(real_pipeline(*a, **k))
-    result = await backend.evaluate("c", FixedWindow(5, 60), 0.0)
+    client.pipeline = lambda *a, **k: _ConflictingPipe(real_pipeline(*a, **k), conflict_once)
+    result = await backend.evaluate("c", _NoLuaFixedWindow(5, 60), 0.0)
     assert result.allowed
     assert state["first"] is False  # the retry branch ran
 
@@ -186,35 +212,11 @@ async def test_backend_falls_back_after_exhausting_retries(client):
     backend = RedisRateLimitBackend(client)
     real_pipeline = client.pipeline
 
-    class AlwaysConflictPipe:
-        def __init__(self, inner):
-            self._inner = inner
+    async def conflict_always():
+        await client.set("veloce:ratelimit:hot", b'{"window": 0, "count": 1}')
 
-        async def __aenter__(self):
-            await self._inner.__aenter__()
-            return self
-
-        async def __aexit__(self, *exc):
-            return await self._inner.__aexit__(*exc)
-
-        async def watch(self, *a):
-            return await self._inner.watch(*a)
-
-        async def get(self, *a):
-            return await self._inner.get(*a)
-
-        def multi(self):
-            return self._inner.multi()
-
-        def set(self, *a, **k):
-            return self._inner.set(*a, **k)
-
-        async def execute(self):
-            await client.set("veloce:ratelimit:hot", b'{"window": 0, "count": 1}')
-            return await self._inner.execute()
-
-    client.pipeline = lambda *a, **k: AlwaysConflictPipe(real_pipeline(*a, **k))
-    result = await backend.evaluate("hot", FixedWindow(5, 60), 0.0)
+    client.pipeline = lambda *a, **k: _ConflictingPipe(real_pipeline(*a, **k), conflict_always)
+    result = await backend.evaluate("hot", _NoLuaFixedWindow(5, 60), 0.0)
     assert result.allowed
     # The fallback wrote state through the plain (non-pipeline) client.
     assert await client.get("veloce:ratelimit:hot") is not None

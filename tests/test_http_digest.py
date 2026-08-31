@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import pytest
 
+from tests.conftest import make_request
 from veloce import HTTPDigest, HTTPDigestCredentials, HTTPException, Request
 
 
 def _req(headers: dict | None = None) -> Request:
-    return Request(method="GET", path="/x", query_string="", headers=headers or {}, body=b"")
+    return make_request(path="/x", headers=headers)
 
 
 def test_no_header_raises_with_digest_challenge():
@@ -39,7 +40,7 @@ def test_realm_with_backslash_is_escaped():
     assert r'realm="c:\\x"' in exc.value.headers["WWW-Authenticate"]
 
 
-def test_realm_with_control_chars_raises_at_construction():
+def test_digest_realm_with_control_chars_raises_at_construction():
     with pytest.raises(ValueError):
         HTTPDigest(realm="bad\r\nInjected: 1")
 

@@ -10,12 +10,14 @@ renaming. They are kept as-is deliberately for spec compliance.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any, TypeVar
 
+from typing_extensions import Doc
+
+from veloce._params import Form
 from veloce._protocol_constants import AUTH_SCHEME_BEARER, OAUTH2_GRANT_TYPE_PASSWORD
 from veloce.exceptions import HTTPException
 from veloce.http.request import Request
-from veloce.routing.params import Form
 from veloce.security.base import _BearerScheme
 from veloce.status import HTTP_422_UNPROCESSABLE_ENTITY
 
@@ -51,13 +53,34 @@ class OAuth2PasswordBearer(_OAuth2BearerScheme):
 
     def __init__(
         self,
-        token_url: str,
-        auto_error: bool = True,
-        scopes: dict[str, str] | None = None,
+        token_url: Annotated[
+            str,
+            Doc("Endpoint the password flow exchanges credentials at."),
+        ],
+        auto_error: Annotated[
+            bool,
+            Doc("Raise 401 when the token is absent; False resolves to None."),
+        ] = True,
+        scopes: Annotated[
+            dict[str, str] | None,
+            Doc("Scope name to description, published in the OpenAPI document."),
+        ] = None,
     ) -> None:
         self.token_url = token_url
         self.auto_error = auto_error
         self.scopes = scopes or {}
+
+    def openapi_scheme(self) -> dict[str, Any] | None:
+        """Describe the password flow, with its token endpoint and scopes."""
+        return {
+            "type": "oauth2",
+            "flows": {
+                OAUTH2_GRANT_TYPE_PASSWORD: {
+                    "tokenUrl": self.token_url,
+                    "scopes": self.scopes,
+                }
+            },
+        }
 
 
 class OAuth2AuthorizationCodeBearer(_OAuth2BearerScheme):
@@ -85,17 +108,43 @@ class OAuth2AuthorizationCodeBearer(_OAuth2BearerScheme):
 
     def __init__(
         self,
-        authorizationUrl: str,
-        tokenUrl: str,
-        refreshUrl: str | None = None,
-        scopes: dict[str, str] | None = None,
-        auto_error: bool = True,
+        authorizationUrl: Annotated[
+            str,
+            Doc("Endpoint the user agent is sent to for authorization."),
+        ],
+        tokenUrl: Annotated[
+            str,
+            Doc("Endpoint the authorization code is exchanged for a token at."),
+        ],
+        refreshUrl: Annotated[
+            str | None,
+            Doc("Endpoint refresh tokens are redeemed at. Omitted when unset."),
+        ] = None,
+        scopes: Annotated[
+            dict[str, str] | None,
+            Doc("Scope name to description, published in the OpenAPI document."),
+        ] = None,
+        auto_error: Annotated[
+            bool,
+            Doc("Raise 401 when the token is absent; False resolves to None."),
+        ] = True,
     ) -> None:
         self.authorizationUrl = authorizationUrl
         self.tokenUrl = tokenUrl
         self.refreshUrl = refreshUrl
         self.scopes = scopes or {}
         self.auto_error = auto_error
+
+    def openapi_scheme(self) -> dict[str, Any] | None:
+        """Describe the authorization-code flow; `refreshUrl` is omitted when unset."""
+        flow: dict[str, Any] = {
+            "authorizationUrl": self.authorizationUrl,
+            "tokenUrl": self.tokenUrl,
+            "scopes": self.scopes,
+        }
+        if self.refreshUrl:
+            flow["refreshUrl"] = self.refreshUrl
+        return {"type": "oauth2", "flows": {"authorizationCode": flow}}
 
 
 class OpenIdConnect(_OAuth2BearerScheme):
@@ -111,11 +160,28 @@ class OpenIdConnect(_OAuth2BearerScheme):
 
     def __init__(
         self,
-        openIdConnectUrl: str,
-        auto_error: bool = True,
+        openIdConnectUrl: Annotated[
+            str,
+            Doc("OpenID Connect discovery document URL."),
+        ],
+        auto_error: Annotated[
+            bool,
+            Doc("Raise 401 when the token is absent; False resolves to None."),
+        ] = True,
     ) -> None:
         self.openIdConnectUrl = openIdConnectUrl
         self.auto_error = auto_error
+
+    def openapi_scheme(self) -> dict[str, Any] | None:
+        """OpenID Connect discovery, published as its single URL."""
+        return {"type": "openIdConnect", "openIdConnectUrl": self.openIdConnectUrl}
+
+
+#: Bound to the form class so `_from_form` returns the *subclass* it was called
+#: on. `typing.Self` would say this directly but is 3.11+, and this package
+#: supports 3.10 - which is why the strict subclass carried a
+#: `# type: ignore[return-value]` instead of a type.
+_FormT = TypeVar("_FormT", bound="OAuth2PasswordRequestForm")
 
 
 class OAuth2PasswordRequestForm:
@@ -152,7 +218,7 @@ class OAuth2PasswordRequestForm:
         return cls._from_form(form_data)
 
     @classmethod
-    def _from_form(cls, form_data: Any) -> OAuth2PasswordRequestForm:
+    def _from_form(cls: type[_FormT], form_data: Any) -> _FormT:
         return cls(
             username=form_data.get("username", ""),
             password=form_data.get("password", ""),
@@ -204,4 +270,4 @@ class OAuth2PasswordRequestFormStrict(OAuth2PasswordRequestForm):
                 HTTP_422_UNPROCESSABLE_ENTITY,
                 f"grant_type must be {OAUTH2_GRANT_TYPE_PASSWORD!r}",
             )
-        return cls._from_form(form_data)  # type: ignore[return-value]
+        return cls._from_form(form_data)

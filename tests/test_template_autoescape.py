@@ -1,25 +1,18 @@
-"""Default Jinja autoescape covers HTML-shaped extensions (TP3 polish)."""
+"""Default Jinja autoescape covers HTML-shaped extensions."""
 
 from __future__ import annotations
 
 from pathlib import Path
-
-import pytest
 
 from veloce import Veloce
 from veloce.contrib.templating import Jinja2Templates
 from veloce.testclient import TestClient
 
 
-@pytest.fixture
-def tmpl_dir(tmp_path: Path) -> Path:
-    return tmp_path
-
-
-def test_html_template_escapes_user_input(tmpl_dir: Path):
-    (tmpl_dir / "p.html").write_text("Hi {{ name }}")
+def test_html_template_escapes_user_input(tmp_path: Path):
+    (tmp_path / "p.html").write_text("Hi {{ name }}")
     app = Veloce(debug=True, openapi_url=None)
-    templates = Jinja2Templates(directory=str(tmpl_dir))
+    templates = Jinja2Templates(directory=str(tmp_path))
 
     @app.get("/")
     async def index():
@@ -29,10 +22,10 @@ def test_html_template_escapes_user_input(tmpl_dir: Path):
     assert resp.body == b"Hi &lt;script&gt;"
 
 
-def test_xml_template_also_escapes(tmpl_dir: Path):
-    (tmpl_dir / "feed.xml").write_text("<title>{{ title }}</title>")
+def test_xml_template_also_escapes(tmp_path: Path):
+    (tmp_path / "feed.xml").write_text("<title>{{ title }}</title>")
     app = Veloce(debug=True, openapi_url=None)
-    templates = Jinja2Templates(directory=str(tmpl_dir))
+    templates = Jinja2Templates(directory=str(tmp_path))
 
     @app.get("/")
     async def index():
@@ -42,11 +35,11 @@ def test_xml_template_also_escapes(tmpl_dir: Path):
     assert resp.body == b"<title>&lt;x&gt;</title>"
 
 
-def test_txt_template_does_not_escape(tmpl_dir: Path):
+def test_txt_template_does_not_escape(tmp_path: Path):
     """Plain-text templates have no XSS risk; autoescape is off."""
-    (tmpl_dir / "p.txt").write_text("Hi {{ name }}")
+    (tmp_path / "p.txt").write_text("Hi {{ name }}")
     app = Veloce(debug=True, openapi_url=None)
-    templates = Jinja2Templates(directory=str(tmpl_dir))
+    templates = Jinja2Templates(directory=str(tmp_path))
 
     @app.get("/")
     async def index():
@@ -56,11 +49,11 @@ def test_txt_template_does_not_escape(tmpl_dir: Path):
     assert resp.body == b"Hi <script>"
 
 
-def test_autoescape_override_disables_globally(tmpl_dir: Path):
+def test_autoescape_override_disables_globally(tmp_path: Path):
     """`autoescape=False` in the ctor disables escaping even for .html."""
-    (tmpl_dir / "p.html").write_text("Hi {{ name }}")
+    (tmp_path / "p.html").write_text("Hi {{ name }}")
     app = Veloce(debug=True, openapi_url=None)
-    templates = Jinja2Templates(directory=str(tmpl_dir), autoescape=False)
+    templates = Jinja2Templates(directory=str(tmp_path), autoescape=False)
 
     @app.get("/")
     async def index():
@@ -70,11 +63,11 @@ def test_autoescape_override_disables_globally(tmpl_dir: Path):
     assert resp.body == b"Hi <script>"
 
 
-def test_safe_filter_opts_out(tmpl_dir: Path):
+def test_safe_filter_opts_out(tmp_path: Path):
     """`{{ x | safe }}` skips autoescape for that one expression."""
-    (tmpl_dir / "p.html").write_text("{{ raw|safe }}")
+    (tmp_path / "p.html").write_text("{{ raw|safe }}")
     app = Veloce(debug=True, openapi_url=None)
-    templates = Jinja2Templates(directory=str(tmpl_dir))
+    templates = Jinja2Templates(directory=str(tmp_path))
 
     @app.get("/")
     async def index():
@@ -87,41 +80,28 @@ def test_safe_filter_opts_out(tmpl_dir: Path):
 # ── auto_reload tracks the app's debug flag (P-4) ────────────────────
 
 
-def test_auto_reload_tracks_app_debug(tmpl_dir: Path):
+def test_auto_reload_tracks_app_debug(tmp_path: Path):
     """With `auto_reload` left unset, it follows the bound app's `debug`:
     off in production (no per-render template stat), on in development."""
-    from veloce.helpers import _current_app_var
-
-    templates = Jinja2Templates(directory=str(tmpl_dir))
+    templates = Jinja2Templates(directory=str(tmp_path))
 
     prod = Veloce(openapi_url=None)  # debug defaults to False
-    token = _current_app_var.set(prod)
-    try:
+    with prod.app_context():
         templates._apply_auto_reload(templates.env)
         assert templates.env.auto_reload is False
-    finally:
-        _current_app_var.reset(token)
 
     dev = Veloce(debug=True, openapi_url=None)
-    token = _current_app_var.set(dev)
-    try:
+    with dev.app_context():
         templates._apply_auto_reload(templates.env)
         assert templates.env.auto_reload is True
-    finally:
-        _current_app_var.reset(token)
 
 
-def test_explicit_auto_reload_is_respected(tmpl_dir: Path):
+def test_explicit_auto_reload_is_respected(tmp_path: Path):
     """An explicit `auto_reload=` is never overridden by the app's debug."""
-    from veloce.helpers import _current_app_var
-
-    templates = Jinja2Templates(directory=str(tmpl_dir), auto_reload=False)
+    templates = Jinja2Templates(directory=str(tmp_path), auto_reload=False)
     assert templates.env.auto_reload is False
 
     dev = Veloce(debug=True, openapi_url=None)
-    token = _current_app_var.set(dev)
-    try:
+    with dev.app_context():
         templates._apply_auto_reload(templates.env)
         assert templates.env.auto_reload is False  # explicit wins over debug
-    finally:
-        _current_app_var.reset(token)

@@ -8,9 +8,18 @@ from __future__ import annotations
 
 import inspect
 import logging
+import unittest.mock
+
+import pytest
+from pydantic import BaseModel
 
 from veloce import Veloce
-from veloce.app import _URLMap
+from veloce.app import URLMap
+from veloce.background import BackgroundTask
+from veloce.blueprints import Blueprint
+from veloce.http.response import JSONResponse, Response
+from veloce.routing.router import Router
+from veloce.testclient import TestClient
 
 
 def _make_app() -> Veloce:
@@ -63,9 +72,9 @@ def test_url_map_cached_until_route_added():
     first = app.url_map
     second = app.url_map
     assert first is second
-    assert isinstance(first, _URLMap)
+    assert isinstance(first, URLMap)
 
-    # _URLMap's internal _build() cache also stable across access
+    # URLMap's internal _build() cache also stable across access
     list_a = list(first)
     list_b = list(first)
     assert [r.endpoint for r in list_a] == [r.endpoint for r in list_b]
@@ -80,7 +89,6 @@ def test_url_map_cached_until_route_added():
 
 
 def test_caches_invalidated_by_register_blueprint():
-    from veloce.blueprints import Blueprint
 
     app = _make_app()
     routes_before = app.routes
@@ -97,7 +105,6 @@ def test_caches_invalidated_by_register_blueprint():
 
 
 def test_caches_invalidated_by_include_router():
-    from veloce.routing.router import Router
 
     app = _make_app()
     routes_before = app.routes
@@ -124,8 +131,6 @@ def test_run_host_default_is_loopback():
     assert sig.parameters["host"].default is None
     assert sig.parameters["bind_all"].default is False
 
-    import unittest.mock
-
     app = _make_app()
     with unittest.mock.patch.object(Veloce, "_serve") as mock_serve:
         mock_serve.side_effect = KeyboardInterrupt
@@ -140,8 +145,6 @@ def test_run_bind_all_parameter_present():
 
 
 def test_bind_all_with_explicit_host_raises_value_error():
-    import pytest
-
     app = _make_app()
     with pytest.raises(ValueError, match="bind_all"):
         app.run(host="192.168.1.10", bind_all=True)
@@ -151,9 +154,6 @@ def test_bind_all_with_explicit_host_raises_value_error():
 
 
 def test_background_task_failure_is_logged(caplog):
-    import asyncio
-
-    from veloce.background import BackgroundTask
 
     app = Veloce(openapi_url=None)
 
@@ -162,22 +162,15 @@ def test_background_task_failure_is_logged(caplog):
         async def boom():
             raise RuntimeError("kaboom")
 
-        from veloce.http.response import Response
-
         return Response(body=b"ok", background=BackgroundTask(boom))
-
-    from veloce.testclient import TestClient
 
     with caplog.at_level(logging.ERROR, logger=app.logger.name), TestClient(app) as client:
         resp = client.get("/")
         assert resp.status_code == 200
 
-        # Drain the loop so the background task's done-callback fires.
-        async def _drain():
-            for _ in range(5):
-                await asyncio.sleep(0)
-
-        client._loop.run_until_complete(_drain())
+        # Wait for the task itself rather than guessing at loop turns; the
+        # done-callback that logs the failure has fired once this returns.
+        assert client.wait_for_background_tasks() is True
 
     matches = [r for r in caplog.records if "Background task failed" in r.getMessage()]
     assert matches, "expected background-task failure to be logged"
@@ -195,8 +188,6 @@ def test_coerce_response_does_not_treat_duck_model_dump_as_pydantic():
     object happening to define that name; the result was a JSONResponse
     built from `result.model_dump()`, silently masking real bugs.
     """
-
-    from veloce.http.response import JSONResponse
 
     app = Veloce(openapi_url=None)
 
@@ -218,13 +209,64 @@ def test_coerce_response_does_not_treat_duck_model_dump_as_pydantic():
 
 
 def test_coerce_response_handles_real_pydantic_model():
-    from pydantic import BaseModel
-
-    from veloce.http.response import JSONResponse
-
     class Item(BaseModel):
         name: str
 
     app = Veloce(openapi_url=None)
     response = app._coerce_response(Item(name="foo"))
     assert isinstance(response, JSONResponse)
+
+
+# Moved here from `test_app_protocol_signals_e2e.py`, a module named for a fix
+# batch rather than a subject. The duck-typing test below is the end-to-end
+# counterpart of `test_coerce_response_does_not_treat_duck_model_dump_as_pydantic`
+# above: that one calls `_coerce_response` directly and proves `.model_dump()` is
+# never invoked; this one proves the whole request path agrees.
+
+
+def test_routes_cache_returns_same_object_until_mutation():
+    app = Veloce(openapi_url=None)
+
+    async def first(request):
+        return {"ok": True}
+
+    app.add_url_rule("/first", endpoint="first", view_func=first)
+    snap1 = app.routes
+    snap2 = app.routes
+    assert snap1 is snap2, "cache hit should return the same list object"
+
+    async def second(request):
+        return {"ok": True}
+
+    app.add_url_rule("/second", endpoint="second", view_func=second)
+    snap3 = app.routes
+    assert snap3 is not snap1, "add_url_rule must invalidate the routes cache"
+    paths = {r["path"] for r in snap3}
+    assert "/first" in paths and "/second" in paths
+
+
+class FakeDumper:
+    """Looks like a Pydantic model but isn't — `_coerce_response` should
+    not route it through `JSONResponse(result.model_dump())`."""
+
+    def model_dump(self):
+        return {"oops": 1}
+
+
+def test_coerce_response_does_not_duck_type_model_dump():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/fake")
+    async def view(request):
+        return FakeDumper()
+
+    client = app.test_client()
+    resp = client.get("/fake")
+    # FakeDumper is not JSON-serializable and not a Pydantic model. The
+    # framework must NOT silently invoke `.model_dump()` and produce
+    # `{"oops": 1}`. The only acceptable outcomes are a non-200 (orjson
+    # TypeError surfacing as a 500) or a fallback body that does not
+    # contain the duck-typed dump.
+    assert b'"oops"' not in resp.body, (
+        f"_coerce_response duck-typed .model_dump(); body={resp.body!r}"
+    )

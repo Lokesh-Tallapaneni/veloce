@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import pytest
-
+from tests._asgi_drive import http_scope
+from tests.conftest import make_request
 from veloce import Request, Veloce
 
 
 def _req(method: str = "GET", path: str = "/x") -> Request:
-    return Request(method=method, path=path, query_string="", headers={}, body=b"")
+    return make_request(method=method, path=path)
 
 
 # ── Router-level: HEAD falls back to GET match ───────────────────────
@@ -71,7 +71,6 @@ def test_static_map_does_not_clobber_explicit_head():
 # ── ASGI path: HEAD has no body, but Content-Length is real ─────────
 
 
-@pytest.mark.asyncio
 async def test_head_has_empty_body_via_asgi():
     app = Veloce(debug=True, openapi_url=None)
 
@@ -91,13 +90,7 @@ async def test_head_has_empty_body_via_asgi():
         elif msg["type"] == "http.response.body":
             received["chunks"].append(msg.get("body", b""))
 
-    scope = {
-        "type": "http",
-        "method": "HEAD",
-        "path": "/x",
-        "query_string": b"",
-        "headers": [],
-    }
+    scope = http_scope(type="http", method="HEAD", path="/x", query_string=b"", headers=[])
     await app(scope, receive, send)
 
     assert received["status"] == 200
@@ -107,7 +100,6 @@ async def test_head_has_empty_body_via_asgi():
     assert received["headers"][b"content-length"] == b"17"  # len('{"hello":"world"}')
 
 
-@pytest.mark.asyncio
 async def test_get_unchanged_after_head_change():
     """Sanity: regular GET still returns the full body."""
     app = Veloce(debug=True, openapi_url=None)

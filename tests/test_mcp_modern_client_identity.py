@@ -8,8 +8,11 @@ server-initiated requests read the same values.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
+from tests._mcp import initialize
 from veloce import Veloce
 from veloce.contrib.mcp.context import MCPContext
 from veloce.contrib.mcp.errors import MCPCapabilityError
@@ -39,6 +42,16 @@ def _app() -> Veloce:
         }
 
     return app
+
+
+def _decoded(response: dict) -> dict:
+    """The tool's return value, decoded.
+
+    Matching substrings of the serialised form instead - `'"name":"x"' in text`
+    - ties the assertion to the encoder's separators, and would be satisfied by
+    any nested object carrying the same pair.
+    """
+    return json.loads(response["result"]["content"][0]["text"])
 
 
 async def _modern_call(
@@ -104,19 +117,19 @@ async def test_a_modern_tool_call_sees_the_client_identity():
     response = await _modern_call(
         MCPServer(_app()), "tools/call", {"name": "whoami", "arguments": {}}
     )
-    text = response["result"]["content"][0]["text"]
-    assert '"name":"claude-code"' in text
-    assert '"version":"2.1.236"' in text
+    reported = _decoded(response)
+    assert reported["name"] == "claude-code"
+    assert reported["version"] == "2.1.236"
 
 
 async def test_a_modern_tool_call_sees_the_advertised_capabilities():
     response = await _modern_call(
         MCPServer(_app()), "tools/call", {"name": "whoami", "arguments": {}}
     )
-    text = response["result"]["content"][0]["text"]
-    assert '"elicitation":true' in text
-    assert '"sampling":false' in text
-    assert '"roots_list_changed":true' in text
+    reported = _decoded(response)
+    assert reported["elicitation"] is True
+    assert reported["sampling"] is False
+    assert reported["roots_list_changed"] is True
 
 
 async def test_the_handshake_era_still_records_identity():
@@ -124,16 +137,12 @@ async def test_the_handshake_era_still_records_identity():
     server = MCPServer(_app())
     session = MCPSession()
     await server.handle_message(
-        {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2025-11-25",
-                "capabilities": {"sampling": {}},
-                "clientInfo": {"name": "legacy-client", "version": "0.1"},
-            },
-        },
+        initialize(
+            "2025-11-25",
+            id=1,
+            capabilities={"sampling": {}},
+            client_info={"name": "legacy-client", "version": "0.1"},
+        ),
         session,
     )
     await server.handle_message({"jsonrpc": "2.0", "method": "notifications/initialized"}, session)
@@ -146,9 +155,9 @@ async def test_the_handshake_era_still_records_identity():
         },
         session,
     )
-    text = response["result"]["content"][0]["text"]
-    assert '"name":"legacy-client"' in text
-    assert '"sampling":true' in text
+    reported = _decoded(response)
+    assert reported["name"] == "legacy-client"
+    assert reported["sampling"] is True
 
 
 # ── The capability gates read the same values ────────────────────────

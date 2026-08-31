@@ -1,4 +1,4 @@
-"""Core data structures — UploadFile, Header, URL, FormData.
+"""Core data structures — the request and response containers.
 
 `Headers` and `QueryParams` subclass `multidict.CIMultiDict` and
 `multidict.MultiDict` respectively. They preserve duplicate keys and add
@@ -8,8 +8,8 @@ the `getlist` alias on top of multidict's native `getall`.
 from __future__ import annotations
 
 import asyncio
-import base64
 import contextlib
+import functools
 import io
 import ipaddress
 import math
@@ -26,7 +26,7 @@ from veloce._constants import (
     MIME_OCTET_STREAM,
 )
 from veloce._header_parsing import parse_header_params, parse_media_type_params
-from veloce._internal import is_default_port
+from veloce._internal import _decode_basic_credentials, _quote_header_value, is_default_port
 from veloce._protocol_constants import URL_SCHEME_HTTP, URL_SCHEME_HTTPS
 from veloce.exceptions import FilesKeyError, RequestURITooLong
 from veloce.http.cookies import iter_cookies
@@ -34,6 +34,32 @@ from veloce.http.cookies import iter_cookies
 # Cap on number of query-string fields parsed per request to bound CPU
 # and memory under hash-collision / parameter-pollution DoS.
 _MAX_QUERY_FIELDS = 1000
+
+
+def _parse_qs_pairs(value: str, max_fields: int | None) -> list[tuple[str, str]]:
+    """Parse `a=1&b=2` into ordered pairs, decoding escapes only when present.
+
+    `urllib.parse.parse_qsl` is pure Python and calls `unquote_plus` twice per
+    field; `unquote_plus` allocates a replaced string before scanning for `%`.
+    A value carrying neither `%` nor `+` has nothing for any of that to do, and
+    that is the shape of most query strings and most urlencoded bodies.
+
+    Escaped input delegates to `parse_qsl`, which stays the single decoder, so
+    the two paths cannot disagree about what an escape means. The guard is two
+    scans over a short string and is within noise of free on the escaped path.
+
+    `parse_qsl` counts fields as `1 + value.count("&")`, which is exactly
+    `len(value.split("&"))`, so the `max_fields` cap - and the 414 / 413 the
+    callers raise from it - is enforced at the same boundary either way.
+    """
+    if "%" in value or "+" in value:
+        return parse_qsl(value, keep_blank_values=True, max_num_fields=max_fields)
+    parts = value.split("&")
+    if max_fields is not None and len(parts) > max_fields:
+        raise ValueError("Max number of fields exceeded")
+    # Blank values are kept (`a=` is `("a", "")`) and an empty segment is
+    # skipped, both matching `parse_qsl(keep_blank_values=True)`.
+    return [(k, v) for k, _, v in (part.partition("=") for part in parts if part)]
 
 
 # ── Request scope primitives ──────────────────────────────
@@ -376,14 +402,23 @@ class URL:
         non-default port (e.g. 8443) survives into `netloc` / absolute URLs.
         """
         host_header = headers.get(HEADER_HOST, "localhost")
-        # Precedence (ASGI Sec. HTTP scope): the scope's `scheme` is the
+        # Precedence (ASGI HTTP connection scope): the scope's `scheme` is the
         # authoritative answer when one was supplied - that's
         # what uvicorn sets under TLS. `X-Forwarded-Proto` is a hint set
         # by reverse proxies and only meaningful when ProxyFix or similar
         # has trusted it. Plain `http` is the final fallback.
+        # Normalised here, once, because this is the single point every consumer
+        # reads the scheme through. RFC 3986 Sec. 3.1 makes a scheme
+        # case-insensitive and RFC 7239 Sec. 4 says the same of the `proto`
+        # directive, so a proxy spelling either `HTTPS` is naming the same
+        # scheme - and comparing it verbatim made `is_secure` answer `False` on
+        # an encrypted connection.
         if scope_scheme:
-            scheme = scope_scheme
-        elif trust_forwarded_proto and headers.get(HEADER_X_FORWARDED_PROTO) == URL_SCHEME_HTTPS:
+            scheme = scope_scheme.lower()
+        elif (
+            trust_forwarded_proto
+            and headers.get(HEADER_X_FORWARDED_PROTO, "").lower() == URL_SCHEME_HTTPS
+        ):
             scheme = URL_SCHEME_HTTPS
         else:
             scheme = URL_SCHEME_HTTP
@@ -438,8 +473,10 @@ class URL:
 # ── Multidict-backed collections ──────────────────────────
 # A header parameter value carrying any of these characters must be
 # double-quoted (RFC 9110 Sec. 5.6.6 quoted-string). Hoisted so `Headers.add`
-# does not rebuild the trigger set on every parameter.
-_HEADER_PARAM_QUOTE_TRIGGERS = frozenset((" ", ";", ",", '"'))
+# does not rebuild the trigger set on every parameter. A backslash is included
+# because it is not a `tchar` (RFC 9110 Sec. 5.6.2), so a value containing one
+# cannot be sent as a bare token.
+_HEADER_PARAM_QUOTE_TRIGGERS = frozenset((" ", ";", ",", '"', "\\"))
 
 
 class _GetListMixin:
@@ -566,7 +603,7 @@ class Headers(_GetListMixin, CIMultiDict):
                 pk = pk.replace("_", "-")
                 sval = str(pv)
                 if any(c in sval for c in _HEADER_PARAM_QUOTE_TRIGGERS):
-                    sval = '"' + sval.replace('"', '\\"') + '"'
+                    sval = '"' + _quote_header_value(sval) + '"'
                 parts.append(f"{pk}={sval}")
             value = "; ".join(parts)
         super().add(key, value)
@@ -634,8 +671,22 @@ class RangeSpec:
 _MimeKey = tuple[str, str, frozenset[tuple[str, str]], int]
 
 
+@functools.lru_cache(maxsize=128)
+def _lookup_mime_key(value: str) -> _MimeKey:
+    """`_parse_mime_key` for a media range the caller names, memoized.
+
+    `quality("application/json")` and its siblings ask about a literal the
+    application owns, and re-parsing it per call was measured as three parses
+    on a single MCP request. Deliberately NOT used for the ranges parsed out of
+    an `Accept` header: those come from the client, and a process-lifetime map
+    keyed on remote input lets a caller sending a few hundred distinct ranges
+    evict the handful this cache exists to hold.
+    """
+    return _parse_mime_key(value)
+
+
 def _parse_mime_key(value: str) -> _MimeKey:
-    """Decompose a media range into a cached, comparison-ready `_MimeKey`."""
+    """Decompose a media range into a comparison-ready `_MimeKey`."""
     head, _, rest = value.partition(";")
     head = head.strip().lower()
     type_, slash, subtype = head.partition("/")
@@ -760,7 +811,7 @@ class AcceptHeader:
         rejected or not mentioned (callers usually special-case this).
         """
         if self._mime:
-            return self._mime_best(_parse_mime_key(value))[0]
+            return self._mime_best(_lookup_mime_key(value))[0]
         folded = value.lower()
         best = 0.0
         for opt, q, _okey in self._options:
@@ -785,9 +836,20 @@ class AcceptHeader:
         # explicit `Br;q=0` must reject `br`. Fold both sides to lowercase
         # before the exact compare; the `*` wildcard fallback is unaffected.
         folded = value.lower()
+        # A repeated token with conflicting weights (`gzip;q=1.0, gzip;q=0`) is
+        # not defined by RFC 9110, so this reads it the way the rest of the
+        # method does: an explicit refusal anywhere wins. Returning the first
+        # entry instead let a later `q=0` be ignored, which is the one reading
+        # this method exists to rule out.
+        found: float | None = None
         for opt, q, _okey in self._options:
             if opt.lower() == folded:
-                return q
+                if q == 0.0:
+                    return 0.0
+                if found is None:
+                    found = q
+        if found is not None:
+            return found
         for opt, q, _okey in self._options:
             if opt == "*":
                 return q
@@ -846,10 +908,17 @@ class AcceptHeader:
         `specificity` is the score of the most specific matching client
         range (0 for non-MIME headers), used by `best_match` to prefer a
         parameterized exact match over a wildcard at equal quality.
+
+        Non-MIME headers rank through `quality_explicit`, not `quality`: RFC 9110
+        Sec. 12.5.3 makes an explicit `q=0` a refusal that a wildcard must not
+        override, and `quality` deliberately reports the max across an exact and
+        a `*` match. Ranking through it made `best_match` recommend a coding the
+        client had explicitly rejected - `gzip;q=0, *` selected `gzip`. The MIME
+        path already resolves this correctly, by most-specific-range.
         """
         if not self._mime:
-            return (self.quality(value), 0)
-        return self._mime_best(_parse_mime_key(value))
+            return (self.quality_explicit(value), 0)
+        return self._mime_best(_lookup_mime_key(value))
 
     def _mime_best(self, vkey: _MimeKey) -> tuple[float, int]:
         """Return `(quality, specificity)` for `vkey` across this header's ranges.
@@ -946,14 +1015,15 @@ class Authorization:
         scheme_lower = scheme.lower()
 
         if scheme_lower == "basic":
-            try:
-                decoded = base64.b64decode(credentials.strip(), validate=True).decode("utf-8")
-            except (ValueError, UnicodeDecodeError):
+            # Shared with `HTTPBasic` so the two cannot disagree about what a
+            # valid payload is. `None` covers both malformed shapes - undecodable
+            # base64 and a colon-less value (RFC 7617 Sec. 2 makes the colon
+            # mandatory) - and yields no credentials either way.
+            decoded_pair = _decode_basic_credentials(credentials.strip())
+            if decoded_pair is None:
                 return cls(type="basic", raw=header_value)
-            if ":" in decoded:
-                user, _, pw = decoded.partition(":")
-                return cls(type="basic", raw=header_value, username=user, password=pw)
-            return cls(type="basic", raw=header_value, username=decoded, password="")
+            user, pw = decoded_pair
+            return cls(type="basic", raw=header_value, username=user, password=pw)
 
         if scheme_lower == "bearer":
             return cls(type="bearer", raw=header_value, token=credentials.strip())
@@ -978,7 +1048,7 @@ class Cookies(_GetListMixin, MultiDict):
     """Cookie collection parsed from the `Cookie` header.
 
     Built on `multidict.MultiDict`. Parsing delegates to `iter_cookies`
-    (RFC 6265 section 5.4) so values are percent-decoded. Duplicate names
+    (RFC 6265 Sec. 5.4) so values are percent-decoded. Duplicate names
     collapse to the first occurrence per the spec.
     """
 
@@ -990,7 +1060,7 @@ class Cookies(_GetListMixin, MultiDict):
 
         Delegates to `iter_cookies` for RFC 6265-compliant parsing
         (percent-decoding, quote-stripping). Duplicate names collapse
-        to the first occurrence per RFC 6265 section 5.4.
+        to the first occurrence per RFC 6265 Sec. 5.4.
         """
         return cls(iter_cookies(header_value))
 
@@ -1015,22 +1085,9 @@ class QueryParams(_GetListMixin, MultiDict):
         if not query_string:
             return cls()
         try:
-            items = parse_qsl(
-                query_string,
-                keep_blank_values=True,
-                max_num_fields=_MAX_QUERY_FIELDS,
-            )
+            items = _parse_qs_pairs(query_string, _MAX_QUERY_FIELDS)
         except ValueError as exc:
             # parse_qsl raises when the field count exceeds the cap;
             # surface as 414 so the framework returns a clean response.
             raise RequestURITooLong(f"Query string exceeds {_MAX_QUERY_FIELDS} fields") from exc
         return cls(items)
-
-
-# ── Backward-compatible re-exports ────────────────────────
-# Re-export from formparsers for backward compatibility.
-from veloce.http.formparsers import (  # noqa: E402, F401
-    DEFAULT_MAX_MULTIPART_PART_SIZE,
-    DEFAULT_MAX_MULTIPART_PARTS,
-    parse_multipart_form,
-)

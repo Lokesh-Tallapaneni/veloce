@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import pytest
-
 from veloce import Veloce
 
 
 class TestMultipleResponses:
-    @pytest.mark.asyncio
     async def test_responses_in_route(self):
         app = Veloce(openapi_url=None)
 

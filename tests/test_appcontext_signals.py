@@ -1,4 +1,4 @@
-"""appcontext_pushed / popped / tearing_down signals (SI2)."""
+"""appcontext_pushed / popped / tearing_down signals."""
 
 from __future__ import annotations
 

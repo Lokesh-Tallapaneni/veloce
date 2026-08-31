@@ -12,12 +12,14 @@ class, instantiated lazily).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import orjson
 
+from veloce._internal import _require_methods
 from veloce.encoders import orjson_default
-from veloce.http.response import JSONResponse
+from veloce.http.response import JSONResponse, Response
 from veloce.status import HTTP_200_OK
 
 
@@ -56,6 +58,16 @@ class JSONProvider:
         app.json_provider_class = MyJSONProvider
     """
 
+    #: Both halves a provider must supply, checked at definition rather than
+    #: left to fail at call time - a provider missing one of them works until
+    #: the first response that needs to encode, or the first request body that
+    #: needs to decode, and then fails on a live request.
+    _required = ("dumps", "loads")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        _require_methods(cls, JSONProvider, JSONProvider._required)
+
     def __init__(self, app: Any) -> None:
         self._app = app
 
@@ -72,7 +84,7 @@ class JSONProvider:
         """Parse JSON `data` into Python objects."""
         raise NotImplementedError
 
-    def response(self, value: Any, **kwargs: Any) -> Any:
+    def response(self, value: Any, **kwargs: Any) -> Response:
         """Build a `Response` carrying `value` as JSON.
 
         The default implementation delegates to `dumps` and wraps the result
@@ -121,3 +133,25 @@ class DefaultJSONProvider(JSONProvider):
 
     def loads(self, data: bytes | str) -> Any:
         return orjson.loads(data)
+
+
+# `dumps_for` / `dumps_current` live in `_internal`, so `http.response` - the
+# lower layer - can reach the one encode funnel without importing this module.
+# `resolve_dumps` stays here because it answers a question only a provider can:
+# whether this app configured one at all.
+
+
+def resolve_dumps(app: Any) -> Callable[..., bytes] | None:
+    """`app`'s serialiser, or `None` when the direct encoder already matches it.
+
+    Separate from `dumps_for` because it answers a different question: not "encode
+    this" but "is there anything to do differently?". `None` says the stock
+    provider with nothing configured is active, which emits exactly what the
+    direct call does - letting the dispatch path skip the indirection for an
+    application that configured nothing.
+    """
+    provider = app.json
+    if type(provider) is DefaultJSONProvider and not provider._config_options:
+        return None
+    dumps: Callable[..., bytes] = provider.dumps
+    return dumps

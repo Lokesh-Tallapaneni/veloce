@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import HTTPException, Request, Veloce
+from tests.conftest import make_request
+from veloce import HTTPException, JSONResponse, Veloce
 from veloce.exceptions import (
     BadRequest,
     Conflict,
@@ -53,11 +54,13 @@ def test_subclass_headers_pass_through():
     assert exc.headers["WWW-Authenticate"] == 'Bearer realm="api"'
 
 
-def test_subclasses_inherit_from_httpexception():
+@pytest.mark.parametrize("cls", [BadRequest, NotFound, Forbidden, InternalServerError])
+def test_subclasses_inherit_from_httpexception(cls):
     # The contract: every spec exception is a `HTTPException`.
-    for cls in (BadRequest, NotFound, Forbidden, InternalServerError):
-        assert issubclass(cls, HTTPException)
-    # `try: ... except HTTPException` catches every typed subclass.
+    assert issubclass(cls, HTTPException)
+
+
+def test_except_httpexception_catches_a_typed_subclass():
     try:
         raise NotFound()
     except HTTPException as exc:
@@ -104,16 +107,14 @@ def test_abort_unknown_code_falls_back_to_base():
 
 
 def _req(path="/"):
-    return Request(method="GET", path=path, query_string="", headers={}, body=b"")
+    return make_request(path=path)
 
 
-@pytest.mark.asyncio
 async def test_handler_on_specific_subclass_catches_that_subclass():
     app = Veloce(debug=True, openapi_url=None)
 
     @app.exception_handler(NotFound)
     async def on_not_found(request, exc):
-        from veloce import JSONResponse
 
         return JSONResponse({"oops": "no such thing"}, status_code=404)
 
@@ -126,7 +127,6 @@ async def test_handler_on_specific_subclass_catches_that_subclass():
     assert b'"oops":"no such thing"' in resp.body
 
 
-@pytest.mark.asyncio
 async def test_handler_on_base_class_catches_subclass():
     """Registering a handler against `HTTPException` should catch every
     typed subclass via the MRO walk — not just direct instances."""
@@ -134,7 +134,6 @@ async def test_handler_on_base_class_catches_subclass():
 
     @app.exception_handler(HTTPException)
     async def on_http(request, exc):
-        from veloce import JSONResponse
 
         return JSONResponse(
             {"caught": type(exc).__name__, "code": exc.status_code},
@@ -158,7 +157,6 @@ async def test_handler_on_base_class_catches_subclass():
     assert b'"caught":"Forbidden"' in r2.body
 
 
-@pytest.mark.asyncio
 async def test_specific_handler_wins_over_base():
     """A `NotFound` handler should fire instead of an `HTTPException`
     handler when a `NotFound` is raised — the MRO walks specific first."""
@@ -166,13 +164,11 @@ async def test_specific_handler_wins_over_base():
 
     @app.exception_handler(HTTPException)
     async def on_http(request, exc):
-        from veloce import JSONResponse
 
         return JSONResponse({"by": "base"}, status_code=exc.status_code)
 
     @app.exception_handler(NotFound)
     async def on_nf(request, exc):
-        from veloce import JSONResponse
 
         return JSONResponse({"by": "specific"}, status_code=404)
 
@@ -185,7 +181,6 @@ async def test_specific_handler_wins_over_base():
     assert b'"by":"specific"' in resp.body
 
 
-@pytest.mark.asyncio
 async def test_handler_for_user_exception_via_mro():
     """A handler on a user-defined base catches its subclasses."""
     app = Veloce(debug=True, openapi_url=None)
@@ -198,7 +193,6 @@ async def test_handler_for_user_exception_via_mro():
 
     @app.exception_handler(AppError)
     async def on_app_err(request, exc):
-        from veloce import JSONResponse
 
         return JSONResponse(
             {"app_error": type(exc).__name__},
@@ -214,14 +208,12 @@ async def test_handler_for_user_exception_via_mro():
     assert b'"app_error":"UserNotFound"' in resp.body
 
 
-@pytest.mark.asyncio
 async def test_handler_on_exception_catches_unhandled():
     """The existing fallback to `Exception` still works via the same MRO."""
     app = Veloce(debug=True, openapi_url=None)
 
     @app.exception_handler(Exception)
     async def fallback(request, exc):
-        from veloce import JSONResponse
 
         return JSONResponse({"fallback": str(exc)}, status_code=500)
 

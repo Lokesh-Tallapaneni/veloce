@@ -19,28 +19,24 @@ Basic usage::
 
 from __future__ import annotations
 
-# Configuration
 from typing import TYPE_CHECKING, Any
 
 # Status codes
 from veloce import status
+
+# Parameter markers
+from veloce._params import Body, Cookie, File, Form, Header, Path, Query
 from veloce._warnings import VeloceDeprecationWarning
-from veloce.app import Plugin, URLRule, Veloce
+from veloce.app import Plugin, URLMap, URLRule, Veloce
+from veloce.audit import AuditContext, AuditFailed, Finding, Severity
 
 # Background tasks
 from veloce.background import BackgroundTask, BackgroundTasks
 from veloce.blueprints import Blueprint
 from veloce.cache import Cache, InMemoryCache, cached
-from veloce.config import Config
 
-# MCP (Model Context Protocol) - the per-call context handle a tool handler
-# may declare. The server / transport classes stay under veloce.contrib.mcp.
-# Resolved on first access rather than at import: reaching it eagerly
-# initialises the whole MCP subpackage - server, registries, tasks, both
-# transports - for one re-exported name, which every `import veloce` paid for
-# whether or not the application exposes a single tool.
-if TYPE_CHECKING:  # pragma: no cover
-    from veloce.contrib.mcp.context import MCPContext
+# Configuration
+from veloce.config import Config
 
 # Static files
 from veloce.contrib.staticfiles import StaticFiles
@@ -177,10 +173,13 @@ from veloce.markup import Markup, escape
 # Middleware
 from veloce.middleware import (
     BaseHTTPMiddleware,
+    CallNext,
+    CompressionMiddleware,
     ConditionalGetMiddleware,
     CORSMiddleware,
     CSPMiddleware,
     CSRFMiddleware,
+    DispatchFunction,
     GZipMiddleware,
     HTTPSRedirectMiddleware,
     LoggingMiddleware,
@@ -191,6 +190,7 @@ from veloce.middleware import (
     SecurityHeadersMiddleware,
     ServerSessionMiddleware,
     SessionMiddleware,
+    SessionMiddlewareBase,
     TrustedHostMiddleware,
     WebSocketOriginMiddleware,
     csp_nonce,
@@ -221,13 +221,13 @@ from veloce.ratelimit import (
     InMemoryRateLimitBackend,
     RateLimitBackend,
     RateLimitResult,
+    RateLimitState,
     RateLimitStrategy,
     SlidingWindow,
     TokenBucket,
     rate_limit,
 )
-from veloce.routing.converters import Converter, register_converter
-from veloce.routing.params import Body, Cookie, File, Form, Header, Path, Query
+from veloce.routing.converters import Converter, register_converter, unregister_converter
 
 # Routing
 from veloce.routing.router import Router
@@ -281,6 +281,7 @@ from veloce.sessions import InMemorySessionStore, Session, SessionStore
 from veloce.signals import (
     Namespace,
     Signal,
+    SignalResult,
     appcontext_popped,
     appcontext_pushed,
     appcontext_tearing_down,
@@ -298,7 +299,7 @@ from veloce.signing import BadData, BadSignature, BadTimeSignature, Signer
 from veloce.sse import EventSourceResponse, ServerSentEvent
 
 # Testing
-from veloce.testclient import AsyncTestClient, TestClient
+from veloce.testclient import AsyncTestClient, TestClient, TestResponse
 
 # Class-based views
 from veloce.views import MethodView, View
@@ -307,20 +308,16 @@ from veloce.views import MethodView, View
 from veloce.watchdog import EventLoopWatchdog
 
 # WebSocket
-from veloce.websocket import WebSocket
+from veloce.websocket import WebSocket, WebSocketState
 
-try:
-    from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
-    from importlib.metadata import version as _pkg_version
-
-    __version__ = _pkg_version("veloceframework")
-    del _pkg_version, _PackageNotFoundError
-except Exception:
-    # Editable install before metadata is materialised, or an unsupported
-    # runtime. The installed package metadata is the single source of the
-    # version (`pyproject.toml`); fall back to a non-version sentinel rather
-    # than a second hand-maintained literal so the two cannot drift.
-    __version__ = "0.0.0+unknown"
+# MCP (Model Context Protocol) - the per-call context handle a tool handler
+# may declare. The server / transport classes stay under veloce.contrib.mcp.
+# Resolved on first access rather than at import: reaching it eagerly
+# initialises the whole MCP subpackage - server, registries, tasks, both
+# transports - for one re-exported name, which every `import veloce` paid for
+# whether or not the application exposes a single tool.
+if TYPE_CHECKING:  # pragma: no cover
+    from veloce.contrib.mcp.context import MCPContext
 
 # `APIRouter` aliases `Router`, whose constructor takes the keyword
 # surface that name implies (`prefix=`, `tags=`, `dependencies=`,
@@ -336,6 +333,7 @@ __all__ = [
     "Router",
     "Blueprint",
     "APIRouter",
+    "URLMap",
     "URLRule",
     "Config",
     # Responses
@@ -352,9 +350,12 @@ __all__ = [
     # Middleware
     "Middleware",
     "BaseHTTPMiddleware",
+    "CallNext",
     "CORSMiddleware",
     "CSRFMiddleware",
+    "DispatchFunction",
     "ConditionalGetMiddleware",
+    "CompressionMiddleware",
     "GZipMiddleware",
     "TrustedHostMiddleware",
     "RateLimitMiddleware",
@@ -366,6 +367,7 @@ __all__ = [
     "RateLimitBackend",
     "InMemoryRateLimitBackend",
     "RateLimitResult",
+    "RateLimitState",
     "rate_limit",
     "HTTPSRedirectMiddleware",
     "SecurityHeadersMiddleware",
@@ -376,6 +378,7 @@ __all__ = [
     "RequestIDMiddleware",
     "SessionMiddleware",
     "ServerSessionMiddleware",
+    "SessionMiddlewareBase",
     "ProxyFix",
     "rotate_csrf_token",
     # Sessions
@@ -387,6 +390,7 @@ __all__ = [
     "WebSocketDisconnect",
     "WebSocketException",
     "WebSocketRequestValidationError",
+    "WebSocketState",
     # DI
     "Depends",
     "Security",
@@ -495,11 +499,16 @@ __all__ = [
     # Testing
     "TestClient",
     "AsyncTestClient",
+    "TestResponse",
     # Class-based views
     "View",
     "MethodView",
     # Helpers
     "Aborter",
+    "AuditContext",
+    "AuditFailed",
+    "Finding",
+    "Severity",
     "abort",
     "after_this_request",
     "async_send_file",
@@ -547,6 +556,7 @@ __all__ = [
     "HealthPlugin",
     # Signals
     "Signal",
+    "SignalResult",
     "Namespace",
     "request_started",
     "request_finished",
@@ -581,6 +591,7 @@ __all__ = [
     # Converters
     "Converter",
     "register_converter",
+    "unregister_converter",
     # Parameter classes
     "Query",
     "Path",
@@ -601,6 +612,15 @@ _LAZY_EXPORTS: dict[str, str] = {
 
 def __getattr__(name: str) -> Any:
     """Import the module owning a lazily-exported name, then cache it here."""
+    if name == "__version__":
+        # Reading the installed package metadata walks the distribution's files
+        # and costs real time on a cold interpreter, which every CLI invocation
+        # and every serverless cold start would otherwise pay to produce a
+        # string almost nothing asks for.
+        from veloce._version import resolve_version
+
+        globals()["__version__"] = value = resolve_version()
+        return value
     module_name = _LAZY_EXPORTS.get(name)
     if module_name is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

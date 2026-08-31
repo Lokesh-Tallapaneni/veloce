@@ -1,28 +1,20 @@
-"""Jinja filter/global/test decorator tests (TP5)."""
+"""Jinja filter/global/test decorator tests."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from veloce import Veloce
 from veloce.contrib.templating import Jinja2Templates, render_template_string
 from veloce.testclient import TestClient
 
-
-@pytest.fixture
-def tmpl_dir(tmp_path: Path) -> Path:
-    return tmp_path
-
-
 # ── @template_filter ───────────────────────────────────────────────────
 
 
-def test_template_filter_registered_by_function_name(tmpl_dir: Path):
-    (tmpl_dir / "x.html").write_text("{{ name|shout }}")
+def test_template_filter_registered_by_function_name(tmp_path: Path):
+    (tmp_path / "x.html").write_text("{{ name|shout }}")
     app = Veloce(debug=True, openapi_url=None)
-    templates = Jinja2Templates(directory=str(tmpl_dir))
+    templates = Jinja2Templates(directory=str(tmp_path))
 
     @app.template_filter()
     def shout(s: str) -> str:
@@ -36,10 +28,10 @@ def test_template_filter_registered_by_function_name(tmpl_dir: Path):
     assert resp.body == b"ALICE!"
 
 
-def test_template_filter_explicit_name(tmpl_dir: Path):
-    (tmpl_dir / "x.html").write_text("{{ s|reversed_str }}")
+def test_template_filter_explicit_name(tmp_path: Path):
+    (tmp_path / "x.html").write_text("{{ s|reversed_str }}")
     app = Veloce(debug=True, openapi_url=None)
-    templates = Jinja2Templates(directory=str(tmpl_dir))
+    templates = Jinja2Templates(directory=str(tmp_path))
 
     @app.template_filter("reversed_str")
     def reverse_helper(s: str) -> str:
@@ -56,10 +48,10 @@ def test_template_filter_explicit_name(tmpl_dir: Path):
 # ── @template_global ───────────────────────────────────────────────────
 
 
-def test_template_global_callable_in_templates(tmpl_dir: Path):
-    (tmpl_dir / "x.html").write_text("{{ now() }}")
+def test_template_global_callable_in_templates(tmp_path: Path):
+    (tmp_path / "x.html").write_text("{{ now() }}")
     app = Veloce(debug=True, openapi_url=None)
-    templates = Jinja2Templates(directory=str(tmpl_dir))
+    templates = Jinja2Templates(directory=str(tmp_path))
 
     @app.template_global()
     def now() -> str:
@@ -75,10 +67,10 @@ def test_template_global_callable_in_templates(tmpl_dir: Path):
     assert resp.body == b"&lt;TIME&gt;"
 
 
-def test_add_template_global_imperative(tmpl_dir: Path):
-    (tmpl_dir / "x.html").write_text("{{ greet('alice') }}")
+def test_add_template_global_imperative(tmp_path: Path):
+    (tmp_path / "x.html").write_text("{{ greet('alice') }}")
     app = Veloce(debug=True, openapi_url=None)
-    templates = Jinja2Templates(directory=str(tmpl_dir))
+    templates = Jinja2Templates(directory=str(tmp_path))
 
     def greet(who: str) -> str:
         return f"Hi {who}"
@@ -96,10 +88,10 @@ def test_add_template_global_imperative(tmpl_dir: Path):
 # ── @template_test ─────────────────────────────────────────────────────
 
 
-def test_template_test_usable_in_if_expressions(tmpl_dir: Path):
-    (tmpl_dir / "x.html").write_text("{% if n is even %}yes{% else %}no{% endif %}")
+def test_template_test_usable_in_if_expressions(tmp_path: Path):
+    (tmp_path / "x.html").write_text("{% if n is even %}yes{% else %}no{% endif %}")
     app = Veloce(debug=True, openapi_url=None)
-    templates = Jinja2Templates(directory=str(tmpl_dir))
+    templates = Jinja2Templates(directory=str(tmp_path))
 
     @app.template_test("even")
     def is_even(n: int) -> bool:
@@ -116,10 +108,10 @@ def test_template_test_usable_in_if_expressions(tmpl_dir: Path):
 # ── Idempotency / interaction with context_processor ──────────────────
 
 
-def test_filter_and_context_processor_coexist(tmpl_dir: Path):
-    (tmpl_dir / "x.html").write_text("{{ name|upper_full }} from {{ brand }}")
+def test_filter_and_context_processor_coexist(tmp_path: Path):
+    (tmp_path / "x.html").write_text("{{ name|upper_full }} from {{ brand }}")
     app = Veloce(debug=True, openapi_url=None)
-    templates = Jinja2Templates(directory=str(tmpl_dir))
+    templates = Jinja2Templates(directory=str(tmp_path))
 
     @app.template_filter()
     def upper_full(s: str) -> str:
@@ -137,11 +129,11 @@ def test_filter_and_context_processor_coexist(tmpl_dir: Path):
     assert resp.body == b"ALICE from Veloce"
 
 
-def test_multiple_renders_sync_idempotently(tmpl_dir: Path):
+def test_multiple_renders_sync_idempotently(tmp_path: Path):
     """Calling render twice doesn't multiply or break filter registration."""
-    (tmpl_dir / "x.html").write_text("{{ x|tag }}")
+    (tmp_path / "x.html").write_text("{{ x|tag }}")
     app = Veloce(debug=True, openapi_url=None)
-    templates = Jinja2Templates(directory=str(tmpl_dir))
+    templates = Jinja2Templates(directory=str(tmp_path))
 
     @app.template_filter()
     def tag(s: str) -> str:

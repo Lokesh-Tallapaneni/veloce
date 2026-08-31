@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import Veloce, WebSocket
+from veloce import Veloce, WebSocket, current_app
 from veloce.testclient import TestClient
 
 
@@ -151,7 +151,6 @@ def test_sync_listener_callback_sees_app_context():
     """A sync `websocket_listener` callback offloaded to a worker thread still
     sees ContextVar-backed helpers like `current_app` (it runs under a copied
     context, matching sync HTTP handlers)."""
-    from veloce import current_app
 
     app = Veloce()
     app.config["MARK"] = "ok"

@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import pytest
+
 from veloce import Request, TestClient, Veloce
-from veloce.http.formparsers import _parse_content_disposition
+from veloce.exceptions import BadRequest, RequestEntityTooLarge
+from veloce.http.datastructures import UploadFile
+from veloce.http.formparsers import _parse_content_disposition, parse_multipart_form
 
 
 def test_quoted_semicolon_preserved_in_name():
@@ -67,8 +71,6 @@ def _file_part_body(boundary: str, extra_headers: dict[str, str]) -> bytes:
 
 
 def test_uploadfile_captures_part_headers():
-    from veloce.http.datastructures import parse_multipart_form
-
     boundary = "veloceboundary123"
     body = _file_part_body(boundary, {"Content-Transfer-Encoding": "binary", "X-Part-Id": "42"})
     form = parse_multipart_form(body, f"multipart/form-data; boundary={boundary}")
@@ -80,8 +82,6 @@ def test_uploadfile_captures_part_headers():
 
 
 def test_uploadfile_headers_default_present_but_minimal():
-    from veloce.http.datastructures import parse_multipart_form
-
     boundary = "veloceboundary123"
     body = _file_part_body(boundary, {})
     form = parse_multipart_form(body, f"multipart/form-data; boundary={boundary}")
@@ -91,8 +91,6 @@ def test_uploadfile_headers_default_present_but_minimal():
 
 
 def test_uploadfile_headers_isolated_across_parts():
-    from veloce.http.datastructures import parse_multipart_form
-
     boundary = "veloceboundary123"
     lines = [
         f"--{boundary}",
@@ -115,18 +113,12 @@ def test_uploadfile_headers_isolated_across_parts():
 
 
 def test_uploadfile_accepts_plain_dict_headers():
-    from veloce.http.datastructures import UploadFile
 
     up = UploadFile(filename="x", headers={"X-A": "1"})
     assert up.headers["x-a"] == "1"
 
 
 # ── Helpers shared by the limit / boundary / charset tests ───────────
-
-import pytest  # noqa: E402
-
-from veloce.exceptions import BadRequest, RequestEntityTooLarge  # noqa: E402
-from veloce.http.formparsers import parse_multipart_form  # noqa: E402
 
 _BOUNDARY = "veloceboundary123"
 
@@ -453,3 +445,54 @@ def test_an_empty_field_value_is_still_accepted():
         response = client.post("/upload", content=_multipart(("a", "")), headers=_TRUNC_HEADERS)
     assert response.status_code == 200
     assert response.json()["fields"] == {"a": ""}
+
+
+# ── the part-count and part-size caps ────────────────────────────────
+#
+# Moved here from `test_request_max_content_length.py`, whose subject is the
+# `Request.max_content_length` accessor. These call `parse_multipart_form`
+# directly, so they belong with the other parser tests; the one that drives
+# `TestClient` went to `test_request_form_e2e.py`.
+
+
+def _multipart_body(boundary: str, parts: list[tuple[str, str]]) -> bytes:
+    """Build a minimal multipart body. parts = [(name, value), ...]."""
+    lines = []
+    for name, value in parts:
+        lines.append(f"--{boundary}")
+        lines.append(f'Content-Disposition: form-data; name="{name}"')
+        lines.append("")
+        lines.append(value)
+    lines.append(f"--{boundary}--")
+    lines.append("")
+    return "\r\n".join(lines).encode()
+
+
+def test_multipart_part_count_cap_rejects():
+    """A form with more parts than `max_parts` raises RequestEntityTooLarge."""
+
+    boundary = "veloceboundary123"
+    body = _multipart_body(boundary, [(f"f{i}", "v") for i in range(10)])
+    ct = f"multipart/form-data; boundary={boundary}"
+    with pytest.raises(RequestEntityTooLarge):
+        parse_multipart_form(body, ct, max_parts=3)
+
+
+def test_multipart_part_size_cap_rejects():
+    """A part whose body exceeds `max_part_size` raises RequestEntityTooLarge."""
+
+    boundary = "veloceboundary123"
+    body = _multipart_body(boundary, [("big", "x" * 5000)])
+    ct = f"multipart/form-data; boundary={boundary}"
+    with pytest.raises(RequestEntityTooLarge):
+        parse_multipart_form(body, ct, max_part_size=1000)
+
+
+def test_multipart_within_caps_parses_normally():
+
+    boundary = "veloceboundary123"
+    body = _multipart_body(boundary, [("a", "1"), ("b", "2")])
+    ct = f"multipart/form-data; boundary={boundary}"
+    form = parse_multipart_form(body, ct, max_parts=10, max_part_size=1000)
+    assert form["a"] == "1"
+    assert form["b"] == "2"

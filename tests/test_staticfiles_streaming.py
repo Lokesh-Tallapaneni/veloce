@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-import pytest
-
+from tests.conftest import make_request
 from veloce import Veloce
 from veloce.contrib.staticfiles import StaticFiles
 from veloce.http.response import StreamingResponse
 from veloce.testclient import TestClient
 
 
-@pytest.mark.asyncio
 async def test_handle_returns_streamingresponse_for_large_files(tmp_path):
     """Files at or above `STREAM_THRESHOLD` come back as `StreamingResponse`.
 
@@ -23,9 +21,7 @@ async def test_handle_returns_streamingresponse_for_large_files(tmp_path):
     payload = b"x" * 4096
     (tmp_path / "big.bin").write_bytes(payload)
 
-    from veloce.http.request import Request
-
-    req = Request(method="GET", path="/s/big.bin", query_string="", headers={}, body=b"")
+    req = make_request(method="GET", path="/s/big.bin", query_string="", headers={}, body=b"")
     resp = await sf.handle(req)
 
     assert isinstance(resp, StreamingResponse)
@@ -37,15 +33,12 @@ async def test_handle_returns_streamingresponse_for_large_files(tmp_path):
     assert resp.headers["ETag"]
 
 
-@pytest.mark.asyncio
 async def test_handle_returns_buffered_response_for_small_files(tmp_path):
     """Files below the threshold keep the single-message buffered path."""
     sf = StaticFiles(directory=str(tmp_path), prefix="/s")
     (tmp_path / "small.txt").write_bytes(b"hi")
 
-    from veloce.http.request import Request
-
-    req = Request(method="GET", path="/s/small.txt", query_string="", headers={}, body=b"")
+    req = make_request(method="GET", path="/s/small.txt", query_string="", headers={}, body=b"")
     resp = await sf.handle(req)
 
     assert resp is not None
@@ -60,7 +53,10 @@ def test_streamed_static_file_reaches_client_intact(tmp_path):
     (tmp_path / "blob.bin").write_bytes(payload)
     sf = StaticFiles(directory=str(tmp_path), prefix="/static")
     sf.STREAM_THRESHOLD = 1024
-    app._static_handlers.append(sf)
+    # Through `mount`, not a bare append: mounting is what registers the
+    # handler as feature state and invalidates the compiled pipeline, so
+    # this exercises the supported registration path rather than around it.
+    app.mount("/static", sf)
 
     resp = TestClient(app).get("/static/blob.bin")
     assert resp.status_code == 200

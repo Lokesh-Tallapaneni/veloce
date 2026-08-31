@@ -14,28 +14,45 @@ built-in middleware live in the separate `veloce.middleware` package.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import Annotated, Any
 
+from typing_extensions import Doc
+
+from veloce.app._host import AppHost
 from veloce.middleware import BaseHTTPMiddleware, Middleware
 
 
-class MiddlewareMixin:
+class MiddlewareMixin(AppHost):
     """Middleware registration funnel, mixed into `Veloce`."""
 
-    if TYPE_CHECKING:  # pragma: no cover
-        # Attributes / methods the host application (Veloce) provides.
-        _assert_mutable: Callable[..., Any]
-        _register_feature_state: Any
-        _asgi_middleware: Any
-        _middlewares: Any
-        _middleware_records: Any
-        _middleware_seq: int
-        _mw_version: int
-        _any_priority: bool
-        _http_middleware_funcs: Any
-        _gen: int
+    @property
+    def middlewares(self) -> tuple[Middleware, ...]:
+        """The registered `Middleware` instances, in the order they will run.
 
-    def add_middleware(self, middleware: Any, **options: Any) -> None:
+        Registration order unless priorities were set, in which case this is the
+        priority order the pipeline actually uses. Checking whether a middleware
+        is installed - a plugin guarding against registering itself twice, or a
+        startup check that CORS is present - otherwise means reading a private
+        list.
+
+        Standard ASGI middleware classes are not here; they are wrapped around
+        the app when the ASGI stack is assembled rather than run per request by
+        this pipeline.
+
+        Usage::
+
+            if not any(isinstance(m, CORSMiddleware) for m in app.middlewares):
+                app.add_middleware(CORSMiddleware, allow_origins=["*"])
+        """
+        return tuple(self._middlewares)
+
+    def add_middleware(
+        self,
+        middleware: Annotated[
+            Any, Doc("A `Middleware` instance, a middleware class, or an ASGI wrapper class.")
+        ],
+        **options: Annotated[Any, Doc("Keyword arguments the middleware class is built with.")],
+    ) -> None:
         """Add middleware to the pipeline.
 
         Call forms:
@@ -131,6 +148,71 @@ class MiddlewareMixin:
                 "Register a BaseHTTPMiddleware via add_http_middleware()."
             )
 
+    def add_http_middleware(self, middleware: Any) -> Any:
+        """Register a middleware on the `(request, call_next) -> response` chain.
+
+        Accepts a `BaseHTTPMiddleware` instance, a bare callable, or a class
+        (which is instantiated with no args). Returns the registered object so
+        it can be used as a decorator.
+        """
+        # Class -> instance.
+        if isinstance(middleware, type):
+            middleware = middleware()
+        if not callable(middleware):
+            raise TypeError(
+                f"add_http_middleware expects a callable / instance / class, got {middleware!r}"
+            )
+        self._register_feature_state(self._http_middleware_funcs, middleware)
+        return middleware
+
+    def middleware(
+        self, middleware_class_or_type: type | str, **kwargs: Any
+    ) -> Callable[[Callable], Callable] | None:
+        """Add middleware - supports both a class form and a decorator form.
+
+        The two forms return different things: the decorator form returns the
+        decorator, and the **class form returns `None`** because it is a
+        statement, not a decorator. Writing `@app.middleware(CORSMiddleware)`
+        therefore fails at decoration rather than silently doing nothing.
+
+        Class form: app.middleware(CORSMiddleware, allow_origins=["*"])
+        Decorator form:
+            @app.middleware("http")
+            async def add_header(request, call_next):
+                response = await call_next(request)
+                response.headers["X-Custom"] = "value"
+                return response
+        """
+        if isinstance(middleware_class_or_type, str) and middleware_class_or_type == "http":
+            if kwargs:
+                # The decorator form registers a plain function and has nowhere to
+                # put a class-form option. Dropping them silently is the trap: the
+                # two most plausible - `priority=` and `name=` - are real
+                # `add_middleware` options, so an author gets unordered or unnamed
+                # middleware and nothing says so.
+                names = ", ".join(sorted(kwargs))
+                raise TypeError(
+                    f"@app.middleware('http') takes no options; got {names}. "
+                    f"Pass them to the class form, app.middleware(MyMiddleware, ...), "
+                    f"or to app.add_middleware(...)."
+                )
+
+            def decorator(func: Callable) -> Callable:
+                self._register_feature_state(self._http_middleware_funcs, func)
+                return func
+
+            return decorator
+        else:
+            if isinstance(middleware_class_or_type, str):
+                raise TypeError(
+                    "middleware(middleware_class) is the class form; "
+                    "@app.middleware('http') is the decorator form"
+                )
+            self.add_middleware(middleware_class_or_type, **kwargs)
+            # Explicit: the class form is a statement, and the annotation says
+            # so, so the `None` is written rather than left implicit.
+            return None
+
     def _register_middleware(self, instance: Middleware, priority: int) -> None:
         """Record a built `Middleware` instance and refresh the ordered chain.
 
@@ -160,45 +242,3 @@ class MiddlewareMixin:
             self._middlewares = [rec[2] for rec in ordered]
         else:
             self._middlewares.append(instance)
-
-    def add_http_middleware(self, middleware: Any) -> Any:
-        """Register a `BaseHTTPMiddleware`-style middleware on the
-        `(request, call_next) -> response` chain. Accepts an instance, a
-        bare callable, or a class (which is instantiated with no args).
-        Returns the registered object so it can be used as a decorator.
-        """
-        # Class -> instance.
-        if isinstance(middleware, type):
-            middleware = middleware()
-        if not callable(middleware):
-            raise TypeError(
-                f"add_http_middleware expects a callable / instance / class, got {middleware!r}"
-            )
-        self._register_feature_state(self._http_middleware_funcs, middleware)
-        return middleware
-
-    def middleware(self, middleware_class_or_type: type | str, **kwargs) -> Any:
-        """Add middleware - supports both a class form and a decorator form.
-
-        Class form: app.middleware(CORSMiddleware, allow_origins=["*"])
-        Decorator form:
-            @app.middleware("http")
-            async def add_header(request, call_next):
-                response = await call_next(request)
-                response.headers["X-Custom"] = "value"
-                return response
-        """
-        if isinstance(middleware_class_or_type, str) and middleware_class_or_type == "http":
-
-            def decorator(func: Callable) -> Callable:
-                self._register_feature_state(self._http_middleware_funcs, func)
-                return func
-
-            return decorator
-        else:
-            if isinstance(middleware_class_or_type, str):
-                raise TypeError(
-                    "middleware(middleware_class) is the class form; "
-                    "@app.middleware('http') is the decorator form"
-                )
-            self.add_middleware(middleware_class_or_type, **kwargs)

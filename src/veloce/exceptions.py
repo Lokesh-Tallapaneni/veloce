@@ -49,6 +49,21 @@ if TYPE_CHECKING:  # pragma: no cover
     from veloce.http.response import Response
 
 
+def _error_handler_key_error(key: Any) -> str:
+    """Build the message for a handler key that is neither a status nor a class.
+
+    Lives here rather than beside either registration site so the app-level and
+    blueprint-level checks cannot drift: the blueprint one was missing entirely,
+    and a non-class key sat in an MRO-matched table where it could never fire.
+    """
+    lead = "error handler keys must be an int status code or an exception class"
+    if isinstance(key, str):
+        if key.isdigit():
+            return f"{lead}; got the string {key!r}. Write {int(key)} without the quotes."
+        return f"{lead}; got the string {key!r}. Pass the class itself, not its name."
+    return f"{lead}; got {key!r}."
+
+
 class VeloceError(Exception):
     """Root of every exception Veloce raises.
 
@@ -106,7 +121,17 @@ class HTTPException(VeloceError):
             status_code = self.code
         self.status_code = status_code
         self.detail = detail or self.description
-        self.headers = headers or {}
+        # Copy on the way in. This mapping becomes the response's `headers`,
+        # which response middleware (CORS / Session / SecurityHeaders) mutates
+        # in place, so sharing it with the raiser lets one request's `Set-Cookie`
+        # or `Access-Control-Allow-Origin` accumulate on a caller-held dict and
+        # ship on every later raise. A security scheme that caches its
+        # `WWW-Authenticate` challenge once - the sensible thing to do, since it
+        # is request-invariant - is exactly the shape that leaks. Copying here
+        # rather than at each raise site means no scheme, present or future, has
+        # to know the rule. The cost lands only on a request that has already
+        # failed and is about to serialise an error body.
+        self.headers = dict(headers) if headers else {}
         super().__init__(self.detail)
 
 
@@ -116,25 +141,6 @@ class HTTPException(VeloceError):
 class BadRequest(HTTPException):
     code = HTTP_400_BAD_REQUEST
     description = "Bad Request"
-
-
-class FilesKeyError(VeloceError, KeyError):
-    """Descriptive miss on ``request.files`` raised in debug mode.
-
-    Subclasses ``KeyError`` so handlers that already catch the bare lookup
-    miss keep working, while the message explains the most common cause:
-    the field was submitted as a plain form value (missing
-    ``enctype="multipart/form-data"``) or the body was JSON rather than a
-    multipart upload. Only raised when ``app.debug`` is set; production
-    keeps the plain ``KeyError`` semantics.
-    """
-
-    def __init__(self, message: str) -> None:
-        self._message = message
-        super().__init__(message)
-
-    def __str__(self) -> str:
-        return self._message
 
 
 class Unauthorized(HTTPException):
@@ -200,6 +206,12 @@ class PreconditionFailed(HTTPException):
 class RequestEntityTooLarge(HTTPException):
     code = HTTP_413_REQUEST_ENTITY_TOO_LARGE
     description = "Content Too Large"
+
+    #: The `MAX_CONTENT_LENGTH` the body exceeded, when the raiser knows it.
+    #: Rendered into the error body so a streamed body's refusal describes
+    #: itself the same way the eager refusal paths do; `None` when a caller
+    #: raises this directly without a limit to report.
+    limit: int | None = None
 
 
 class RequestURITooLong(HTTPException):
@@ -320,6 +332,13 @@ class WebSocketDisconnect(VeloceError):
     """WebSocket connection closed."""
 
     def __init__(self, code: int = WS_1000_NORMAL_CLOSURE) -> None:
+        # Through `super()`, so the message does not depend on how the caller
+        # spelled the call. `BaseException.__new__` populates `args` from
+        # *positional* arguments only, so without this
+        # `WebSocketDisconnect(1006)` stringified as "1006" while
+        # `WebSocketDisconnect(code=1006)` and the default stringified as "" -
+        # the same close code logging differently depending on the call site.
+        super().__init__(code)
         self.code = code
 
 
@@ -350,6 +369,25 @@ class WebSocketRequestValidationError(RequestValidationError):
 
 
 # ── Other exception families ──────────────────────────────
+
+
+class FilesKeyError(VeloceError, KeyError):
+    """Descriptive miss on ``request.files`` raised in debug mode.
+
+    Subclasses ``KeyError`` so handlers that already catch the bare lookup
+    miss keep working, while the message explains the most common cause:
+    the field was submitted as a plain form value (missing
+    ``enctype="multipart/form-data"``) or the body was JSON rather than a
+    multipart upload. Only raised when ``app.debug`` is set; production
+    keeps the plain ``KeyError`` semantics.
+    """
+
+    def __init__(self, message: str) -> None:
+        self._message = message
+        super().__init__(message)
+
+    def __str__(self) -> str:
+        return self._message
 
 
 class BuildError(VeloceError, LookupError):
@@ -461,18 +499,43 @@ def exception_for_status(status_code: int) -> type[HTTPException]:
 # ── Default exception handlers ────────────────────────────
 
 
+def http_exception_payload(exc: Any) -> dict[str, Any]:
+    """Build the JSON body for an `HTTPException`, in one place.
+
+    Used by every path that renders one: the request cycle, the out-of-band
+    `handle_http_exception`, and the public `http_exception_handler`. They were
+    separate copies that disagreed - an exception with an empty detail rendered
+    `{"detail": ""}` through a request and `{"detail": "Error"}` elsewhere, and
+    only one of them carried a body-limit refusal's `limit`.
+
+    `exc.detail` already falls back to the subclass `description` at
+    construction, so no second fallback is applied here. A validation error's
+    structured `.errors` list is emitted verbatim.
+    """
+    structured = getattr(exc, "errors", None)
+    payload: dict[str, Any] = {
+        "detail": structured if structured is not None else exc.detail,
+        "status_code": exc.status_code,
+    }
+    # A body-limit refusal carries the limit it tripped, so a streamed body's
+    # 413 describes itself the same way the eager refusal paths do.
+    limit = getattr(exc, "limit", None)
+    if limit is not None:
+        payload["limit"] = limit
+    return payload
+
+
 async def http_exception_handler(request: Any, exc: HTTPException) -> Response:
     """Render an ``HTTPException`` as a JSON ``{"detail": ..., "status_code": ...}`` response.
 
     Honours ``exc.status_code``, ``exc.detail`` (falling back to the
     subclass description), and ``exc.headers``.
     """
-    status = exc.status_code or HTTP_500_INTERNAL_SERVER_ERROR
-    detail = exc.detail or getattr(exc, "description", "") or "Error"
+    payload = http_exception_payload(exc)
     return JSONResponse(
-        {"detail": detail, "status_code": status},
-        status_code=status,
-        headers=dict(exc.headers) if getattr(exc, "headers", None) else None,
+        payload,
+        status_code=payload["status_code"],
+        headers=dict(exc.headers) if exc.headers else None,
     )
 
 
@@ -489,7 +552,7 @@ async def request_validation_exception_handler(
 # Backward-compat re-export - Aborter moved to veloce.helpers.
 def __getattr__(name: str) -> Any:
     if name == "Aborter":
-        from veloce.helpers import Aborter
+        from veloce.helpers import Aborter  # breaks exceptions->helpers cycle
 
         return Aborter
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

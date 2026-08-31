@@ -74,9 +74,10 @@ declaration documents the response in `/docs`.
 
 Struct request bodies and declared `response_model` structs — including
 `list[Struct]` — emit component schemas under `components.schemas`, with nested
-structs resolved by `$ref`, at parity with Pydantic models. A handler that only
-*returns* a struct without declaring `response_model=` gets a generic response
-schema, the same as a Pydantic handler that omits `response_model=`.
+structs resolved by `$ref`, at parity with Pydantic models. A return annotation
+supplies the response model here as it does for Pydantic, so a handler annotated
+`-> list[User]` documents an array of `$ref` without declaring
+`response_model=`.
 
 ## Parity and the one difference
 

@@ -1,10 +1,10 @@
-"""TrustedHost wildcards + HTTPSRedirect scope.scheme + 308 (M6, M7)."""
+"""TrustedHost wildcards + HTTPSRedirect scope.scheme + 308."""
 
 from __future__ import annotations
 
 import pytest
 
-from veloce import HTTPSRedirectMiddleware, TrustedHostMiddleware, Veloce
+from veloce import HTTPSRedirectMiddleware, Request, TrustedHostMiddleware, Veloce
 from veloce.testclient import TestClient
 
 # ── M6: TrustedHostMiddleware wildcards ────────────────────────────────
@@ -129,13 +129,10 @@ def test_redirect_includes_query_string():
     assert "?a=1&b=2" in loc
 
 
-def test_no_redirect_when_scope_scheme_https():
+async def test_no_redirect_when_scope_scheme_https():
     """If the ASGI server says the transport is already HTTPS, no redirect."""
     # We can't easily inject scope.scheme through TestClient, so verify via
     # direct dispatch of a synthetic scope.
-    import asyncio
-
-    from veloce import Request
 
     app = Veloce(debug=True, openapi_url=None)
     app.add_middleware(HTTPSRedirectMiddleware())
@@ -152,7 +149,7 @@ def test_no_redirect_when_scope_scheme_https():
         body=b"",
         scope={"type": "http", "scheme": "https"},
     )
-    resp = asyncio.new_event_loop().run_until_complete(app.handle_request(req))
+    resp = await app.handle_request(req)
     assert resp.status_code == 200
 
 

@@ -11,9 +11,13 @@ through. The fix routes a `StaticFiles` instance into the
 
 from __future__ import annotations
 
+import os
+import warnings
+
 import pytest
 
 from veloce import Veloce
+from veloce.contrib import staticfiles
 from veloce.contrib.staticfiles import StaticFiles
 from veloce.testclient import TestClient
 
@@ -97,8 +101,6 @@ def test_staticfiles_missing_directory_warns_when_opt_out(tmp_path):
 
 
 def test_staticfiles_existing_directory_ok(tmp_path):
-    import warnings
-
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         StaticFiles(directory=str(tmp_path))  # no raise, no warning
@@ -118,10 +120,6 @@ def test_mount_static_missing_directory_opt_out_warns():
 
 def test_staticfiles_checks_search_perm_not_read_by_default(tmp_path, monkeypatch):
     # Serving a known file needs X_OK (search); R_OK (read) is only for listing.
-    import os
-
-    from veloce.contrib import staticfiles
-
     seen = {}
 
     def _spy(path, mode):
@@ -134,10 +132,6 @@ def test_staticfiles_checks_search_perm_not_read_by_default(tmp_path, monkeypatc
 
 
 def test_staticfiles_directory_index_requires_read_and_search(tmp_path, monkeypatch):
-    import os
-
-    from veloce.contrib import staticfiles
-
     seen = {}
     monkeypatch.setattr(staticfiles.os, "access", lambda p, m: seen.update(mode=m) or True)
     StaticFiles(directory=str(tmp_path), directory_index=True)

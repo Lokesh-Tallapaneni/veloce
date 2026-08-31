@@ -20,15 +20,20 @@ import asyncio
 import base64
 import contextlib
 import os
+import struct
 
 import httptools
 
+from tests._ws_frames import client_frame as _client_frame
 from veloce import Veloce, WebSocket
 from veloce.serving.protocol import HttpProtocol
 
 
 class _FakeTransport(asyncio.Transport):
     """A full-duplex transport that records writes and models a write high mark.
+
+    Not `tests/_protocol.py`'s shared transport: this one drives `pause_writing`
+    and `resume_writing` on the protocol, which is the behaviour under test.
 
     `writelines` and `write` append to `outbound` so frames the handler produces
     are observable. To model a slow-reading peer, the transport invokes the
@@ -273,19 +278,21 @@ def test_websocket_queue_full_closes_connection_with_1009():
             headers={},
             recv_queue_maxsize=2,
         )
-        # A tiny unfragmented text frame: FIN=1, opcode=1, payload=b"x".
-        # Frame bytes: 0x81, 0x01, b'x'.
-        frame = b"\x81\x01x"
+        # RFC 6455 Sec. 5.1: a client-to-server frame MUST be masked. An
+        # unmasked one is rejected as a protocol error before its length is
+        # resolved, so it never reaches the queue this test is about.
+        frame = _client_frame(0x1, b"x")
         # Fill the queue, then deliver one more — the third one
         # would have raised QueueFull; instead the WS closes itself.
         ws.feed_data(frame)
         ws.feed_data(frame)
         ws.feed_data(frame)
+        assert ws._receive_queue.qsize() == 2, "the queue never filled"
         assert ws._closed is True
         assert closed == [True]
-        # A Close frame was sent first — opcode 0x8 with code 1009 in
-        # the payload (big-endian 16-bit).
         assert written, "expected a Close frame on the way out"
         assert written[-1][0] & 0x0F == 0x8
+        # Close payload: a big-endian 16-bit code. 1009 is Message Too Big.
+        assert struct.unpack("!H", written[-1][2:4])[0] == 1009
 
     asyncio.run(go())

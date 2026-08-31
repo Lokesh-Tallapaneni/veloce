@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 
+from tests._mcp import METHOD_NOT_FOUND
 from veloce import MCPContext, Veloce
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.session import MCPSession
@@ -18,7 +19,7 @@ MODERN = {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}
 LOG_LEVEL_KEY = "io.modelcontextprotocol/logLevel"
 
 
-def _app(sent: list[dict]) -> Veloce:
+def _app() -> Veloce:
     app = Veloce(title="RemovalProbe", version="1.0.0", openapi_url=None)
 
     @app.mcp_tool(description="Emit one log line at each level")
@@ -35,7 +36,9 @@ def _app(sent: list[dict]) -> Veloce:
 class Harness:
     def __init__(self) -> None:
         self.sent: list[dict] = []
-        self.server = MCPServer(_app(self.sent))
+        self.server = MCPServer(_app())
+        # What collects is the notifier, not the app: the factory used to take
+        # `self.sent` and ignore it, which read as a wiring that is not there.
         self.server.set_notifier(self.send)
         self.session = MCPSession()
 
@@ -72,7 +75,7 @@ async def test_a_removed_method_is_not_found_for_a_modern_client(method: str):
         },
         harness.session,
     )
-    assert response["error"]["code"] == -32601
+    assert response["error"]["code"] == METHOD_NOT_FOUND
 
 
 @pytest.mark.parametrize("method", ["ping", "logging/setLevel"])

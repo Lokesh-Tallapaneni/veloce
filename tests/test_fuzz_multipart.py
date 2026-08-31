@@ -13,7 +13,8 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from veloce.exceptions import BadRequest, RequestEntityTooLarge
-from veloce.http.datastructures import FormData, parse_multipart_form
+from veloce.http.datastructures import FormData
+from veloce.http.formparsers import parse_multipart_form
 
 pytestmark = pytest.mark.fuzz
 
@@ -58,13 +59,20 @@ _BASE_BODY = (
 
 @_FUZZ
 @given(
-    positions=st.lists(st.integers(min_value=0, max_value=len(_BASE_BODY) - 1), max_size=6),
-    replacements=st.lists(st.integers(min_value=0, max_value=255), max_size=6),
+    edits=st.lists(
+        st.tuples(
+            st.integers(min_value=0, max_value=len(_BASE_BODY) - 1),
+            st.integers(min_value=0, max_value=255),
+        ),
+        min_size=1,
+        max_size=6,
+    ),
 )
-def test_corrupted_valid_body_never_crashes(positions: list[int], replacements: list[int]) -> None:
+def test_corrupted_valid_body_never_crashes(edits: list[tuple[int, int]]) -> None:
     """Flipping random bytes in a well-formed body yields only declared outcomes."""
     corrupted = bytearray(_BASE_BODY)
-    for pos, rep in zip(positions, replacements):
+    # One draw of pairs; see the note in `test_fuzz_signing.py`.
+    for pos, rep in edits:
         corrupted[pos] = rep
     content_type = f"multipart/form-data; boundary={_BOUNDARY}"
     try:

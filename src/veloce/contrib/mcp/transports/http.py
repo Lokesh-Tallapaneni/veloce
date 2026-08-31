@@ -10,11 +10,13 @@ stream that carries the call's progress / log notifications followed by the
 JSON-RPC response; otherwise a single JSON response is returned. A message that
 needs no reply (a notification or a response) is answered with ``202 Accepted``.
 
-Before dispatch the transport enforces two spec MUSTs: a present ``Origin`` outside
+Before dispatch the transport enforces three spec MUSTs: a present ``Origin`` outside
 the configured allowlist is rejected ``403`` (DNS-rebinding defense; a missing
-``Origin`` is allowed), and a present ``MCP-Protocol-Version`` header naming an
+``Origin`` is allowed), a present ``MCP-Protocol-Version`` header naming an
 unsupported revision is rejected ``400`` (a missing header keeps the negotiated
-version). Each violation raises an `MCPError` subclass carrying its HTTP status.
+version), and on the modern revision the standard request headers are required and
+cross-checked against the body they label (``400``, JSON-RPC ``-32020``). Each
+violation raises an `MCPError` subclass carrying its HTTP status.
 
 Session management is opt-in (``sessions=True``): the server mints an
 ``Mcp-Session-Id`` on the ``initialize`` result, then requires it on every later
@@ -46,36 +48,59 @@ scheme) - the transport adds no auth of its own.
 This transport satisfies the `Transport` contract through its per-request outbound
 sink (`send` in `_stream_response`): the SSE generator drains a queue the sink
 feeds, so one-way notifications reach the client while the call is in flight.
+
+This module owns the admission and response helpers both HTTP wires use, so the
+two cannot drift apart: `sse.py` imports `_protocol_response`, `_validate_origin`,
+`_authenticate`, `register_metadata_route` and `_SSE_RETRY_MS` from here rather
+than carrying its own. Changing one of them changes the legacy transport too.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import secrets
 from collections.abc import Sequence
 from itertools import count
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
-from veloce import status
-from veloce.contrib.mcp.auth import PROTECTED_RESOURCE_METADATA_PATH, MCPAuth
+import veloce.status as status
+from veloce.contrib.mcp._helpers import encode_envelope, transport_route_name
+from veloce.contrib.mcp._posture import record_endpoint
+from veloce.contrib.mcp.auth import MCPAuth
 from veloce.contrib.mcp.context import _transport_var
 from veloce.contrib.mcp.errors import (
     _JSONRPC_FORBIDDEN,
     _JSONRPC_INTERNAL_ERROR,
-    _JSONRPC_INVALID_REQUEST,
+    HeaderMismatchError,
     MCPError,
-    OriginNotAllowedError,
     ProtocolVersionError,
     SessionNotFoundError,
     SessionRequiredError,
     _error,
+    invalid_request_error,
+    parse_error,
 )
-from veloce.contrib.mcp.server import _SERVED_VERSION_SET, MCPServer, _notifier_var
+from veloce.contrib.mcp.server import (
+    _SERVED_VERSION_SET,
+    META_PROTOCOL_VERSION,
+    MCPServer,
+    _notifier_var,
+    _requested_version,
+    is_modern_version,
+)
 from veloce.contrib.mcp.session import MCPSession
-from veloce.contrib.mcp.transports.event_store import SSEEventStore
+from veloce.contrib.mcp.transports._common import (
+    _SSE_RETRY_MS,
+    _authenticate,
+    _protocol_response,
+    _validate_origin,
+    register_metadata_route,
+)
+from veloce.contrib.mcp.transports.event_store import _EVENT_ID_SEP, SSEEventStore
 from veloce.contrib.mcp.transports.session_store import HttpSessionStore, SessionBackend
-from veloce.http.response import JSONResponse, Response
+from veloce.http.response import Response
 from veloce.principal import Principal, current_principal, set_principal
 from veloce.sse import EventSourceResponse, ServerSentEvent
 
@@ -84,23 +109,20 @@ if TYPE_CHECKING:  # pragma: no cover
 
 _logger = logging.getLogger(__name__)
 
-# JSON-RPC 2.0 Sec. 5.1 parse error - a body that is not a single JSON object.
-_JSONRPC_PARSE_ERROR = -32700
-
 # Header carrying the session id when session management is enabled (MCP
 # 2025-06-18 Streamable HTTP transport: the server assigns it on the initialize
 # result and the client echoes it on every later request).
 _SESSION_ID_HEADER = "Mcp-Session-Id"
 
-# Reconnect hint (milliseconds) emitted as the SSE `retry` field before a stream
-# closes, so a disconnected client knows how long to wait before reconnecting
-# (MCP 2025-11-25 transport: "send an SSE event with a standard retry field
-# before closing").
-_SSE_RETRY_MS = 3000
-
 # Header a resuming client sends to name the last event it received, so the
 # server replays only what came after it (WHATWG SSE / MCP transport resumability).
 _LAST_EVENT_ID_HEADER = "Last-Event-ID"
+# The same name as the lower-case wire key, encoded once at import.
+_RAW_LAST_EVENT_ID = _LAST_EVENT_ID_HEADER.lower().encode("latin-1")
+
+# The lower-case wire key for the bearer credential, encoded once at import like
+# the one above. `_peek_header_key` compares it against the raw header tuples,
+# so reading the token never materialises the whole header mapping.
 
 # Monotonic source of SSE event ids for the non-resumable priming event. The id
 # makes the stream's first frame addressable; when resumability is off the id is
@@ -115,6 +137,12 @@ _STREAM_ID_ENTROPY_BYTES = 12
 # Sentinel marking the end of an SSE response stream (the runner has produced the
 # call's notifications and final response).
 _STREAM_END = object()
+
+
+# ── Response envelopes ────────────────────────────────────
+
+
+# ── Route registration ────────────────────────────────────
 
 
 def register_http_transport(
@@ -168,11 +196,39 @@ def register_http_transport(
         # session management is on); GET resumes a dropped stream when resumability
         # is on (it carries Last-Event-ID), else there is no standalone
         # server-to-client stream this server keeps, so a GET is answered 405.
+        #
+        # Admission control runs here, above the verb switch, rather than inside
+        # each verb's handler. Every verb is subject to the same three rules, and a
+        # check that lives in a handler is one a newly added verb can be written
+        # without - which is how a `DELETE` came to terminate a session with no
+        # credential and no `Origin` check at all. Ordering is deliberate: the two
+        # header checks are cheap and unconditional, so a request that fails them
+        # never reaches token verification.
+        try:
+            _validate_origin(request, allowed_origins)
+            _validate_protocol_version(request)
+        except MCPError as exc:
+            return _protocol_response(exc.to_error(None), status_code=exc.http_status)
+
+        # Names the transport for `MCPContext.transport`. Set on the request's own
+        # context rather than inside the streaming runner: a plain JSON POST never
+        # enters that branch, and the runner inherits this context anyway.
+        _transport_var.set("http")
+
+        if auth is not None:
+            principal, challenge = await _authenticate(auth, request)
+            if challenge is not None:
+                return challenge
+            # Publish the identity for the duration of this request so the
+            # dispatched tool / resource (and any business dependency) reads it
+            # through `current_principal`; the SSE runner task copies this context.
+            set_principal(principal)
+
         if request.method == "DELETE":
             return await _handle_delete(store, request)
         if request.method == "GET":
-            return _handle_get(event_store, request, allowed_origins)
-        return await _handle_http(server, request, auth, allowed_origins, store, event_store)
+            return await _handle_get(event_store, request, store)
+        return await _handle_http(server, request, store, event_store)
 
     app.add_route(
         path,
@@ -180,85 +236,45 @@ def register_http_transport(
         methods=["POST", "GET", "DELETE"],
         include_in_schema=False,
         exclude_middleware=exclude_middleware,
+        name=transport_route_name("mcp_endpoint", path),
     )
+    record_endpoint(app, "http", path, auth, allowed_origins)
 
-    if auth is not None:
-
-        async def mcp_metadata(request: Request) -> Response:
-            return JSONResponse(auth.metadata())
-
-        app.add_route(
-            PROTECTED_RESOURCE_METADATA_PATH,
-            mcp_metadata,
-            methods=["GET"],
-            include_in_schema=False,
-            exclude_middleware=exclude_middleware,
-        )
+    register_metadata_route(app, auth, exclude_middleware)
 
 
 async def _handle_http(
     server: MCPServer,
     request: Request,
-    auth: MCPAuth | None,
-    allowed_origins: frozenset[str] | None = None,
     store: HttpSessionStore | None = None,
     event_store: SSEEventStore | None = None,
 ) -> Response:
-    """Authenticate, then dispatch one JSON-RPC message from an HTTP POST body."""
-    # Origin and protocol-version checks are spec MUSTs that precede dispatch; a
-    # violation raises an `MCPError` subclass carrying its own HTTP status, so the
-    # two checks share one rejection path (a JSON-RPC error body at that status).
-    try:
-        _validate_origin(request, allowed_origins)
-        _validate_protocol_version(request)
-    except MCPError as exc:
-        return JSONResponse(exc.to_error(None), status_code=exc.http_status)
+    """Dispatch one JSON-RPC message from an HTTP POST body.
 
-    # Names the transport for `MCPContext.transport`. Set on the request's own
-    # context rather than inside the streaming runner: a plain JSON POST never
-    # enters that branch, and the runner inherits this context anyway.
-    _transport_var.set("http")
-
-    if auth is not None:
-        principal, challenge = await _authenticate(auth, request)
-        if challenge is not None:
-            return challenge
-        # Publish the identity for the duration of this request so the dispatched
-        # tool / resource (and any business dependency) reads it through
-        # `current_principal`; the SSE runner task copies this context.
-        set_principal(principal)
-
+    The caller has already run admission control (`Origin`, `MCP-Protocol-Version`,
+    authentication) and published the principal.
+    """
     try:
         message = await request.json()
     except Exception:
-        return JSONResponse(
-            _error(None, _JSONRPC_PARSE_ERROR, "Parse error"),
-            status_code=status.HTTP_400_BAD_REQUEST,
-        )
+        return _protocol_response(parse_error(), status_code=status.HTTP_400_BAD_REQUEST)
     if not request.data:
         # No body at all is no JSON document to read, which is the parse failure
         # rather than a well-formed document of the wrong shape.
-        return JSONResponse(
-            _error(None, _JSONRPC_PARSE_ERROR, "Parse error"),
-            status_code=status.HTTP_400_BAD_REQUEST,
-        )
+        return _protocol_response(parse_error(), status_code=status.HTTP_400_BAD_REQUEST)
     if not isinstance(message, dict):
         # It parsed, so the failure is the shape rather than the JSON. JSON-RPC
         # keeps these apart: -32700 says the text could not be read, -32600 says
         # what was read is not a Request object.
-        return JSONResponse(
-            _error(None, _JSONRPC_INVALID_REQUEST, "Invalid Request"),
-            status_code=status.HTTP_400_BAD_REQUEST,
-        )
+        return _protocol_response(invalid_request_error(), status_code=status.HTTP_400_BAD_REQUEST)
 
-    # When session management is on, every request except `initialize` must echo a
-    # live session id (HTTP 400 if missing, 404 once terminated); `initialize`
-    # mints a new id returned on its response. Each id owns a real `MCPSession`, so
-    # the connection is a first-class server connection (capabilities, in-flight
-    # scope, subscriptions, lifecycle). The stateless default uses a fresh
-    # per-request session instead: it carries no id and lives only for this POST,
-    # which still isolates the in-flight registry so a colliding JSON-RPC id from a
-    # concurrent POST cannot cancel this one.
+    # The standard headers label the body a proxy forwarded without parsing, so
+    # they are cross-checked before anything acts on either one.
+    try:
+        _validate_standard_headers(request, message)
+    except MCPError as exc:
+        return _protocol_response(exc.to_error(message.get("id")), status_code=exc.http_status)
+
     is_initialize = message.get("method") == "initialize"
     session_id: str | None = None
     session: MCPSession
@@ -266,7 +282,7 @@ async def _handle_http(
         try:
             session_id, session = await _bind_session(store, request, is_initialize)
         except MCPError as exc:
-            return JSONResponse(exc.to_error(message.get("id")), status_code=exc.http_status)
+            return _protocol_response(exc.to_error(message.get("id")), status_code=exc.http_status)
     else:
         # A throwaway session for this POST only: it isolates the in-flight registry
         # (so a concurrent POST's colliding id cannot cancel this one) but is not a
@@ -275,10 +291,26 @@ async def _handle_http(
         session = MCPSession(persistent=False)
 
     is_request = "id" in message and isinstance(message.get("method"), str)
-    accepts_sse = "text/event-stream" in request.headers.get("accept", "")
-    if is_request and accepts_sse:
+    # Through the framework's own parser rather than a substring test, which
+    # read `text/event-streaming` as a match and ignored `q=0` - so a client
+    # that explicitly refused the stream was handed one. `quality_explicit`
+    # excludes a `*/*` wildcard, keeping the existing choice of JSON unless the
+    # stream was actually asked for.
+    accepts_sse = request.accept_mimetypes.quality_explicit("text/event-stream") > 0
+    # The JSON test sits inside the branch so a JSON-only client - the majority -
+    # never pays for it. A client that offered the stream but NOT JSON accepts
+    # only the stream, and the streamless shortcut must not answer such a client
+    # in a type it refused.
+    if (
+        is_request
+        and accepts_sse
+        and (
+            request.accept_mimetypes.quality("application/json") <= 0
+            or _needs_stream(server, message, event_store)
+        )
+    ):
         return _stream_response(
-            server, message, current_principal(), session, session_id, event_store
+            server, message, current_principal(), session, session_id, event_store, store
         )
 
     response = await server.handle_message(message, session)
@@ -298,7 +330,7 @@ async def _handle_http(
     if isinstance(error, dict) and error.get("code") == _JSONRPC_FORBIDDEN:
         scopes = (error.get("data") or {}).get("requiredScopes") or []
         return _forbidden(response, scopes)
-    return _with_session(JSONResponse(response), session_id)
+    return _with_session(_protocol_response(response), session_id)
 
 
 async def _bind_session(
@@ -313,7 +345,7 @@ async def _bind_session(
     """
     if is_initialize:
         return await store.create()
-    session_id = request.headers.get("mcp-session-id")
+    session_id = request._peek_header_key(b"mcp-session-id")
     if not session_id:
         raise SessionRequiredError("missing Mcp-Session-Id header")
     session = await store.resolve(session_id)
@@ -335,22 +367,27 @@ async def _handle_delete(store: HttpSessionStore | None, request: Request) -> Re
     A `DELETE` is meaningful only under session management: without it the verb is
     unsupported (HTTP 405). With it, a live id is terminated (HTTP 204) and a
     missing / already-terminated id is HTTP 404.
+
+    The caller has already run admission control, so terminating a session
+    requires the same credential and passes the same `Origin` check as any
+    other request to this endpoint.
     """
     if store is None:
         return Response(status_code=status.HTTP_405_METHOD_NOT_ALLOWED, headers={"Allow": "POST"})
-    session_id = request.headers.get("mcp-session-id")
+    session_id = request._peek_header_key(b"mcp-session-id")
     if not session_id or not await store.terminate(session_id):
-        return JSONResponse(
+        return _protocol_response(
             SessionNotFoundError("unknown or terminated session").to_error(None),
             status_code=status.HTTP_404_NOT_FOUND,
         )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-def _handle_get(
-    event_store: SSEEventStore | None,
-    request: Request,
-    allowed_origins: frozenset[str] | None = None,
+# ── Verb handlers ─────────────────────────────────────────
+
+
+async def _handle_get(
+    event_store: SSEEventStore | None, request: Request, store: HttpSessionStore | None
 ) -> Response:
     """Resume a dropped SSE stream from `Last-Event-ID`, or answer 405.
 
@@ -359,26 +396,33 @@ def _handle_get(
     events that one stream produced after it (scoped to that stream, never another
     POST's). Without resumability, or without the header, there is no standalone
     server-push stream, so the verb is unsupported (HTTP 405).
-    """
-    # The Origin and protocol-version checks are the same spec MUSTs the POST path
-    # runs; a resume must not bypass the DNS-rebinding defense, so they precede any
-    # replay. A violation raises an `MCPError` subclass carrying its HTTP status.
-    try:
-        _validate_origin(request, allowed_origins)
-        _validate_protocol_version(request)
-    except MCPError as exc:
-        return JSONResponse(exc.to_error(None), status_code=exc.http_status)
 
+    Under session management the id is checked first, through the same
+    `_bind_session` gate a `POST` goes through: a missing header is HTTP 400 and a
+    terminated or unknown one HTTP 404. `SSEEventStore` has no session dimension,
+    so without this a client whose session had been `DELETE`d - or evicted by the
+    idle TTL or the `max_sessions` reclaim - could still replay that stream's
+    buffered payloads, tool results included, from a session `DELETE` next door
+    already answered 404 for.
+
+    The caller has already run admission control, so a replay cannot bypass the
+    DNS-rebinding defense or reach an unauthenticated client.
+    """
     if event_store is None:
         return _method_not_allowed()
-    last_event_id = request.headers.get(_LAST_EVENT_ID_HEADER)
+    last_event_id = request._peek_header_key(_RAW_LAST_EVENT_ID)
     if not last_event_id:
         return _method_not_allowed()
+    if store is not None:
+        try:
+            await _bind_session(store, request, is_initialize=False)
+        except MCPError as exc:
+            return _protocol_response(exc.to_error(None), status_code=exc.http_status)
     missed = event_store.replay_after(last_event_id)
 
     async def events() -> Any:
         for event_id, payload in missed:
-            yield ServerSentEvent.json(payload, id=event_id)
+            yield ServerSentEvent(data=encode_envelope(payload).decode(), id=event_id)
         # Close the resumed stream with the same reconnect hint a live stream uses,
         # so a second drop reconnects on the same schedule.
         yield ServerSentEvent(retry=_SSE_RETRY_MS)
@@ -386,18 +430,7 @@ def _handle_get(
     return EventSourceResponse(events())
 
 
-def _validate_origin(request: Request, allowed_origins: frozenset[str] | None) -> None:
-    """Reject a present `Origin` outside the allowlist (DNS-rebinding defense).
-
-    A missing `Origin` (a non-browser client) is allowed; a browser-set `Origin`
-    not in `allowed_origins` raises `OriginNotAllowedError` (HTTP 403). Validation
-    is skipped entirely when no allowlist is configured.
-    """
-    if allowed_origins is None:
-        return
-    origin = request.headers.get("origin")
-    if origin is not None and origin not in allowed_origins:
-        raise OriginNotAllowedError("origin not allowed")
+# ── Admission control ─────────────────────────────────────
 
 
 def _validate_protocol_version(request: Request) -> None:
@@ -408,9 +441,153 @@ def _validate_protocol_version(request: Request) -> None:
     `initialize` stands); a present value this server does not speak raises
     `ProtocolVersionError`.
     """
-    version = request.headers.get("mcp-protocol-version")
+    version = request._peek_header_key(b"mcp-protocol-version")
     if version is not None and version not in _SERVED_VERSION_SET:
         raise ProtocolVersionError(f"unsupported MCP-Protocol-Version: {version}")
+
+
+# The methods whose `Mcp-Name` header labels a body value, and the param that
+# carries it. Every other method sends no `Mcp-Name` at all.
+_NAME_BEARING_METHODS = {
+    "tools/call": "name",
+    "prompts/get": "name",
+    "resources/read": "uri",
+}
+
+# A `Mcp-Name` value that is not plain printable ASCII - and any value that would
+# itself read as the sentinel - travels base64 between these two markers, which
+# the revision requires to be spelled exactly this way, in lowercase.
+_NAME_B64_PREFIX = "=?base64?"
+_NAME_B64_SUFFIX = "?="
+
+
+def _decode_standard_name(raw: str) -> str:
+    """Return the value `Mcp-Name` carries, decoding the base64 sentinel form."""
+    if raw.startswith(_NAME_B64_PREFIX) and raw.endswith(_NAME_B64_SUFFIX):
+        encoded = raw[len(_NAME_B64_PREFIX) : -len(_NAME_B64_SUFFIX)]
+        try:
+            return base64.b64decode(encoded, validate=True).decode("utf-8")
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise HeaderMismatchError("Mcp-Name is not valid base64") from exc
+    if raw != raw.strip() or not raw.isascii() or not raw.isprintable():
+        raise HeaderMismatchError("Mcp-Name carries characters that must travel base64-encoded")
+    return raw
+
+
+def _require_header(request: Request, name: str) -> str:
+    """Return a required standard header, rejecting the request when it is absent."""
+    value: str | None = request._peek_header_key(name.lower().encode("latin-1"))
+    if value is None:
+        raise HeaderMismatchError(f"{name} is required on this protocol revision")
+    return value
+
+
+def _needs_stream(
+    server: MCPServer, message: dict[str, Any], event_store: SSEEventStore | None
+) -> bool:
+    """Whether this request can produce anything beyond its own single reply.
+
+    The spec lets a POST carrying a request be answered either as JSON or as an
+    SSE stream, and tells clients to accept both - so keying the choice on the
+    `Accept` header alone means a conformant client always pays for stream
+    framing, including for a call that emits exactly one message. Measured, that
+    framing is a third of the cost of a plain tool call.
+
+    A `tools/call` produces extra messages only when the handler can reach the
+    `MCPContext` (progress, logging, sampling, elicitation), which the registry
+    settles per tool at registration.
+
+    A handler reaching the connection WITHOUT binding an `MCPContext` - through
+    `MCPServer.send_to_current_connection` - is not visible to that walk; such a
+    tool should be registered with `dispatches_tools=True`. Everything else keeps the stream: another
+    method, a tool that can reach the context, a client that asked for progress,
+    or a server configured for resumability, whose replay needs the event ids
+    only the stream carries.
+    """
+    if event_store is not None:
+        return True
+    if getattr(server, "_connections", None) is not None:
+        # Subscriptions are enabled, and `GET` on this endpoint only serves a
+        # resumption - so an open POST stream is a subscribed client's delivery
+        # window for `notifications/resources/updated`. Closing that window to
+        # save the framing would cost the client updates it asked for.
+        return True
+    if message.get("method") != "tools/call":
+        return True
+    params = message.get("params")
+    if not isinstance(params, dict):
+        return True
+    if "task" in params:
+        # A task-augmented call is answered with a `CreateTaskResult` and then
+        # runs detached, emitting `notifications/tasks/status` as it settles.
+        # Those follow the reply rather than accompanying it, so the channel has
+        # to be there: answering this one as a lone JSON document is how a
+        # client stops hearing that its task finished.
+        return True
+    meta = params.get("_meta")
+    if isinstance(meta, dict) and meta.get("progressToken") is not None:
+        # The client asked to be kept informed; give it the channel to be
+        # informed on, whatever this tool turns out to do.
+        return True
+    name = params.get("name")
+    if not isinstance(name, str):
+        return True
+    # An unknown name falls through to the normal error path, which is a single
+    # message either way.
+    tool = server.registry.resolve(name, _requested_version(params))
+    return tool is None or tool.may_stream
+
+
+def _validate_standard_headers(request: Request, message: dict[str, Any]) -> None:
+    """Cross-check the standard request headers against the body they label.
+
+    A modern request states its method - and, for the three methods that act on
+    a named thing, that name - in headers as well as in the body, so a proxy can
+    route without parsing JSON. The server executes the body, so the two MUST
+    agree: a request whose header says one thing and whose body says another is
+    rejected rather than served (MCP 2026-07-28 Streamable HTTP, "Standard
+    Request Headers" and "Server Validation").
+
+    Earlier revisions defined none of these headers, so a handshake-era request
+    is left alone; the request is modern when either end names a modern revision,
+    because a header a proxy trusted is exactly what must not go unchecked.
+    """
+    method = message.get("method")
+    if not isinstance(method, str):
+        # Not a request object at all - the shape check downstream owns it.
+        return
+    header_version = request._peek_header_key(b"mcp-protocol-version")
+    params = message.get("params")
+    meta = params.get("_meta") if isinstance(params, dict) else None
+    raw_body_version = meta.get(META_PROTOCOL_VERSION) if isinstance(meta, dict) else None
+    body_version = raw_body_version if isinstance(raw_body_version, str) else None
+    # The gate opens on the revision each half *names*, not on the mere presence
+    # of a `_meta` version. A body naming a handshake-era revision is a
+    # handshake-era request, and holding it to headers that revision never
+    # defined would refuse a call that spelled its version correctly in both
+    # places.
+    if not is_modern_version(header_version) and not is_modern_version(body_version):
+        return
+
+    if not is_modern_version(header_version):
+        raise HeaderMismatchError("MCP-Protocol-Version is required on this protocol revision")
+    if body_version is not None and body_version != header_version:
+        raise HeaderMismatchError(
+            "MCP-Protocol-Version does not match the version in the request body"
+        )
+
+    if _require_header(request, "mcp-method") != method:
+        raise HeaderMismatchError("Mcp-Method does not match the method in the request body")
+
+    field = _NAME_BEARING_METHODS.get(method)
+    if field is None:
+        return
+    body_name = params.get(field) if isinstance(params, dict) else None
+    if _decode_standard_name(_require_header(request, "mcp-name")) != body_name:
+        raise HeaderMismatchError(f"Mcp-Name does not match params.{field} in the request body")
+
+
+# ── Refusal responses ─────────────────────────────────────
 
 
 def _method_not_allowed() -> Response:
@@ -423,52 +600,14 @@ def _forbidden(response: dict[str, Any], scopes: list[str]) -> Response:
     parts = ['Bearer error="insufficient_scope"']
     if scopes:
         parts.append(f'scope="{" ".join(scopes)}"')
-    return JSONResponse(
+    return _protocol_response(
         response,
         status_code=status.HTTP_403_FORBIDDEN,
         headers={"WWW-Authenticate": ", ".join(parts)},
     )
 
 
-async def _authenticate(
-    auth: MCPAuth, request: Request
-) -> tuple[Principal | None, Response | None]:
-    """Validate the request's bearer token; return `(principal, challenge)`.
-
-    A missing or invalid token yields a `401` challenge; a valid token missing the
-    endpoint's required scopes yields a `403`. On success the challenge is `None`.
-    """
-    header = request.headers.get("authorization", "")
-    scheme, _, raw_token = header.partition(" ")
-    token = raw_token.strip()
-    if scheme.lower() != "bearer" or not token:
-        return None, _challenge(auth, 401, "invalid_token")
-
-    try:
-        outcome = auth.verify(token)
-        if asyncio.iscoroutine(outcome):
-            outcome = await outcome
-        principal = cast("Principal | None", outcome)
-    except Exception:
-        _logger.exception("MCP token verification raised")
-        principal = None
-    if principal is None:
-        return None, _challenge(auth, 401, "invalid_token")
-
-    if auth.required_scopes and not principal.has_scopes(auth.required_scopes):
-        return None, _challenge(auth, 403, "insufficient_scope")
-    return principal, None
-
-
-def _challenge(auth: MCPAuth, status_code: int, error: str) -> Response:
-    """Build a `401`/`403` response with the RFC 6750 `WWW-Authenticate` challenge."""
-    parts = [f'Bearer error="{error}"', f'resource_metadata="{PROTECTED_RESOURCE_METADATA_PATH}"']
-    if error == "insufficient_scope" and auth.required_scopes:
-        parts.append(f'scope="{" ".join(sorted(auth.required_scopes))}"')
-    body = {"error": error}
-    return JSONResponse(
-        body, status_code=status_code, headers={"WWW-Authenticate": ", ".join(parts)}
-    )
+# ── SSE streaming ─────────────────────────────────────────
 
 
 def _stream_response(
@@ -478,6 +617,7 @@ def _stream_response(
     session: MCPSession,
     session_id: str | None = None,
     event_store: SSEEventStore | None = None,
+    store: HttpSessionStore | None = None,
 ) -> EventSourceResponse:
     """Answer one request as an SSE stream: its notifications then its response.
 
@@ -513,7 +653,12 @@ def _stream_response(
     # A resumable stream has already recorded each payload in the event store, so
     # dropping the queue hand-off after teardown costs a reconnecting client
     # nothing: the replay comes from the store, not from here.
-    draining = [True]
+    draining = True
+    # Set when the SSE generator tears down, however it ended. A long-lived
+    # `subscriptions/listen` waits on this: its request is answered by its own
+    # close, so without something to hold the dispatch task the stream would end
+    # on the acknowledgement and the subscription would never deliver anything.
+    client_gone = asyncio.Event()
     # A resumable stream gets a unique id so its event ids encode their origin and
     # a resume replays only this stream's events. `seq` advances per recorded
     # payload; 0 is reserved for the priming event so the replay base is addressable.
@@ -532,7 +677,7 @@ def _stream_response(
     # recording is what survives a dropped connection for later replay.
     async def send(message: dict[str, Any]) -> None:
         event_id = emit_id(message)
-        if draining[0]:
+        if draining:
             await queue.put((event_id, message))
 
     async def runner() -> None:
@@ -547,10 +692,25 @@ def _stream_response(
         set_principal(principal)
         try:
             response = await server.handle_message(message, session)
+            # Publish what this message changed, as the JSON reply path does at its
+            # own equivalent point. A conformant client offers both content types on
+            # POST and `_needs_stream` keeps the stream for everything but
+            # `tools/call`, so `initialize` - the message that establishes the whole
+            # session - always arrives here. Persisting only on the JSON path wrote a
+            # record with no capabilities and no client identity, which `resolve`
+            # then copied back over the live session.
+            if store is not None and session_id is not None:
+                await store.persist(session_id, session)
             if response is not None:
                 response_id = emit_id(response)
-                if draining[0]:
+                if draining:
                     await queue.put((response_id, response))
+            elif message.get("id") in session.listen_streams:
+                # This request opened a listen stream, so it is answered when the
+                # stream closes rather than now. Hold the task - and with it this
+                # connection's registration - until the client goes away, so the
+                # fan-out has somewhere to deliver in the meantime.
+                await client_gone.wait()
         except asyncio.CancelledError:
             # The client cancelled this request (notifications/cancelled): the
             # call's task was cancelled deliberately. Close the stream cleanly
@@ -560,15 +720,16 @@ def _stream_response(
             _logger.exception("MCP HTTP request handling failed")
             err = _error(message.get("id"), _JSONRPC_INTERNAL_ERROR, "internal error")
             err_id = emit_id(err)
-            if draining[0]:
+            if draining:
                 await queue.put((err_id, err))
         finally:
             server.unregister_connection(conn_token)
             _notifier_var.reset(token)
-            if draining[0]:
+            if draining:
                 await queue.put(_STREAM_END)
 
     async def events() -> Any:
+        nonlocal draining
         # Disconnection is not cancellation (MCP transport): a client that closes
         # the stream must not abort the in-flight call, so the dispatch task is
         # never cancelled on generator teardown. It holds its own context and
@@ -580,7 +741,10 @@ def _stream_response(
         # gives the first frame an id, before any notification or the response. A
         # resumable stream's priming id encodes the stream (sequence 0) so a resume
         # from it replays the whole tail.
-        prime_id = f"{stream_id}.0" if stream_id is not None else str(next(_event_id))
+        # The separator belongs to `SSEEventStore`, which parses these ids back
+        # apart with `rpartition`. Spelling it here made two modules own one
+        # wire format.
+        prime_id = f"{stream_id}{_EVENT_ID_SEP}0" if stream_id is not None else str(next(_event_id))
         try:
             yield ServerSentEvent(data="", id=prime_id)
             while True:
@@ -588,7 +752,7 @@ def _stream_response(
                 if item is _STREAM_END:
                     break
                 event_id, payload = item
-                yield ServerSentEvent.json(payload, id=event_id)
+                yield ServerSentEvent(data=encode_envelope(payload).decode(), id=event_id)
             # A closing frame carrying the reconnect hint, so a client that drops
             # mid-stream knows how long to wait before reconnecting.
             yield ServerSentEvent(retry=_SSE_RETRY_MS)
@@ -596,8 +760,10 @@ def _stream_response(
         finally:
             # Whether the stream ended normally or the client vanished, nothing
             # will read this queue again. Tell the runner to stop filling it and
-            # release whatever is already buffered.
-            draining[0] = False
+            # release whatever is already buffered, and release a listen stream
+            # still waiting for the client so its connection is unregistered.
+            draining = False
+            client_gone.set()
             while not queue.empty():
                 queue.get_nowait()
 

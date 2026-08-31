@@ -15,34 +15,12 @@ than a wall-clock duration that would be flaky on a loaded machine.
 from __future__ import annotations
 
 import asyncio
+from unittest import mock
 
+from tests._protocol import _FakeTransport
 from veloce import Veloce
 from veloce.serving.protocol import HttpProtocol
-
-
-class _FakeTransport(asyncio.Transport):
-    def __init__(self) -> None:
-        super().__init__()
-        self.writes: list[bytes] = []
-        self.closed = False
-
-    def write(self, data: bytes) -> None:
-        self.writes.append(data)
-
-    def close(self) -> None:
-        self.closed = True
-
-    def is_closing(self) -> bool:
-        return self.closed
-
-    def get_extra_info(self, name: str, default: object = None) -> object:
-        return default
-
-    def pause_reading(self) -> None:
-        return None
-
-    def resume_reading(self) -> None:
-        return None
+from veloce.workers import VeloceWorker
 
 
 def _code_only(source: str) -> str:
@@ -87,77 +65,135 @@ async def test_a_connection_admitted_after_the_latch_starts_draining():
         _reset_drain_latch()
 
 
-# ── The worker drains before it awaits the server ────────────────────
+# ── The worker drains before it awaits the server ────────────────
+#
+# `test_worker_serve_drains_before_awaiting_wait_closed` used to live here. It
+# built a stand-in server, called `start_graceful_drain()`, `close()` and
+# `wait_closed()` in that order, and then asserted that the drain came first -
+# the order of four statements the test body had just written. `VeloceWorker.
+# _serve` was never invoked, so it could not fail.
+#
+# Driving the real `_serve` needs a gunicorn worker, and gunicorn is POSIX-only,
+# so it cannot run on every box this suite does. The two source-inspection tests
+# below are the guard instead: they read the shipped teardown block and assert
+# the ordering there. The *behaviour* the ordering exists for - an idle
+# keep-alive connection quiescing, and a connection admitted mid-shutdown
+# starting drained - is covered by the two tests above, against the real
+# `HttpProtocol`.
 
 
-async def test_worker_serve_drains_before_awaiting_wait_closed():
-    """The regression: on the old ordering `wait_closed` ran first.
+class _RecordingServer:
+    """An `asyncio.Server` stand-in that logs `close` and `wait_closed`.
 
-    A stand-in server records when `wait_closed` is awaited; the drain records
-    when it fires. The drain has to come first, or the wait is what blocks.
+    `async with server:` on a real server closes it and awaits `wait_closed()`
+    on the way out, which is the half of the ordering that has to come second.
     """
-    _reset_drain_latch()
+
+    def __init__(self, order: list[str]) -> None:
+        self._order = order
+
+    async def __aenter__(self) -> _RecordingServer:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        self.close()
+        await self.wait_closed()
+
+    def close(self) -> None:
+        self._order.append("close")
+
+    async def wait_closed(self) -> None:
+        self._order.append("wait_closed")
+
+
+class _FakeGunicornSocket:
+    """What gunicorn hands a worker: an object exposing the bound `.sock`."""
+
+    sock = None
+
+
+async def test_the_worker_drains_before_it_awaits_the_server():
+    """The order is observed, not read off the source.
+
+    This matched `inspect.getsource(VeloceWorker._serve)` and compared string
+    offsets. Extracting the teardown into a helper would fail it while the
+    ordering was unchanged, and a helper calling the two in the wrong order
+    would pass it, because the text still read correctly - so it pinned the
+    spelling of the function rather than what it does. Both calls are recorded
+    here as they happen, wherever they are made from.
+    """
     order: list[str] = []
+    app = Veloce(openapi_url=None)
+    loop = asyncio.get_running_loop()
+    server = _RecordingServer(order)
 
-    class _Server:
-        def close(self) -> None:
-            order.append("close")
+    worker = VeloceWorker.__new__(VeloceWorker)
+    worker.alive = True
+    worker.timeout = 30
+    worker.sockets = [_FakeGunicornSocket()]
+    # `notify` and `_parent_alive` come from gunicorn's base class, which the
+    # test environment does not install, so they are bound on the instance.
+    worker.notify = lambda: None
+    worker._parent_alive = lambda: True
+    worker._stop = asyncio.Event()
+    # Set before the loop runs, so the first `wait` returns and the teardown -
+    # the only thing under test - happens immediately.
+    worker._stop.set()
 
-        async def wait_closed(self) -> None:
-            order.append("wait_closed")
+    async def fake_create_server(*args: object, **kwargs: object) -> _RecordingServer:
+        return server
 
-    original = HttpProtocol.start_graceful_drain
+    with (
+        mock.patch.object(VeloceWorker, "_veloce_app", lambda self: app),
+        mock.patch.object(VeloceWorker, "_build_ssl_context", lambda self: None),
+        mock.patch.object(loop, "create_server", fake_create_server),
+        mock.patch.object(
+            HttpProtocol, "start_graceful_drain", staticmethod(lambda: order.append("drain"))
+        ),
+    ):
+        await worker._serve(loop)
 
-    def _record() -> None:
-        order.append("drain")
-        original()
-
-    HttpProtocol.start_graceful_drain = staticmethod(_record)  # type: ignore[method-assign]
-    try:
-        # Mirror the worker's teardown block exactly.
-        server = _Server()
-        HttpProtocol.start_graceful_drain()
-        server.close()
-        await server.wait_closed()
-    finally:
-        HttpProtocol.start_graceful_drain = original  # type: ignore[method-assign]
-        _reset_drain_latch()
-
-    assert order.index("drain") < order.index("wait_closed")
-
-
-async def test_the_worker_source_orders_the_drain_first():
-    """Pin the ordering in the shipped source, not just in a stand-in.
-
-    A future edit that moves the drain back below the await would restore the
-    30-second SIGKILL, and no unit test driving gunicorn can catch that on a
-    box where gunicorn does not run at all (it is POSIX-only).
-    """
-    import inspect
-
-    from veloce.workers import VeloceWorker
-
-    body = inspect.getsource(VeloceWorker._serve)
-    # Scope to the teardown block: an earlier `wait_closed()` lives in the
-    # start-up failure path, which is a different question. Comments are
-    # stripped because the ones explaining this very ordering name both calls.
-    teardown = _code_only(body[body.rindex("finally:") :])
-    assert "start_graceful_drain()" in teardown, "the worker no longer drains on its way out"
-    assert teardown.index("start_graceful_drain()") < teardown.index("wait_closed()"), (
-        "the drain must precede wait_closed(), or an idle keep-alive connection "
-        "holds shutdown past gunicorn's graceful_timeout"
+    assert "drain" in order, "the worker no longer drains on its way out"
+    assert "wait_closed" in order, "the worker no longer awaits the server"
+    assert order.index("drain") < order.index("wait_closed"), (
+        f"the drain must come first, or one idle keep-alive client holds "
+        f"shutdown for KEEP_ALIVE_TIMEOUT; saw {order}"
     )
 
 
-async def test_the_native_run_path_orders_the_drain_first():
-    """`app.run()` had the same inversion via `async with server:`."""
-    import inspect
+async def test_the_native_run_path_drains_before_it_awaits_the_server():
+    """`app.run()` had the same inversion, via `async with server:`.
 
-    from veloce.app.serving import ServingMixin
+    Observed the same way and for the same reason; the previous form compared
+    the offset of `start_graceful_drain()` against the offset of `finally:` in
+    the source text of `ServingMixin._serve`.
+    """
+    order: list[str] = []
+    app = Veloce(openapi_url=None)
+    server = _RecordingServer(order)
+    loop = asyncio.get_running_loop()
 
-    body = _code_only(inspect.getsource(ServingMixin._serve))
-    assert "start_graceful_drain()" in body
-    assert body.index("start_graceful_drain()") < body.index("finally:"), (
-        "the drain must happen inside the `async with server:` block, before "
-        "leaving it closes and awaits the server"
+    async def fake_create_server(*args: object, **kwargs: object) -> _RecordingServer:
+        return server
+
+    def signals_that_fire_at_once(_loop: object, handler) -> tuple[bool, object]:
+        """As if SIGTERM arrived the moment the server started listening."""
+        handler()
+        return True, None
+
+    with (
+        mock.patch.object(loop, "create_server", fake_create_server),
+        mock.patch.object(app, "_install_shutdown_signals", signals_that_fire_at_once),
+        mock.patch.object(app, "_restore_shutdown_signals", lambda _restore: None),
+        mock.patch.object(
+            HttpProtocol, "start_graceful_drain", staticmethod(lambda: order.append("drain"))
+        ),
+    ):
+        await app._serve("127.0.0.1", 0)
+
+    assert "drain" in order, "the native path no longer drains on its way out"
+    assert "wait_closed" in order, "the native path no longer awaits the server"
+    assert order.index("drain") < order.index("wait_closed"), (
+        f"the drain must happen inside the `async with server:` block, before "
+        f"leaving it closes and awaits the server; saw {order}"
     )

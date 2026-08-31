@@ -15,20 +15,24 @@ import logging
 import weakref
 from collections.abc import Callable
 from enum import Enum
-from typing import Annotated, Any, Literal, get_args, get_origin
+from typing import TYPE_CHECKING, Annotated, Any, Literal, get_args, get_origin
 
 from pydantic import TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
 from typing_extensions import Doc
 
-from veloce._constants import MSG_FIELD_REQUIRED, STATE_INJECTED_RESPONSE
+from veloce._constants import (
+    MSG_FIELD_REQUIRED,
+    MSG_MISSING_PARAMETER,
+    MSG_YIELD_NO_VALUE,
+    STATE_INJECTED_RESPONSE,
+)
 from veloce._handler_plan import (
     K_BG_TASKS,
     K_BODY_MODEL,
     K_DEPENDS,
     K_MODEL_GROUP,
     K_PARAM_MARKER,
-    K_PATH,
     K_QUERY,
     K_QUERY_LIST,
     K_REQUEST,
@@ -40,14 +44,22 @@ from veloce._handler_plan import (
     MK_COOKIE,
     MK_FORM,
     MK_HEADER,
-    _slot_parallel_safe,
-    parallel_group_end,
+    build_plan,
+    build_route_dep_plans,
 )
-from veloce._internal import _BaseExceptionGroup, _is_async_callable, offload
+from veloce._internal import (
+    _BaseExceptionGroup,
+    _is_async_callable,
+    json_body_refused,
+    offload,
+)
 from veloce._model_backend import ModelBackend, _msgspec, adapter_for, is_pydantic_model
 from veloce._resolver_codegen import compile_graph_resolver, compile_param_resolver
 from veloce.background import BackgroundTasks
-from veloce.exceptions import RequestValidationError, ValidationError
+from veloce.exceptions import HTTPException, RequestValidationError, ValidationError
+
+if TYPE_CHECKING:  # pragma: no cover
+    from veloce.http.datastructures import Cookies, FormData, Headers, QueryParams
 from veloce.http.request import Request
 from veloce.http.response import Response
 
@@ -90,6 +102,25 @@ def _type_adapter(target_type: Any) -> TypeAdapter | None:
         return None
 
 
+# The boolean spellings a request value may take, matching what Pydantic accepts
+# so a bare `bool` parameter and one carried on a model agree about the same
+# query string. Anything outside these is refused rather than read as False:
+# `?errors_only=ture` meant "no filter", which is a bug the caller never heard
+# about, on a framework that already refuses `?page=abc`.
+_TRUE_VALUES = frozenset({"1", "on", "t", "true", "y", "yes"})
+_FALSE_VALUES = frozenset({"0", "off", "f", "false", "n", "no"})
+
+
+def _coerce_bool_value(value: str) -> bool:
+    """Read a request string as a boolean, refusing anything that is not one."""
+    lowered = value.lower()
+    if lowered in _TRUE_VALUES:
+        return True
+    if lowered in _FALSE_VALUES:
+        return False
+    raise ValueError(f"not a boolean: {value!r}")
+
+
 def _coerce_literal(value: Any, target_type: Any, param_name: str, loc: str) -> Any:
     """Match a request value against a `Literal[...]` parameter.
 
@@ -102,7 +133,8 @@ def _coerce_literal(value: Any, target_type: Any, param_name: str, loc: str) -> 
     members = get_args(target_type)
     candidates: list[Any] = [value]
     if isinstance(value, str):
-        candidates.append(value.lower() in ("true", "1", "yes"))
+        with contextlib.suppress(ValueError):
+            candidates.append(_coerce_bool_value(value))
         with contextlib.suppress(ValueError):
             candidates.append(int(value))
         with contextlib.suppress(ValueError):
@@ -184,7 +216,7 @@ def _coerce_value(value: Any, target_type: Any, param_name: str, loc: str) -> An
             return float(value)
         if target_type is bool:
             if isinstance(value, str):
-                return value.lower() in ("true", "1", "yes")
+                return _coerce_bool_value(value)
             return bool(value)
         # Enum (or any class with __members__).
         if hasattr(target_type, "__members__"):
@@ -233,9 +265,11 @@ def _coerce_scalar(value: Any, target_type: Any, param_name: str, loc: str) -> A
 
 
 def _err_missing_marker(loc: str, name: str) -> RequestValidationError:
-    """Build the missing-required error for a `Query`/`Header`/`Cookie`/`Form`
-    marker. The list and scalar branches of `_resolve_marker` raise the same
-    `value_error.missing` shape, so it is constructed in one place. (A bare
+    """Build the missing-required error for a parameter marker.
+
+    Covers `Query`, `Header`, `Cookie` and `Form`. The list and scalar branches
+    of `_resolve_marker` raise the same `value_error.missing` shape, so it is
+    constructed in one place. (A bare
     `K_QUERY` slot uses the distinct `'missing'` / `MSG_FIELD_REQUIRED` contract;
     that intentional difference is preserved.)
     """
@@ -243,7 +277,7 @@ def _err_missing_marker(loc: str, name: str) -> RequestValidationError:
         [
             {
                 "loc": [loc, name],
-                "msg": f"Missing required parameter: {name}",
+                "msg": MSG_MISSING_PARAMETER.format(name=name),
                 "type": "value_error.missing",
             }
         ]
@@ -251,6 +285,13 @@ def _err_missing_marker(loc: str, name: str) -> RequestValidationError:
 
 
 # ── Markers ───────────────────────────────────────────────
+
+
+#: Caught by `_validate_marker_body`. Empty when msgspec is absent, which makes
+#: the `except` clause a no-op rather than a NameError.
+_msgspec_validation_error: tuple[type[BaseException], ...] = (
+    (_msgspec.ValidationError,) if _msgspec is not None else ()
+)
 
 
 class Depends:
@@ -365,26 +406,18 @@ class SecurityScopes:
 
 # ── Resolver ──────────────────────────────────────────────
 
-# Returned by `_resolve_scalar_param` for a path slot with no value, no default,
-# and not optional: the caller leaves the kwarg unset so the handler default
-# applies. A query slot raises `missing` instead, so it never returns this.
-_PARAM_MISSING: Any = object()
 
-
-def _resolve_scalar_param(
-    slot: Any, request: Request, path_params: dict[str, str], *, allow_query: bool
-) -> Any:
+def _resolve_scalar_param(slot: Any, request: Request, path_params: dict[str, str]) -> Any:
     """Resolve a scalar path-or-query parameter to its coerced value.
 
-    A path binding wins when the matched params include the name; a `K_QUERY`
-    slot (`allow_query=True`) then falls back to the query string, a `K_PATH`
-    slot does not. With no value, a default or optional yields that; otherwise a
-    query slot raises `missing` and a path slot returns `_PARAM_MISSING`.
+    A path binding wins when the matched params include the name, then the
+    query string. With no value, a default or optional yields that; otherwise
+    the parameter is reported missing.
     """
     name = slot.name
     if name in path_params:
         return _coerce_value(path_params[name], slot.target_type or str, name, "path")
-    if allow_query and name in request.query_params:
+    if name in request.query_params:
         return _coerce_value(request.query_params[name], slot.target_type or str, name, "query")
     if slot.has_default:
         # A plain mutable default is wrapped in a copying factory at
@@ -392,14 +425,12 @@ def _resolve_scalar_param(
         # `_guard_plain_mutable_default`); immutable defaults read inline.
         if slot.default_factory is not None:
             return slot.default_factory()
-        return slot.default
+        return slot._static_default
     if slot.is_optional:
         return None
-    if allow_query:
-        raise RequestValidationError(
-            [{"loc": ("query", name), "msg": MSG_FIELD_REQUIRED, "type": "missing"}]
-        )
-    return _PARAM_MISSING
+    raise RequestValidationError(
+        [{"loc": ("query", name), "msg": MSG_FIELD_REQUIRED, "type": "missing"}]
+    )
 
 
 def _resolve_list_param(slot: Any, request: Request, path_params: dict[str, str]) -> Any:
@@ -424,12 +455,30 @@ def _resolve_list_param(slot: Any, request: Request, path_params: dict[str, str]
         # `_guard_plain_mutable_default`); immutable defaults read inline.
         if slot.default_factory is not None:
             return slot.default_factory()
-        return slot.default
+        return slot._static_default
     if slot.is_optional:
         return None
     raise RequestValidationError(
         [{"loc": ("query", name), "msg": MSG_FIELD_REQUIRED, "type": "missing"}]
     )
+
+
+def _every_value(source: Any, key: str) -> list[str]:
+    """Every value stored under `key`, from a multi-dict or a plain mapping.
+
+    A `Request` carries multi-value headers and cookies; a `WebSocket` carries
+    plain dicts built from the handshake, where a repeated field is already
+    folded. Reading `.getlist` unconditionally raised `AttributeError` on a
+    websocket route, so a `list`-typed `Header()` or `Cookie()` closed the
+    handshake 1011 before the handler ran. Only the list-typed marker branch
+    reaches this, so the scalar path is untouched.
+    """
+    getlist = getattr(source, "getlist", None)
+    if getlist is not None:
+        values: list[str] = getlist(key)
+        return values
+    value = source.get(key)
+    return [] if value is None else [value]
 
 
 class DependencyResolver:
@@ -477,10 +526,12 @@ class DependencyResolver:
     def reset(self) -> None:
         """Clear the per-request resolver state.
 
-        Run at the top of every `resolve_plan`, and also called directly
-        by the dispatcher's trivial-route fast path (a route with no
-        parameters and no dependencies) so the shared resolver never
-        carries a previous request's cached results into the next one.
+        Run at the top of `resolve_plan` and `resolve_websocket_plan`, which is
+        every path that resolves against this instance. The dispatcher does not
+        call it: a resolver is allocated per request, and a trivial-plan route
+        (no parameters, no dependencies) never allocates one at all - see the
+        note in `_dispatch_request` on why a single shared resolver would let one
+        request's reset clobber another's `yield`-teardown stack.
         """
         self._cache.clear()
         self._teardowns.clear()
@@ -515,14 +566,28 @@ class DependencyResolver:
 
             # The param-only compiler rejected this plan (it has dependencies or
             # other interpreter-only slots). A no-wave dependency graph - a
-            # linear chain with no parallel-safe batching to preserve, no
-            # Security scopes, and no yield-teardown deps - compiles to a
-            # straight-line `async` resolver too. It reads neither the override
-            # map nor the MCP context, so it is used only when both are absent;
-            # an active override or MCP context falls through to the interpreter,
-            # which applies them. The compiled body is self-contained (its own
-            # locals dedup shared deps), so it runs after the `reset()` above
-            # without touching `_cache` / `_teardowns` / `_scope_stack`.
+            # linear chain with no parallel-safe batching to preserve and no
+            # yield-teardown deps - compiles to a straight-line `async` resolver
+            # too, including a `Security()` scope chain: the union each
+            # `SecurityScopes` parameter sees is fixed by the graph edges, so it
+            # is resolved at compile time rather than on a per-request stack. It
+            # reads neither the override map nor the MCP context, so it is used
+            # only when both are absent; an active override falls through to the
+            # interpreter, which applies them.
+            #
+            # The `_mcp_context` half of that test is a guard, not a live branch:
+            # the MCP door does not call `resolve()` at all - it walks the
+            # top-level slots itself in `contrib/mcp/plan_bridge.bind_arguments`
+            # so it can source arguments from the JSON map rather than the query
+            # string, and reaches this class only through `_exec_depends` for
+            # each sub-graph. So an MCP tool call never reaches this compiled
+            # path whether or not a context is set, and setting one costs it
+            # nothing here. The guard stays because a direct caller can set both.
+            # The compiled body is self-contained (its own locals dedup shared
+            # deps), so it runs after the `reset()` above without touching
+            # `_cache` or `_scope_stack`. It is handed `_teardowns` because a
+            # `yield` dependency has to register its live generator there for
+            # `run_teardowns` to drain.
             if not self._overrides and self._mcp_context is None:
                 gcr = plan.compiled_graph_resolver
                 if gcr is None:
@@ -533,12 +598,13 @@ class DependencyResolver:
                         offload,
                         BackgroundTasks,
                         Response,
+                        SecurityScopes,
                     )
                     plan.compiled_graph_resolver = gcr = (
                         graph if graph is not None else _NOT_COMPILABLE
                     )
                 if gcr is not _NOT_COMPILABLE:
-                    return await gcr(request, path_params)
+                    return await gcr(request, path_params, self._teardowns)
         else:
             for slot in route_dep_plans:
                 await self._exec_depends(slot, request, path_params)
@@ -636,11 +702,10 @@ class DependencyResolver:
         path_params: dict[str, str],
         route_dependencies: list[Depends] | None = None,
     ) -> dict[str, Any]:
-        """Back-compat path - build a plan on demand. Tests and direct
-        callers that did not pre-plan land here.
-        """
-        from veloce._handler_plan import build_plan, build_route_dep_plans
+        """Build a plan on demand, for a caller that did not pre-plan.
 
+        The back-compat path: tests and direct callers land here.
+        """
         plan = build_plan(handler)
         rdp = build_route_dep_plans(route_dependencies) if route_dependencies else None
         return await self.resolve_plan(plan, request, path_params, rdp)
@@ -668,7 +733,7 @@ class DependencyResolver:
         - markers and body: `K_PARAM_MARKER` -> `_resolve_marker`, `K_BODY_MODEL`
           -> `_resolve_body_model`, `K_UPLOAD_FILE` -> `_resolve_upload_file`;
         - path / query parameters: `K_QUERY_LIST` -> `_resolve_list_param`,
-          `K_QUERY` / `K_PATH` -> `_resolve_scalar_param`.
+          `K_QUERY` -> `_resolve_scalar_param`.
         """
         slots = plan.slots
         kwargs: dict[str, Any] = {}
@@ -679,39 +744,36 @@ class DependencyResolver:
         wave_trigger = plan.wave_trigger
         wave_members = plan.wave_members
 
-        i = 0
-        n = len(slots)
         # Hoist the MCP tool-call context to a local. It is `None` on every
         # HTTP and WebSocket request (only the MCP bridge sets it), so the
         # per-`K_QUERY`-slot binding check below reads a local instead of doing
         # an attribute load each iteration on the dependency hot path.
         mcp_context = self._mcp_context
-        while i < n:
-            slot = slots[i]
+        # `enumerate` rather than a hand-rolled counter: every branch below
+        # advanced by exactly one, so the invariant is better expressed by the
+        # loop than repeated in sixteen places - and it measures ~7% faster on
+        # a representative slot ladder than indexing with a manual counter.
+        for i, slot in enumerate(slots):
             kind = slot.kind
             name = slot.name
 
             # ── Framework injections ──────────────────────────────
             if kind == K_REQUEST:
                 kwargs[name] = request
-                i += 1
                 continue
 
             if kind == K_WEBSOCKET:
                 # WebSocket plans pass the connection where an HTTP resolve
                 # passes the `Request`, so the same object is bound here.
                 kwargs[name] = request
-                i += 1
                 continue
 
             if kind == K_BG_TASKS:
                 kwargs[name] = self._bind_background_tasks(request)
-                i += 1
                 continue
 
             if kind == K_RESPONSE:
                 kwargs[name] = self._bind_injected_response(request)
-                i += 1
                 continue
 
             if kind == K_SECURITY_SCOPES:
@@ -720,7 +782,6 @@ class DependencyResolver:
                 # copying it twice; later mutations still don't affect this
                 # instance.
                 kwargs[name] = SecurityScopes(self._scope_stack)
-                i += 1
                 continue
 
             # ── Dependencies ──────────────────────────────────────
@@ -742,37 +803,30 @@ class DependencyResolver:
                     waves = wave_trigger.get(i)
                     if waves is not None:
                         await self._run_dep_waves(waves, slots, request, path_params, kwargs)
-                    i += 1
                     continue
                 kwargs[name] = await self._exec_depends(slot, request, path_params)
-                i += 1
                 continue
 
             # ── Markers and request body ──────────────────────────
             if kind == K_PARAM_MARKER:
                 kwargs[name] = await self._resolve_marker(slot, request, path_params)
-                i += 1
                 continue
 
             if kind == K_BODY_MODEL:
                 kwargs[name] = await self._resolve_body_model(slot, request)
-                i += 1
                 continue
 
             if kind == K_MODEL_GROUP:
                 kwargs[name] = await self._resolve_model_group(slot, request)
-                i += 1
                 continue
 
             if kind == K_UPLOAD_FILE:
                 await self._resolve_upload_file(slot, request, kwargs)
-                i += 1
                 continue
 
             # ── Path and query parameters ─────────────────────────
             if kind == K_QUERY_LIST:
                 kwargs[name] = _resolve_list_param(slot, request, path_params)
-                i += 1
                 continue
 
             if kind == K_QUERY:
@@ -785,23 +839,12 @@ class DependencyResolver:
                 # an ordinary agent input.
                 if mcp_context is not None and slot.target_type is type(mcp_context):
                     kwargs[name] = mcp_context
-                    i += 1
                     continue
-                kwargs[name] = _resolve_scalar_param(slot, request, path_params, allow_query=True)
-                i += 1
-                continue
-
-            # K_PATH is not currently emitted by build_plan; future-proof.
-            if kind == K_PATH:
-                val = _resolve_scalar_param(slot, request, path_params, allow_query=False)
-                if val is not _PARAM_MISSING:
-                    kwargs[name] = val
-                i += 1
+                kwargs[name] = _resolve_scalar_param(slot, request, path_params)
                 continue
 
             # Fall-through: kind didn't match anything; advance so the
             # loop terminates instead of spinning on an unknown slot.
-            i += 1
 
         return kwargs
 
@@ -866,17 +909,6 @@ class DependencyResolver:
         elif slot.is_optional:
             kwargs[slot.name] = None
 
-    def _parallel_dep_group_end(self, slots: list[Any], start: int) -> int:
-        """Compat shim. The grouping is precomputed at registration
-        (`HandlerPlan.parallel_groups`); this delegates to the shared
-        implementation for direct callers and tests.
-        """
-        return parallel_group_end(slots, start)
-
-    def _slot_safe_for_parallel(self, slot: Any, seen_plans: set[int]) -> bool:
-        """Compat shim delegating to the shared parallel-safety check."""
-        return _slot_parallel_safe(slot, seen_plans)
-
     async def _resolve_model_group(self, slot: Any, request: Request) -> Any:
         """Bind a model whose fields come from one request source.
 
@@ -887,6 +919,9 @@ class DependencyResolver:
         `["query", "<field>"]` so a bad `limit` blames `limit`, not the group.
         """
         mk = slot.marker_kind
+        # Declared up front: the four branches yield four different mappings,
+        # and the only things read off the result are `getlist` and `get`.
+        source: FormData | Headers | Cookies | QueryParams
         if mk == MK_FORM:
             source = await request.form()
         elif mk == MK_HEADER:
@@ -923,7 +958,7 @@ class DependencyResolver:
             raise RequestValidationError(
                 [
                     {
-                        "loc": [loc, *(str(part) for part in err["loc"])],
+                        "loc": [loc, *err["loc"]],
                         "msg": err["msg"],
                         "type": err["type"],
                     }
@@ -942,14 +977,48 @@ class DependencyResolver:
             return await self._resolve_adapted_body(slot, request)
         return await self._resolve_pydantic_body(slot, request)
 
+    @staticmethod
+    def _require_json_body(request: Request) -> None:
+        """Refuse a body whose `Content-Type` declares it is not JSON.
+
+        Beyond reading what the client said rather than guessing, this closes a
+        CSRF avenue. `text/plain`, `multipart/form-data` and
+        `application/x-www-form-urlencoded` are the content types a cross-origin
+        form or `fetch` may send *without* a CORS preflight (the Fetch
+        Standard's CORS-safelisted request headers), so a JSON endpoint that
+        parses a body under `text/plain` can be driven cross-origin through a
+        cookie-authenticated victim's browser with no preflight to stop it.
+
+        An absent header is accepted: plenty of clients omit it, and its absence
+        asserts nothing about the body. A `+json` structured suffix (RFC 6839),
+        such as `application/vnd.api+json`, is JSON and is accepted too.
+
+        The rule lives in `json_body_refused` so this door and
+        `await request.json()` cannot answer differently; re-spelling it here
+        is what let the two disagree on `text/foo+json`.
+        """
+        mimetype = request.mimetype
+        if not json_body_refused(mimetype):
+            return
+        raise RequestValidationError(
+            [
+                {
+                    "loc": ["body"],
+                    "msg": f"Expected a JSON body; got Content-Type {mimetype!r}",
+                    "type": "value_error",
+                }
+            ]
+        )
+
     async def _resolve_adapted_body(self, slot: Any, request: Request) -> Any:
         """Validate a dataclass / `TypedDict` body through its cached adapter."""
+        self._require_json_body(request)
         raw = await request.body()
         if not raw.strip():
             if slot.is_optional:
                 return None
             raise RequestValidationError(
-                [{"loc": ["body"], "msg": "field required", "type": "missing"}]
+                [{"loc": ["body"], "msg": MSG_FIELD_REQUIRED, "type": "missing"}]
             )
         try:
             return adapter_for(slot.model).validate_json(raw)
@@ -957,7 +1026,7 @@ class DependencyResolver:
             raise RequestValidationError(
                 [
                     {
-                        "loc": ["body", *(str(part) for part in err["loc"])],
+                        "loc": ["body", *err["loc"]],
                         "msg": err["msg"],
                         "type": err["type"],
                     }
@@ -966,6 +1035,7 @@ class DependencyResolver:
             ) from e
 
     async def _resolve_pydantic_body(self, slot: Any, request: Request) -> Any:
+        self._require_json_body(request)
         try:
             body_data = await request.json()
             return slot.model.model_validate(body_data)
@@ -986,6 +1056,15 @@ class DependencyResolver:
             ) from e
         except ValidationError:
             raise
+        except HTTPException:
+            # A malformed body already reached `Request.on_json_loading_failed`,
+            # which raises `BadRequest` under a deliberate policy: a stable
+            # message by default, the decoder's reason only under
+            # `JSON_ERRORS_VERBOSE` / debug, since the offsets derive from
+            # attacker-controlled input. Swallowing it here replaced all of that
+            # with a generic message, so the documented opt-in did nothing for a
+            # body model and the two ways of reading a body disagreed.
+            raise
         except Exception as err:
             raise RequestValidationError(
                 [
@@ -1000,6 +1079,7 @@ class DependencyResolver:
     async def _resolve_msgspec_body(self, slot: Any, request: Request) -> Any:
         # Reached only for a msgspec.Struct body slot, which the registration
         # tagging in `_handler_plan` produces only when msgspec is installed.
+        self._require_json_body(request)
         raw = await request.body()
         # An empty or whitespace-only body is "missing", not a decode error -
         # `msgspec.json.decode(b"")` would raise an opaque truncation error.
@@ -1028,6 +1108,42 @@ class DependencyResolver:
                 [{"loc": ["body"], "msg": "Invalid JSON body", "type": "value_error"}]
             ) from e
 
+    @staticmethod
+    def _validate_marker_body(value: Any, slot: Any) -> Any:
+        """Validate an already-extracted `Body()` value against the slot's model.
+
+        `payload: Payload = Body()` declares the same contract as a bare
+        `payload: Payload`, so it validates the same way and reports errors under
+        the same `["body", ...]` location. It cannot reuse `_resolve_body_model`:
+        `embed=True` means the value has already been taken from under the
+        parameter name, and those resolvers read the whole body themselves.
+        """
+        backend = slot.backend
+        try:
+            if backend == ModelBackend.MSGSPEC:
+                return _msgspec.convert(value, type=slot.model, strict=False)
+            if backend == ModelBackend.ADAPTED:
+                return adapter_for(slot.model).validate_python(value)
+            return slot.model.model_validate(value)
+        except PydanticValidationError as e:
+            raise RequestValidationError(
+                [
+                    {
+                        "loc": ["body", *err["loc"]],
+                        "msg": err["msg"],
+                        "type": err["type"],
+                    }
+                    for err in e.errors()
+                ]
+            ) from e
+        except _msgspec_validation_error as e:
+            # msgspec embeds the field path in the message text rather than
+            # exposing it, so `loc` stays `["body"]` - as `_resolve_msgspec_body`
+            # does for the same reason.
+            raise RequestValidationError(
+                [{"loc": ["body"], "msg": str(e), "type": "value_error"}]
+            ) from e
+
     async def _resolve_marker(
         self, slot: Any, request: Request, path_params: dict[str, str]
     ) -> Any:
@@ -1045,9 +1161,9 @@ class DependencyResolver:
             if mk == 5:  # MK_FORM
                 values = (await request.form()).getlist(lookup)
             elif mk == 2:  # MK_HEADER
-                values = request.headers.getlist(lookup.lower())
+                values = _every_value(request.headers, lookup.lower())
             elif mk == 3:  # MK_COOKIE
-                values = request.cookies.getlist(lookup)
+                values = _every_value(request.cookies, lookup)
             else:  # MK_QUERY
                 values = request.query_params.getlist(lookup)
             loc = MARKER_LOC[mk]
@@ -1066,10 +1182,16 @@ class DependencyResolver:
         if mk == 1:  # MK_PATH
             raw = path_params.get(lookup)
         elif mk == 2:  # MK_HEADER
-            raw = request.headers.get(lookup.lower())
+            # Single-header read; see `Request._peek_header`.
+            raw = request._peek_header(lookup.lower())
         elif mk == 3:  # MK_COOKIE
             raw = request.cookies.get(lookup)
         elif mk == 4:  # MK_BODY
+            # The same content-type policy the bare-model body applies. A JSON
+            # endpoint that parses a `text/plain` body is reachable cross-origin
+            # without a preflight; the two body forms must not differ on that.
+            if slot.model is not None:
+                self._require_json_body(request)
             body = await request.json()
             # `Body(embed=True)` - the value lives under the param name
             # inside the JSON object, rather than being the whole body.
@@ -1088,6 +1210,12 @@ class DependencyResolver:
             if slot.is_optional:
                 return None
             raise _err_missing_marker(loc, slot.name)
+
+        # A model target is validated by the model, not coerced as a scalar:
+        # `_coerce_scalar` passes a `dict` straight through, so the handler used
+        # to receive the raw decoded body and fail on its first attribute access.
+        if slot.model is not None:
+            return self._validate_marker_body(raw, slot)
 
         raw = _coerce_scalar(raw, slot.target_type, slot.name, loc)
 
@@ -1132,9 +1260,6 @@ class DependencyResolver:
             # cache across requests via the Veloce instance.
             entry = self._override_subplans.get(actual)
             if entry is None:
-                # local: avoids dependency <-> _handler_plan cycle
-                from veloce._handler_plan import build_plan
-
                 entry = (
                     build_plan(actual),
                     _is_async_callable(actual),
@@ -1176,18 +1301,14 @@ class DependencyResolver:
             try:
                 result = next(gen)
             except StopIteration as err:
-                raise RuntimeError(
-                    f"yield dependency {actual!r} returned without yielding a value"
-                ) from err
+                raise RuntimeError(MSG_YIELD_NO_VALUE.format(dependency=actual)) from err
             self._teardowns.append(("sync", gen))
         elif is_async_gen:
             agen = actual(**sub_kwargs)
             try:
                 result = await agen.__anext__()
             except StopAsyncIteration as err:
-                raise RuntimeError(
-                    f"yield dependency {actual!r} returned without yielding a value"
-                ) from err
+                raise RuntimeError(MSG_YIELD_NO_VALUE.format(dependency=actual)) from err
             self._teardowns.append(("async", agen))
         elif is_coro:
             result = await actual(**sub_kwargs)

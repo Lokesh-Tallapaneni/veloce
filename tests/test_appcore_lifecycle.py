@@ -15,13 +15,16 @@ import sys
 
 import pytest
 
+from tests._loops import protocol_loop
+from tests._protocol import _FakeTransport
+from tests.conftest import make_request
 from veloce import SetupError, Veloce
+from veloce.serving.protocol import HttpProtocol
 from veloce.testclient import TestClient
 
 # -- AsyncExitStack lifespan unwind ----------------------------------
 
 
-@pytest.mark.asyncio
 async def test_partial_startup_failure_unwinds_acquired_resources():
     """A startup handler that raises unwinds the lifespan CM already entered."""
     order: list[str] = []
@@ -49,7 +52,6 @@ async def test_partial_startup_failure_unwinds_acquired_resources():
     assert order == ["cm-enter", "startup", "cm-exit"]
 
 
-@pytest.mark.asyncio
 async def test_clean_startup_then_shutdown_runs_teardowns_in_reverse():
     order: list[str] = []
 
@@ -77,7 +79,6 @@ async def test_clean_startup_then_shutdown_runs_teardowns_in_reverse():
     assert order == ["cm-enter", "shutdown-second", "shutdown-first", "cm-exit"]
 
 
-@pytest.mark.asyncio
 @pytest.mark.skipif(sys.version_info < (3, 11), reason="ExceptionGroup requires 3.11+")
 async def test_shutdown_runs_all_teardowns_and_groups_failures():
     ran: list[str] = []
@@ -112,7 +113,6 @@ async def test_shutdown_runs_all_teardowns_and_groups_failures():
     assert ValueError in kinds and KeyError in kinds
 
 
-@pytest.mark.asyncio
 async def test_standalone_shutdown_without_startup_runs_handlers():
     """`_run_lifecycle('shutdown')` with no prior startup still runs handlers."""
     fired: list[str] = []
@@ -136,7 +136,7 @@ def test_setup_locks_after_first_request_outside_debug():
     async def a():
         return {"ok": True}
 
-    asyncio.run(app.handle_request(_get("/a")))
+    asyncio.run(app.handle_request(make_request(path="/a")))
 
     with pytest.raises(SetupError):
 
@@ -158,7 +158,7 @@ def test_setup_lock_relaxed_under_debug():
     async def a():
         return {}
 
-    asyncio.run(app.handle_request(_get("/a")))
+    asyncio.run(app.handle_request(make_request(path="/a")))
 
     # DEBUG keeps setup mutable for hot-reload ergonomics.
     @app.get("/late")
@@ -193,7 +193,7 @@ def test_add_instrumentation_locks_after_first_request_outside_debug():
     async def a():
         return {"ok": True}
 
-    asyncio.run(app.handle_request(_get("/a")))
+    asyncio.run(app.handle_request(make_request(path="/a")))
 
     with pytest.raises(SetupError):
         app.add_instrumentation(lambda metrics: None)
@@ -208,18 +208,17 @@ def test_add_instrumentation_lock_relaxed_under_debug():
     async def a():
         return {}
 
-    asyncio.run(app.handle_request(_get("/a")))
+    asyncio.run(app.handle_request(make_request(path="/a")))
 
     seen: list[object] = []
     app.add_instrumentation(seen.append)
-    asyncio.run(app.handle_request(_get("/a")))
+    asyncio.run(app.handle_request(make_request(path="/a")))
     assert len(seen) == 1
 
 
 # -- app.spawn -------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_spawn_runs_and_is_drained_on_shutdown():
     app = Veloce()
     started = asyncio.Event()
@@ -245,7 +244,6 @@ async def test_spawn_runs_and_is_drained_on_shutdown():
     assert app.get_spawned_task("worker") is None
 
 
-@pytest.mark.asyncio
 async def test_task_spawned_in_on_shutdown_is_drained():
     # The spawned-task drain runs AFTER the on_shutdown handlers, so a task a
     # teardown callback spawns via app.spawn(...) is still cancelled and drained
@@ -283,7 +281,6 @@ async def test_task_spawned_in_on_shutdown_is_drained():
     assert app.get_spawned_task("late") is None
 
 
-@pytest.mark.asyncio
 async def test_spawn_duplicate_name_raises():
     app = Veloce()
 
@@ -300,7 +297,6 @@ async def test_spawn_duplicate_name_raises():
     await app._run_lifecycle("shutdown")
 
 
-@pytest.mark.asyncio
 async def test_cancel_spawned_task_by_name():
     app = Veloce()
 
@@ -331,7 +327,6 @@ def test_spawn_without_running_loop_raises():
 # -- ASGI lifespan.shutdown.failed -----------------------------------
 
 
-@pytest.mark.asyncio
 async def test_asgi_lifespan_shutdown_failed_message():
     app = Veloce()
 
@@ -364,10 +359,8 @@ async def test_asgi_lifespan_shutdown_failed_message():
 
 
 def test_begin_drain_closes_idle_connection():
-    from veloce.serving.protocol import HttpProtocol
 
-    loop = asyncio.new_event_loop()
-    try:
+    with protocol_loop() as loop:
         proto = HttpProtocol(Veloce(openapi_url=None), loop)
         transport = _RecordingTransport()
         proto.connection_made(transport)
@@ -375,73 +368,61 @@ def test_begin_drain_closes_idle_connection():
         proto.begin_drain()
         assert proto._draining is True
         assert transport.closed is True
-    finally:
-        loop.close()
 
 
 def test_start_graceful_drain_flips_live_connections():
-    from veloce.serving.protocol import HttpProtocol
 
-    loop = asyncio.new_event_loop()
-    try:
-        HttpProtocol.reset_graceful_drain()
-        proto = HttpProtocol(Veloce(openapi_url=None), loop)
-        transport = _RecordingTransport()
-        proto.connection_made(transport)
-        HttpProtocol.start_graceful_drain()
-        assert proto._draining is True
-    finally:
-        HttpProtocol.reset_graceful_drain()
-        loop.close()
+    with protocol_loop() as loop:
+        try:
+            HttpProtocol.reset_graceful_drain()
+            proto = HttpProtocol(Veloce(openapi_url=None), loop)
+            transport = _RecordingTransport()
+            proto.connection_made(transport)
+            HttpProtocol.start_graceful_drain()
+            assert proto._draining is True
+        finally:
+            HttpProtocol.reset_graceful_drain()
 
 
 def test_draining_serves_inflight_request_and_declines_pipelined_followup():
     """Two pipelined requests: with the connection draining, the in-flight
     request is served in full and the pipelined follow-up is declined (the
     connection closes at the boundary instead of cancelling mid-pipeline)."""
-    from veloce.serving.protocol import HttpProtocol
 
-    loop = asyncio.new_event_loop()
-    try:
-        HttpProtocol.reset_graceful_drain()
-        app = Veloce(openapi_url=None)
+    with protocol_loop() as loop:
+        try:
+            HttpProtocol.reset_graceful_drain()
+            app = Veloce(openapi_url=None)
 
-        @app.get("/a")
-        async def a(request):  # noqa: ANN001, ANN202
-            return {"who": "A"}
+            @app.get("/a")
+            async def a(request):  # noqa: ANN001, ANN202
+                return {"who": "A"}
 
-        @app.get("/b")
-        async def b(request):  # noqa: ANN001, ANN202
-            return {"who": "B"}
+            @app.get("/b")
+            async def b(request):  # noqa: ANN001, ANN202
+                return {"who": "B"}
 
-        from tests.test_server_protocol import _FakeTransport
+            proto = HttpProtocol(app, loop)
+            transport = _FakeTransport()
+            proto.connection_made(transport)
+            proto.data_received(
+                b"GET /a HTTP/1.1\r\nHost: x\r\n\r\nGET /b HTTP/1.1\r\nHost: x\r\n\r\n"
+            )
+            # Quiesce before the loop runs: the already-popped request A completes,
+            # then the loop closes at the boundary without serving B.
+            proto.begin_drain()
+            if proto._server_loop is not None:
+                loop.run_until_complete(proto._server_loop)
 
-        proto = HttpProtocol(app, loop)
-        transport = _FakeTransport()
-        proto.connection_made(transport)
-        proto.data_received(b"GET /a HTTP/1.1\r\nHost: x\r\n\r\nGET /b HTTP/1.1\r\nHost: x\r\n\r\n")
-        # Quiesce before the loop runs: the already-popped request A completes,
-        # then the loop closes at the boundary without serving B.
-        proto.begin_drain()
-        if proto._server_loop is not None:
-            loop.run_until_complete(proto._server_loop)
-
-        emitted = b"".join(transport.writes)
-        assert b'"who":"A"' in emitted
-        assert b'"who":"B"' not in emitted
-        assert transport.closed is True
-    finally:
-        HttpProtocol.reset_graceful_drain()
-        loop.close()
+            emitted = b"".join(transport.writes)
+            assert b'"who":"A"' in emitted
+            assert b'"who":"B"' not in emitted
+            assert transport.closed is True
+        finally:
+            HttpProtocol.reset_graceful_drain()
 
 
 # -- Helpers ---------------------------------------------------------
-
-
-def _get(path: str):
-    from veloce.http.request import Request
-
-    return Request(method="GET", path=path, query_string="", headers={}, body=b"")
 
 
 class _RecordingTransport:

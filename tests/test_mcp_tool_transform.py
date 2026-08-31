@@ -11,6 +11,7 @@ original handler runs, so both tools share one implementation.
 
 from __future__ import annotations
 
+import orjson
 import pytest
 
 from veloce import Veloce
@@ -48,8 +49,6 @@ async def _call(app: Veloce, name: str, arguments: dict) -> dict:
     )
     result = response["result"]
     assert not result.get("isError"), result["content"][0]["text"]
-    import orjson
-
     return orjson.loads(result["content"][0]["text"])
 
 
@@ -305,7 +304,7 @@ def test_offering_a_type_the_handler_does_not_take_is_refused():
         )
 
 
-def test_the_refusal_names_the_argument_and_both_types():
+def test_the_transform_refusal_names_the_argument_and_both_types():
     _app_obj, internal = _app()
     with pytest.raises(ValueError, match="'query'.*string.*integer"):
         derive_tool(

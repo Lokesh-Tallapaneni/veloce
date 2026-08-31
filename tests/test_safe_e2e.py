@@ -1,8 +1,12 @@
 """End-to-end coverage for safe_join's case-insensitive descendant check.
 
-Exercises the fix in `src/veloce/safe.py` that compares the joined path
-against the base via `os.path.normcase`, so a Windows drive-letter or
-filename casing difference doesn't reject an in-tree path.
+Exercises through `StaticFiles` the fix in `src/veloce/safe.py` that compares
+the joined path against the base via `os.path.normcase`, so a Windows
+drive-letter or filename casing difference doesn't reject an in-tree path.
+
+`safe_join` itself is unit-tested in `tests/test_safe.py`; this module holds
+only the requests that reach it through a served directory, so a new
+`safe_join` case has one obvious home.
 """
 
 from __future__ import annotations
@@ -12,54 +16,13 @@ import sys
 
 import pytest
 
+from tests.conftest import make_request
 from veloce import Request
 from veloce.contrib.staticfiles import StaticFiles
-from veloce.safe import safe_join
 
 
 def _req(path: str) -> Request:
-    return Request(method="GET", path=path, query_string="", headers={}, body=b"")
-
-
-def test_safe_join_mixed_case_descendant(monkeypatch):
-    """With case-folding forced, mixed-case base/joined still resolves."""
-    monkeypatch.setattr(os.path, "normcase", str.lower)
-    result = safe_join("/SRV/uploads", "Alice/file.txt")
-    assert result is not None
-    assert result.lower().endswith(os.path.join("uploads", "alice", "file.txt").lower())
-
-
-def test_safe_join_rejects_parent_escape():
-    assert safe_join("/srv/uploads", "../etc/passwd") is None
-
-
-def test_safe_join_with_no_extra_components_returns_base():
-    assert safe_join("/srv/uploads") == os.path.abspath("/srv/uploads")
-
-
-def test_safe_join_rejects_absolute_component():
-    assert safe_join("/srv/uploads", "/etc/passwd") is None
-
-
-def test_safe_join_rejects_nul_byte():
-    assert safe_join("/srv/uploads", "file\x00.txt") is None
-
-
-def test_safe_join_same_directory_returns_base():
-    """No-op join (single empty-relative component) stays inside the base."""
-    result = safe_join("/srv/uploads", "")
-    assert result == os.path.abspath("/srv/uploads")
-
-
-def test_safe_join_sibling_prefix_collision_rejected(monkeypatch):
-    """`/srv/a` must not accept `/srv/abc` even with case-folding active."""
-    monkeypatch.setattr(os.path, "normcase", str.lower)
-    base = os.path.abspath("/srv/a")
-    sibling = os.path.abspath("/srv/abc")
-    # Construct via abspath then re-derive the relative bit so the joined
-    # path actually lands at the sibling directory.
-    rel = os.path.relpath(sibling, base)
-    assert safe_join(base, rel) is None
+    return make_request(path=path)
 
 
 async def test_staticfiles_serves_mixed_case_subdirectory(tmp_path):

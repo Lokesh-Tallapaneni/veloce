@@ -24,6 +24,8 @@ import orjson
 
 from veloce._protocol_constants import URL_SCHEME_HTTP
 
+_logger = logging.getLogger(__name__)
+
 # Per-process cap on simultaneously-open connections for the built-in serving
 # path. Without it, a DDoS can exhaust RAM by opening sockets faster than
 # dispatch can drain them.
@@ -37,8 +39,6 @@ DEFAULT_MAX_CONCURRENT_CONNECTIONS = 1000
 # streaming path awaits on. The low mark is left to asyncio's default (a
 # quarter of high) when only the high mark is supplied.
 DEFAULT_WRITE_BUFFER_HIGH_WATER = 256 * 1024
-
-_logger = logging.getLogger(__name__)
 
 
 def _orjson_load(fp: IO[str] | IO[bytes]) -> Mapping[str, Any]:
@@ -128,6 +128,136 @@ def _import_string(dotted_path: str) -> object:
     raise ImportError(f"could not import {dotted_path!r}")
 
 
+#: Keys whose value is typed but whose default is `None`, so the type cannot be
+#: read off the default. Every other key is typed from its own default, and
+#: `tests/test_env_file_typing.py` asserts this table plus the typed defaults
+#: covers every key in `default_config()` - a new key cannot be added without a
+#: decision about what an env file's string should become.
+_ENV_TYPED_NONE_DEFAULTS: dict[str, str] = {
+    "MAX_FORM_FIELDS": "int",
+    "MAX_FORM_FIELD_MEMORY": "int",
+    "MAX_FORM_FIELD_SIZE": "int",
+    "MAX_FORM_FILES": "int",
+    "MAX_FORM_FILE_SIZE": "int",
+    "PROPAGATE_EXCEPTIONS": "bool",
+    "SEND_FILE_MAX_AGE_DEFAULT": "int",
+    "TCP_KEEPALIVE_COUNT": "int",
+    "TCP_KEEPALIVE_IDLE": "int",
+    "TCP_KEEPALIVE_INTERVAL": "int",
+    "WEBSOCKET_IDLE_TIMEOUT": "int",
+    "MCP_CALL_TIMEOUT": "int",
+    # Truthy enables the watchdog; a mapping tunes it. Only a string needs
+    # coercing - a mapping set in code passes through untouched.
+    "EVENT_LOOP_WATCHDOG": "bool",
+}
+
+#: Keys an env file supplies as free-form text. Listed so the completeness test
+#: can tell "deliberately a string" from "nobody decided yet".
+_ENV_FREE_FORM: frozenset[str] = frozenset({"SECRET_KEY", "SERVER_NAME", "PREFERRED_URL_SCHEME"})
+
+
+#: The tokens an env file may write for a boolean, matching what Pydantic's own
+#: bool parser accepts - the same set every dotenv-reading tool has converged on.
+#: Written out here rather than delegated to `pydantic.TypeAdapter`: importing
+#: `TypeAdapter` pulls `importlib.metadata` onto the base import path, which
+#: `test_import_laziness` forbids for cold-start reasons, and the membership test
+#: is about twice as fast besides (190ns against 353ns, measured).
+_ENV_TRUE = frozenset({"1", "true", "t", "yes", "y", "on"})
+#: The empty string is here and not an error: every dotenv reader treats `KEY=`
+#: as an empty value, and for a flag the conventional reading is "off". It is a
+#: value the operator can have meant; `flase` is not.
+_ENV_FALSE = frozenset({"0", "false", "f", "no", "n", "off", ""})
+
+#: What each declared type is called in the error a bad value raises.
+_ENV_TYPE_NAMES = {"int": "an integer", "bool": "a boolean (true/false, yes/no, on/off, 1/0)"}
+
+
+def _coerce_env_typed(value: str, kind: str, *, name: str) -> Any:
+    """Parse an env-file string as `kind`, refusing a value that is not one.
+
+    The refusal is the point. The integer path always rejected a non-integer, but
+    the boolean path could not fail: anything outside the truthy tokens read as
+    `False`, so `DEBUG=flase` was indistinguishable from `DEBUG=false` and a typo
+    in a security flag silently selected the unsafe value.
+
+    Raises `ValueError` naming the config key, so the message points at the line
+    of the `.env` file to fix rather than at a `TypeError` several layers later.
+    """
+    if kind == "bool":
+        token = value.strip().lower()
+        if token in _ENV_TRUE:
+            return True
+        if token in _ENV_FALSE:
+            return False
+        raise ValueError(_env_type_error(name, kind, value))
+    try:
+        return int(value)
+    except ValueError as err:
+        raise ValueError(_env_type_error(name, kind, value)) from err
+
+
+def _env_type_error(name: str, kind: str, value: str) -> str:
+    """Build the message for a value that is not the type its key declares."""
+    return f"{name} must be {_ENV_TYPE_NAMES[kind]}, got {value!r}"
+
+
+def _coerce_env_value(key: str, value: Any, current: Any) -> Any:
+    """Give an env-file string the type its config key is read as.
+
+    A `.env` file carries no types, so every value arrives as a string and
+    `MAX_CONTENT_LENGTH=1000` reached a `>` against an int - a `TypeError` on
+    every request carrying a body. `DEBUG=false` was worse: a non-empty string
+    is truthy, so the setting read as the opposite of what was written.
+
+    The target type comes from the key's own default, which is the one place
+    already describing what the key holds. `bool` is tested before `int`
+    because `bool` is a subclass of it.
+    """
+    if not isinstance(value, str):
+        return value
+    if isinstance(current, bool):
+        return _coerce_env_typed(value, "bool", name=key)
+    if isinstance(current, int):
+        return _coerce_env_typed(value, "int", name=key)
+    if isinstance(current, tuple):
+        # A list-valued key is written `A,B` in an env file; left a string, a
+        # membership test would match single characters rather than entries.
+        return tuple(part.strip() for part in value.split(",") if part.strip())
+    declared = _ENV_TYPED_NONE_DEFAULTS.get(key)
+    if declared is not None:
+        return _coerce_env_typed(value, declared, name=key)
+    return value
+
+
+_SILENT_MISS = object()
+
+
+def _read_config_file(
+    filename: str,
+    mode: str,
+    reader: Callable[[Any], Any],
+    *,
+    silent: bool,
+    encoding: str | None = None,
+) -> Any:
+    """Open `filename`, hand the handle to `reader`, and honour `silent=`.
+
+    Returns `_SILENT_MISS` when the file could not be opened and the caller
+    asked for silence, so `silent=` means one thing across every loader rather
+    than three hand-copied try/except blocks that can drift apart. `encoding`
+    stays the caller's choice: `from_env_file` pins utf-8 and `from_file`
+    leaves a text-mode load on the platform default, and collapsing that
+    difference here would change what one of them reads.
+    """
+    try:
+        with open(filename, mode, encoding=encoding) as handle:
+            return reader(handle)
+    except OSError:
+        if silent:
+            return _SILENT_MISS
+        raise
+
+
 class Config(dict[str, Any]):
     """A dict that knows how to load itself from common config sources.
 
@@ -137,7 +267,7 @@ class Config(dict[str, Any]):
 
     @staticmethod
     def default_config() -> dict[str, Any]:
-        """The documented default config keys with their values.
+        """Return the documented default config keys with their values.
 
         Seeded into `app.config` at construction so reads never raise
         `KeyError`. Values are the documented defaults; veloce-specific
@@ -149,7 +279,6 @@ class Config(dict[str, Any]):
             "TESTING": False,
             "SECRET_KEY": None,
             "SERVER_NAME": None,
-            "APPLICATION_ROOT": "/",
             "PREFERRED_URL_SCHEME": URL_SCHEME_HTTP,
             # Default request-body ceiling. The body is buffered in memory, so an
             # unbounded default lets one large request OOM the process; 100 MiB is
@@ -163,13 +292,10 @@ class Config(dict[str, Any]):
             "MAX_FORM_FILE_SIZE": None,
             "MAX_FORM_FIELD_SIZE": None,
             "MAX_FORM_FIELD_MEMORY": None,
-            "MAX_COOKIE_SIZE": 4093,
-            "SESSION_COOKIE_NAME": "session",
-            "SESSION_COOKIE_HTTPONLY": True,
-            "SESSION_COOKIE_SECURE": False,
-            "SESSION_COOKIE_SAMESITE": None,
-            "PERMANENT_SESSION_LIFETIME": 2678400,
-            "JSON_SORT_KEYS": True,
+            # Finding ids the audit drops. An accepted finding is turned off
+            # by id so the audit stays on for everything else.
+            "SILENCED_AUDIT_IDS": (),
+            "JSON_SORT_KEYS": False,
             "JSONIFY_PRETTYPRINT_REGULAR": False,
             # Surface the verbose JSON decoder reason in the 400 response body.
             # Off in production so a malformed body can't leak decoder internals;
@@ -180,6 +306,7 @@ class Config(dict[str, Any]):
             "REQUEST_HANDLER_TIMEOUT": 30,
             "KEEP_ALIVE_TIMEOUT": 75,
             "REQUEST_TIMEOUT": 30,
+            "MAX_PIPELINED_REQUESTS": 64,
             # Read by the built-in serving path alongside the timeouts above;
             # seeded here so every key it consults is discoverable in one place.
             "MAX_CONCURRENT_CONNECTIONS": DEFAULT_MAX_CONCURRENT_CONNECTIONS,
@@ -197,15 +324,36 @@ class Config(dict[str, Any]):
             "TCP_KEEPALIVE_IDLE": None,
             "TCP_KEEPALIVE_INTERVAL": None,
             "TCP_KEEPALIVE_COUNT": None,
+            # Read by `app/lifecycle.py`. Truthy turns the event-loop watchdog
+            # on; a mapping additionally tunes it (`interval`,
+            # `stall_threshold`).
+            "EVENT_LOOP_WATCHDOG": None,
+            # Read by `contrib/mcp/server.py`. Declared here so they carry a
+            # documented default and an env-file value gets the right type -
+            # unregistered, `MCP_CALL_TIMEOUT=5` reached `asyncio.wait_for` as a
+            # string and broke every tool call.
+            "MCP_CALL_TIMEOUT": None,
+            "MCP_ENFORCE_LIFECYCLE": False,
+            "MCP_RESOURCE_SUBSCRIPTIONS": False,
             # Per-task budget, in seconds, for draining an `app.spawn(...)`
             # background task on shutdown: each task is cancelled and awaited
-            # for at most this long before the drain moves on.
+            # for at most this long before the drain moves on. Read by
+            # `app/background.py`.
             "GRACEFUL_TASK_TIMEOUT": 10,
+            # How long shutdown waits for in-flight requests to finish after
+            # every connection has been asked to quiesce. Separate from
+            # GRACEFUL_TASK_TIMEOUT, which bounds background-task cancellation:
+            # the two run in sequence, so a container's termination grace period
+            # must cover both.
+            "GRACEFUL_DRAIN_TIMEOUT": 30,
+            # Seconds a WebSocket may sit idle before it is closed 1001.
+            # `None` disables it. Applies on both transports.
+            "WEBSOCKET_IDLE_TIMEOUT": None,
         }
 
     @staticmethod
     def _is_uppercase_key(name: str) -> bool:
-        """A valid config key: starts with A-Z, then A-Z/0-9/_."""
+        """True when `name` is a valid config key: A-Z, then A-Z/0-9/_."""
         if not name:
             return False
         if not ("A" <= name[0] <= "Z"):
@@ -220,10 +368,21 @@ class Config(dict[str, Any]):
     def from_mapping(self, mapping: Mapping[str, Any] | None = None, **kwargs: Any) -> bool:
         """Bulk-update from `mapping` and/or kwargs.
 
-        Only UPPERCASE keys are stored; lowercase keys are silently
-        skipped. Always returns True so the call can be used as a
-        chaining sentinel.
+        Only UPPERCASE keys are config keys. A non-uppercase **keyword** argument
+        raises: it was typed out one key at a time, so dropping it silently means
+        `from_mapping(debug=True)` leaves `DEBUG` untouched and says nothing. Keys
+        in a `mapping` are filtered quietly instead, because a settings dict or a
+        parsed config section legitimately carries entries that are not config.
+
+        Always returns True so the call can be used as a chaining sentinel.
         """
+        rejected = sorted(k for k in kwargs if not self._is_uppercase_key(k))
+        if rejected:
+            raise TypeError(
+                f"config keys must be UPPERCASE; got {', '.join(rejected)}. "
+                f"Write {rejected[0].upper()}=... , or pass a mapping to have "
+                f"non-config keys filtered."
+            )
         merged: dict[str, Any] = {}
         if mapping is not None:
             merged.update(mapping)
@@ -258,13 +417,9 @@ class Config(dict[str, Any]):
         """
         module = types.ModuleType("veloce_config")
         module.__file__ = filename
-        try:
-            with open(filename, "rb") as f:
-                source = f.read()
-        except OSError:
-            if silent:
-                return False
-            raise
+        source = _read_config_file(filename, "rb", lambda handle: handle.read(), silent=silent)
+        if source is _SILENT_MISS:
+            return False
         # Compile + exec into the module namespace. Errors raised by the
         # config file itself propagate - they're legitimate misconfig
         # and silently swallowing them would mask real bugs.
@@ -284,9 +439,11 @@ class Config(dict[str, Any]):
         `export ` prefix is accepted, and a value wrapped in matching
         single or double quotes is unquoted. An unquoted value may carry
         a trailing ` #` inline comment, which is stripped; a `#` inside
-        quotes is kept literal. Values are stored as plain strings -
-        a `.env` file carries no types. Only UPPERCASE keys are kept (see
-        `from_mapping`). With `silent=True` a missing file returns
+        quotes is kept literal. A `.env` file carries no types, so a value for
+        a key with a known type is converted to it: `DEBUG=false` stores `False`
+        rather than a truthy string, and `MAX_CONTENT_LENGTH=1000` stores `1000`
+        rather than `"1000"`. An unparseable number raises, naming the key. Only
+        UPPERCASE keys are kept (see `from_mapping`). With `silent=True` a missing file returns
         `False` rather than raising.
 
         Keys are stored exactly as the file spells them, and `os.environ` is
@@ -297,14 +454,18 @@ class Config(dict[str, Any]):
         using both reads two different keys depending on how it was started -
         pick one of the two and use it on every path.
         """
-        try:
-            with open(filename, encoding="utf-8") as handle:
-                lines = handle.readlines()
-        except OSError:
-            if silent:
-                return False
-            raise
-        return self.from_mapping(_parse_env_lines(lines, source=filename))
+        lines = _read_config_file(
+            filename, "r", lambda handle: handle.readlines(), silent=silent, encoding="utf-8"
+        )
+        if lines is _SILENT_MISS:
+            return False
+        parsed = _parse_env_lines(lines, source=filename)
+        defaults = self.default_config()
+        typed = {
+            key: _coerce_env_value(key, value, self.get(key, defaults.get(key)))
+            for key, value in parsed.items()
+        }
+        return self.from_mapping(typed)
 
     # ── from_envvar ───────────────────────────────────────
 
@@ -324,13 +485,18 @@ class Config(dict[str, Any]):
         prefix: str = "VELOCE",
         loads: Callable[[str], Any] = orjson.loads,
     ) -> bool:
-        """Pull env vars starting with `<prefix>_`, strip the prefix, store
-        with JSON-decoded values (falling back to the raw string when JSON
-        parsing fails). Nested config via `__` separator: `VELOCE_MAIL__SERVER`
-        sets `config["MAIL"]["SERVER"]`.
+        """Load config from the env vars named `<prefix>_...`, less the prefix.
+
+        Values are JSON-decoded, falling back to the raw string when JSON
+        parsing fails. Nested config uses the `__` separator:
+        `VELOCE_MAIL__SERVER` sets `config["MAIL"]["SERVER"]`.
 
         Reads `os.environ` only. `from_env_file` reads a file and keeps each key
         verbatim, so the two name the same setting differently - see its note.
+
+        A value that is not valid JSON is given the type its key is read as, the
+        same way the file loader does; a value that cannot be converted raises,
+        naming the key. Nested keys have no declared type and are stored as read.
         """
         sep = f"{prefix}_"
         for name, raw in os.environ.items():
@@ -343,7 +509,13 @@ class Config(dict[str, Any]):
                 value = raw
             if "__" not in stripped:
                 if self._is_uppercase_key(stripped):
-                    self[stripped] = value
+                    # A value that is not valid JSON arrives here as the raw
+                    # string, so `VELOCE_MAX_CONTENT_LENGTH=10MB` would be stored
+                    # as `str` and then compared with `>` against an int on every
+                    # request carrying a body. The same coercion the file loader
+                    # applies gives it the type its key is read as, or refuses it
+                    # by name at load time instead of failing per request.
+                    self[stripped] = _coerce_env_value(stripped, value, self.get(stripped))
                 continue
             # Nested: walk segments and set the leaf.
             segments = stripped.split("__")
@@ -375,13 +547,9 @@ class Config(dict[str, Any]):
         through `from_mapping`.
         """
         mode = "r" if text else "rb"
-        try:
-            with open(filename, mode) as f:
-                data = load(f)
-        except OSError:
-            if silent:
-                return False
-            raise
+        data = _read_config_file(filename, mode, load, silent=silent)
+        if data is _SILENT_MISS:
+            return False
         if not isinstance(data, Mapping):
             raise TypeError(
                 f"config loader {load!r} returned {type(data).__name__}, expected a mapping"

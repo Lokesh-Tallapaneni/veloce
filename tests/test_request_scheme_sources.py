@@ -19,6 +19,7 @@ trusted, then the bare header only when no `ProxyFix` ran.
 
 from __future__ import annotations
 
+from tests.conftest import make_request
 from veloce.http.datastructures import URL, Headers
 from veloce.http.request import Request
 
@@ -36,7 +37,7 @@ class _Transport:
 
 
 def _request(*, tls: bool = False, headers: dict[str, str] | None = None) -> Request:
-    return Request(
+    return make_request(
         method="GET",
         path="/x",
         query_string="",
@@ -71,7 +72,7 @@ def test_the_connection_outranks_a_forwarded_header():
 
 def test_a_request_with_no_transport_is_unchanged():
     """The ASGI path supplies a scope and never a transport."""
-    request = Request(
+    request = make_request(
         method="GET",
         path="/x",
         query_string="",
@@ -84,7 +85,7 @@ def test_a_request_with_no_transport_is_unchanged():
 
 def test_the_scope_still_wins_when_present():
     """ProxyFix writes the trusted scheme into the scope; that must hold."""
-    request = Request(
+    request = make_request(
         method="GET",
         path="/x",
         query_string="",
@@ -108,14 +109,14 @@ def test_the_header_is_honoured_when_no_proxyfix_ran():
 def test_the_header_is_ignored_once_proxyfix_has_run():
     """The bypass: ProxyFix refused the hop, the raw header won anyway."""
     request = _request(headers={"host": "example.com", "x-forwarded-proto": "https"})
-    request._state["proxy_fix_applied"] = True
+    request.state["proxy_fix_applied"] = True
     assert request.scheme == "http", "an untrusted hop set the scheme after ProxyFix refused it"
 
 
 def test_a_trusted_proxyfix_scheme_still_applies():
     """Refusing the raw header must not break the trusted path."""
     request = _request(headers={"host": "example.com", "x-forwarded-proto": "https"})
-    request._state["proxy_fix_applied"] = True
+    request.state["proxy_fix_applied"] = True
     request.scope["scheme"] = "https"
     request._url = None
     assert request.scheme == "https"

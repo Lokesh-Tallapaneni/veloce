@@ -4,25 +4,24 @@ from __future__ import annotations
 
 import logging
 
-import pytest
+import orjson
 
+from tests._asgi_drive import http_scope
 from veloce import HTTPException, JSONResponse, Veloce
+from veloce.contrib.mcp.server import MCPServer
+from veloce.contrib.mcp.transports.stdio import StdioTransport
 from veloce.exceptions import Forbidden, NotFound
 
 
-@pytest.mark.asyncio
 async def test_handle_http_exception_default_body():
     app = Veloce(debug=True, openapi_url=None)
     resp = await app.handle_http_exception(NotFound("missing"))
     assert resp.status_code == 404
-    import orjson
-
     # Same body the request cycle emits for the same exception - the two must
     # not diverge, or a handler reports errors differently over MCP than HTTP.
     assert orjson.loads(resp.body) == {"detail": "missing", "status_code": 404}
 
 
-@pytest.mark.asyncio
 async def test_handle_http_exception_uses_status_handler():
     app = Veloce(debug=True, openapi_url=None)
 
@@ -31,12 +30,9 @@ async def test_handle_http_exception_uses_status_handler():
         return JSONResponse({"custom": True}, status_code=404)
 
     resp = await app.handle_http_exception(NotFound())
-    import orjson
-
     assert orjson.loads(resp.body) == {"custom": True}
 
 
-@pytest.mark.asyncio
 async def test_handle_http_exception_passes_headers():
     app = Veloce(debug=True, openapi_url=None)
     exc = Forbidden("nope")
@@ -45,14 +41,12 @@ async def test_handle_http_exception_passes_headers():
     assert resp.headers.get("X-Reason") == "private"
 
 
-@pytest.mark.asyncio
 async def test_handle_user_exception_http_routes_through_http_path():
     app = Veloce(debug=True, openapi_url=None)
     resp = await app.handle_user_exception(NotFound("nope"))
     assert resp.status_code == 404
 
 
-@pytest.mark.asyncio
 async def test_handle_user_exception_arbitrary_with_handler():
     app = Veloce(debug=True, openapi_url=None)
 
@@ -64,12 +58,9 @@ async def test_handle_user_exception_arbitrary_with_handler():
         return {"err": str(exc)}
 
     resp = await app.handle_user_exception(MyError("boom"))
-    import orjson
-
     assert orjson.loads(resp.body) == {"err": "boom"}
 
 
-@pytest.mark.asyncio
 async def test_handle_user_exception_unhandled_returns_500(caplog):
     app = Veloce(debug=True, openapi_url=None)
     caplog.set_level(logging.ERROR, logger=app.logger.name)
@@ -93,14 +84,11 @@ def test_log_exception_calls_logger(caplog):
     assert any("Exception on request" in r.message for r in caplog.records)
 
 
-@pytest.mark.asyncio
 async def test_handle_http_exception_bare():
     """Untyped HTTPException (no detail/headers) gets sensible defaults."""
     app = Veloce(debug=True, openapi_url=None)
     resp = await app.handle_http_exception(HTTPException(418, "i am a teapot"))
     assert resp.status_code == 418
-    import orjson
-
     assert orjson.loads(resp.body) == {"detail": "i am a teapot", "status_code": 418}
 
 
@@ -109,11 +97,6 @@ async def test_error_body_is_identical_across_http_and_mcp_doors():
     on both doors. The HTTP path shapes errors in `_dispatch_request`, while the
     MCP path routes through `handle_user_exception`; those two builders drifting
     apart is invisible in tests that only exercise one door."""
-    import orjson
-
-    from veloce.contrib.mcp.server import MCPServer
-    from veloce.contrib.mcp.transports.stdio import StdioTransport
-
     app = Veloce(openapi_url=None)
 
     @app.get("/items/{item_id}", expose_as_mcp_tool=True, mcp_description="Fetch an item")
@@ -129,20 +112,20 @@ async def test_error_body_is_identical_across_http_and_mcp_doors():
         sent.append(message)
 
     await app._asgi_app(
-        {
-            "type": "http",
-            "asgi": {"version": "3.0"},
-            "http_version": "1.1",
-            "method": "GET",
-            "scheme": "http",
-            "path": "/items/7",
-            "raw_path": b"/items/7",
-            "query_string": b"",
-            "root_path": "",
-            "headers": [(b"host", b"t")],
-            "client": ("127.0.0.1", 5000),
-            "server": ("127.0.0.1", 8000),
-        },
+        http_scope(
+            type="http",
+            asgi={"version": "3.0"},
+            http_version="1.1",
+            method="GET",
+            scheme="http",
+            path="/items/7",
+            raw_path=b"/items/7",
+            query_string=b"",
+            root_path="",
+            headers=[(b"host", b"t")],
+            client=("127.0.0.1", 5000),
+            server=("127.0.0.1", 8000),
+        ),
         receive,
         send,
     )

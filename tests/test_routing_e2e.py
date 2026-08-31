@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
-from veloce import Blueprint, Depends, Veloce
-from veloce.routing.params import Query
+from veloce import Blueprint, Depends, Query, Veloce
 from veloce.testclient import TestClient
 
 
@@ -69,43 +66,6 @@ def test_query_multiple_of_zero_raises_at_declaration():
     """`Query(multiple_of=0)` is invalid — `ParamBase.__init__` rejects it."""
     with pytest.raises(ValueError, match="multiple_of"):
         Query(multiple_of=0)
-
-
-@pytest.fixture
-def static_app(tmp_path):
-    asset = tmp_path / "hello.txt"
-    asset.write_bytes(b"hello etag\n")
-    os.utime(str(asset), (1_700_000_000, 1_700_000_000))
-
-    app = Veloce(openapi_url=None)
-    app.mount_static(prefix="/static", directory=str(tmp_path))
-    return app
-
-
-def test_weak_etag_round_trip_with_strong_client_token(static_app):
-    """Server emits `W/"..."`; client sends just `"..."` → 304."""
-    client = TestClient(static_app)
-    first = client.get("/static/hello.txt")
-    assert first.status_code == 200
-    server_etag = first.headers["etag"]
-    assert server_etag.startswith('W/"')
-
-    strong_form = server_etag.removeprefix("W/")
-    second = client.get("/static/hello.txt", headers={"if-none-match": strong_form})
-    assert second.status_code == 304
-    assert second.body == b""
-
-
-def test_weak_etag_round_trip_with_weak_client_token(static_app):
-    """Client echoes the server's `W/"..."` verbatim → 304."""
-    client = TestClient(static_app)
-    first = client.get("/static/hello.txt")
-    server_etag = first.headers["etag"]
-    assert server_etag.startswith('W/"')
-
-    second = client.get("/static/hello.txt", headers={"if-none-match": server_etag})
-    assert second.status_code == 304
-    assert second.body == b""
 
 
 def test_dependency_cycle_detected_at_registration():

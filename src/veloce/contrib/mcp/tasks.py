@@ -11,8 +11,8 @@ runner calls the server's shared `tools/call` result builder - so a tool exposed
 from a route stays one handler behind both doors: the HTTP request, the
 synchronous tool call, and the task all run the identical dispatch path. Task
 support is opt-in per tool (`@app.mcp_tool(task_support=True)` or
-``mcp_task_support=True`` on a route); a tool that does not opt in advertises
-``execution.taskSupport: "forbidden"`` and rejects a task-augmented call.
+``mcp_task_support=True`` on a route); a tool that does not opt in omits the
+``execution`` field from its listing entirely and rejects a task-augmented call.
 
 A task moves through the spec's lifecycle - ``working`` while the handler runs,
 then ``completed`` / ``failed`` on its outcome, or ``cancelled`` after
@@ -33,6 +33,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from veloce.contrib.mcp._helpers import _era_modern_var
 from veloce.contrib.mcp._registry_base import Registry
 from veloce.contrib.mcp.capabilities.base import _ServerCapability
 from veloce.contrib.mcp.descriptors import MCPDescriptor
@@ -41,14 +42,14 @@ from veloce.contrib.mcp.errors import InvalidParamsError, ResourceNotFoundError
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.server import MethodHandler
 
-# The task status values the spec defines. `working` is the only non-terminal
-# state the framework drives a task into on its own; `input_required` is modelled
-# for a tool that needs client follow-up but is never entered automatically.
 # The extension the modern revision moves tasks into. A client declares it in the
 # `extensions` block of its per-request capabilities; a server advertises the same
 # key in `server/discover`. A task is never returned to a client that did not.
 TASKS_EXTENSION = "io.modelcontextprotocol/tasks"
 
+# The task status values the spec defines. `working` is the only non-terminal
+# state the framework drives a task into on its own; `input_required` is modelled
+# for a tool that needs client follow-up but is never entered automatically.
 STATUS_WORKING = "working"
 STATUS_INPUT_REQUIRED = "input_required"
 STATUS_COMPLETED = "completed"
@@ -73,8 +74,15 @@ _TERMINAL_STATUSES = TASK_STATUSES - _NON_TERMINAL_STATUSES
 
 # Default time-to-live (seconds) a created task is retained before eviction, used
 # when the client requests none. A client may shorten or extend it per call via
-# the task `ttl`; the server keeps the requested value verbatim.
+# the task `ttl`.
 _DEFAULT_TASK_TTL_SECONDS = 300
+
+# Ceiling (seconds) on a client-requested `ttl`. Expiry is what reclaims a
+# settled task and its result, so an unclamped `ttl` let a caller decide how long
+# the server holds them - `{"task": {"ttl": 999999999999}}` is 31 years, which is
+# process life. Clamped rather than refused: the call still succeeds and the task
+# reports the TTL it actually got, so a client asking for more learns what it has.
+_MAX_TASK_TTL_SECONDS = 3600
 
 # Suggested client poll interval (milliseconds) reported on a working task so a
 # client paces its `tasks/get` polling instead of busy-looping.
@@ -87,6 +95,9 @@ META_RELATED_TASK = "io.modelcontextprotocol/related-task"
 # MCP `_meta` hint on a `CreateTaskResult` telling the client an immediate model
 # turn is not expected - the task runs in the background. Advisory, non-binding.
 _META_MODEL_IMMEDIATE_RESPONSE = "io.modelcontextprotocol/model-immediate-response"
+
+
+# ── Task records ──────────────────────────────────────────
 
 
 def _now_iso() -> str:
@@ -129,13 +140,19 @@ class MCPTask(MCPDescriptor):
     # work that asked for input.
     input_responses: dict[str, Any] = field(default_factory=dict)
 
-    def describe(self, *, modern: bool = False) -> dict[str, Any]:
+    def describe(self) -> dict[str, Any]:
         """Shape this task into the MCP Task object the task methods return.
 
         The extension renamed the two duration fields, so a modern client is sent
         `ttlMs` / `pollIntervalMs` and a handshake client the names its revision
         defined. Everything else is common to both.
+
+        The era is read from the message being answered rather than passed in:
+        creation and polling supplied it while cancellation and the status
+        notification did not, so one task reported `ttlMs` on the way in and
+        `ttl` on the way out.
         """
+        modern = _era_modern_var.get()
         task: dict[str, Any] = {
             "taskId": self.name,
             "status": self.status,
@@ -227,18 +244,22 @@ class TaskRegistry(Registry[MCPTask]):
         self.tasks.pop(task.name, None)
 
 
+# ── Wire shapes ───────────────────────────────────────────
+
+
 def task_ttl_ms(params: dict[str, Any]) -> int:
     """Return the requested task time-to-live in milliseconds, or the default.
 
     The client may attach a ``ttl`` (milliseconds) to the ``task`` field; an
-    absent or non-positive value falls back to the server default so a task is
-    always retained for a bounded, sensible window.
+    absent or non-positive value falls back to the server default, and a value
+    above `_MAX_TASK_TTL_SECONDS` is clamped to it, so a task is always retained
+    for a bounded, sensible window.
     """
     task_field = params.get("task")
     if isinstance(task_field, dict):
         ttl = task_field.get("ttl")
         if isinstance(ttl, int) and not isinstance(ttl, bool) and ttl > 0:
-            return ttl
+            return min(ttl, _MAX_TASK_TTL_SECONDS * 1000)
     return _DEFAULT_TASK_TTL_SECONDS * 1000
 
 
@@ -255,22 +276,14 @@ def new_task(tool_name: str, ttl_ms: int, owner_key: int | None = None) -> MCPTa
     return task
 
 
-def _modern_params(params: dict[str, Any]) -> bool:
-    """Whether the request carrying these params declared a modern revision."""
-    meta = params.get("_meta")
-    return isinstance(meta, dict) and isinstance(
-        meta.get("io.modelcontextprotocol/protocolVersion"), str
-    )
-
-
-def create_task_result(task: MCPTask, *, modern: bool = False) -> dict[str, Any]:
+def create_task_result(task: MCPTask) -> dict[str, Any]:
     """Build the `CreateTaskResult` returned immediately for a task-augmented call.
 
     Carries the new task object plus the non-binding model-immediate-response
     hint so the client knows no immediate model turn is expected.
     """
     return {
-        "task": task.describe(modern=modern),
+        "task": task.describe(),
         "_meta": {_META_MODEL_IMMEDIATE_RESPONSE: True},
     }
 
@@ -291,6 +304,9 @@ def status_notification(task: MCPTask) -> dict[str, Any]:
     }
 
 
+# ── The capability ────────────────────────────────────────
+
+
 class TasksCapability(_ServerCapability):
     """The ``tasks/get|result|list|cancel`` methods and the tasks advertisement.
 
@@ -301,12 +317,20 @@ class TasksCapability(_ServerCapability):
 
     __slots__ = ()
 
-    def advertise(self) -> dict[str, Any] | None:
+    handshake_only_methods = frozenset({"tasks/list", "tasks/result"})
+
+    def advertise(self, *, modern: bool = False) -> dict[str, Any] | None:
         if not any(tool.task_support for tool in self._server.registry.tools.values()):
             return None
         # `list` / `cancel` are the optional sub-capabilities this server answers;
         # `requests.tools/call` declares that a `tools/call` may be task-augmented.
-        return {"tasks": {"list": {}, "cancel": {}, "requests": {"tools/call": {}}}}
+        # The modern revision retired `tasks/list`, so it is not offered there -
+        # advertising it would promise a method the dispatcher answers with
+        # method-not-found.
+        entry: dict[str, Any] = {"cancel": {}, "requests": {"tools/call": {}}}
+        if not modern:
+            entry["list"] = {}
+        return {"tasks": entry}
 
     def extensions(self) -> dict[str, Any] | None:
         """Advertise the tasks extension when any tool opts into task execution."""
@@ -344,7 +368,7 @@ class TasksCapability(_ServerCapability):
         `tasks/result`, so a completed task carries its result here.
         """
         task = self._lookup(params)
-        return task.describe(modern=_modern_params(params))
+        return task.describe()
 
     async def _result(self, params: dict[str, Any]) -> dict[str, Any]:
         """Return a settled task's `tools/call` result (``tasks/result``).

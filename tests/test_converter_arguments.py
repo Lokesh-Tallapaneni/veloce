@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import Veloce
+from veloce import BuildError, Veloce
 from veloce.routing.converters import parse_converter
 from veloce.testclient import TestClient
 
@@ -170,7 +170,6 @@ def test_url_for_accepts_in_bounds_value():
 
 
 def test_url_for_rejects_out_of_bounds_value():
-    from veloce import BuildError
 
     app = Veloce()
 

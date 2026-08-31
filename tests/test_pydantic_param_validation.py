@@ -13,23 +13,17 @@ from decimal import Decimal
 from enum import Enum
 from typing import Literal
 
-from veloce import Cookie, Header, Query, Request, Veloce
+import orjson
+
+from tests._openapi import parameters
+from tests.conftest import make_request
+from veloce import Cookie, Header, Query, Veloce
 from veloce.contrib.openapi import get_openapi_schema
 
 
 class Color(str, Enum):
     red = "red"
     green = "green"
-
-
-def make_request(method="GET", path="/", headers=None, body=b"", query_string="") -> Request:
-    return Request(
-        method=method,
-        path=path,
-        query_string=query_string,
-        headers=headers or {},
-        body=body,
-    )
 
 
 # ── runtime coercion: query parameters ────────────────────────────────
@@ -46,8 +40,7 @@ async def test_datetime_query_param_is_coerced():
         make_request(path="/when", query_string="created=2021-06-15T09:30:00")
     )
     assert resp.status_code == 200
-    assert b'"datetime"' in resp.body
-    assert b'"year":2021' in resp.body or b'"year": 2021' in resp.body
+    assert orjson.loads(resp.body) == {"type": "datetime", "year": 2021}
 
 
 async def test_date_query_param_is_coerced():
@@ -195,9 +188,7 @@ async def test_invalid_int_fast_path_still_422():
 
 
 def _param_schema(app: Veloce, path: str, name: str, method: str = "get") -> dict:
-    schema = get_openapi_schema(app)
-    params = schema["paths"][path][method].get("parameters", [])
-    for p in params:
+    for p in parameters(get_openapi_schema(app), path, method):
         if p["name"] == name:
             return p["schema"]
     raise AssertionError(f"parameter {name!r} not found in {path}")
@@ -293,8 +284,7 @@ async def test_int_literal_query_param_accepts_member():
 
     resp = await app.handle_request(make_request(path="/lvl", query_string="level=2"))
     assert resp.status_code == 200
-    assert b'"int"' in resp.body
-    assert b'"level":2' in resp.body or b'"level": 2' in resp.body
+    assert orjson.loads(resp.body) == {"level": 2, "type": "int"}
 
 
 async def test_int_literal_query_param_rejects_non_member():
@@ -317,8 +307,7 @@ async def test_bool_literal_query_param_accepts_member():
 
     resp = await app.handle_request(make_request(path="/flag", query_string="on=true"))
     assert resp.status_code == 200
-    assert b'"bool"' in resp.body
-    assert b'"on":true' in resp.body or b'"on": true' in resp.body
+    assert orjson.loads(resp.body) == {"on": True, "type": "bool"}
 
 
 # ── Decimal numeric constraints are enforced ──────────────────────────

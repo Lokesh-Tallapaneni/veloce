@@ -42,6 +42,8 @@ from pathlib import Path
 from typing import Any
 
 from veloce._constants import MSG_APP_REFERENCE_FORM
+from veloce._version import resolve_version
+from veloce.audit import run as audit_run
 from veloce.config import _parse_env_lines
 
 # ── Constants ─────────────────────────────────────────────
@@ -65,14 +67,10 @@ _COMMAND_ENTRY_POINT_GROUP = "veloce.commands"
 
 
 def _resolve_version() -> str:
-    # Avoid `from veloce import __version__` so `veloce --version` does not
-    # drag the entire framework (router, middleware, security, sse, ...) into
-    # sys.modules just to print a string. Fallback must mirror the one in
-    # `veloce/__init__.py` for editable installs without resolved metadata.
-    try:
-        return importlib.metadata.version("veloceframework")
-    except importlib.metadata.PackageNotFoundError:
-        return "0.3.0"
+    # Not `from veloce import __version__`, so `veloce --version` does not drag
+    # the whole framework into sys.modules to print a string. Both spellings
+    # resolve through the same helper, so their fallbacks cannot drift.
+    return resolve_version()
 
 
 def _load_app(reference: str) -> Any:
@@ -147,6 +145,36 @@ def _require_app_attr(app: Any, attr: str, hint: str) -> None:
 # ── Subcommands ───────────────────────────────────────────
 
 
+def _import_uvicorn() -> Any | None:
+    """Return the `uvicorn` module, or `None` when the extra is not installed."""
+    try:
+        import uvicorn
+    except ImportError:
+        return None
+    return uvicorn
+
+
+def _serve_builtin(app: Any, args: argparse.Namespace, *, reload: bool = False) -> None:
+    """Serve `app` on the built-in server, telling the operator that is what happened.
+
+    The notice is not optional: falling through to a different server in
+    silence leaves someone who believes they are on uvicorn with no way to find
+    out from the output. `veloce mcp run --transport http` reaches this too, and
+    its stdio sibling documents stderr as the only channel it may write to,
+    which is where this goes.
+    """
+    print(
+        "uvicorn is not installed - serving with veloce's built-in server. "
+        "Install veloceframework[uvicorn] for the recommended production server.",
+        file=sys.stderr,
+    )
+    # The native server takes `bind_all=True` rather than an all-interfaces host.
+    if args.host in ("0.0.0.0", "::"):
+        app.run(port=args.port, bind_all=True, reload=reload)
+    else:
+        app.run(host=args.host, port=args.port, reload=reload)
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
     """`veloce run` - serve the app under uvicorn, or the built-in server.
 
@@ -159,11 +187,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
     _apply_env_file(args)
     app = _load_app(args.app)
 
-    try:
-        import uvicorn
-    except ImportError:
-        uvicorn = None  # type: ignore[assignment]
-
+    uvicorn = _import_uvicorn()
     if uvicorn is not None:
         uvicorn.run(
             args.app,
@@ -182,11 +206,6 @@ def _cmd_run(args: argparse.Namespace) -> int:
             f"{args.app!r} has no built-in server to fall back to; install "
             "veloceframework[uvicorn] to serve it under uvicorn."
         )
-    print(
-        "uvicorn is not installed - serving with veloce's built-in server. "
-        "Install veloceframework[uvicorn] for the recommended production server.",
-        file=sys.stderr,
-    )
     # The built-in server is single-process; --workers>1 needs uvicorn or the
     # gunicorn VeloceWorker, so warn and run one process rather than passing a
     # count `run()` would reject.
@@ -196,11 +215,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
             "process); install veloceframework[uvicorn] for multiple workers.",
             file=sys.stderr,
         )
-    # The native server takes `bind_all=True` rather than an all-interfaces host.
-    if args.host in ("0.0.0.0", "::"):
-        app.run(port=args.port, bind_all=True, reload=args.reload)
-    else:
-        app.run(host=args.host, port=args.port, reload=args.reload)
+    _serve_builtin(app, args, reload=args.reload)
     return 0
 
 
@@ -302,25 +317,19 @@ def _cmd_check(args: argparse.Namespace) -> int:
     app = _load_app(args.app)
     _require_app_attr(app, "security_audit", "`.security_audit()`")
 
-    issues = app.security_audit()
-    if issues:
-        print(f"Security audit: {len(issues)} issue(s) found:")
-        for issue in issues:
-            print(f"  - {issue}")
+    # The structured form, not `app.security_audit()`: severity is what decides
+    # the exit code, so an informational finding is reported without failing a
+    # deploy that is otherwise sound.
+    findings = audit_run(app)
+    failing = [f for f in findings if f.at_least("warning")]
+    if findings:
+        print(f"Security audit: {len(findings)} finding(s):")
+        for finding in findings:
+            print(f"  - [{finding.severity}] {finding}")
     else:
         print("Security audit: no issues found.")
 
-    # Response contracts are reported alongside the security posture so a route
-    # that documents nothing - or contradicts its own annotation - is visible
-    # before deploying, rather than surfacing as a client-side surprise.
-    contracts = app.response_contract_audit()
-    if contracts:
-        print(f"Response contracts: {len(contracts)} finding(s):")
-        for finding in contracts:
-            print(f"  - {finding}")
-    else:
-        print("Response contracts: every route publishes a response schema.")
-    return 1 if issues else 0
+    return 1 if failing else 0
 
 
 def _cmd_mcp_run(args: argparse.Namespace) -> int:
@@ -342,21 +351,14 @@ def _cmd_mcp_run(args: argparse.Namespace) -> int:
         return 0
 
     app.mount_mcp(transport="http", path=args.path, sessions=args.sessions)
-    try:
-        import uvicorn
-    except ImportError:
-        uvicorn = None  # type: ignore[assignment]
-
+    uvicorn = _import_uvicorn()
     if uvicorn is not None:
         # The app object is passed rather than its import string: the mount above
         # happened on *this* instance, and re-importing would serve one without it.
         uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
         return 0
 
-    if args.host in ("0.0.0.0", "::"):
-        app.run(port=args.port, bind_all=True)
-    else:
-        app.run(host=args.host, port=args.port)
+    _serve_builtin(app, args)
     return 0
 
 
@@ -883,7 +885,7 @@ def _first_positional(tokens: list[str]) -> str | None:
 
 @functools.cache
 def _builtin_command_names() -> frozenset[str]:
-    """The built-in subcommand names, read once from the plugin-free parser.
+    """Read the built-in subcommand names once from the plugin-free parser.
 
     Cached because the built-in command set is fixed for the process - the
     plugin-free parser always has the same shape, so there is nothing to

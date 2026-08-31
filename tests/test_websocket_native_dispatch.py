@@ -9,69 +9,29 @@ clean -> 1000), and drains `yield`-style teardowns exception-aware.
 
 These tests drive that core over a genuine `asyncio.Transport`-backed
 `WebSocket` (the native mode, `transport is not None`) rather than the ASGI
-receive/send envelope, so they exercise the same helper the native upgrade
-handler calls while holding only the app reference (no app-level import in
-`serving/`). The end-to-end cases stand up a real localhost asyncio server and
-connect with a raw-socket RFC 6455 client (a genuine HTTP/1.1 upgrade handshake
-plus masked client frames) so a complete native connection flows through
-`_run_websocket`.
+receive/send envelope, so the close-code mapping is asserted against the frames
+that actually reach a transport.
+
+Over a real socket the core is reached through `HttpProtocol`, in
+`test_websocket_native_server.py`. This module used to stand up its own
+localhost server driven by a test-owned protocol class - sixty lines
+re-implementing what `HttpProtocol` does, which proved the re-implementation
+worked rather than the framework. Its one unduplicated case, `Depends()` over a
+real socket, moved to the production path as
+`test_native_upgrade_injects_a_dependency`.
 """
 
 from __future__ import annotations
 
-import asyncio
-import base64
-import contextlib
-import hashlib
-import os
 import struct
 
 import pytest
 
+from tests._protocol import _FakeTransport
 from veloce import Veloce, WebSocket, status
 from veloce._protocol_constants import ROUTE_METHOD_WEBSOCKET
 from veloce.dependency import Depends
 from veloce.exceptions import WebSocketException, WebSocketRequestValidationError
-
-_RFC6455_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-
-
-class _FakeTransport(asyncio.Transport):
-    """Minimal raw transport that records frames and the close call."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.writes: list[bytes] = []
-        self.closed = False
-
-    def write(self, data: bytes) -> None:
-        self.writes.append(data)
-
-    def writelines(self, data) -> None:
-        # A real transport coalesces the buffers on the wire; join them into a
-        # single recorded write so frame headers and payloads stay contiguous.
-        self.writes.append(b"".join(bytes(chunk) for chunk in data))
-
-    def close(self) -> None:
-        self.closed = True
-
-    def is_closing(self) -> bool:
-        return self.closed
-
-
-def _client_frame(opcode: int, payload: bytes, fin: bool = True) -> bytes:
-    """Build one masked client->server frame (RFC 6455 Sec. 5)."""
-    mask = b"\x12\x34\x56\x78"
-    masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
-    b0 = (0x80 if fin else 0x00) | opcode
-    n = len(payload)
-    if n < 126:
-        header = bytes([b0, 0x80 | n])
-    elif n < 65536:
-        header = bytes([b0, 0x80 | 126]) + struct.pack("!H", n)
-    else:
-        header = bytes([b0, 0x80 | 127]) + struct.pack("!Q", n)
-    return header + mask + masked
 
 
 def _make_native_ws() -> tuple[WebSocket, _FakeTransport]:
@@ -257,182 +217,3 @@ async def test_native_teardown_sees_handler_exception():
     # teardown), not advanced with a plain `next`.
     assert len(seen) == 1
     assert str(seen[0]) == "boom"
-
-
-# ── Real localhost server + raw-socket RFC 6455 client end-to-end ───
-
-
-class _NativeWSServerProtocol(asyncio.Protocol):
-    """Drives one raw-transport WebSocket connection through `_run_websocket`.
-
-    A genuine HTTP/1.1 upgrade: the handshake request is parsed off the wire,
-    a raw-transport `WebSocket` is built, the route is matched, and the shared
-    dispatch core runs while inbound bytes are pumped into `ws.feed_data`. This
-    is the same call the native upgrade handler makes, using only the held app
-    reference - no app-level import in the serving layer.
-    """
-
-    def __init__(self, app: Veloce) -> None:
-        self.app = app
-        self.transport: asyncio.Transport | None = None
-        self.ws: WebSocket | None = None
-        self._buffer = bytearray()
-
-    def connection_made(self, transport: asyncio.BaseTransport) -> None:
-        self.transport = transport  # type: ignore[assignment]
-
-    def data_received(self, data: bytes) -> None:
-        if self.ws is not None:
-            self.ws.feed_data(data)
-            return
-        self._buffer += data
-        if b"\r\n\r\n" not in self._buffer:
-            return
-        head, _, rest = self._buffer.partition(b"\r\n\r\n")
-        lines = head.decode("latin-1").split("\r\n")
-        path = lines[0].split(" ", 2)[1]
-        headers: dict[str, str] = {}
-        for line in lines[1:]:
-            k, _, v = line.partition(":")
-            headers[k.strip().lower()] = v.strip()
-        assert self.transport is not None
-        ws = WebSocket(self.transport, headers)
-        ws.path = path
-        self.ws = ws
-        if rest:
-            ws.feed_data(bytes(rest))
-        match = self.app.match(ROUTE_METHOD_WEBSOCKET, path)
-        if match is None:
-            self.transport.close()
-            return
-        ws.path_params = match.path_params
-        asyncio.ensure_future(self._dispatch(ws, match.route_info))
-
-    async def _dispatch(self, ws: WebSocket, route_info) -> None:
-        try:
-            await self.app._run_websocket(ws, route_info)
-        except Exception:
-            # Mirror the native dispatch task: an unhandled handler exception
-            # was already mapped to a 1011 close inside `_run_websocket`; the
-            # driver just drops the transport.
-            if self.transport is not None:
-                self.transport.close()
-
-
-class _RawWSClient:
-    """A minimal RFC 6455 client over a real socket - genuine handshake + frames.
-
-    A purpose-built client is used instead of a third-party one so the test
-    pins Veloce's own framing against the spec (correct accept-key GUID, masked
-    client->server frames, server->client text frames) without depending on an
-    external library's wire behaviour.
-    """
-
-    def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        self._reader = reader
-        self._writer = writer
-
-    @classmethod
-    async def connect(cls, host: str, port: int, path: str) -> _RawWSClient:
-        reader, writer = await asyncio.open_connection(host, port)
-        key = base64.b64encode(os.urandom(16)).decode()
-        request = (
-            f"GET {path} HTTP/1.1\r\n"
-            f"Host: {host}:{port}\r\n"
-            "Upgrade: websocket\r\n"
-            "Connection: Upgrade\r\n"
-            f"Sec-WebSocket-Key: {key}\r\n"
-            "Sec-WebSocket-Version: 13\r\n\r\n"
-        )
-        writer.write(request.encode())
-        await writer.drain()
-        # Read and validate the 101 handshake response.
-        head = await reader.readuntil(b"\r\n\r\n")
-        status_line, *header_lines = head.decode("latin-1").split("\r\n")
-        assert "101" in status_line, status_line
-        resp_headers = {}
-        for line in header_lines:
-            k, _, v = line.partition(":")
-            if k:
-                resp_headers[k.strip().lower()] = v.strip()
-        expected = base64.b64encode(
-            hashlib.sha1((key + _RFC6455_GUID).encode()).digest()  # noqa: S324
-        ).decode()
-        assert resp_headers.get("sec-websocket-accept") == expected
-        return cls(reader, writer)
-
-    async def send_text(self, text: str) -> None:
-        payload = text.encode("utf-8")
-        mask = os.urandom(4)
-        masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
-        header = bytes([0x81, 0x80 | len(payload)])  # FIN + text, masked
-        self._writer.write(header + mask + masked)
-        await self._writer.drain()
-
-    async def recv_text(self) -> str:
-        b0 = await self._reader.readexactly(1)
-        assert b0[0] & 0x0F == 0x1, "expected a text frame"
-        b1 = await self._reader.readexactly(1)
-        length = b1[0] & 0x7F
-        if length == 126:
-            length = struct.unpack("!H", await self._reader.readexactly(2))[0]
-        elif length == 127:
-            length = struct.unpack("!Q", await self._reader.readexactly(8))[0]
-        payload = await self._reader.readexactly(length)
-        return payload.decode("utf-8")
-
-    async def close(self) -> None:
-        self._writer.close()
-        with contextlib.suppress(Exception):
-            await self._writer.wait_closed()
-
-
-async def test_native_real_localhost_echo_roundtrip():
-    app = Veloce(openapi_url=None)
-
-    @app.websocket("/echo")
-    async def echo(ws: WebSocket):
-        await ws.accept()
-        async for message in ws.iter_text():
-            await ws.send_text(f"echo:{message}")
-
-    loop = asyncio.get_running_loop()
-    server = await loop.create_server(lambda: _NativeWSServerProtocol(app), "127.0.0.1", 0)
-    port = server.sockets[0].getsockname()[1]
-    try:
-        client = await _RawWSClient.connect("127.0.0.1", port, "/echo")
-        try:
-            await client.send_text("hello")
-            assert await client.recv_text() == "echo:hello"
-            await client.send_text("world")
-            assert await client.recv_text() == "echo:world"
-        finally:
-            await client.close()
-    finally:
-        server.close()
-        await server.wait_closed()
-
-
-async def test_native_real_localhost_di_value_injected():
-    app = Veloce(openapi_url=None)
-
-    def greeting() -> str:
-        return "hi"
-
-    @app.websocket("/greet")
-    async def greet(ws: WebSocket, msg: str = Depends(greeting)):
-        await ws.accept()
-        await ws.send_text(msg)
-
-    loop = asyncio.get_running_loop()
-    server = await loop.create_server(lambda: _NativeWSServerProtocol(app), "127.0.0.1", 0)
-    port = server.sockets[0].getsockname()[1]
-    try:
-        client = await _RawWSClient.connect("127.0.0.1", port, "/greet")
-        try:
-            assert await client.recv_text() == "hi"
-        finally:
-            await client.close()
-    finally:
-        server.close()
-        await server.wait_closed()

@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import pytest
-
-from veloce import Veloce
+from veloce import Veloce, signals
 
 
-@pytest.mark.asyncio
 async def test_before_serving_runs_on_startup():
     app = Veloce(openapi_url=None)
     fired: list[str] = []
@@ -20,7 +17,6 @@ async def test_before_serving_runs_on_startup():
     assert fired == ["started"]
 
 
-@pytest.mark.asyncio
 async def test_after_serving_runs_on_shutdown():
     app = Veloce(openapi_url=None)
     fired: list[str] = []
@@ -33,7 +29,6 @@ async def test_after_serving_runs_on_shutdown():
     assert fired == ["stopped"]
 
 
-@pytest.mark.asyncio
 async def test_before_serving_alongside_on_startup_both_fire():
     """Both decorators register on the same `_on_startup` list."""
     app = Veloce(openapi_url=None)
@@ -53,7 +48,6 @@ async def test_before_serving_alongside_on_startup_both_fire():
 
 def test_signal_namespace_exposes_module():
     """`app.signal_namespace` is the `veloce.signals` module."""
-    from veloce import signals
 
     app = Veloce(openapi_url=None)
     assert app.signal_namespace is signals

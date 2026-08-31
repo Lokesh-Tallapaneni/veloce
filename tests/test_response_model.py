@@ -1,10 +1,11 @@
-"""response_model + dump-flag application tests (Q48)."""
+"""response_model + dump-flag application tests."""
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from veloce import Veloce
+from veloce.http.response import JSONResponse
 from veloce.testclient import TestClient
 
 
@@ -68,82 +69,21 @@ def test_response_model_list_of_models():
     assert body == [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}]
 
 
-def test_response_model_exclude_unset():
-    """exclude_unset drops fields the handler didn't explicitly set."""
-    app = Veloce(debug=True, openapi_url=None)
-
-    class M(BaseModel):
-        a: str = "default-a"
-        b: str = "default-b"
-
-    @app.get("/m", response_model=M, response_model_exclude_unset=True)
-    async def m():
-        return M(a="explicit-a")  # b is unset
-
-    body = TestClient(app).get("/m").json()
-    assert body == {"a": "explicit-a"}
-
-
-def test_response_model_exclude_none():
-    """exclude_none drops keys whose value is None."""
-    app = Veloce(debug=True, openapi_url=None)
-
-    class M(BaseModel):
-        a: str
-        b: str | None = None
-
-    @app.get("/m", response_model=M, response_model_exclude_none=True)
-    async def m():
-        return M(a="x", b=None)
-
-    body = TestClient(app).get("/m").json()
-    assert body == {"a": "x"}
-
-
-def test_response_model_by_alias():
-    """by_alias serializes via Pydantic field aliases."""
-    app = Veloce(debug=True, openapi_url=None)
-
-    class M(BaseModel):
-        user_id: int = Field(alias="userId")
-        model_config = {"populate_by_name": True}
-
-    @app.get("/m", response_model=M, response_model_by_alias=True)
-    async def m():
-        return M(user_id=42)
-
-    body = TestClient(app).get("/m").json()
-    assert body == {"userId": 42}
-
-
-def test_response_model_include():
-    """include={'name'} keeps only the listed fields."""
-    app = Veloce(debug=True, openapi_url=None)
-
-    @app.get("/me", response_model=_UserPublic, response_model_include={"name"})
-    async def me():
-        return _UserPublic(id=1, name="alice")
-
-    body = TestClient(app).get("/me").json()
-    assert body == {"name": "alice"}
-
-
-def test_response_model_exclude():
-    """exclude={'id'} drops the listed fields."""
-    app = Veloce(debug=True, openapi_url=None)
-
-    @app.get("/me", response_model=_UserPublic, response_model_exclude={"id"})
-    async def me():
-        return _UserPublic(id=1, name="alice")
-
-    body = TestClient(app).get("/me").json()
-    assert body == {"name": "alice"}
+# The five dump-flag behaviours that were here - `exclude_unset`,
+# `exclude_none`, `by_alias`, `include`, `exclude` - are covered in
+# `test_response_model_dump_kwargs.py`, which owns them: it also covers
+# `exclude_defaults`, the combinations, an empty include collection, and that
+# two routes do not share one precomputed mapping. Asserting a subset of that
+# here a second time meant a change to the flags had two places to be noticed
+# and one of them said less.
+#
+# What stays in this module is what is about `response_model` itself rather
+# than about how the model is dumped.
 
 
 def test_response_model_not_applied_when_handler_returns_response():
     """If the handler returns a raw Response, response_model is bypassed —
     the user has taken explicit control of the wire format."""
-    from veloce.http.response import JSONResponse
 
     app = Veloce(debug=True, openapi_url=None)
 

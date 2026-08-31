@@ -1,32 +1,59 @@
 """Jinja templating registry — filters, globals, tests, context processors.
 
-Mixed into `Veloce`. Registration-time methods that populate the app's Jinja
-environment and context-processor list, so they sit off the per-request path.
+Mixed into `Veloce`. The `jinja_env` / `jinja_loader` accessors plus the
+registration-time methods that populate the app's Jinja environment and
+context-processor list, so they sit off the per-request path.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import Any
+
+from veloce.app._host import AppHost
 
 
-class TemplatingMixin:
+class TemplatingMixin(AppHost):
     """Register Jinja filters, globals, tests, and context processors."""
 
-    __slots__ = ()
+    # ── The bound Jinja environment ───────────────────────
 
-    if TYPE_CHECKING:  # pragma: no cover
-        # Attributes the host application (`Veloce`) provides.
-        jinja_env: Any
-        _template_filters: Any
-        _template_globals: Any
-        _template_tests: Any
-        _context_processors: Any
-        _assert_mutable: Callable[..., Any]
+    @property
+    def jinja_env(self) -> Any:
+        """The app's shared Jinja2 `Environment`.
+
+        Available once a `template_folder` has been configured (either
+        via the constructor or by binding `Jinja2Templates`). Mutate it
+        directly to register filters/globals or tweak settings:
+        `app.jinja_env.filters["money"] = fmt`. Raises `RuntimeError`
+        when no templating is configured.
+        """
+        if self._templates is None:
+            raise RuntimeError(
+                "no Jinja environment - pass `template_folder=` to Veloce(...) "
+                "or bind a Jinja2Templates instance first"
+            )
+        return self._templates.env
+
+    @property
+    def jinja_loader(self) -> Any:
+        """The app's Jinja template loader.
+
+        The `FileSystemLoader` (or whatever loader the bound
+        `Jinja2Templates` env uses). `None` when no templating is
+        configured - Veloce returns `None` for an app with no template
+        folder rather than raising.
+        """
+        if self._templates is None:
+            return None
+        return self._templates.env.loader
 
     def context_processor(self, func: Callable) -> Callable:
         """Register a template context processor.
-        The function should return a dict that merges into the template context."""
+
+        The function should return a dict that merges into the template
+        context.
+        """
         self._assert_mutable()
         self._context_processors.append(func)
         return func
@@ -54,8 +81,10 @@ class TemplatingMixin:
         return decorator
 
     def template_global(self, name: str | None = None) -> Callable:
-        """Register a callable as a Jinja global - accessible from any
-        template by name. Same shape as `template_filter`."""
+        """Register a callable as a Jinja global, reachable by name in a template.
+
+        Same shape as `template_filter`.
+        """
 
         def decorator(func: Callable) -> Callable:
             global_name = name or func.__name__

@@ -15,10 +15,8 @@ from __future__ import annotations
 import functools
 from typing import Any
 
-import pytest
-
+from tests._mcp import FORBIDDEN, call, call_error
 from veloce import Veloce
-from veloce.contrib.mcp.errors import AuthorizationError
 from veloce.contrib.mcp.server import MCPServer
 from veloce.principal import Principal, set_principal
 
@@ -46,7 +44,13 @@ def _names(result: dict[str, Any]) -> set[str]:
 
 
 async def _list(server: MCPServer) -> dict[str, Any]:
-    return await server._handle_tools_list({})
+    """The listing as a client sees it: through the dispatch map, not past it.
+
+    Calling `server._handle_tools_list` directly skips the map, the in-flight
+    tracking and the error shaping, so a method registered under the wrong name
+    passed here and failed for a real client.
+    """
+    return await call(server, "tools/list")
 
 
 # ── Declared scopes, with no filter configured ───────────────────────
@@ -229,8 +233,8 @@ async def test_hidden_tool_still_raises_authorization_error_when_called():
     server = MCPServer(_app(), tool_filter=lambda tool, principal: False)
     set_principal(Principal(subject="nobody", scopes=frozenset()))
     assert _names(await _list(server)) == set()
-    with pytest.raises(AuthorizationError):
-        await server._tools_call({"name": "delete_tenant", "arguments": {}})
+    error = await call_error(server, "tools/call", {"name": "delete_tenant", "arguments": {}})
+    assert error["code"] == FORBIDDEN
 
 
 async def test_a_policy_hidden_but_in_scope_tool_remains_callable():
@@ -238,7 +242,7 @@ async def test_a_policy_hidden_but_in_scope_tool_remains_callable():
     server = MCPServer(_app(), tool_filter=lambda tool, principal: False)
     set_principal(Principal(subject="ops", scopes=frozenset({"admin"})))
     assert _names(await _list(server)) == set()
-    result = await server._tools_call({"name": "delete_tenant", "arguments": {}})
+    result = await call(server, "tools/call", {"name": "delete_tenant", "arguments": {}})
     assert result.get("isError") is not True
     assert "deleted" in result["content"][0]["text"]
 
@@ -334,30 +338,30 @@ def _primitives_app() -> Veloce:
 async def test_a_scoped_prompt_is_not_listed_to_a_caller_that_cannot_render_it():
     server = MCPServer(_primitives_app())
     set_principal(Principal(subject="nobody", scopes=frozenset()))
-    result = await server._handle_prompts_list({})
+    result = await call(server, "prompts/list")
     assert [prompt["name"] for prompt in result["prompts"]] == ["open_prompt"]
 
 
 async def test_a_scoped_resource_is_not_listed_to_a_caller_that_cannot_read_it():
     server = MCPServer(_primitives_app())
     set_principal(Principal(subject="nobody", scopes=frozenset()))
-    result = await server._handle_resources_list({})
+    result = await call(server, "resources/list")
     assert [resource["uri"] for resource in result["resources"]] == ["doc://open"]
 
 
 async def test_a_scoped_resource_template_is_not_listed_either():
     server = MCPServer(_primitives_app())
     set_principal(Principal(subject="nobody", scopes=frozenset()))
-    result = await server._handle_resource_templates_list({})
+    result = await call(server, "resources/templates/list")
     assert result["resourceTemplates"] == []
 
 
 async def test_a_caller_holding_the_grant_is_shown_all_three():
     server = MCPServer(_primitives_app())
     set_principal(Principal(subject="ops", scopes=frozenset({"admin"})))
-    prompts = await server._handle_prompts_list({})
-    resources = await server._handle_resources_list({})
-    templates = await server._handle_resource_templates_list({})
+    prompts = await call(server, "prompts/list")
+    resources = await call(server, "resources/list")
+    templates = await call(server, "resources/templates/list")
     assert len(prompts["prompts"]) == 2
     assert len(resources["resources"]) == 2
     assert len(templates["resourceTemplates"]) == 1
@@ -367,12 +371,12 @@ async def test_hiding_a_prompt_does_not_change_what_rendering_it_does():
     """Same contract as a tool: the listing narrows, the refusal is unchanged."""
     server = MCPServer(_primitives_app())
     set_principal(Principal(subject="nobody", scopes=frozenset()))
-    with pytest.raises(AuthorizationError):
-        await server._prompts_get({"name": "admin_prompt"})
+    error = await call_error(server, "prompts/get", {"name": "admin_prompt"})
+    assert error["code"] == FORBIDDEN
 
 
 async def test_hiding_a_resource_does_not_change_what_reading_it_does():
     server = MCPServer(_primitives_app())
     set_principal(Principal(subject="nobody", scopes=frozenset()))
-    with pytest.raises(AuthorizationError):
-        await server._resources_read({"uri": "doc://admin"})
+    error = await call_error(server, "resources/read", {"uri": "doc://admin"})
+    assert error["code"] == FORBIDDEN

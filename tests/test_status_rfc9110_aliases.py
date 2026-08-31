@@ -6,8 +6,6 @@ alongside the legacy ones, both pointing at the same integer code.
 
 from __future__ import annotations
 
-import pytest
-
 from tests.conftest import make_request
 from veloce import Request, Veloce, status
 
@@ -46,28 +44,27 @@ def test_modern_names_are_plain_ints():
     assert status.HTTP_422_UNPROCESSABLE_CONTENT + 0 == 422
 
 
-class TestStatusModule:
-    def test_common_status_codes(self):
-        assert status.HTTP_200_OK == 200
-        assert status.HTTP_201_CREATED == 201
-        assert status.HTTP_204_NO_CONTENT == 204
-        assert status.HTTP_301_MOVED_PERMANENTLY == 301
-        assert status.HTTP_400_BAD_REQUEST == 400
-        assert status.HTTP_401_UNAUTHORIZED == 401
-        assert status.HTTP_403_FORBIDDEN == 403
-        assert status.HTTP_404_NOT_FOUND == 404
-        assert status.HTTP_405_METHOD_NOT_ALLOWED == 405
-        assert status.HTTP_422_UNPROCESSABLE_ENTITY == 422
-        assert status.HTTP_429_TOO_MANY_REQUESTS == 429
-        assert status.HTTP_500_INTERNAL_SERVER_ERROR == 500
+def test_common_status_codes():
+    assert status.HTTP_200_OK == 200
+    assert status.HTTP_201_CREATED == 201
+    assert status.HTTP_204_NO_CONTENT == 204
+    assert status.HTTP_301_MOVED_PERMANENTLY == 301
+    assert status.HTTP_400_BAD_REQUEST == 400
+    assert status.HTTP_401_UNAUTHORIZED == 401
+    assert status.HTTP_403_FORBIDDEN == 403
+    assert status.HTTP_404_NOT_FOUND == 404
+    assert status.HTTP_405_METHOD_NOT_ALLOWED == 405
+    assert status.HTTP_422_UNPROCESSABLE_ENTITY == 422
+    assert status.HTTP_429_TOO_MANY_REQUESTS == 429
+    assert status.HTTP_500_INTERNAL_SERVER_ERROR == 500
 
-    @pytest.mark.asyncio
-    async def test_status_code_in_route(self):
-        app = Veloce(openapi_url=None)
 
-        @app.post("/items", status_code=status.HTTP_201_CREATED)
-        async def create(request: Request):
-            return {"id": 1}
+async def test_status_code_in_route():
+    app = Veloce(openapi_url=None)
 
-        resp = await app.handle_request(make_request(method="POST", path="/items"))
-        assert resp.status_code == 201
+    @app.post("/items", status_code=status.HTTP_201_CREATED)
+    async def create(request: Request):
+        return {"id": 1}
+
+    resp = await app.handle_request(make_request(method="POST", path="/items"))
+    assert resp.status_code == 201

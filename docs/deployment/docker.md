@@ -221,4 +221,3 @@ assert resp.json() == {"client": "203.0.113.7", "scheme": "https"}
 - [HTTPS concepts](https.md) — TLS termination at the proxy or load balancer.
 - [Behind a proxy](../guide/behind-a-proxy.md) — `ProxyFix`, `root_path`, and mount prefixes in depth.
 - Full signatures are in the [API reference](../reference/index.md).
-```

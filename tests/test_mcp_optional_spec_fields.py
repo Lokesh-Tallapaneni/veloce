@@ -86,10 +86,7 @@ def _sampling_context(sent: list) -> MCPContext:
         sent.append((method, params))
         return {"role": "assistant", "content": {"type": "text", "text": "ok"}}
 
-    context = MCPContext("probe")
-    context._requester = requester
-    context._client_capabilities = {"sampling": {}}
-    return context
+    return MCPContext("probe", requester=requester, client_capabilities={"sampling": {}})
 
 
 @pytest.mark.parametrize("mode", ["none", "thisServer", "allServers"])

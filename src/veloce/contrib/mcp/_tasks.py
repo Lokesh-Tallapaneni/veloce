@@ -18,6 +18,7 @@ from veloce._model_backend import shape_through_model
 from veloce.contrib.mcp._helpers import (
     _binary_result,
     _content_blocks,
+    _era_modern_var,
     _notifier_var,
     _progress_token,
     _request_id_var,
@@ -73,17 +74,6 @@ _STREAM_BUFFER_LIMIT = 5 * 1024 * 1024
 _STREAM_DRAIN_TIMEOUT = 30.0
 
 
-# The `_meta` key a modern request states its revision in. Duplicated here rather
-# than imported from `server`, which imports this module.
-_META_PROTOCOL_VERSION = "io.modelcontextprotocol/protocolVersion"
-
-
-def _modern_request(params: dict[str, Any]) -> bool:
-    """Whether this request declared a modern protocol version in its `_meta`."""
-    meta = params.get("_meta")
-    return isinstance(meta, dict) and isinstance(meta.get(_META_PROTOCOL_VERSION), str)
-
-
 def _client_declared_tasks() -> bool:
     """Whether the calling client advertised the tasks extension."""
     session = _session_var.get()
@@ -104,6 +94,7 @@ class TasksMixin:
         # Attributes / methods the host server (and `InvocationMixin`) provide.
         app: Any
         _tasks: TaskRegistry
+        _result_dumps: Any
         _produce_tool_result: Callable[..., Any]
         _error_text: Callable[..., Any]
 
@@ -126,7 +117,7 @@ class TasksMixin:
             )
         # A task is never handed to a client that did not declare the extension:
         # it would be given a handle it has no `tasks/*` methods to resolve.
-        modern = _modern_request(params)
+        modern = _era_modern_var.get()
         if modern and not _client_declared_tasks():
             raise InvalidParamsError(
                 "This client did not declare the "
@@ -160,7 +151,7 @@ class TasksMixin:
         task.runner = asyncio.ensure_future(
             self._run_task(task, tool, arguments, progress_token, _request_id_var.get())
         )
-        return create_task_result(task, modern=modern)
+        return create_task_result(task)
 
     async def _run_task(
         self,
@@ -369,7 +360,7 @@ class TasksMixin:
         # shape). A success goes through the shared success shaping so a declared
         # `outputSchema` yields `structuredContent` alongside the text block.
         if response.status_code >= 400:
-            return _text_result(_stringify(shaped), is_error=True)
+            return _text_result(_stringify(shaped, self._result_dumps), is_error=True)
         # A handler that returned its own `Response` bypassed the route
         # `response_model` filter, so its decoded body is not yet trusted to
         # conform to the advertised `outputSchema`. Re-run it through the filter
@@ -399,7 +390,7 @@ class TasksMixin:
                     try:
                         shaped = self.app._apply_response_model(shaped, route_info)
                     except Exception:
-                        return _text_result(_stringify(shaped))
+                        return _text_result(_stringify(shaped, self._result_dumps))
             elif tool.output_model is not None:
                 # The output schema came from the handler's return annotation, not
                 # a `response_model`, so `_build_response` never filtered to it -
@@ -408,7 +399,7 @@ class TasksMixin:
                 try:
                     shaped = shape_through_model(shaped, tool.output_model)
                 except Exception:
-                    return _text_result(_stringify(shaped))
+                    return _text_result(_stringify(shaped, self._result_dumps))
         return self._success_result(tool, shaped)
 
     def _success_result(self, tool: MCPTool, shaped: Any) -> dict[str, Any]:
@@ -430,7 +421,7 @@ class TasksMixin:
             return _text_result(str(exc), is_error=True)
         if blocks is not None:
             return {"content": blocks}
-        result = _text_result(_stringify(shaped))
+        result = _text_result(_stringify(shaped, self._result_dumps))
         if tool.output_schema is not None:
             structured = _to_structured(shaped)
             if structured is not None:

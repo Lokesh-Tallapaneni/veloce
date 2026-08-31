@@ -10,19 +10,13 @@ pays nothing for it.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
+
+from veloce.app._host import AppHost
 
 
-class OpenAPIMixin:
+class OpenAPIMixin(AppHost):
     """OpenAPI schema build and docs-route registration, mixed into `Veloce`."""
-
-    if TYPE_CHECKING:  # pragma: no cover
-        # Attributes the host application (Veloce) provides.
-        openapi_schema: Any
-        _openapi_setup: bool
-        _openapi_url: Any
-        _docs_url: Any
-        _redoc_url: Any
 
     def _setup_openapi(self) -> None:
         """Register OpenAPI/Swagger routes if enabled."""
@@ -30,7 +24,8 @@ class OpenAPIMixin:
             return
         self._openapi_setup = True
         if self._openapi_url:
-            from veloce.contrib.openapi import setup_openapi_routes
+            # Deferred: `contrib/` is optional.
+            from veloce.contrib.docs_ui import setup_openapi_routes
 
             # Pass the configured URLs through unchanged - `None` means
             # "do not register that UI", and must not be replaced by a
@@ -55,6 +50,7 @@ class OpenAPIMixin:
         `app.openapi_schema` before any request lands.
         """
         if self.openapi_schema is None:
+            # Deferred: `contrib/` is optional.
             from veloce.contrib.openapi import get_openapi_schema
 
             self.openapi_schema = get_openapi_schema(self)

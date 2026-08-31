@@ -41,8 +41,11 @@ def test_apirouter_tags_apply_to_routes():
         return []
 
     app.include_router(api)
-    routes = [info for _m, path, info in app._collect_all_routes() if path == "/api/items"]
-    assert routes and routes[0].tags == ["items"]
+    # `app.routes` is the public view and already carries `tags`; reaching
+    # for `_collect_all_routes` pinned a private name this assertion says
+    # nothing about.
+    tagged = [route for route in app.routes if route["path"] == "/api/items"]
+    assert tagged and tagged[0]["tags"] == ["items"]
 
 
 def test_include_router_mounts_blueprint():

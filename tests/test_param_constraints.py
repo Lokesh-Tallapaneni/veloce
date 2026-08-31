@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from veloce.routing.params import Query
+from veloce import Query
 
 # ── numeric: ge / le ────────────────────────────────────────────────
 

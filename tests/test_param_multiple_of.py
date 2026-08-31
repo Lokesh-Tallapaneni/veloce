@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import Query, Veloce
-from veloce.routing.params import Path
+from tests._openapi import document
+from veloce import Path, Query, Veloce
 from veloce.testclient import TestClient
 
 
@@ -56,7 +56,7 @@ def test_multiple_of_emitted_to_openapi():
         return {}
 
     with TestClient(app) as client:
-        schema = client.get("/openapi.json").json()
+        schema = document(client)
 
     params = schema["paths"]["/x"]["get"]["parameters"]
     n = [p for p in params if p["name"] == "n"][0]
@@ -85,8 +85,10 @@ def test_multiple_of_positive_construction_ok():
     assert q.multiple_of == 2
 
 
-def test_multiple_of_negative_construction_allowed():
+def test_a_negative_multiple_of_is_rejected_at_construction():
     # JSON Schema draft 2020-12 §6.2.1 / OpenAPI 3.1 require multipleOf > 0,
-    # so negatives are now rejected at declaration time.
+    # so negatives are rejected at declaration time. The name used to read
+    # `..._negative_construction_allowed`, which claims the opposite of what
+    # the body asserts - so a reader scanning names learned the wrong rule.
     with pytest.raises(ValueError, match="multiple_of must be positive"):
         Query(multiple_of=-3)

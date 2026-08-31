@@ -138,7 +138,6 @@
   padding-block: 40px 64px;
 }
 
-
 /* ----------------------------------------------------------------- Light -- */
 [data-md-color-scheme="default"] {
   --vl-violet:       #5b3df0;
@@ -702,7 +701,6 @@
   }
 }
 
-
 /* --------------------------------------------------------------- Tab bar -- */
 /* The header and the tab bar were both full-bleed brand violet, stacking ~96px
    of saturated colour above every page. The tab bar reads as page surface
@@ -1006,17 +1004,6 @@ html:has(:target) {
   font-weight: 600;
 }
 
-.md-sidebar--secondary .md-nav__link--active::before {
-  content: "";
-  position: absolute;
-  left: -12px;
-  top: 3px;
-  bottom: 3px;
-  width: 2px;
-  border-radius: 1px;
-  background-color: var(--md-typeset-a-color);
-}
-
 /* The current page in the navigation was violet but at the same weight as its
    neighbours, so it read as a link rather than as "you are here". */
 .md-sidebar--primary .md-nav__link {
@@ -1027,6 +1014,30 @@ html:has(:target) {
   font-weight: 600;
 }
 
+/* One indicator per list, moved rather than re-created.
+ *
+ * The bar used to be a `::before` on the active link, so moving between
+ * sections destroyed one element and created another and the bar blinked
+ * between positions. A single bar on the list, translated into place, slides.
+ *
+ * `nav-indicator.js` measures the active link and writes the three custom
+ * properties; the transition lives here. `--veloce-nav-x` tracks the item's
+ * indent so the bar stays beside a nested table-of-contents entry instead of
+ * detaching from it.
+ */
+.md-sidebar--secondary .md-nav--secondary > .md-nav__list,
+.md-sidebar--primary .md-nav--primary > .md-nav__list {
+  position: relative;
+  --veloce-nav-y: 0px;
+  --veloce-nav-x: 0px;
+  --veloce-nav-h: 0px;
+}
+
+/* Fallback: with no JavaScript the moving bar has no geometry to move to, so
+   the active item keeps a plain static bar - the behaviour before this feature.
+   The script adds `veloce-nav--js` to the list, which swaps the two over. The
+   animation is an enhancement; the indicator itself is not. */
+.md-sidebar--secondary .md-nav__link--active::before,
 .md-sidebar--primary .md-nav__link--active::before {
   content: "";
   position: absolute;
@@ -1036,6 +1047,54 @@ html:has(:target) {
   width: 2px;
   border-radius: 1px;
   background-color: var(--md-typeset-a-color);
+}
+
+.md-nav__list.veloce-nav--js .md-nav__link--active::before {
+  display: none;
+}
+
+.md-sidebar--secondary .md-nav--secondary > .md-nav__list.veloce-nav--js::before,
+.md-sidebar--primary .md-nav--primary > .md-nav__list.veloce-nav--js::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 2px;
+  height: var(--veloce-nav-h);
+  border-radius: 1px;
+  background-color: var(--md-typeset-a-color);
+  opacity: 0;
+  transform: translate3d(calc(var(--veloce-nav-x) - 12px), var(--veloce-nav-y), 0)
+    scaleY(0.6);
+  transform-origin: center;
+  /* Position and size ease together so the bar appears to travel and stretch to
+     the new heading; opacity is quicker so it is visible for the whole trip. */
+  transition:
+    transform 0.32s cubic-bezier(0.22, 1, 0.36, 1),
+    height 0.32s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.18s ease;
+  pointer-events: none;
+  will-change: transform, height;
+}
+
+.md-sidebar--secondary .md-nav__list.veloce-nav--js.veloce-nav--tracking::before,
+.md-sidebar--primary .md-nav__list.veloce-nav--js.veloce-nav--tracking::before {
+  opacity: 1;
+  transform: translate3d(calc(var(--veloce-nav-x) - 12px), var(--veloce-nav-y), 0)
+    scaleY(1);
+}
+
+/* First paint, and after a resize: place the bar without travelling to it from
+   wherever it happened to be. */
+.md-nav__list.veloce-nav--instant::before {
+  transition: none;
+}
+
+/* A reader who has asked for less motion gets the highlight without the travel. */
+@media (prefers-reduced-motion: reduce) {
+  .md-nav__list.veloce-nav--js::before {
+    transition: opacity 0.18s ease;
+  }
 }
 
 /* The active tab carried colour and weight but no underline, which is the

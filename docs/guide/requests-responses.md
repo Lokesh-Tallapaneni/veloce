@@ -69,9 +69,10 @@ async def ip(request: Request):
     }
 ```
 
-`client`, `client_host`, and `remote_addr` return `None` for synthetic requests
-(e.g. `TestClient` without a live socket). `access_route` returns `[]` in that
-case.
+`client`, `client_host`, and `remote_addr` return `None` when the transport
+reports no peer. `TestClient` supplies a synthetic one, so under it they read
+`Address(host="testclient", port=50000)`, `"testclient"` and `"testclient"`, and
+`access_route` is `["testclient"]` — assert against those rather than `None`.
 
 !!! warning "Forwarded headers are spoofable"
     `X-Forwarded-For` and `access_route` reflect whatever the caller sent. Only
@@ -129,9 +130,24 @@ already buffered or still streaming in.
 | Accessor | Returns |
 | --- | --- |
 | `await request.body()` | the full body as `bytes`. |
-| `await request.json()` | the body parsed as JSON (raises `400` on malformed JSON, returns `None` for an empty body). |
+| `await request.json()` | the body parsed as JSON (raises `400` on malformed JSON, returns `None` for an empty body, and `None` when `Content-Type` declares the body is not JSON). |
 | `await request.text()` | the body decoded as UTF-8. |
 | `await request.get_data(as_text=True)` | the body decoded via the `Content-Type` charset. |
+
+!!! warning "A declared non-JSON body is not parsed"
+    `await request.json()` returns `None` when the request declares a
+    `Content-Type` that is not JSON. `text/plain`, `multipart/form-data` and
+    `application/x-www-form-urlencoded` are the types a cross-origin form or
+    `fetch` may send with **no CORS preflight**, so parsing a body under one of
+    them lets an attacker drive the endpoint through a cookie-authenticated
+    victim's browser. An absent header asserts nothing and is still parsed; a
+    `+json` suffix such as `application/vnd.api+json` is JSON. A JSON body model
+    applies the same rule and answers `422`.
+
+!!! note "Changed in version 0.18"
+    `await request.json()` previously parsed the body whatever the
+    `Content-Type` said. Send `application/json`, or read the raw bytes with
+    `await request.body()` and parse them yourself.
 
 ```python title="app.py"
 from veloce import Request, Veloce
@@ -237,6 +253,7 @@ A handler can return several shapes; Veloce coerces each to a `Response`.
 | `Response` instance | Used as-is. |
 | `(body, status)` tuple | `body` coerced, then status applied. |
 | `(body, status, headers)` tuple | `body` coerced, status and headers applied. |
+| any other tuple | JSON-encoded as an array, like a `list`. |
 
 ```python title="app.py"
 from veloce import Request, Veloce
@@ -265,6 +282,17 @@ In the `(body, status)` tuple the second element may be an `int` status, in
 !!! note
     A bare `str` body still becomes `text/html`, so `("<b>hi</b>", 201)` is an
     HTML `201`.
+
+Only those two lengths are response tuples. A tuple of any other length is a
+value, and is encoded as a JSON array — `return ("x",)` is `["x"]`, not `"x"`.
+That holds whether or not the route declares a `response_class`, so a mistyped
+`return body, 201, headers, extra` shows up in the body rather than silently
+serving a `200` with the headers dropped.
+
+!!! note "Changed in version 0.13"
+    A route with a `response_class` reads a non-`(body, status[, headers])`
+    tuple the same way a route without one does. It previously took the tuple's
+    first element and discarded the rest.
 
 ### Status codes
 
@@ -452,18 +480,48 @@ It also accepts these filter flags:
 | `response_model_include` |
 | `response_model_exclude` |
 
-!!! warning "`response_model` is never inferred from the return annotation"
-    Unlike FastAPI, Veloce does not read the handler's `-> UserOut` return
-    annotation to pick a response model. A return annotation is ignored for
-    output shaping; you must pass `response_model=UserOut` explicitly, or the
-    handler's value is serialised as-is with no field filtering.
+Each flag maps to the `model_dump` option of the same name. `include` and
+`exclude` accept any collection of field names and are normalised to a set;
+where a field is named by both, `exclude` wins.
 
-!!! warning "A `Union` response model neither filters nor documents"
-    Only a Pydantic model or `list[Model]` is reshaped at runtime. A
-    `response_model=A | B` (or `Union[A, B]`) falls through unfiltered — the
-    return value is serialised as-is — and the response schema is omitted from
-    OpenAPI rather than rendered as an `anyOf`. Declare a single concrete output
-    model per route.
+`response_model_include` and `response_model_exclude` also shape the **OpenAPI
+document**: the route's response schema names exactly the fields it sends, under
+a derived component (`Item_name_price`). Routes filtering one model the same way
+share that component; an unfiltered route keeps the model's own. Without this the
+document would advertise fields the route omits — and mark them `required` when
+they have no default — so a generated client would expect data it never receives.
+
+!!! note "Changed in version 0.13"
+    A filtered response documents its filtered shape. It previously documented
+    the whole model whatever the filter said.
+
+```python
+@app.get("/users/{user_id}", response_model=UserOut, response_model_exclude_none=True)
+async def read_user(user_id: int) -> UserOut:
+    return UserOut(id=user_id, name="Ada")     # a null `nickname` is omitted
+```
+
+The flags are fixed when the route is registered, so the options are resolved
+once there rather than rebuilt on every response. That is invisible from the
+outside — the same fields are emitted either way — but it means the flags are
+constructor arguments: assigning to `route.response_model_exclude_none` after
+registration does not take effect. Pass the flag to the route decorator.
+
+!!! note "`response_model` is inferred from the return annotation"
+    A `-> UserOut` return annotation supplies the response model, as in FastAPI:
+    the value is reshaped and filtered through it, and the schema is documented.
+    Pass `response_model=` when you want a different model from the one you
+    annotate; it wins over the annotation.
+
+    Inference recognises a model, `list[Model]`, and a union of models. Any other
+    annotation declares no contract and the value is serialised as-is.
+
+!!! warning "A `Union` response model documents but does not filter"
+    Only a Pydantic model or a sequence of one is reshaped at runtime. A
+    `response_model=A | B` (or `Union[A, B]`) falls through unfiltered — which
+    member to reshape through is ambiguous, so the return value is serialised
+    as-is. It **is** documented, as a `oneOf` of the alternatives. Declare a
+    single concrete output model per route when you need filtering.
 
 ## Streaming responses
 

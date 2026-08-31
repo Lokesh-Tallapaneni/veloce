@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import pytest
-
 from tests.conftest import make_request
 from veloce import Request, Veloce
 
 
 class TestStatusCodeDecorator:
-    @pytest.mark.asyncio
     async def test_status_code_201(self):
         app = Veloce(openapi_url=None)
 

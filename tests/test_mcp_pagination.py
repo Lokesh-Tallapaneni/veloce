@@ -12,15 +12,15 @@ hide the rest of its catalogue from every client that does.
 
 from __future__ import annotations
 
+import orjson
 import pytest
 
-from veloce import Veloce
+from tests._mcp import INVALID_PARAMS
+from veloce import MCPContext, Veloce
 from veloce.contrib.mcp.errors import InvalidParamsError
 from veloce.contrib.mcp.pagination import decode_cursor, encode_cursor, paginate
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.session import MCPSession
-
-_INVALID_PARAMS = -32602
 
 
 def _tool(index: int):
@@ -99,7 +99,7 @@ async def test_a_list_is_answered_in_full_by_default():
 async def test_a_cursor_is_refused_when_the_server_does_not_paginate():
     """No cursor was ever issued, so one presented is not this server's."""
     response = await _list(MCPServer(_app()), "tools/list", encode_cursor(0, "tool_0"))
-    assert response["error"]["code"] == _INVALID_PARAMS
+    assert response["error"]["code"] == INVALID_PARAMS
 
 
 @pytest.mark.parametrize("size", [0, -1])
@@ -276,7 +276,7 @@ def test_a_malformed_cursor_is_invalid_params(cursor: str):
 async def test_a_malformed_cursor_is_reported_over_the_wire():
     server = MCPServer(_app(tools=3), page_size=2)
     response = await _list(server, "tools/list", "not-a-cursor")
-    assert response["error"]["code"] == _INVALID_PARAMS
+    assert response["error"]["code"] == INVALID_PARAMS
 
 
 # ── The pager itself ─────────────────────────────────────────────────
@@ -294,3 +294,80 @@ def test_the_pager_accepts_a_non_sequence_iterable():
     page, cursor = paginate(iter(["a", "b", "c"]), str, None, 2)
     assert list(page) == ["a", "b"]
     assert cursor is not None
+
+
+# ── The context listings are hidden-aware, and unpaged ───────────────
+#
+# `MCPContext.list_resources` / `list_prompts` had their own builders, which
+# applied scope narrowing but not the connection's hidden set - so a handler
+# enumerating the catalogue contradicted what the client's own listing showed.
+# Routing them through the one listing builder fixes that, but the builder pages,
+# and a handler cannot ask again for the next page. So they pass `page_size=None`.
+
+
+def _hiding_app() -> Veloce:
+    app = Veloce(openapi_url=None)
+
+    for name in ("a_one", "b_two", "c_three", "d_four"):
+
+        def make(bound: str):
+            async def render() -> str:
+                return bound
+
+            render.__name__ = bound
+            return render
+
+        app.mcp_prompt(description=f"prompt {name}")(make(name))
+
+    @app.mcp_tool(description="Hide one prompt, then list what remains")
+    async def probe(ctx: MCPContext) -> dict:
+        await ctx.hide("b_two")
+        return {"names": [p["name"] for p in ctx.list_prompts()]}
+
+    return app
+
+
+async def _probe(server: MCPServer, session: MCPSession) -> list[str]:
+    out = await server.handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "probe", "arguments": {}},
+        },
+        session,
+    )
+    return orjson.loads(out["result"]["content"][0]["text"])["names"]
+
+
+async def test_a_context_listing_omits_what_the_connection_hid():
+    """The defect: the handler saw a prompt the client's own listing did not."""
+    server = MCPServer(_hiding_app())
+    assert "b_two" not in await _probe(server, MCPSession())
+
+
+async def test_a_context_listing_matches_the_clients_listing():
+    server = MCPServer(_hiding_app())
+    session = MCPSession()
+    via_context = await _probe(server, session)
+    listing = await server.handle_message(
+        {"jsonrpc": "2.0", "id": 2, "method": "prompts/list", "params": {}}, session
+    )
+    assert via_context == [p["name"] for p in listing["result"]["prompts"]]
+
+
+async def test_a_context_listing_is_not_truncated_by_the_servers_page_size():
+    """A handler cannot ask again for the next page, so it gets the whole catalogue."""
+    server = MCPServer(_hiding_app(), page_size=2)
+    names = await _probe(server, MCPSession())
+    assert names == ["a_one", "c_three", "d_four"]
+
+
+async def test_the_clients_listing_still_pages():
+    """The override must not disable paging for the wire protocol."""
+    server = MCPServer(_hiding_app(), page_size=2)
+    listing = await server.handle_message(
+        {"jsonrpc": "2.0", "id": 1, "method": "prompts/list", "params": {}}, MCPSession()
+    )
+    assert len(listing["result"]["prompts"]) == 2
+    assert "nextCursor" in listing["result"]

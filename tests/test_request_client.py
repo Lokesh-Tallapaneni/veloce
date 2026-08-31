@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-from veloce import Request
+from tests.conftest import make_request
 from veloce.http.request import Address
 
 
 def test_client_none_for_synthetic_request():
-    req = Request(method="GET", path="/", query_string="", headers={}, body=b"")
+    req = make_request(method="GET", path="/", query_string="", headers={}, body=b"")
     assert req.client is None
 
 
 def test_client_from_asgi_scope():
-    req = Request(
+    req = make_request(
         method="GET",
         path="/",
         query_string="",
@@ -24,7 +24,7 @@ def test_client_from_asgi_scope():
 
 
 def test_client_host_and_port_attributes():
-    req = Request(
+    req = make_request(
         method="GET",
         path="/",
         query_string="",
@@ -37,7 +37,7 @@ def test_client_host_and_port_attributes():
 
 
 def test_client_tuple_unpacking():
-    req = Request(
+    req = make_request(
         method="GET",
         path="/",
         query_string="",
@@ -51,8 +51,8 @@ def test_client_tuple_unpacking():
 
 
 def test_client_honours_proxy_fix():
-    req = Request(method="GET", path="/", query_string="", headers={}, body=b"")
-    req._state["proxy_fix_client"] = "198.51.100.9"
+    req = make_request(method="GET", path="/", query_string="", headers={}, body=b"")
+    req.state["proxy_fix_client"] = "198.51.100.9"
     # client_host returns the trusted IP; port falls back to 0.
     assert req.client == Address("198.51.100.9", 0)
 

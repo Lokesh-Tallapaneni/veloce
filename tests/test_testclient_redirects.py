@@ -224,3 +224,21 @@ def test_testclient_absolute_redirect_cross_host_raises():
 
     with TestClient(app) as client, pytest.raises(RuntimeError, match="other-host"):
         client.get("/from", follow_redirects=True)
+
+
+def test_testclient_cross_host_redirect_error_names_both_hosts() -> None:
+    app = Veloce()
+
+    @app.get("/go")
+    async def go() -> RedirectResponse:
+        return RedirectResponse("http://other-host/x", status_code=302)
+
+    with (
+        TestClient(app, follow_redirects=True) as client,
+        pytest.raises(RuntimeError) as excinfo,
+    ):
+        client.get("/go")
+
+    msg = str(excinfo.value)
+    assert "other-host" in msg
+    assert "testserver" in msg

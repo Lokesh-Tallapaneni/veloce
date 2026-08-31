@@ -9,15 +9,67 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, ClassVar
 
 from veloce.http.request import Request
 from veloce.http.response import Response
 
+if TYPE_CHECKING:  # pragma: no cover
+    from collections.abc import Iterable
+
+    from veloce.audit import AuditContext, Finding
+
 # The `call_next` argument type, so user dispatch functions can annotate it.
 CallNext = Callable[[Request], Awaitable[Response]]
 
+#: A `dispatch(request, call_next)` coroutine - the shape `BaseHTTPMiddleware`
+#: accepts as `dispatch=`. Named here beside `CallNext` because the constructor
+#: took a bare `Callable` for its documented public argument while `dispatch()`
+#: five lines below already spelled the parameterised form.
+DispatchFunction = Callable[[Request, CallNext], Awaitable[Response]]
 
-class Middleware:
+
+class Auditable:
+    """What a registered component declares about its own security posture.
+
+    Mixed into every middleware shape rather than owned by one of them: Veloce
+    accepts `Middleware` instances, `BaseHTTPMiddleware` dispatch objects and
+    ASGI middleware classes, and an audit that reaches only one shape reports a
+    middleware in either of the others as absent - it would have no way to say
+    otherwise.
+    """
+
+    __slots__ = ()
+
+    # Set True by a component that adds hardening headers to every response.
+    # The audit warns when nothing in the stack claims this, and asks the marker
+    # rather than naming a class so a middleware outside this package answers
+    # the question too.
+    sets_hardening_headers: ClassVar[bool] = False
+
+    # Set True when `audit` reads the route table. The audit then skips this
+    # component until the table is final, so `veloce check` - which imports the
+    # app without starting it - cannot report a route as missing when it is
+    # merely registered later, during startup.
+    audit_needs_routes: ClassVar[bool] = False
+
+    def audit(self, ctx: AuditContext) -> Iterable[Finding]:
+        """Report what is wrong with this component's own configuration.
+
+        The audit collects these from everything registered, so a check belongs
+        to the thing it is about and an app that registers none never loads the
+        code that checks them. Return nothing when there is nothing to say.
+
+        Severity decides what a finding does: an `error` refuses the boot, a
+        `warning` fails `veloce check` without stopping anything, and `info`
+        fails nothing. Set `audit_needs_routes` when the check reads
+        `ctx.app`'s routes. Runs at audit and startup time only - never on a
+        request path.
+        """
+        return ()
+
+
+class Middleware(Auditable):
     """Base middleware class. Subclass and override process_request/process_response.
 
     Each middleware carries a `name` used by per-route exclusion
@@ -40,18 +92,18 @@ class Middleware:
         return self.name or type(self).__name__
 
     async def process_request(self, request: Request) -> Response | None:
-        """Called before route handler. Return a Response to short-circuit."""
+        """Run before the route handler; return a `Response` to short-circuit."""
         return None
 
     async def process_response(self, request: Request, response: Response) -> Response:
-        """Called after route handler. Can modify the response."""
+        """Run after the route handler; may modify the response."""
         return response
 
     def __repr__(self) -> str:
         return f"<{type(self).__name__}>"
 
 
-class BaseHTTPMiddleware:
+class BaseHTTPMiddleware(Auditable):
     """Class-based dispatch-shape middleware.
 
     Subclass and override `dispatch`, or construct with `dispatch=fn` for a
@@ -77,10 +129,10 @@ class BaseHTTPMiddleware:
         app.add_http_middleware(BaseHTTPMiddleware(dispatch=my_dispatch))
     """
 
-    def __init__(self, dispatch: Callable | None = None) -> None:
+    def __init__(self, dispatch: DispatchFunction | None = None) -> None:
         # A supplied callable is invoked with (request, call_next) directly via
         # `__call__`; bare-function bindings don't receive an automatic `self`.
-        self._dispatch_override: Callable | None = dispatch
+        self._dispatch_override: DispatchFunction | None = dispatch
 
     async def dispatch(self, request: Request, call_next: CallNext) -> Response:
         """Override this in subclasses. Default just calls through.

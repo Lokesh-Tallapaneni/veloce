@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import RedirectResponse, Response
+from veloce import (
+    EventSourceResponse,
+    RedirectResponse,
+    Request,
+    Response,
+    StreamingResponse,
+    Veloce,
+)
 
 
 def test_set_cookie_rejects_crlf_in_value():
@@ -44,7 +51,6 @@ def test_redirect_response_percent_encodes_url():
 
 def test_asgi_emit_rejects_crlf_in_header_value():
     """The ASGI emit path (not just encode()) rejects a CRLF header value."""
-    from veloce import Request, Veloce
 
     app = Veloce(openapi_url=None)
 
@@ -60,7 +66,6 @@ def test_asgi_emit_rejects_crlf_in_header_value():
 
 async def test_eventsource_stream_to_rejects_crlf_header():
     """EventSourceResponse.stream_to rejects a CRLF header value."""
-    from veloce import EventSourceResponse
 
     async def _empty():
         return
@@ -92,7 +97,6 @@ def _count_ci_header(head: bytes, name: str) -> int:
 def test_streaming_response_lowercase_content_type_not_duplicated():
     """A lowercase `content-type` override must not produce two
     Content-Type header lines on the raw-transport encode."""
-    from veloce import StreamingResponse
 
     async def _gen():
         yield b"row\n"
@@ -106,7 +110,6 @@ def test_streaming_response_lowercase_content_type_not_duplicated():
 
 def test_streaming_response_lowercase_connection_not_duplicated():
     """A lowercase `connection` override suppresses the default."""
-    from veloce import StreamingResponse
 
     async def _gen():
         yield b"row\n"
@@ -123,7 +126,6 @@ def test_streaming_response_rejects_crlf_in_content_type():
     `content_type` is a public constructor argument that flows into the
     default headers; the raw-transport encode must reject it rather than
     emit `Content-Type: text/csv\\r\\nEvil: 1` (HTTP response splitting)."""
-    from veloce import StreamingResponse
 
     async def _gen():
         yield b"row\n"
@@ -135,7 +137,6 @@ def test_streaming_response_rejects_crlf_in_content_type():
 
 def test_streaming_response_rejects_nul_in_content_type():
     """A NUL in `content_type` is rejected on the raw-transport encode."""
-    from veloce import StreamingResponse
 
     async def _gen():
         yield b"row\n"
@@ -148,7 +149,6 @@ def test_streaming_response_rejects_nul_in_content_type():
 async def test_eventsource_stream_to_lowercase_content_type_not_duplicated():
     """EventSourceResponse must emit one Content-Type even when the
     caller supplies a lowercase `content-type`."""
-    from veloce import EventSourceResponse
 
     async def _empty():
         return

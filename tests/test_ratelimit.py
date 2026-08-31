@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import time as _time
+
 import pytest
 
 from tests.conftest import make_request
 from veloce import (
+    Blueprint,
     FixedWindow,
     InMemoryRateLimitBackend,
     RateLimitBackend,
@@ -16,7 +19,10 @@ from veloce import (
     SlidingWindow,
     TokenBucket,
     Veloce,
+    rate_limit,
 )
+from veloce.audit import run
+from veloce.ratelimit import RATE_LIMIT_ATTR
 from veloce.testclient import TestClient
 
 # ── FixedWindow ──────────────────────────────────────────────────────
@@ -234,6 +240,11 @@ def test_result_fields():
 # TestClient (which carries no transport peer address).
 _UA = {"User-Agent": "rl-test"}
 
+# The property three tests used to spell out separately: with a limit of two in
+# a window nothing can expire inside, the third request is refused.
+_LEGACY_LIMIT = {"max_requests": 2, "window_seconds": 60}
+_ALLOW_ALLOW_REFUSE = [200, 200, 429]
+
 
 def _app(strategy, backend=None) -> Veloce:
     app = Veloce(openapi_url=None)
@@ -279,19 +290,26 @@ def test_middleware_rejects_backend_without_strategy():
         RateLimitMiddleware(backend=InMemoryRateLimitBackend())
 
 
-def test_middleware_legacy_path_still_works():
-    # The released max_requests/window_seconds signature is unchanged.
+def test_the_legacy_untagged_path_allows_then_refuses():
+    """The released `max_requests`/`window_seconds` signature, with no tagged
+    route anywhere, still runs the sliding log and refuses the third request.
+
+    Two tests asserted this against identical arrangements - one named for the
+    signature being unchanged, the other for no route carrying a tag - and both
+    are claims about the same untagged legacy path. The remaining difference in
+    the module is the *door*: `test_the_dispatch_entry_point_allows_then_refuses`
+    drives `handle_request` directly rather than a client.
+    """
     app = Veloce(openapi_url=None)
-    app.add_middleware(RateLimitMiddleware(max_requests=2, window_seconds=60))
+    app.add_middleware(RateLimitMiddleware(**_LEGACY_LIMIT))
 
     @app.get("/")
     async def index(request: Request):
         return {"ok": True}
 
     with TestClient(app) as tc:
-        assert tc.get("/", headers=_UA).status_code == 200
-        assert tc.get("/", headers=_UA).status_code == 200
-        assert tc.get("/", headers=_UA).status_code == 429
+        codes = [tc.get("/", headers=_UA).status_code for _ in range(3)]
+    assert codes == _ALLOW_ALLOW_REFUSE
 
 
 # ── Per-route overrides ──────────────────────────────────────────────
@@ -343,10 +361,13 @@ def test_overrides_reject_non_strategy():
 
 
 def _req(app, path):
-    return Request(method="GET", path=path, query_string="", headers={}, body=b"", app=app)
+    return make_request(method="GET", path=path, query_string="", headers={}, body=b"", app=app)
 
 
-def test_unknown_override_key_raises_on_first_request():
+def test_unknown_override_key_is_reported_not_raised_on_a_request():
+    """It used to raise here, so silencing the startup finding - the documented
+    way of accepting it - turned every request into a 500 instead."""
+
     app = Veloce(openapi_url=None)
 
     @app.get("/cheap")
@@ -354,8 +375,12 @@ def test_unknown_override_key_raises_on_first_request():
         return {}
 
     mw = RateLimitMiddleware(strategy=FixedWindow(10), overrides={"/nope": FixedWindow(1)})
-    with pytest.raises(ValueError, match="match no registered route"):
-        mw._build_route_strategies(_req(app, "/cheap"))
+    app.add_middleware(mw)
+    # The request path reports; the audit is what decides it is fatal.
+    assert mw._build_route_strategies(_req(app, "/cheap")) is not None
+    assert [
+        f.severity for f in run(app, routes_final=True) if f.id == "ratelimit-overrides-unknown"
+    ] == ["error"]
 
 
 def test_valid_override_key_passes_validation():
@@ -402,7 +427,6 @@ def test_valid_override_key_starts_up_cleanly():
 
 
 def test_blueprint_override_key_needs_prefix():
-    from veloce import Blueprint
 
     app = Veloce(openapi_url=None)
     bp = Blueprint("api", url_prefix="/api")
@@ -413,9 +437,15 @@ def test_blueprint_override_key_needs_prefix():
 
     app.register_blueprint(bp)
     # The bare "/login" matches no route; the prefixed "/api/login" does.
+
     bad = RateLimitMiddleware(strategy=FixedWindow(10), overrides={"/login": FixedWindow(1)})
-    with pytest.raises(ValueError, match="match no registered route"):
-        bad._build_route_strategies(_req(app, "/api/login"))
+    bad_app = Veloce(openapi_url=None)
+    bad_app.register_blueprint(bp)
+    bad_app.add_middleware(bad)
+    finding = next(
+        f for f in run(bad_app, routes_final=True) if f.id == "ratelimit-overrides-unknown"
+    )
+    assert "/login" in str(finding)
     ok = RateLimitMiddleware(strategy=FixedWindow(10), overrides={"/api/login": FixedWindow(1)})
     assert "/api/login" in ok._build_route_strategies(_req(app, "/api/login"))
 
@@ -424,8 +454,6 @@ def test_blueprint_override_key_needs_prefix():
 
 
 def test_rate_limit_decorator_tags_handler():
-    from veloce import rate_limit
-    from veloce.ratelimit import RATE_LIMIT_ATTR
 
     strat = FixedWindow(5, 60)
 
@@ -437,14 +465,12 @@ def test_rate_limit_decorator_tags_handler():
 
 
 def test_rate_limit_decorator_requires_strategy():
-    from veloce import rate_limit
 
     with pytest.raises(TypeError, match="RateLimitStrategy"):
         rate_limit("nope")
 
 
 def test_rate_limit_decorator_applies_per_route():
-    from veloce import rate_limit
 
     app = Veloce(openapi_url=None)
     app.add_middleware(RateLimitMiddleware(strategy=FixedWindow(100, 60)))
@@ -471,7 +497,6 @@ def test_rate_limit_decorator_applies_to_hidden_route():
     # POST, an internal endpoint - the routes most worth throttling) must still
     # be enforced. The strategy scan walks hidden routes too, so the tag is not
     # silently dropped with the schema-only view.
-    from veloce import rate_limit
 
     app = Veloce(openapi_url=None)
     app.add_middleware(RateLimitMiddleware(strategy=FixedWindow(100, 60)))
@@ -490,7 +515,6 @@ def test_rate_limit_decorator_applies_to_hidden_route():
 def test_route_added_after_first_request_is_limited():
     # A route registered after the per-route cache was primed must still be
     # picked up (the cache rebuilds when the app's route generation advances).
-    from veloce import rate_limit
 
     app = Veloce(openapi_url=None)
     app.add_middleware(RateLimitMiddleware(strategy=FixedWindow(100, 60)))
@@ -512,7 +536,6 @@ def test_route_added_after_first_request_is_limited():
 
 
 def test_explicit_override_wins_over_decorator():
-    from veloce import rate_limit
 
     app = Veloce(openapi_url=None)
     # Decorator says 100/min, overrides says 1/min - the explicit map wins.
@@ -533,111 +556,107 @@ def test_explicit_override_wins_over_decorator():
         assert tc.get("/strict", headers=_UA).status_code == 429
 
 
-class TestRateLimitMiddlewareE2E:
-    @pytest.mark.asyncio
-    async def test_rate_limit(self):
-        app = Veloce(openapi_url=None)
-        app.add_middleware(RateLimitMiddleware(max_requests=2, window_seconds=60))
+async def test_the_dispatch_entry_point_allows_then_refuses():
+    """The same property through `handle_request` rather than a client.
 
-        @app.get("/")
-        async def index(request: Request):
-            return {"ok": True}
+    The client path goes through the ASGI transport; this one calls dispatch
+    directly, which is a different door onto the same middleware and the reason
+    this is not a third copy of the test above.
+    """
+    app = Veloce(openapi_url=None)
+    app.add_middleware(RateLimitMiddleware(**_LEGACY_LIMIT))
 
-        # Stable UA → all three requests bucket together (no client_host
-        # in these synthetic Requests; UA hash is the next fallback).
-        ua = {"user-agent": "rate-limit-test/1.0"}
+    @app.get("/")
+    async def index(request: Request):
+        return {"ok": True}
 
-        # First two requests should pass
-        for _ in range(2):
-            resp = await app.handle_request(make_request(headers=ua))
-            assert resp.status_code == 200
+    # Stable UA → all three requests bucket together (no client_host
+    # in these synthetic Requests; UA hash is the next fallback).
+    ua = {"user-agent": "rate-limit-test/1.0"}
+    codes = [(await app.handle_request(make_request(headers=ua))).status_code for _ in range(3)]
+    assert codes == _ALLOW_ALLOW_REFUSE
 
-        # Third should be rate limited
-        resp = await app.handle_request(make_request(headers=ua))
-        assert resp.status_code == 429
 
-    @pytest.mark.asyncio
-    async def test_rate_limit_headers_on_success(self):
-        """Successful responses carry X-RateLimit-Limit/Remaining/Reset."""
-        app = Veloce(openapi_url=None)
-        app.add_middleware(RateLimitMiddleware(max_requests=5, window_seconds=60))
+async def test_rate_limit_headers_on_success():
+    """Successful responses carry X-RateLimit-Limit/Remaining/Reset."""
+    app = Veloce(openapi_url=None)
+    app.add_middleware(RateLimitMiddleware(max_requests=5, window_seconds=60))
 
-        @app.get("/")
-        async def index(request: Request):
-            return {"ok": True}
+    @app.get("/")
+    async def index(request: Request):
+        return {"ok": True}
 
-        ua = {"user-agent": "rl-headers-success/1.0"}
-        resp = await app.handle_request(make_request(headers=ua))
-        assert resp.status_code == 200
-        assert resp.headers["X-RateLimit-Limit"] == "5"
-        assert resp.headers["X-RateLimit-Remaining"] == "4"
-        # Pin the seconds-remaining form — a unix epoch would also satisfy
-        # >= 0 and silently regress the header semantics. The upper bound is
-        # window + 1: `_reset_after` ceils a sub-second remainder, so a fresh
-        # window can momentarily round up to `window_seconds + 1`.
-        assert 0 <= int(resp.headers["X-RateLimit-Reset"]) <= 61
+    ua = {"user-agent": "rl-headers-success/1.0"}
+    resp = await app.handle_request(make_request(headers=ua))
+    assert resp.status_code == 200
+    assert resp.headers["X-RateLimit-Limit"] == "5"
+    assert resp.headers["X-RateLimit-Remaining"] == "4"
+    # Pin the seconds-remaining form — a unix epoch would also satisfy
+    # >= 0 and silently regress the header semantics. The upper bound is
+    # window + 1: `_reset_after` ceils a sub-second remainder, so a fresh
+    # window can momentarily round up to `window_seconds + 1`.
+    assert 0 <= int(resp.headers["X-RateLimit-Reset"]) <= 61
 
-        resp = await app.handle_request(make_request(headers=ua))
-        assert resp.headers["X-RateLimit-Remaining"] == "3"
+    resp = await app.handle_request(make_request(headers=ua))
+    assert resp.headers["X-RateLimit-Remaining"] == "3"
 
-    @pytest.mark.asyncio
-    async def test_rate_limit_headers_on_429(self):
-        """A 429 carries X-RateLimit-* plus Retry-After."""
-        app = Veloce(openapi_url=None)
-        app.add_middleware(RateLimitMiddleware(max_requests=1, window_seconds=60))
 
-        @app.get("/")
-        async def index(request: Request):
-            return {"ok": True}
+async def test_rate_limit_headers_on_429():
+    """A 429 carries X-RateLimit-* plus Retry-After."""
+    app = Veloce(openapi_url=None)
+    app.add_middleware(RateLimitMiddleware(max_requests=1, window_seconds=60))
 
-        ua = {"user-agent": "rl-headers-429/1.0"}
-        ok = await app.handle_request(make_request(headers=ua))
-        assert ok.status_code == 200
+    @app.get("/")
+    async def index(request: Request):
+        return {"ok": True}
 
-        rejected = await app.handle_request(make_request(headers=ua))
-        assert rejected.status_code == 429
-        assert rejected.headers["X-RateLimit-Limit"] == "1"
-        assert rejected.headers["X-RateLimit-Remaining"] == "0"
-        # Pin the seconds-remaining form — a unix epoch would also satisfy
-        # >= 0 and silently regress the header semantics.
-        assert 0 <= int(rejected.headers["X-RateLimit-Reset"]) <= 60
-        assert "Retry-After" in rejected.headers
+    ua = {"user-agent": "rl-headers-429/1.0"}
+    ok = await app.handle_request(make_request(headers=ua))
+    assert ok.status_code == 200
 
-    @pytest.mark.asyncio
-    async def test_clientless_requests_do_not_share_bucket(self):
-        """Two anonymous requests with no shared signals must not collide."""
-        app = Veloce(openapi_url=None)
-        app.add_middleware(RateLimitMiddleware(max_requests=1, window_seconds=60))
+    rejected = await app.handle_request(make_request(headers=ua))
+    assert rejected.status_code == 429
+    assert rejected.headers["X-RateLimit-Limit"] == "1"
+    assert rejected.headers["X-RateLimit-Remaining"] == "0"
+    # Pin the seconds-remaining form — a unix epoch would also satisfy
+    # >= 0 and silently regress the header semantics.
+    assert 0 <= int(rejected.headers["X-RateLimit-Reset"]) <= 60
+    assert "Retry-After" in rejected.headers
 
-        @app.get("/")
-        async def index(request: Request):
-            return {"ok": True}
 
-        # Distinct scope identity per request + no UA + no XFF → distinct
-        # buckets. The legacy "unknown" key would 429 the second call.
-        r1 = await app.handle_request(make_request())
-        assert r1.status_code == 200
-        r2 = await app.handle_request(make_request())
-        assert r2.status_code == 200
+async def test_clientless_requests_do_not_share_bucket():
+    """Two anonymous requests with no shared signals must not collide."""
+    app = Veloce(openapi_url=None)
+    app.add_middleware(RateLimitMiddleware(max_requests=1, window_seconds=60))
+
+    @app.get("/")
+    async def index(request: Request):
+        return {"ok": True}
+
+    # Distinct scope identity per request + no UA + no XFF → distinct
+    # buckets. The legacy "unknown" key would 429 the second call.
+    r1 = await app.handle_request(make_request())
+    assert r1.status_code == 200
+    r2 = await app.handle_request(make_request())
+    assert r2.status_code == 200
 
 
 async def test_rate_limit_middleware_evicts_stale_buckets():
     """The bucket dict must not grow unbounded with unique client IPs."""
-    import time as _time
-
     mw = RateLimitMiddleware(max_requests=1000, window_seconds=1)
     now = _time.monotonic()
     stale = now - 3600
-    mw._buckets = {f"stale-{i}": [stale] for i in range(100)}
-    mw._buckets["fresh"] = [now]  # a live bucket — must survive the sweep
-    mw._last_sweep = stale  # force the next request to trigger a sweep
+    log = mw._log
+    log._buckets = {f"stale-{i}": [stale] for i in range(100)}
+    log._buckets["fresh"] = [now]  # a live bucket — must survive the sweep
+    log.last_sweep = stale  # force the next request to trigger a sweep
 
     req = Request(method="GET", path="/", query_string="", headers={}, body=b"")
     await mw.process_request(req)
 
     # The 100 stale buckets are evicted; the live bucket is kept.
-    assert not any(k.startswith("stale-") for k in mw._buckets)
-    assert "fresh" in mw._buckets
+    assert not any(k.startswith("stale-") for k in log._buckets)
+    assert "fresh" in log._buckets
 
 
 def test_reset_never_exceeds_the_window():
@@ -649,12 +668,12 @@ def test_reset_never_exceeds_the_window():
     mw = RateLimitMiddleware(max_requests=1, window_seconds=60)
     now = 1000.0
     # Oldest stamp equal to (and, defensively, later than) `now`.
-    assert mw._reset_after(deque([now]), now) <= 60
-    assert mw._reset_after(deque([now + 5]), now) <= 60
+    assert mw._log.reset_after(deque([now]), now) <= 60
+    assert mw._log.reset_after(deque([now + 5]), now) <= 60
     # A partly-elapsed window still reports the real remainder.
-    assert mw._reset_after(deque([now - 30]), now) == 30
+    assert mw._log.reset_after(deque([now - 30]), now) == 30
     # An expired stamp reports nothing left to wait for.
-    assert mw._reset_after(deque([now - 120]), now) == 0
+    assert mw._log.reset_after(deque([now - 120]), now) == 0
 
 
 def test_strict_overrides_false_warns_instead_of_failing_startup(caplog):
@@ -693,3 +712,226 @@ def test_strict_overrides_defaults_to_failing_startup():
     )
     with pytest.raises(ValueError, match="match no registered route"):
         TestClient(app)
+
+
+# ── @rate_limit in the max_requests= constructor mode ────────────────
+#
+# `rate_limit()` promises unconditionally that "a decorated handler is limited
+# by `strategy` ... overriding the RateLimitMiddleware default". That held only
+# when the middleware was built with `strategy=`. Built the other way -
+# `RateLimitMiddleware(max_requests=..., window_seconds=...)`, the default
+# shape - the tag was collected by nothing and dropped in silence, so a route
+# carrying a strict `@rate_limit` tag answered every request under the default
+# budget. `test_tag_is_honored_in_the_max_requests_mode` below is the executable
+# statement of that property.
+#
+# A strict limit on a sensitive route silently became no limit at all. The
+# constructor already refuses `backend=` and `overrides=` without `strategy=`,
+# so the one misconfiguration it did not report was the one that mattered.
+
+
+def _tagged_app(**middleware_kwargs) -> Veloce:
+
+    app = Veloce(openapi_url=None)
+    app.add_middleware(RateLimitMiddleware(**middleware_kwargs))
+
+    @app.get("/login")
+    @rate_limit(FixedWindow(2, 60))
+    async def login(request: Request):
+        return {"ok": True}
+
+    @app.get("/open")
+    async def open_route(request: Request):
+        return {"ok": True}
+
+    return app
+
+
+def test_tag_is_honored_in_the_max_requests_mode():
+    """The defect: the decorator was dropped without a word."""
+    with TestClient(_tagged_app(max_requests=1000, window_seconds=60)) as tc:
+        codes = [tc.get("/login", headers=_UA).status_code for _ in range(4)]
+    assert codes == [200, 200, 429, 429]
+
+
+def test_both_constructor_modes_agree():
+    """The tag must mean the same thing whichever way the middleware was built."""
+    with TestClient(_tagged_app(max_requests=1000, window_seconds=60)) as tc:
+        legacy = [tc.get("/login", headers=_UA).status_code for _ in range(4)]
+    with TestClient(_tagged_app(strategy=FixedWindow(1000, 60))) as tc:
+        strategy = [tc.get("/login", headers=_UA).status_code for _ in range(4)]
+    assert legacy == strategy
+
+
+def test_an_untagged_route_keeps_the_default_budget():
+    """Only the tagged route changes; everything else keeps the plain limit."""
+    with TestClient(_tagged_app(max_requests=3, window_seconds=60)) as tc:
+        codes = [tc.get("/open", headers=_UA).status_code for _ in range(4)]
+    assert codes == [200, 200, 200, 429]
+
+
+def test_the_tagged_route_has_its_own_counter():
+    """A tagged route must not spend, or be spent by, the default budget."""
+    with TestClient(_tagged_app(max_requests=3, window_seconds=60)) as tc:
+        for _ in range(3):
+            assert tc.get("/open", headers=_UA).status_code == 200
+        assert tc.get("/open", headers=_UA).status_code == 429
+        # The default budget is exhausted; the tagged route has its own.
+        assert tc.get("/login", headers=_UA).status_code == 200
+
+
+def test_the_tagged_route_still_reports_its_headers():
+    """X-RateLimit-* must describe the tag's budget, not the default."""
+    with TestClient(_tagged_app(max_requests=1000, window_seconds=60)) as tc:
+        response = tc.get("/login", headers=_UA)
+    assert response.headers.get("X-RateLimit-Limit") == "2"
+    assert response.headers.get("X-RateLimit-Remaining") == "1"
+
+
+def test_a_refused_tagged_request_sends_retry_after():
+    with TestClient(_tagged_app(max_requests=1000, window_seconds=60)) as tc:
+        for _ in range(2):
+            tc.get("/login", headers=_UA)
+        refused = tc.get("/login", headers=_UA)
+    assert refused.status_code == 429
+    assert int(refused.headers["Retry-After"]) > 0
+
+
+async def test_distinct_clients_keep_distinct_tagged_buckets():
+    """A shared bucket would let one caller exhaust everyone else's quota.
+
+    Driven through the middleware directly: `TestClient` reports one peer for
+    every request, and the peer outranks every other signal in `_bucket_key`,
+    so the caller cannot be varied over the wire here.
+    """
+    app = _tagged_app(max_requests=1000, window_seconds=60)
+    middleware = app.middlewares[-1]
+
+    async def call(agent: str):
+        request = make_request(path="/login", headers={"User-Agent": agent})
+        request.app = app
+        request.state["url_rule"] = "/login"
+        return await middleware.process_request(request)
+
+    assert await call("first") is None
+    assert await call("first") is None
+    refused = await call("first")
+    assert refused is not None and refused.status_code == 429
+    assert await call("second") is None
+
+
+def test_a_route_added_after_the_first_request_is_tagged():
+    """The route table can grow; the tag map is rebuilt on generation change."""
+
+    app = Veloce(openapi_url=None)
+    app.add_middleware(RateLimitMiddleware(max_requests=1000, window_seconds=60))
+
+    @app.get("/first")
+    async def first(request: Request):
+        return {"ok": True}
+
+    tc = TestClient(app)
+    assert tc.get("/first", headers=_UA).status_code == 200
+
+    @app.get("/late")
+    @rate_limit(FixedWindow(1, 60))
+    async def late(request: Request):
+        return {"ok": True}
+
+    assert tc.get("/late", headers=_UA).status_code == 200
+    assert tc.get("/late", headers=_UA).status_code == 429
+
+
+# ── end to end through a client ───────────────────────────────
+#
+# Moved here from `test_security_middleware_e2e.py`, which covered three
+# unrelated middleware subsystems end to end. These are that subsystem's.
+
+
+def _rl_app(max_requests: int = 5, window_seconds: int = 60) -> Veloce:
+    app = Veloce(openapi_url=None)
+    app.add_middleware(
+        RateLimitMiddleware(max_requests=max_requests, window_seconds=window_seconds)
+    )
+
+    @app.get("/ping")
+    async def ping(request):
+        return {"ok": True}
+
+    return app
+
+
+def test_ratelimit_success_headers_present():
+    """A single allowed request carries X-RateLimit-Limit/Remaining/Reset."""
+    app = _rl_app(max_requests=5, window_seconds=60)
+    with TestClient(app) as client:
+        # Stable User-Agent so the bucket key is deterministic.
+        resp = client.get("/ping", headers={"User-Agent": "rl-test/1"})
+
+    assert resp.status_code == 200
+    assert resp.headers["X-RateLimit-Limit"] == "5"
+    assert resp.headers["X-RateLimit-Remaining"] == "4"
+    reset = int(resp.headers["X-RateLimit-Reset"])
+    assert 0 <= reset <= 60
+
+
+def test_ratelimit_429_carries_retry_after_and_headers():
+    """The 6th request inside max_requests=5 must be rejected with 429
+    and carry both Retry-After and the X-RateLimit-* family."""
+    app = _rl_app(max_requests=5, window_seconds=60)
+    ua = {"User-Agent": "rl-test/limit"}
+    with TestClient(app) as client:
+        for _ in range(5):
+            ok = client.get("/ping", headers=ua)
+            assert ok.status_code == 200
+        rejected = client.get("/ping", headers=ua)
+
+    assert rejected.status_code == 429
+    assert rejected.headers["X-RateLimit-Limit"] == "5"
+    assert rejected.headers["X-RateLimit-Remaining"] == "0"
+    assert "Retry-After" in rejected.headers
+    assert "X-RateLimit-Reset" in rejected.headers
+
+
+def test_ratelimit_buckets_two_calls_from_one_peer_together():
+    """The test client reports a peer, so both calls are the same caller and
+    share one budget - a second call past `max_requests=1` is refused.
+
+    The complementary property (callers with *no* resolvable address must not
+    share a bucket) is pinned at the key level in
+    `tests/test_request_client_peer.py`, where a peerless request can actually
+    be constructed."""
+    app = _rl_app(max_requests=1, window_seconds=60)
+    with TestClient(app) as client:
+        first = client.get("/ping")
+        second = client.get("/ping")
+
+    assert first.status_code == 200
+    assert second.status_code == 429
+
+
+def test_reset_after_ceils_subsecond_remainder():
+    # A sub-second remainder must round up to 1, not floor to 0, so the client
+    # is never told "retry now" while a fraction of a second still remains.
+    from collections import deque
+
+    mw = RateLimitMiddleware(max_requests=1, window_seconds=60)
+    assert mw._log.reset_after(deque([0.4]), 60.0) == 1
+
+
+def test_ratelimit_xff_keys_on_rightmost_hop():
+    """X-Forwarded-For is parsed RIGHT-to-LEFT — the right-most hop is
+    the closest (and only trustworthy) proxy. Spoofing the LEFT-most
+    value must not let a client evade the per-source limit."""
+    app = _rl_app(max_requests=3, window_seconds=60)
+    with TestClient(app) as client:
+        spoofed_left = "9.9.9.9, real-proxy-ip"
+        for _ in range(3):
+            ok = client.get("/ping", headers={"X-Forwarded-For": spoofed_left})
+            assert ok.status_code == 200
+        # Rotate the spoofed left hop — the right hop stays "real-proxy-ip",
+        # so the bucket must be the same and the next call must trip 429.
+        rejected = client.get("/ping", headers={"X-Forwarded-For": "1.2.3.4, real-proxy-ip"})
+
+    assert rejected.status_code == 429
+    assert rejected.headers["X-RateLimit-Remaining"] == "0"

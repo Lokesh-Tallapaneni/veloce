@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
+from tests._openapi import parameter
 from veloce import Query, Veloce
 from veloce.contrib.openapi import get_openapi_schema
 
 
 def _param_schema(app: Veloce, path: str, name: str) -> dict:
-    schema = get_openapi_schema(app)
-    for p in schema["paths"][path]["get"].get("parameters", []):
-        if p["name"] == name:
-            return p["schema"]
-    raise AssertionError(f"parameter {name!r} not found")
+    found = parameter(get_openapi_schema(app), path, name)
+    assert found is not None, f"parameter {name!r} not found"
+    return found["schema"]
 
 
 def test_examples_emitted_to_param_schema():

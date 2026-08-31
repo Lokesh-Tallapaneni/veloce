@@ -63,9 +63,12 @@ and produces:
 - the **dependency graph** — `Depends`/`Security` callables and their own
   sub-dependencies, grouped into parallel-safe waves and flagged for
   thread-offload where they run blocking work;
-- the **response type** (`response_model`);
-- the **auth requirements** and a per-route **side-effect class** (whether the
-  route is read-only or mutating).
+- the **auth requirements**.
+
+Alongside it the route itself carries the **response type**
+(`response_model`, inferred from the return annotation when you do not pass one),
+and a route's **side-effect class** — read-only or mutating — is derived from its
+HTTP verb when a lowering needs it.
 
 You never write the plan. You write a normal handler; the plan is the framework's
 projection of it. See [Dependency Injection](../guide/dependency-injection.md)

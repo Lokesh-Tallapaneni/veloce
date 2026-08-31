@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "veloceframework"
-version = "0.17.1"
+version = "0.18.0"
 description = "Ultra-fast async Python web framework — ASGI-native, batteries included"
 readme = "README.md"
 license = "MIT"
@@ -15,7 +15,42 @@ authors = [
 maintainers = [
     { name = "Lokesh Tallapaneni" },
 ]
-keywords = ["asgi", "async", "web", "framework", "http", "api", "websocket", "openapi"]
+keywords = [
+    # What it is
+    "veloce",
+    "asgi",
+    "async",
+    "asyncio",
+    "web",
+    "framework",
+    "web-framework",
+    "http",
+    "http-server",
+    # What it is used to build
+    "api",
+    "rest",
+    "rest-api",
+    "microservice",
+    "websocket",
+    "sse",
+    "server-sent-events",
+    # What it documents itself with
+    "openapi",
+    "swagger",
+    "redoc",
+    # The MCP server, which is the thing no comparable framework ships
+    "mcp",
+    "model-context-protocol",
+    "llm",
+    "ai-agents",
+    "agents",
+    "tools",
+    # How handlers are written
+    "dependency-injection",
+    "pydantic",
+    "msgspec",
+    "type-hints",
+]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Web Environment",
@@ -42,12 +77,12 @@ classifiers = [
 ]
 dependencies = [
     "uvloop>=0.19.0; sys_platform != 'win32'",
-    "orjson>=3.9.0",
-    "pydantic>=2.0.0",
+    "orjson>=3.11.5",
+    "pydantic>=2.4.0",
     "multidict>=6.0.0",
-    "python-multipart>=0.0.6",
+    "python-multipart>=0.0.22",
     "httptools>=0.6.0",
-    "jinja2>=3.1",
+    "jinja2>=3.1.6",
 ]
 
 [project.optional-dependencies]
@@ -68,7 +103,7 @@ ws = ["websockets>=12"]
 # worker class. POSIX-only — gunicorn does not run on Windows — so this extra
 # is opt-in and never pulled in by a plain install. The `uvicorn` extra
 # remains the recommended production server.
-gunicorn = ["gunicorn>=21.0; sys_platform != 'win32'"]
+gunicorn = ["gunicorn>=23.0.0; sys_platform != 'win32'"]
 # OpenTelemetry tracing bridge for `veloce.otel.instrument_with_otel`. Only the
 # OTel API is pulled in — the application supplies its own configured SDK,
 # TracerProvider, and exporter. Kept optional so a plain install carries no
@@ -97,16 +132,35 @@ redis = ["redis>=4.2"]
 # is pure stdlib `argparse` and needs nothing extra, so Click stays opt-in.
 # Install with `pip install veloceframework[cli]`.
 cli = ["click>=8.1"]
+# Brotli for `CompressionMiddleware`. Every current browser sends `br` in
+# Accept-Encoding, and it compresses text better than gzip at comparable speed
+# around the quality the middleware defaults to. Without this extra the
+# middleware simply does not offer `br`. Install with
+# `pip install veloceframework[brotli]`.
+brotli = ["brotli>=1.0"]
+# Zstandard for `CompressionMiddleware`. Faster than both gzip and brotli at a
+# similar ratio, and increasingly sent by browsers as `zstd`. Without this extra
+# the middleware does not offer `zstd`. Install with
+# `pip install veloceframework[zstd]`.
+zstd = ["zstandard>=0.21"]
+# ciso8601 accelerates the `<datetime:>` path converter. Only values with no
+# numeric offset take it - those are the ones it parses identically to the
+# stdlib - so the converter answers the same either way, just faster. Install
+# with `pip install veloceframework[ciso8601]`.
+ciso8601 = ["ciso8601>=2.3"]
 # Everything optional in one shot.
 all = [
     "uvicorn[standard]>=0.23",
     "websockets>=12",
-    "gunicorn>=21.0; sys_platform != 'win32'",
+    "gunicorn>=23.0.0; sys_platform != 'win32'",
     "opentelemetry-api>=1.20",
     "prometheus_client>=0.17",
     "msgspec>=0.13",
     "redis>=4.2",
     "click>=8.1",
+    "brotli>=1.0",
+    "zstandard>=0.21",
+    "ciso8601>=2.3",
 ]
 
 [project.scripts]
@@ -129,6 +183,11 @@ dev = [
     "pytest-asyncio>=0.21",
     "pytest-cov>=5.0",
     "hypothesis>=6.0",
+    # `tomllib` is stdlib from 3.11; the packaging-claims test reads
+    # `pyproject.toml` and `requires-python` is `>=3.10`, so 3.10 needs the
+    # backport `tomllib` was upstreamed from. Without it that whole module
+    # failed to import and took the 3.10 leg's entire collection with it.
+    "tomli>=2.0; python_version < '3.11'",
     "ruff>=0.6",
     "mypy>=1.10",
     # uvicorn is now an optional extra, but the test suite still exercises the
@@ -143,9 +202,36 @@ dev = [
     # In-memory Redis fake so the contrib.redis store/limiter tests run without a
     # real Redis server.
     "fakeredis>=2.20",
+    # `fakeredis` executes Lua only with a runtime available; without it the
+    # Lua/Python rate-limit parity guard would skip and the duplication of each
+    # built-in strategy would be unchecked.
+    "lupa>=2.0",
     # CodSpeed's pytest plugin — powers the `benchmarks/` suite (`pytest
     # benchmarks --codspeed`) that CI runs to track request-path performance.
     "pytest-codspeed>=5.0.3",
+    # The libraries `docs/guide/databases.md` and `docs/how-to/graphql.md` are
+    # written against. Their examples had never been executed because these were
+    # not installed, and the GraphQL page's install line was wrong as a result.
+    # The guarded tests skip without them; installing them is what makes the
+    # guard run.
+    "sqlalchemy[asyncio]>=2.0",
+    "aiosqlite>=0.19",
+    "strawberry-graphql[asgi]>=0.230",
+    # The `otel` extra ships only `opentelemetry-api`, but the instrumentation
+    # tests need a real tracer provider and span exporter to observe what
+    # `veloce/otel.py` records - so 36 of `test_otel.py`'s 43 tests skipped in
+    # every environment this project defines, and the module sat at ~20%
+    # coverage with the suite reporting green. The SDK is a test-only
+    # dependency; the shipped extra still requires the API alone.
+    "opentelemetry-sdk>=1.20",
+    # The `metrics` extra's backend. It was present in the working environment
+    # only incidentally, so `uv sync --group dev` removed it and eight
+    # instrumentation tests began skipping - the same shape as the otel gap
+    # above. Named here so the dev environment is reproducible.
+    "prometheus_client>=0.17",
+    "brotli>=1.2.0",
+    "zstandard>=0.25.0",
+    "ciso8601>=2.3.3",
 ]
 docs = [
     "mkdocs-material[imaging]>=9.5",
@@ -213,15 +299,54 @@ select = [
     "UP",   # pyupgrade
     "SIM",  # flake8-simplify
     "ASYNC",
+    # PEP 257 docstring rules. The style guide names ruff as the write-time gate
+    # for its PEP 257 clause; before this, `select` carried no `D` family at all,
+    # so that clause was prose nothing executed. The subset below is every `D`
+    # rule the source already satisfies, so it is enforced from here on. The
+    # rules deliberately left out are listed under `ignore`, each with the
+    # convention it would contradict - they are style decisions for the
+    # maintainer, not defects to sweep.
+    "D",
 ]
 ignore = [
     "E501",  # line length handled by formatter
     "B008",  # function calls in default args (Depends/Query/etc. legitimately need this)
+    # ── PEP 257 rules deliberately not enforced ──────────────────────
+    # The style guide explicitly says to skip docstrings on dunders, `__init__`,
+    # HTTP-method shortcuts and delegation methods under five lines, so these
+    # three would flag exactly what it tells authors not to write.
+    "D105",  # undocumented magic method
+    "D107",  # undocumented `__init__`
+    "D102",  # undocumented public method
+    "D101",  # undocumented public class - same skip list (HTTP exception subclasses)
+    # A predicate reads better as a noun phrase ("True when the port is the
+    # default for the scheme") than as "Return True when ...", and the codebase
+    # uses that form consistently for properties and predicates. Enforcing
+    # The only docstrings left in non-imperative mood are predicates, which read
+    # better as the property they test ("True when the port is the default for
+    # the scheme") than as a command. `tests/test_docstring_mood.py` enforces
+    # that this stays the whole of the exemption.
+    "D401",  # non-imperative mood
+    # Escape sequences appear inside RFC quotations and regex documentation; a
+    # raw docstring there would be noise.
+    "D301",  # use raw string for backslashes
+    "D400",  # first line should end with a period - taglines end with a clause
+    "D404",  # docstring should not start with "This"
+    "D415",  # first line should end with punctuation - as D400
+    "D203",  # incompatible with D211, which is the convention here
+    "D213",  # incompatible with D212, which is the convention here
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["B"]  # bugbear false positives in test patterns
+# The style guide's PEP 257 clause is about `src/veloce/**`. Test functions,
+# benchmark scripts and the demo app carry their explanation in the module
+# docstring and the test name, not in a per-function docstring.
+"tests/**" = ["B", "D"]  # bugbear false positives in test patterns; see above
 "src/veloce/__init__.py" = ["F401"]  # re-exports
+"benchmarks/**" = ["D"]
+"example_app.py" = ["D"]
+"bench/**" = ["D"]
+"mkdocs_hooks.py" = ["D"]  # a build hook, not shipped API
 
 [tool.mypy]
 python_version = "3.10"
@@ -251,6 +376,10 @@ module = [
     "prometheus_client",
     "redis.*",
     "watchfiles",
+    "brotli",
+    "brotlicffi",
+    "zstandard",
+    "ciso8601",
 ]
 ignore_missing_imports = true
 

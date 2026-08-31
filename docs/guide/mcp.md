@@ -58,9 +58,16 @@ automatically. A route — of any HTTP verb, including a mutating `POST` / `PUT`
 explicitly with `expose_as_mcp_tool=True`:
 
 ```python
+from pydantic import BaseModel
+
+
+class User(BaseModel):
+    name: str
+
+
 @app.post("/users", expose_as_mcp_tool=True, mcp_description="Create a user")
-async def create_user(user: User):
-    ...
+async def create_user(user: User) -> dict:
+    return {"created": user.name}
 ```
 
 An exposed route keeps every guard it has as an HTTP endpoint — its `Security`
@@ -99,6 +106,42 @@ The synthetic `request` carries the wrapped route's real HTTP method and rule
 path, so a handler, dependency, or hook that branches on `request.method` /
 `request.path` sees the route's own values (the concrete path-parameter values
 remain on `request.path_params`).
+
+It also carries the caller: `request.client_host` on a replayed call is the
+address the transport saw on the carrying request, so anything keyed on who is
+calling — a rate limit, an allow-list, an audit log — behaves as it does over
+HTTP. Where a `ProxyFix`-style middleware corrected the address on the carrier,
+the corrected value is what propagates.
+
+```python
+from veloce import Veloce, rate_limit
+from veloce.ratelimit import FixedWindow
+
+app = Veloce()
+
+@app.get("/report", expose_as_mcp_tool=True, mcp_description="Build a report")
+@rate_limit(FixedWindow(limit=2, window=60))
+async def report() -> dict:
+    return {"rows": 10_000}
+```
+
+Two calls a minute, whichever door they arrive through — the third is refused
+over HTTP with a `429`, and refused to an agent as a tool error. The budget is
+shared, so an agent that has spent it cannot get a third report by switching to
+the HTTP endpoint.
+
+!!! warning "A stdio server has no caller to inherit"
+    Over `serve_stdio` there is no carrying request, so `request.client_host` is
+    `None` and a rate limit keyed on the caller has nothing to count against —
+    each call falls into its own bucket and is admitted. A stdio server is
+    launched by, and serves, exactly one local client; put the limit at the
+    process level rather than per-caller.
+
+Headers are a separate matter and are deliberately **not** inherited. A replayed
+request has no headers at all, so a credential presented to the transport is
+never re-read by the route's own `Security` scheme, and a tool argument can
+never masquerade as one. Authentication over MCP is the validated
+[`Principal`](#authentication-and-authorization), not a request header.
 
 A client-supplied parameter declared inside a `Depends` dependency - including a
 body model - is advertised in the tool's input schema, so `tools/list` and
@@ -791,6 +834,31 @@ The `initialize` request is never cancellable (the spec forbids it), and a cance
 naming an already-finished or unknown request is ignored. Over the Streamable HTTP
 transport a cancelled call closes its SSE stream without a response frame.
 
+### Handler output on stdio
+
+Over stdio the process's standard output *is* the protocol pipe, so anything else
+written there would be injected into the JSON-RPC stream as a line the client
+cannot parse. Veloce isolates the wire for the duration: the protocol is carried
+on private duplicates of descriptors 0 and 1, while descriptor 0 points at the
+null device and descriptor 1 at stderr. Both are restored when serving ends.
+
+In practice this means a `print` left in a handler, a library that logs to stdout,
+and a subprocess a tool spawns all land on **stderr**, where they are visible as
+diagnostics instead of corrupting the protocol — and a handler that reads
+`sys.stdin` sees end-of-file rather than eating the next request.
+
+!!! tip "Prefer `ctx.log` over `print`"
+    A message meant for the client belongs on the MCP logging channel:
+
+    ```python
+    from veloce import MCPContext
+
+    @app.mcp_tool(description="Rebuild the index")
+    async def reindex(ctx: MCPContext) -> dict:
+        await ctx.log("starting")
+        return {"ok": True}
+    ```
+
 ### Call timeout
 
 The stdio transport serves calls one at a time, so a handler that blocks forever
@@ -984,10 +1052,18 @@ as a failed result with an actionable message. Call the tool synchronously (no
 The server emits `notifications/tasks/status` on each transition (carrying the
 `io.modelcontextprotocol/related-task` `_meta` key), and the `CreateTaskResult`
 returned at creation carries the `io.modelcontextprotocol/model-immediate-response`
-hint. A task is retained for a bounded time-to-live (the client may set `ttl` in
-milliseconds on the `task` field); a settled task is evicted once it expires, and
-a session's tasks — settled or still working — are reclaimed when its
-`Mcp-Session-Id` is terminated or evicted, so an abandoned task cannot leak.
+hint. A task is retained for a bounded time-to-live: the client may set `ttl` in
+milliseconds on the `task` field, up to a server ceiling of one hour, above which
+the request is clamped rather than refused — the task reports the TTL it actually
+received, so a client that asked for more can see what it got. A settled task is
+evicted once it expires, and a session's tasks — settled or still working — are
+reclaimed when its `Mcp-Session-Id` is terminated or evicted, so an abandoned
+task cannot leak.
+
+!!! note "Changed in version 0.13"
+    A client-requested `ttl` is capped at one hour. It was previously kept
+    verbatim, so a client could pin a task and its result for the process
+    lifetime.
 
 !!! note "Added in version 0.9"
     Task-augmented tool calls require a tool to opt in with `task_support=True`;
@@ -1231,8 +1307,9 @@ app.mount_mcp(transport="http")
 # Listed as: "billing_invoice"
 ```
 
-The namespace defaults to the mount prefix. Pass `mcp_namespace=` to choose
-another, or `mcp_namespace=""` to merge the sub-app's names in unprefixed.
+The namespace is the mount prefix. `mount()` takes `prefix`, `app` and
+`expose_mcp`; there is no separate namespace argument, so mount the sub-app under
+the prefix you want its tools named for.
 
 ### Tools from another MCP server
 
@@ -1251,14 +1328,23 @@ from veloce.contrib.mcp import add_mcp_proxy
 app = Veloce(title="Gateway")
 
 
+UPSTREAM_URL = "https://upstream.example.com/mcp"
+
+
 async def call_upstream(method: str, params: dict) -> dict:
-    response = await client.post(UPSTREAM_URL, json={
+    """One JSON-RPC request against the upstream server."""
+    response = await app.state.client.post(UPSTREAM_URL, json={
         "jsonrpc": "2.0", "id": 1, "method": method, "params": params,
     })
     return response.json()["result"]
 
 
-await add_mcp_proxy(app, "search", call_upstream)
+@app.on_startup
+async def attach_upstream() -> None:
+    # `add_mcp_proxy` is awaited, so it runs from startup rather than at import.
+    await add_mcp_proxy(app, "search", call_upstream)
+
+
 app.mount_mcp(transport="http")
 ```
 
@@ -1292,10 +1378,12 @@ from veloce.contrib.mcp.registry import build_registry
 
 app = Veloce(title="Search")
 
+SERVER_KEY = "the credential the agent must not supply"
+
 
 @app.mcp_tool(description="Search the index (internal)")
 async def search(query: str, api_key: str, limit: int = 5) -> dict:
-    return await backend.search(query, api_key, limit)
+    return {"query": query, "limit": limit}
 
 
 app.add_mcp_tool(
@@ -1437,9 +1525,23 @@ if __name__ == "__main__":
 Call `mount_mcp(transport="http")` **after** registering your tools, resources, and
 prompts. The client `POST`s one JSON-RPC message to the route and gets one reply:
 
-- A request with `Accept: text/event-stream` is answered with an SSE stream that
-  carries the call's progress / log notifications followed by the JSON-RPC
-  response. A request without it gets a single JSON response.
+- A request is answered with an SSE stream when the call could send more than the
+  reply itself, and with a single JSON response when it could not. The spec lets
+  the server choose either, and framing a stream around one message is not free,
+  so the choice follows the call rather than the header: a stream carries the
+  call's progress / log notifications ahead of the JSON-RPC response.
+
+    A call gets the stream when its tool can reach an `MCPContext` (directly, or
+    through a dependency, or because the tool dispatches other tools), when the
+    client sent a `progressToken`, when the call is task-augmented, when
+    `resumable=True`, or when the client did not offer `application/json` at all.
+    A tool that can do none of those answers with one message, and gets a single
+    JSON response even from a client that offered both types.
+
+    The two shapes report an authorization failure differently: a streamed reply
+    carries an insufficient-scope error in band on a committed `200`, while a
+    JSON reply can still use the status line and answers `403` with an RFC 6750
+    scope challenge. A client that handles step-up auth should read both.
 - A notification (a message with no `id`) is answered with `202 Accepted` and no body.
 - A `GET` on the endpoint is answered `405 Method Not Allowed` (the transport keeps
   no standalone server-to-client stream).
@@ -1453,6 +1555,17 @@ and a client dropping the stream does not cancel the in-flight call.
     missing `Origin` (a non-browser client) is allowed. A request carrying an
     `MCP-Protocol-Version` header naming a revision the server does not support is
     rejected `400`; a request with no such header is unaffected.
+
+    On the `2026-07-28` revision the standard request headers become mandatory and
+    are checked against the body they label. Every `POST` carries
+    `MCP-Protocol-Version` and `Mcp-Method`, and a `tools/call`, `resources/read`
+    or `prompts/get` also carries `Mcp-Name`. A missing header, or one whose value
+    disagrees with the body, is rejected `400` with JSON-RPC `-32020`
+    (`HeaderMismatchError`) — an intermediary routes on the headers while the
+    server executes the body, so the two must not be allowed to diverge. A
+    `Mcp-Name` outside plain printable ASCII travels as
+    `=?base64?<standard-base64-of-the-utf-8-bytes>?=`. Earlier revisions defined
+    none of these headers and are unaffected.
 
 ### Session management
 
@@ -1489,6 +1602,8 @@ store:
 import json
 from dataclasses import asdict
 
+from redis.asyncio import Redis
+
 from veloce.contrib.mcp import SessionRecord
 
 
@@ -1507,6 +1622,7 @@ class RedisSessions:
         await self._client.delete(f"mcp:{session_id}")
 
 
+redis = Redis.from_url("redis://localhost:6379")
 app.mount_mcp(transport="http", sessions=True, session_backend=RedisSessions(redis))
 ```
 
@@ -1537,8 +1653,8 @@ copy does not, since another may still be serving it.
 
 ### Resumable streams
 
-When a tool call replies over SSE (the client sent `Accept: text/event-stream`), a
-dropped connection normally loses any events the client had not yet received. Pass
+When a tool call replies over SSE, a dropped connection normally loses any events
+the client had not yet received. Pass
 `resumable=True` to let a client reconnect and replay only what it missed:
 
 ```python
@@ -1650,6 +1766,18 @@ app.mount_mcp(transport="http", auth=MCPAuth(
     a token minted for another service — or forwarding it onward — is the
     spec-forbidden "token passthrough" anti-pattern.
 
+`auth=` and `allowed_origins=` gate **every** verb the endpoint serves, not just the
+`POST` that carries a call: a `GET` resuming a stream and a `DELETE` terminating a
+session are checked the same way. A client that reconnects with only a
+`Last-Event-ID`, or tears a session down without presenting its token, is answered
+`401`. The protected-resource metadata at `/.well-known/oauth-protected-resource`
+stays reachable without a credential — a client cannot present a token before it has
+discovered where to get one.
+
+!!! note "Changed in version 0.18"
+    `GET` and `DELETE` previously skipped authentication, and `DELETE` also skipped
+    the `Origin` check. Send the token on all three verbs.
+
 For the **stdio** transport there is no OAuth handshake — the process is launched
 locally and trusted — so pass a static identity instead:
 `app.mount_mcp(principal=Principal(subject="local", scopes={"mcp:tools"}))`.
@@ -1683,11 +1811,19 @@ authorization = MCPAuthorizationServer(
 register_authorization_server(app, authorization)
 
 app.mount_mcp(transport="http", auth=MCPAuth(
-    verify=authorization.verifier(),
+    verify=authorization.verifier(resource="https://api.example.com/mcp"),
     resource_server_url="https://api.example.com/mcp",
     authorization_servers=["https://api.example.com"],
 ))
 ```
+
+!!! warning "Pass `resource=` to the verifier"
+    It is the same URI as `resource_server_url`, and it is what enforces
+    audience binding ([RFC 8707](https://www.rfc-editor.org/rfc/rfc8707)): a token
+    this authorization server minted for a *different* MCP server is refused.
+    Building the verifier without it leaves that check off and warns at startup —
+    the previous section's warning applies here too, and this is how Veloce
+    satisfies it for you.
 
 That serves the four endpoints an MCP client walks:
 
@@ -1767,6 +1903,15 @@ once and run over HTTP and MCP alike.
 ### Reconciling existing middleware and dependencies
 
 ```python
+from veloce import Middleware, Principal
+from veloce.contrib.mcp import MCPAuth
+
+
+def verify(token: str) -> Principal | None:
+    """Your token validation - see the section above."""
+    return Principal(subject="agent", scopes={"mcp:tools"}) if token else None
+
+
 class AuthMiddleware(Middleware):
     async def process_request(self, request):
         if request.is_mcp:           # a replayed tool call — transport already authed
@@ -1775,8 +1920,14 @@ class AuthMiddleware(Middleware):
 
 app.add_middleware(AuthMiddleware)
 
+mcp_auth = MCPAuth(
+    verify=verify,                                   # from the section above
+    resource_server_url="https://api.example.com/mcp",
+    authorization_servers=["https://auth.example.com"],
+)
+
 # Drop the same middleware from the /mcp transport route (it has its own MCPAuth):
-app.mount_mcp(transport="http", auth=MCPAuth(...), exclude_middleware=["AuthMiddleware"])
+app.mount_mcp(transport="http", auth=mcp_auth, exclude_middleware=["AuthMiddleware"])
 ```
 
 An exposed route's `Depends`, `Security`, and request middleware **run** on the
@@ -1829,6 +1980,17 @@ primitive called anyway still fails with an authorization error.
 
 That much needs no configuration. Pass a `tool_filter` to narrow the tool listing
 further, by whatever policy the application has:
+
+!!! warning "A filter narrows listings; it does not refuse calls"
+
+    Unlike the scope check above, `tool_filter` is **not** an authorization
+    boundary. A tool it hides is still callable — `tools/list` omits the entry
+    and `tools/call` runs it. The same is true of
+    [`ctx.hide`](#hiding-a-primitive-from-one-connection).
+
+    Anything a caller must be *refused* needs `scopes=` on the tool, which is
+    checked on every call. Use `tool_filter` to keep a listing short and
+    relevant, not to keep a caller out.
 
 ```python
 from veloce import Veloce, Principal
@@ -1948,9 +2110,16 @@ async def verify(key: str, ctx: MCPContext) -> str:
     return "verified"
 ```
 
+### Hiding a primitive from one connection
+
 `ctx.hide(name)` removes a tool, prompt or resource from this connection's
 listings; `ctx.unhide(name)` puts it back; `ctx.reset_visibility()` restores
 everything. Resources are named by their URI.
+
+!!! warning "Hiding is not enforcement"
+
+    A hidden primitive is still callable, exactly as with `tool_filter`. What a
+    caller may invoke is decided by its declared `scopes=` alone.
 
 Each sends the `list_changed` notification for the listing the name belongs to,
 and only when something actually changed — a name that names nothing sends
@@ -2044,9 +2213,9 @@ answers with at most that many entries, plus a `nextCursor` while more remain.
 app.mount_mcp(transport="http", page_size=50)
 ```
 
-```json
-// tools/list -> {"tools": [ ...50 entries... ], "nextCursor": "NDk6b3BfNDk="}
-// tools/list {"cursor": "NDk6b3BfNDk="} -> the next 50
+```text
+tools/list                              -> {"tools": [ ...50 entries... ], "nextCursor": "NDk6b3BfNDk="}
+tools/list {"cursor": "NDk6b3BfNDk="}   -> the next 50
 ```
 
 A client walks the catalogue by passing the `nextCursor` it received back as
@@ -2118,8 +2287,9 @@ the newest revision both sides speak. `instructions` comes from the app's
 
 ### Version mismatch
 
-A request declaring a version the server does not serve is rejected with
-`-32022`, naming what *is* served so the client can retry rather than fail:
+A **modern** request — one declaring its revision in `_meta` — that names a
+version the server does not serve is rejected with `-32022`, naming what *is*
+served so the client can retry rather than fail:
 
 ```json
 {
@@ -2130,6 +2300,11 @@ A request declaring a version the server does not serve is rejected with
   }
 }
 ```
+
+A **handshake** `initialize` is different: it negotiates rather than rejects. A
+client asking for a version the server does not serve is answered with one the
+server does, and decides for itself whether to continue — which is what the
+handshake exists for.
 
 Every modern result also carries `resultType: "complete"`. Handshake-era
 results do not — that field belongs to the modern revision only.

@@ -109,7 +109,7 @@ def test_blocks_stay_slotted():
     assert not hasattr(EmbeddedResource({"uri": "res://a"}), "__dict__")
 
 
-def test_subclass_without_slots_is_rejected():
+def test_a_content_block_subclass_without_slots_is_rejected():
     """A subclass that forgets `__slots__` fails loudly at class creation."""
     with pytest.raises(TypeError, match="must declare __slots__"):
 

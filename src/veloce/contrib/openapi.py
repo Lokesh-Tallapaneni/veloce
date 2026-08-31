@@ -1,46 +1,47 @@
-"""OpenAPI 3.1 schema generation and Swagger UI — auto-generated from routes."""
+"""OpenAPI 3.1 schema generation — auto-generated from routes."""
 
 from __future__ import annotations
 
+import collections.abc
 import contextlib
 import copy
-import datetime
-import enum
-import html
+import dataclasses
+import functools
 import inspect
 import logging
-import pathlib
-import types
-import uuid
+import warnings
 import weakref
-from decimal import Decimal
-from typing import Any, Literal, Union, get_args, get_origin, get_type_hints
-
-import orjson
-from pydantic import BaseModel
+from typing import TYPE_CHECKING, Any, get_type_hints
 
 from veloce._constants import MIME_FORM_URLENCODED, MIME_JSON, MIME_MULTIPART_FORM_DATA
-from veloce._model_backend import (
-    _msgspec,
-    adapter_for,
-    is_adaptable_model,
-    is_msgspec_struct,
-    is_pydantic_model,
-)
-from veloce._protocol_constants import HTTP_METHOD_QUERY, OAUTH2_GRANT_TYPE_PASSWORD
+from veloce._handler_plan import extract_annotated_marker
+from veloce._params import ParamBase
+from veloce._protocol_constants import HTTP_METHOD_QUERY
 from veloce._route_contract import RouteContract, iter_param_descriptors
-from veloce.dependency import Depends
-from veloce.http.response import HTMLResponse, JSONResponse
-from veloce.routing.converters import path_param_schemas
-from veloce.routing.params import ParamBase
-from veloce.security.api_key import APIKeyCookie, APIKeyHeader, APIKeyQuery
-from veloce.security.http import HTTPBasic, HTTPBearer, HTTPDigest
-from veloce.security.oauth2 import (
-    OAuth2AuthorizationCodeBearer,
-    OAuth2PasswordBearer,
-    OpenIdConnect,
+from veloce.contrib._jsonschema import (
+    SchemaRegistry,
+    _apply_marker_constraints,
+    _is_model_type,
+    _iter_dicts,
+    _python_type_to_schema,
+    _response_model_to_schema,
+    _unique_component_name,
+    _warn_schema_fallback,
 )
+
+# Two names this module no longer uses itself, kept importable from here
+# because they were imported from this module before the schema layer moved
+# to `_jsonschema`. The `X as X` spelling marks them as deliberate
+# re-exports rather than dead imports.
+from veloce.contrib._jsonschema import _local_def_refs as _local_def_refs
+from veloce.contrib._jsonschema import _rewrite_byte_format as _rewrite_byte_format
+from veloce.dependency import Depends
+from veloce.routing.converters import path_param_schemas
+from veloce.security.base import SecurityScheme
 from veloce.status import HTTP_200_OK, HTTP_422_UNPROCESSABLE_ENTITY
+
+if TYPE_CHECKING:  # pragma: no cover
+    from veloce.app import Veloce
 
 _logger = logging.getLogger(__name__)
 
@@ -54,21 +55,36 @@ _HANDLER_INTRO_CACHE: weakref.WeakKeyDictionary[Any, tuple[Any, dict[str, Any]]]
     weakref.WeakKeyDictionary()
 )
 
-# Swagger UI / ReDoc bundles are pinned to a specific patch version and
-# loaded with a Subresource Integrity hash. Together with
-# `crossorigin="anonymous"` the browser refuses to execute the script
-# if the CDN ever serves bytes that do not hash to this exact digest,
-# so a CDN compromise cannot inject arbitrary JavaScript onto a
-# `/docs` page. Bump the versions in lock-step with the hashes - the
-# hash will not match if you change one without the other.
-_SWAGGER_UI_VERSION = "5.18.2"
-_SWAGGER_UI_CSS_INTEGRITY = "sha512-xRGj65XGEcpPTE7Cn6ujJWokpXVLxqLxdtNZ/n1w52+76XaCRO7UWKZl9yJHvzpk99A0EP6EW+opPcRwPDxwkA=="
-_SWAGGER_UI_JS_INTEGRITY = "sha512-9tBcCofqWq+PelL6USpUB7OJrCaObfefi9ht9nVZuKt1XP7eHDs7NwVljLSLVtSsErax1Tz3pG3O82eeq546Rg=="
-_REDOC_VERSION = "2.1.5"
-_REDOC_JS_INTEGRITY = "sha384-0GrsyTQc9Oqd8h+b2dbc4XdR2T/DYpy0tLNNstyx+LBMUyiBbcWPbEs9aRmUcaxD"
-
-
 # ── Introspection / merge helpers ──────────────────────────
+
+
+def _group_field_schema(model: Any, wire_name: str) -> dict[str, Any] | None:
+    """Return one field's declared schema from a grouped model, or `None`.
+
+    `None` when the field resolves to a `$ref` (a nested model), which a
+    parameter schema cannot carry - the caller falls back to the annotation.
+    That fallback is lossy: the caller rebuilds the schema from the annotation
+    alone, so the field's own `ge` / `le` / `title` do not reach the document
+    while the resolver goes on enforcing them. A `$ref` is the expected reason
+    to take it; an introspection failure is not, and is reported rather than
+    left to look like the ordinary case.
+    """
+    try:
+        properties = _grouped_model_properties(model)
+    except Exception as exc:
+        _warn_schema_fallback(f"grouped field {wire_name!r} on {model!r}", exc)
+        return None
+    prop = properties.get(wire_name)
+    if prop is None or "$ref" in prop:
+        return None
+    return dict(prop)
+
+
+@functools.lru_cache(maxsize=256)
+def _grouped_model_properties(model: Any) -> dict[str, Any]:
+    """`{wire name: schema}` for a grouped model, by alias where one is set."""
+    schema = model.model_json_schema(by_alias=True)
+    return schema.get("properties") or {}
 
 
 def _handler_intro(handler: Any) -> tuple[Any, dict[str, Any]]:
@@ -91,7 +107,11 @@ def _handler_intro(handler: Any) -> tuple[Any, dict[str, Any]]:
     hints: dict[str, Any] = {}
     if hasattr(handler, "__annotations__"):
         try:
-            hints = get_type_hints(handler)
+            # `include_extras=True` keeps PEP 593 metadata: an
+            # `Annotated[..., Security(...)]` parameter carries its marker there
+            # and nowhere else, and stripping it published the route as
+            # unauthenticated while the runtime still enforced it.
+            hints = get_type_hints(handler, include_extras=True)
         except Exception:
             # `get_type_hints` raises a wide range (NameError on unresolved
             # forward refs, TypeError on bad annotations, recursion errors on
@@ -104,7 +124,27 @@ def _handler_intro(handler: Any) -> tuple[Any, dict[str, Any]]:
     return result
 
 
-def _deep_merge(target: dict, overlay: dict) -> None:
+def _param_marker(param: Any, hints: dict[str, Any]) -> Any:
+    """Find the `Depends` / parameter marker for `param`, however it was spelled.
+
+    A marker reaches a handler two ways: as the parameter default
+    (`cred = Security(scheme)`) or as PEP 593 metadata
+    (`cred: Annotated[object, Security(scheme)]`). Reading only the default
+    published an `Annotated`-spelled route as unauthenticated while the runtime
+    enforced it - and `Annotated` is this project's documented house style, so
+    the recommended form was the broken one.
+
+    Resolution is delegated to the same helper the handler plan uses, so the
+    published contract and the enforced one cannot drift apart again.
+    """
+    default = param.default
+    if isinstance(default, (Depends, ParamBase)):
+        return default
+    marker, _base = extract_annotated_marker(hints.get(param.name, param.annotation))
+    return marker if marker is not None else default
+
+
+def _deep_merge(target: dict[str, Any], overlay: dict[str, Any]) -> None:
     """Recursively merge `overlay` into `target` in place.
 
     Nested dicts merge key-by-key; any non-dict value (scalar, list)
@@ -120,790 +160,101 @@ def _deep_merge(target: dict, overlay: dict) -> None:
 # ── Python type → JSON Schema helpers ──────────────────────
 
 
-def _is_model_type(annotation: Any) -> bool:
-    """Return True for a Pydantic ``BaseModel`` or a ``msgspec.Struct`` annotation.
-
-    The single gate every request-body / response / list-item schema site uses,
-    so both backends register a component schema and resolve to a ``$ref`` the
-    same way.
-    """
-    if is_pydantic_model(annotation):
-        return True
-    return is_msgspec_struct(annotation)
-
-
-def _literal_enum_schema(values: list) -> dict[str, Any]:
-    """Build an OpenAPI schema for a fixed set of literal / enum values."""
-    schema: dict[str, Any] = {"enum": values}
-    if not values:
-        return schema
-    if all(isinstance(v, bool) for v in values):
-        schema["type"] = "boolean"
-    elif all(isinstance(v, int) and not isinstance(v, bool) for v in values):
-        schema["type"] = "integer"
-    elif all(isinstance(v, str) for v in values):
-        schema["type"] = "string"
-    return schema
-
-
-# Scalar Python types mapped to their fixed OpenAPI / JSON Schema fragment.
-# Hoisted out of `_python_type_to_schema` so the table is built once at import
-# time rather than per call. Callers mutate the schema they get back
-# (`_apply_marker_constraints` writes minimum/maximum/pattern; the parameter
-# builder sets `default`), so a lookup hit must return a fresh shallow copy -
-# never a reference into this shared table. The copy is shallow: nested
-# containers (the `list` entry's `items` dict) are shared across callers, so
-# callers must mutate only top-level keys and never edit `schema["items"]` (or
-# any nested object) in place, which would corrupt this table for every caller.
-_SCALAR_TYPE_SCHEMAS: dict[Any, dict[str, Any]] = {
-    str: {"type": "string"},
-    int: {"type": "integer"},
-    float: {"type": "number"},
-    bool: {"type": "boolean"},
-    bytes: {"type": "string", "format": "byte"},
-    list: {"type": "array", "items": {}},
-    dict: {"type": "object"},
-    datetime.datetime: {"type": "string", "format": "date-time"},
-    datetime.date: {"type": "string", "format": "date"},
-    datetime.time: {"type": "string", "format": "time"},
-    datetime.timedelta: {"type": "string", "format": "duration"},
-    uuid.UUID: {"type": "string", "format": "uuid"},
-    Decimal: {"type": "number"},
-    # A filesystem path arrives as a string. `path` is not a registered JSON
-    # Schema format, but the keyword is an open annotation, so naming it tells a
-    # client what the string means rather than leaving it indistinguishable from
-    # free text. `PurePath` covers the platform-specific subclasses too.
-    pathlib.PurePath: {"type": "string", "format": "path"},
-    pathlib.Path: {"type": "string", "format": "path"},
-}
-
-
-def _python_type_to_schema(annotation: Any) -> dict:
-    """Convert a Python type to its OpenAPI 3.1 / JSON Schema 2020-12 form.
-
-    This builds the schema for a non-body parameter (query / path / header
-    / cookie) or a form field. Those values arrive over the wire as raw
-    strings: the resolver pulls them from `request.query_params`,
-    `request.headers`, `request.cookies`, or `request.form()` and coerces
-    each through `_coerce_value`. The schema therefore documents only what
-    that string-origin pipeline can actually deliver.
-
-    Scalars resolve to their richer JSON Schema form - `datetime`, `date`,
-    `time`, `UUID`, `Decimal`, `Enum` subclasses and `Literal[...]` all
-    keep their `format` / `enum` keywords. A nullable scalar
-    (`Optional[T]`) unwraps to the inner schema.
-
-    Pydantic models - and models nested inside `list` / `set` / `dict` -
-    keep `{"type": "string"}`: the value arrives as a raw string and the
-    resolver parses that string as a JSON document into the model
-    (`?tag={"name":"x"}`), so the wire shape is genuinely a string.
-
-    Multi-member unions are schema'd by which branches a *string* input
-    can actually reach under Pydantic's smart coercion:
-
-    - A union that includes `str` (`int | str`, `int | str | None`)
-      collapses to `{"type": "string"}`: smart-mode coercion keeps a
-      string value as the `str` member, so that is the only reachable
-      branch.
-    - A union with no string-accepting member (`int | float`,
-      `UUID | int`, `date | datetime`) emits an `anyOf` over the members'
-      schemas: the resolver feeds the string to Pydantic, which resolves
-      it to whichever non-string branch matches, so several branches are
-      genuinely reachable.
-    """
-    if annotation is None or annotation is inspect.Parameter.empty:
-        return {"type": "string"}
-    # `Any` means "any value allowed" - JSON Schema convention is an empty
-    # schema, not a string default. Lets `dict[str, Any]` emit
-    # `additionalProperties: {}` rather than forcing string-valued entries.
-    if annotation is Any:
-        return {}
-
-    origin = get_origin(annotation)
-    # Unwrap `Optional[T]` / `T | None` to the inner type so a nullable
-    # rich-typed parameter still emits its `format` / `enum` keywords.
-    #
-    # For a genuine multi-member union the schema follows which branch a
-    # string wire value can reach under Pydantic's smart coercion (verified
-    # against the resolver, not assumed):
-    #   - a member that accepts a string directly (`str` / `bytes`) always
-    #     wins, so the union collapses to `{"type": "string"}`;
-    #   - a Pydantic-model member is NOT reachable from a string in a union -
-    #     the resolver only JSON-decodes a *bare* model annotation, so
-    #     `Tag | int` rejects `?v={"name":"x"}` with 422. Model members are
-    #     dropped from the union schema so it never advertises a 422 branch;
-    #   - the remaining scalar branches (`int | float`, `UUID | int`, ...) are
-    #     each genuinely reachable, so the union emits an `anyOf` over them.
-    if origin is Union or origin is types.UnionType:
-        members = get_args(annotation)
-        inner = [a for a in members if a is not type(None)]
-        if len(inner) == 1:
-            return _python_type_to_schema(inner[0])
-        if any(m is str or m is bytes for m in inner):
-            return {"type": "string"}
-        reachable = [m for m in inner if not _is_model_type(m)]
-        if not reachable:
-            # Every member is a model; none is reachable from a string in a
-            # union (`A | B` 422s on any string value), so document a bare
-            # object rather than a string the resolver would also reject.
-            return {"type": "object"}
-        if len(reachable) == 1:
-            return _python_type_to_schema(reachable[0])
-        return {"anyOf": [_python_type_to_schema(m) for m in reachable]}
-
-    # Parametrised `list[T]` / `set[T]` -> an array schema with typed items.
-    # A model item is not reachable: `list[Tag]` 422s on a JSON-array string,
-    # so the item schema falls through to `{"type": "string"}` rather than the
-    # model's fields (the resolver only JSON-decodes a bare model annotation).
-    if origin in (list, set, tuple):
-        args = get_args(annotation)
-        item = _python_type_to_schema(args[0]) if args else {}
-        return {"type": "array", "items": item}
-    # Parametrised `dict[K, V]` -> a bare object schema. A non-body dict
-    # parameter is not wire-addressable at all: the resolver only JSON-decodes
-    # a bare model annotation, so `dict[str, int]` (and `dict[str, Tag]`) 422s
-    # on a JSON-object string and there is no repeated-param form for a dict.
-    # Documenting typed `additionalProperties` would therefore advertise a
-    # shape the resolver always rejects, so the value type is intentionally
-    # not emitted.
-    if origin is dict:
-        return {"type": "object"}
-    # `Literal["a", "b"]` -> an enum schema of the literal values.
-    if origin is Literal:
-        return _literal_enum_schema(list(get_args(annotation)))
-
-    mapped = _SCALAR_TYPE_SCHEMAS.get(annotation)
-    if mapped is not None:
-        # Shallow copy: callers mutate the result (constraints, defaults).
-        return dict(mapped)
-
-    # `Enum` subclass -> an enum schema carrying the member values.
-    if isinstance(annotation, type) and issubclass(annotation, enum.Enum):
-        return _literal_enum_schema([member.value for member in annotation])
-
-    # Pydantic model -> `string`. A non-body parameter / form field arrives
-    # as a raw string; the resolver parses that string as a JSON document
-    # and validates it into the model (`?tag={"name":"x"}`), so the wire
-    # shape is a string. A model carried as a structured JSON body belongs
-    # in `requestBody`, handled by `_pydantic_to_schema`.
-    if is_pydantic_model(annotation):
-        return {"type": "string"}
-
-    return {"type": "string"}
-
-
-# Placeholder `$ref` prefix written while the document is assembled. Every
-# model reference points at `<PREFIX><token>` until `SchemaRegistry.finalize`
-# assigns the final human-readable component names and rewrites the whole
-# document in one pass. Keeping the prefix unmistakably non-OpenAPI guarantees
-# a leftover placeholder (a builder bug) is easy to spot.
-_REF_PLACEHOLDER_PREFIX = "#/$veloce-schema/"
-
-# Pydantic emits nested-model references as `#/$defs/<Name>`. They are rewritten
-# to point at the per-owner registry entry while the model's `$defs` are folded
-# into the document, so this fragment is matched on the way in.
-_PYDANTIC_DEF_PREFIX = "#/$defs/"
-
-
-class SchemaRegistry:
-    """Identity-keyed registry for the component schemas of one document.
-
-    Models are keyed on the class object plus the JSON-Schema mode
-    (`"validation"` for request bodies, `"serialization"` for responses), so
-    two distinct classes that happen to share a ``__name__`` never overwrite
-    each other and a model whose input and output shapes diverge can publish
-    both. References handed back during assembly are placeholders; `finalize`
-    resolves them to readable component names, disambiguating same-name
-    collisions by the diverging module segment and collapsing a serialization
-    variant back onto its validation schema when the two are byte-identical.
-    """
-
-    __slots__ = ("_entries", "_order", "separate_input_output")
-
-    def __init__(self, separate_input_output: bool = True) -> None:
-        # Identity key -> _SchemaEntry. The key is `(id(model), mode)`; the
-        # entry retains the class itself so finalize can derive names.
-        self._entries: dict[tuple[int, str], _SchemaEntry] = {}
-        # Insertion order of identity keys, so `components.schemas` is emitted
-        # deterministically in first-seen order rather than dict-hash order.
-        self._order: list[tuple[int, str]] = []
-        self.separate_input_output = separate_input_output
-
-    def ref(self, model: type[BaseModel], mode: str = "validation") -> dict[str, str]:
-        """Register `model` under `mode` and return a placeholder `$ref`."""
-        # Serialization is only requested for response schemas. When the app
-        # opts out of split schemas, fold every request back onto the single
-        # validation variant so the document keeps one schema name per model.
-        if mode == "serialization" and not self.separate_input_output:
-            mode = "validation"
-        key = (id(model), mode)
-        entry = self._entries.get(key)
-        if entry is None:
-            entry = _SchemaEntry(model, mode)
-            self._entries[key] = entry
-            self._order.append(key)
-        return {"$ref": f"{_REF_PLACEHOLDER_PREFIX}{entry.token}"}
-
-    def finalize(self, document: dict[str, Any]) -> dict[str, dict]:
-        """Resolve placeholders, rewrite `document` in place, return schemas.
-
-        Assigns each entry a final component name (bare class name when that
-        name is unique across the document, otherwise qualified by the module
-        tail), folds a byte-identical serialization variant onto its validation
-        twin, then rewrites every placeholder `$ref` reachable from `document`.
-        """
-        token_to_name: dict[str, str] = {}
-        components: dict[str, dict] = {}
-
-        # Group entries by the human-readable base name they want. A serialization
-        # entry is suffixed `-Output` only when it actually diverges from its
-        # validation twin, so the common (non-diverging) case keeps one name.
-        wanted: dict[str, list[_SchemaEntry]] = {}
-        for key in self._order:
-            entry = self._entries[key]
-            entry.build()
-            base = entry.model.__name__
-            if entry.mode == "serialization":
-                val_key = (id(entry.model), "validation")
-                twin = self._entries.get(val_key)
-                if twin is not None:
-                    twin.build()
-                    # Compare the FULL schema - the top-level root (`body`) AND
-                    # every nested `$defs` entry (`defs`). Two models can share an
-                    # identical root while a nested model carries serialization-only
-                    # fields (a `computed_field`, a read-only / serialization alias)
-                    # that only surface in `mode="serialization"`. Folding on the
-                    # root alone would drop that distinct `-Output` schema even with
-                    # `separate_input_output_schemas=True`. Only collapse when the
-                    # entire schema, nested defs included, is byte-identical.
-                    if twin.body == entry.body and twin.defs == entry.defs:
-                        # Output equals input: reuse the validation component
-                        # rather than emit a redundant `-Output` schema.
-                        entry.alias_token = twin.token
-                        continue
-                    # A model used for both input and output whose shapes
-                    # diverge keeps the bare name for the request schema and a
-                    # distinct `-Output` name for the response schema. With no
-                    # validation twin (response-only model) the bare name is
-                    # free, so no suffix is needed.
-                    base = f"{base}-Output"
-            wanted.setdefault(base, []).append(entry)
-
-        for base, group in wanted.items():
-            if len(group) == 1:
-                token_to_name[group[0].token] = base
-            else:
-                # Same base name from >1 distinct class: qualify each by the
-                # last segment of its defining module (`schemas.User` -> the
-                # `User__schemas` form). Identical qualified names are made
-                # unique with a numeric tail so the bijection always holds.
-                used: dict[str, int] = {}
-                for entry in group:
-                    seg = (entry.model.__module__ or "").rsplit(".", 1)[-1]
-                    candidate = f"{base}__{seg}" if seg else base
-                    seen = used.get(candidate, 0)
-                    used[candidate] = seen + 1
-                    if seen:
-                        candidate = f"{candidate}_{seen}"
-                    token_to_name[entry.token] = candidate
-
-        # Materialise components, folding each model's own `$defs` (nested
-        # models) into the shared component map. A nested def is emitted under
-        # its bare Pydantic name when free. When a later owner brings a def of
-        # the SAME name but DIFFERENT content - a serialization-mode nested model
-        # that diverges from its validation twin (a nested `computed_field`, a
-        # read-only field) - it must not be dropped onto the first writer, or the
-        # serialization-only nested field disappears from the response schema.
-        # Divergence is transitive: a def whose own body matches the first
-        # writer's but which references (directly or through other defs) a
-        # diverging child still resolves to the WRONG subtree if folded, because
-        # its surviving `#/$defs/<child>` ref points at the validation child. So
-        # every def on a path that reaches a divergence gets its own `-Output`
-        # variant, and the owner's body plus each variant's internal refs are
-        # repointed at the renamed children so the response schema reaches the
-        # serialization subtree end to end.
-        for key in self._order:
-            entry = self._entries[key]
-            if entry.alias_token is not None:
-                continue
-            name = token_to_name[entry.token]
-            components[name] = entry.body
-            local_renames = self._diverging_def_renames(entry.defs, components)
-            for def_name, def_schema in entry.defs.items():
-                target = local_renames.get(def_name)
-                if target is not None:
-                    # Diverging (directly or transitively): emit under the unique
-                    # name with its own refs repointed at any renamed children.
-                    rewritten = _copy_with_local_defs(def_schema, local_renames)
-                    components[target] = rewritten
-                elif def_name not in components:
-                    components[def_name] = def_schema
-                # An identical, non-diverging re-emission is harmless: the first
-                # writer stands.
-            if local_renames:
-                _rewrite_local_defs(entry.body, local_renames)
-
-        # Rewrite every placeholder reference in the whole document, plus the
-        # `#/$defs/...` references inside the freshly materialised components.
-        # Resolve aliases through a token -> alias_token map built once, so the
-        # rewrite is linear rather than O(n^2) over the entries per token.
-        alias_by_token: dict[str, str] = {}
-        for entry in self._entries.values():
-            if entry.alias_token is not None:
-                alias_by_token[entry.token] = entry.alias_token
-        resolved_token = {
-            t: (token_to_name.get(t) or token_to_name[alias_by_token.get(t, t)])
-            for t in self._all_tokens()
-        }
-        _rewrite_refs(document, resolved_token)
-        _rewrite_refs(components, resolved_token)
-        return components
-
-    def _diverging_def_renames(
-        self, defs: dict[str, dict], components: dict[str, dict]
-    ) -> dict[str, str]:
-        """Map nested-def names needing an `-Output` variant to unique names.
-
-        A def diverges when its own body differs from the committed component of
-        the same name, OR when it references (transitively) a def that diverges.
-        The second clause is the recursive part: a structurally-identical wrapper
-        that points at a diverging child must still get its own variant so the
-        response schema follows the serialization subtree rather than collapsing
-        onto the validation child. Computed as a fixpoint over the `#/$defs/...`
-        reference graph, then each diverging name is allocated a unique target.
-        """
-        diverging: set[str] = set()
-        for def_name, def_schema in defs.items():
-            existing = components.get(def_name)
-            if existing is not None and existing != def_schema:
-                diverging.add(def_name)
-
-        # Propagate divergence backwards along references until stable: any def
-        # that reaches a diverging def is itself diverging for the output graph.
-        changed = True
-        while changed:
-            changed = False
-            for def_name, def_schema in defs.items():
-                if def_name in diverging:
-                    continue
-                for target in _local_def_refs(def_schema):
-                    if target in diverging:
-                        diverging.add(def_name)
-                        changed = True
-                        break
-
-        renames: dict[str, str] = {}
-        for def_name in defs:
-            if def_name in diverging:
-                renames[def_name] = self._unique_def_name(components, def_name)
-        return renames
-
-    @staticmethod
-    def _unique_def_name(components: dict[str, dict], base: str) -> str:
-        """Return a component name derived from `base` not already in use."""
-        # The `-Output` suffix mirrors the top-level serialization variant
-        # naming so a diverging nested model reads as its owner's output twin.
-        candidate = f"{base}-Output"
-        if candidate not in components:
-            return candidate
-        n = 2
-        while f"{candidate}_{n}" in components:
-            n += 1
-        return f"{candidate}_{n}"
-
-    def _all_tokens(self) -> list[str]:
-        return [self._entries[k].token for k in self._order]
-
-
-def _rewrite_byte_format(node: Any) -> None:
-    """Rewrite bytes string fields from OpenAPI `format: binary` to `format: byte`.
-
-    Veloce's JSON encoder base64-encodes `bytes`/`bytearray`, so a bytes field in
-    a JSON model travels as a base64 string - RFC 4648 `byte` - not raw `binary`.
-    Pydantic emits `binary` for `bytes`; this realigns the generated schema with
-    the actual serialized form. Walks nested objects, arrays, and `$defs` in place.
-    """
-    if isinstance(node, dict):
-        if node.get("type") == "string" and node.get("format") == "binary":
-            node["format"] = "byte"
-        for value in node.values():
-            _rewrite_byte_format(value)
-    elif isinstance(node, list):
-        for item in node:
-            _rewrite_byte_format(item)
-
-
-class _SchemaEntry:
-    """One `(model, mode)` registration awaiting name assignment."""
-
-    __slots__ = ("alias_token", "body", "defs", "mode", "model", "token")
-
-    # Monotonic token source shared across entries so placeholder strings stay
-    # short and globally unique within a process; only used as an opaque key.
-    _counter = 0
-
-    def __init__(self, model: type[BaseModel], mode: str) -> None:
-        self.model = model
-        self.mode = mode
-        cls = type(self)
-        cls._counter += 1
-        self.token = str(cls._counter)
-        self.body: dict[str, Any] = {}
-        self.defs: dict[str, dict] = {}
-        # Set when this entry collapses onto another (byte-identical output).
-        self.alias_token: str | None = None
-
-    def build(self) -> None:
-        """Populate `body` / `defs` from the model's JSON Schema once."""
-        if self.body:
-            return
-        if is_msgspec_struct(self.model):
-            self._build_msgspec()
-            return
-        try:
-            if is_adaptable_model(self.model):
-                # A dataclass / TypedDict has no `model_json_schema`; its shape
-                # comes from the same adapter that validates it, so the document
-                # and the validator cannot describe different fields.
-                schema = adapter_for(self.model).json_schema()
-            else:
-                schema = self.model.model_json_schema(mode=self.mode)  # type: ignore[arg-type]
-        except Exception as exc:
-            # Degrading silently to `{type: object}` hides real model bugs.
-            # Log at WARNING so the failure surfaces, then fall back so /docs
-            # still renders (an underspecified schema beats a 500).
-            _logger.warning(
-                "OpenAPI schema generation failed for %s (%s mode): %s. "
-                "Falling back to {type: object}. "
-                "Inspect the model definition or attach a debugger to "
-                "veloce.contrib.openapi to see the full traceback.",
-                self.model.__name__,
-                self.mode,
-                exc,
-                exc_info=_logger.isEnabledFor(logging.DEBUG),
-            )
-            self.body = {"type": "object"}
-            return
-        # Realign bytes fields with veloce's base64 JSON encoding (binary -> byte).
-        _rewrite_byte_format(schema)
-        if "$defs" in schema:
-            for def_name, def_schema in schema["$defs"].items():
-                self.defs[def_name] = def_schema
-            del schema["$defs"]
-        self.body = schema
-
-    def _build_msgspec(self) -> None:
-        """Populate `body` / `defs` from a `msgspec.Struct`'s JSON Schema.
-
-        msgspec has no separate validation / serialization shape, so `mode` is
-        not consulted - the registry folds the byte-identical variants onto one
-        component name. The `#/$defs/{name}` ref template matches the nested-ref
-        prefix the document rewriter already repoints into `components.schemas`,
-        so nested structs resolve with no extra translation.
-        """
-        try:
-            schemas, components = _msgspec.json.schema_components(
-                [self.model], ref_template="#/$defs/{name}"
-            )
-        except Exception as exc:
-            _logger.warning(
-                "OpenAPI schema generation failed for %s (msgspec): %s. "
-                "Falling back to {type: object}.",
-                self.model.__name__,
-                exc,
-                exc_info=_logger.isEnabledFor(logging.DEBUG),
-            )
-            self.body = {"type": "object"}
-            return
-        # msgspec returns the model's own schema inside `components` and a
-        # top-level `$ref` to it; lift that into `body` and keep the rest as
-        # nested `$defs`. A struct with no nested refs may come back inline.
-        root = schemas[0]
-        if isinstance(root, dict) and set(root) == {"$ref"}:
-            name = root["$ref"].rsplit("/", 1)[-1]
-            self.body = components.pop(name, {"type": "object"})
-        else:
-            self.body = dict(root)
-        for def_name, def_schema in components.items():
-            self.defs[def_name] = def_schema
-        _rewrite_byte_format(self.body)
-        for def_schema in self.defs.values():
-            _rewrite_byte_format(def_schema)
-
-
-def _local_def_refs(node: Any) -> set[str]:
-    """Collect every `#/$defs/<name>` target referenced anywhere under `node`."""
-    targets: set[str] = set()
-
-    def _walk(value: Any) -> None:
-        if isinstance(value, dict):
-            ref = value.get("$ref")
-            if isinstance(ref, str) and ref.startswith(_PYDANTIC_DEF_PREFIX):
-                targets.add(ref[len(_PYDANTIC_DEF_PREFIX) :])
-            for item in value.values():
-                _walk(item)
-        elif isinstance(value, list):
-            for item in value:
-                _walk(item)
-
-    _walk(node)
-    return targets
-
-
-def _copy_with_local_defs(node: dict, renames: dict[str, str]) -> dict:
-    """Deep-copy `node`, repointing renamed `#/$defs/<old>` refs to the new names.
-
-    Used to emit a diverging nested def's `-Output` variant: the source schema is
-    shared with the validation owner, so it must be copied before its internal
-    references are redirected at the renamed (serialization) children.
-    """
-    copied = copy.deepcopy(node)
-    _rewrite_local_defs(copied, renames)
-    return copied
-
-
-def _rewrite_local_defs(node: Any, renames: dict[str, str]) -> None:
-    """Repoint `#/$defs/<old>` refs in `node` to `#/components/schemas/<new>`.
-
-    Used for an owner whose diverging nested def was emitted under a
-    disambiguated name; only the listed `$defs` names are rewritten so the
-    owner reaches its distinct nested model while leaving every other ref for
-    the global pass.
-    """
-    if isinstance(node, dict):
-        ref = node.get("$ref")
-        if isinstance(ref, str) and ref.startswith(_PYDANTIC_DEF_PREFIX):
-            old = ref[len(_PYDANTIC_DEF_PREFIX) :]
-            new = renames.get(old)
-            if new is not None:
-                node["$ref"] = f"#/components/schemas/{new}"
-        for value in node.values():
-            _rewrite_local_defs(value, renames)
-    elif isinstance(node, list):
-        for item in node:
-            _rewrite_local_defs(item, renames)
-
-
-def _rewrite_refs(node: Any, token_to_name: dict[str, str]) -> None:
-    """Rewrite placeholder and `#/$defs/...` `$ref`s in place throughout `node`."""
-    if isinstance(node, dict):
-        ref = node.get("$ref")
-        if isinstance(ref, str):
-            if ref.startswith(_REF_PLACEHOLDER_PREFIX):
-                name = token_to_name.get(ref[len(_REF_PLACEHOLDER_PREFIX) :])
-                if name is not None:
-                    node["$ref"] = f"#/components/schemas/{name}"
-            elif ref.startswith(_PYDANTIC_DEF_PREFIX):
-                node["$ref"] = f"#/components/schemas/{ref[len(_PYDANTIC_DEF_PREFIX) :]}"
-        for value in node.values():
-            _rewrite_refs(value, token_to_name)
-    elif isinstance(node, list):
-        for item in node:
-            _rewrite_refs(item, token_to_name)
-
-
-def _register_schema(name: str, schema: dict, registry: dict[str, dict]) -> None:
-    """Hoist a generated schema's `$defs` into `registry` and record it by name."""
-    _rewrite_byte_format(schema)
-    if "$defs" in schema:
-        for def_name, def_schema in schema["$defs"].items():
-            registry[def_name] = def_schema
-        del schema["$defs"]
-    # A recursive model renders as `{"$defs": {Name: <real object>},
-    # "$ref": ".../Name"}`: after extracting `$defs` the leftover top-level
-    # schema is a bare self-`$ref`. Overwriting the registry entry with it
-    # would clobber the real definition pulled from `$defs`, leaving an
-    # unresolvable cycle. Keep the extracted def.
-    if not (list(schema.keys()) == ["$ref"] and name in registry):
-        registry[name] = schema
-
-
-def _adapted_to_schema(model: Any, registry: dict[str, dict]) -> dict:
-    """Convert a dataclass / `TypedDict` to a name-keyed `$ref`, extending `registry`.
-
-    The adapted counterpart to `_pydantic_to_schema`: both hoist their `$defs`
-    through `_register_schema`, so a nested or recursive shape resolves the same
-    way whichever backend declared it.
-    """
-    name = getattr(model, "__name__", "Model")
-    if name not in registry:
-        try:
-            _register_schema(name, adapter_for(model).json_schema(), registry)
-        except Exception as exc:
-            _logger.warning(
-                "JSON Schema generation failed for %s: %s. Falling back to {type: object}.",
-                name,
-                exc,
-                exc_info=_logger.isEnabledFor(logging.DEBUG),
-            )
-            registry[name] = {"type": "object"}
-    return {"$ref": f"#/components/schemas/{name}"}
-
-
-def _pydantic_to_schema(
-    model: type[BaseModel],
-    registry: dict[str, dict],
-    mode: str = "validation",
-    by_alias: bool = True,
-) -> dict:
-    """Convert a Pydantic model to a name-keyed `$ref`, extending `registry`.
-
-    Standalone renderer for callers that build a self-contained schema envelope
-    (the MCP plan bridge inlines these into per-tool `$defs`). `mode` selects the
-    JSON Schema variant: ``"validation"`` (the default, for request inputs) or
-    ``"serialization"`` (for response/output schemas, so computed and
-    serialization-only fields are documented as clients actually receive them).
-    `by_alias` matches the property keys to how the value is dumped, so a caller
-    that emits the value without aliases (``model_dump(by_alias=False)``) can
-    request a field-name schema that the value conforms to. The document-wide
-    OpenAPI generator uses `SchemaRegistry` instead, which keys on class identity
-    and supports dual validation/serialization modes.
-    """
-    name = model.__name__
-    if name not in registry:
-        try:
-            schema = model.model_json_schema(mode=mode, by_alias=by_alias)  # type: ignore[arg-type]
-            _register_schema(name, schema, registry)
-        except Exception as exc:
-            _logger.warning(
-                "OpenAPI schema generation failed for %s: %s. "
-                "Falling back to {type: object}. "
-                "Inspect the model definition or attach a debugger to "
-                "veloce.contrib.openapi to see the full traceback.",
-                name,
-                exc,
-                exc_info=_logger.isEnabledFor(logging.DEBUG),
-            )
-            registry[name] = {"type": "object"}
-    return {"$ref": f"#/components/schemas/{name}"}
-
-
-def _response_model_to_schema(response_model: Any, registry: SchemaRegistry) -> dict | None:
-    """Render `response_model` into an OpenAPI schema object.
-
-    Handles four shapes:
-    - `MyModel` (Pydantic BaseModel subclass) -> `{"$ref": ".../MyModel"}`.
-    - `list[MyModel]` (or any `Sequence[MyModel]`) -> array-of-refs.
-    - `A | B` / `A | None` (a union of models) -> `oneOf`, with `None`
-      rendered as the JSON Schema null type so an optional result is documented
-      rather than dropped.
-    - Anything else -> `None` (caller omits the schema).
-
-    Response models render under the model's serialization JSON Schema so
-    computed / read-only fields are documented as clients actually receive them.
-    """
-    origin = get_origin(response_model)
-    if origin is list:
-        args = get_args(response_model)
-        if args and _is_model_type(args[0]):
-            inner = registry.ref(args[0], mode="serialization")
-            return {"type": "array", "items": inner}
-        return {"type": "array", "items": {}}
-
-    if origin in (Union, types.UnionType):
-        variants: list[dict] = []
-        for arg in get_args(response_model):
-            if arg is type(None):
-                variants.append({"type": "null"})
-            elif _is_model_type(arg):
-                variants.append(registry.ref(arg, mode="serialization"))
-            else:
-                # A member with no schema form makes the whole union
-                # inexpressible; omit rather than document it partially.
-                return None
-        if not variants:
-            return None
-        return variants[0] if len(variants) == 1 else {"oneOf": variants}
-
-    if _is_model_type(response_model):
-        return registry.ref(response_model, mode="serialization")
-
-    return None
-
-
 # ── Info / parameter / body / response builders ────────────
 
 
-def _build_info_object(app: Any) -> dict[str, Any]:
+def _build_info_object(app: Veloce) -> dict[str, Any]:
     """Return the OpenAPI `info` object assembled from app metadata."""
-    info_obj: dict[str, Any] = {
-        "title": getattr(app, "title", "Veloce API"),
-        "version": getattr(app, "version", "0.1.0"),
-    }
-    if getattr(app, "summary", None):
+    # Read directly: `Veloce.__init__` requires both to be non-empty strings, so
+    # a fallback here is a second copy of a default that cannot be reached. The
+    # two copies had already disagreed - this one said "Veloce API" where the
+    # constructor and the MCP server said "Veloce", so one app named itself two
+    # things across its two doors.
+    info_obj: dict[str, Any] = {"title": app.title, "version": app.version}
+    if app.summary:
         info_obj["summary"] = app.summary
-    if getattr(app, "description", ""):
+    if app.description:
         info_obj["description"] = app.description
-    if getattr(app, "terms_of_service", None):
+    if app.terms_of_service:
         info_obj["termsOfService"] = app.terms_of_service
-    if getattr(app, "contact", None):
+    if app.contact:
         info_obj["contact"] = app.contact
-    if getattr(app, "license_info", None):
+    if app.license_info:
         info_obj["license"] = app.license_info
     return info_obj
 
 
-def _apply_marker_constraints(param_schema: dict[str, Any], marker: Any) -> None:
-    """Copy validation / metadata keywords from a `ParamBase` marker onto `param_schema`."""
-    if getattr(marker, "title", None):
-        param_schema["title"] = marker.title
-    if marker.description:
-        param_schema["description"] = marker.description
-    if marker.ge is not None:
-        param_schema["minimum"] = marker.ge
-    if marker.le is not None:
-        param_schema["maximum"] = marker.le
-    # OpenAPI 3.1 / JSON Schema 2020-12: gt/lt map to the
-    # numeric `exclusiveMinimum` / `exclusiveMaximum`.
-    if marker.gt is not None:
-        param_schema["exclusiveMinimum"] = marker.gt
-    if marker.lt is not None:
-        param_schema["exclusiveMaximum"] = marker.lt
-    if marker.min_length is not None:
-        param_schema["minLength"] = marker.min_length
-    if marker.max_length is not None:
-        param_schema["maxLength"] = marker.max_length
-    if getattr(marker, "multiple_of", None) is not None:
-        param_schema["multipleOf"] = marker.multiple_of
-    if marker.regex is not None:
-        param_schema["pattern"] = marker.regex
-    # OpenAPI 3.1 / JSON Schema 2020-12 - `examples` is an array of
-    # sample values on the schema object.
-    if getattr(marker, "examples", None):
-        param_schema["examples"] = list(marker.examples or [])
+@dataclasses.dataclass(frozen=True, slots=True)
+class _FormField:
+    """One `Form()` / `File()` parameter, as the request body will describe it."""
+
+    alias: str
+    schema: dict[str, Any]
+    required: bool
+    is_file: bool
 
 
-def _extract_parameters(
-    info: Any, schemas_registry: SchemaRegistry
-) -> tuple[
-    list[dict],
-    dict | None,
-    list[tuple[str, dict, bool, bool]],
-    list[tuple[str, dict, bool]],
-    tuple[dict, bool] | None,
-]:
+@dataclasses.dataclass(frozen=True, slots=True)
+class _BodyField:
+    """One `Body(embed=True)` parameter - a named key of the JSON object body."""
+
+    alias: str
+    schema: dict[str, Any]
+    required: bool
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _ScalarBody:
+    """A non-embedded `Body()` over a non-model: the whole JSON body."""
+
+    schema: dict[str, Any]
+    required: bool
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _RouteParameters:
+    """What lowering a route's handler plan says about its inputs.
+
+    The fields were a 5-tuple whose meanings lived in prose, unpacked
+    positionally at the single call site - so `form_fields[0][3]` was `is_file`
+    only if you had read the docstring. Naming them puts that in the type.
+    """
+
+    parameters: list[dict[str, Any]]
+    request_body_schema: dict[str, Any] | None
+    form_fields: list[_FormField]
+    body_fields: list[_BodyField]
+    scalar_body: _ScalarBody | None
+
+
+def _is_required(d: Any, marker: Any) -> bool:
+    """Whether the parameter `d` (optionally carrying `marker`) must be supplied.
+
+    A default relaxes required, and so does an `Optional[T]` annotation: the
+    resolver binds `None` when the value is absent, so a document that called it
+    required would contradict what the resolver accepts. Where a marker is
+    present its default wins - the marker is the declaration the author wrote.
+    """
+    carrier = marker if marker is not None else d
+    return not (carrier.has_default or d.is_optional)
+
+
+def _extract_parameters(info: Any, schemas_registry: SchemaRegistry) -> _RouteParameters:
     """Classify every parameter by lowering the route's handler plan.
 
-    Returns `(parameters, request_body_schema, form_fields, body_fields, scalar_body)`:
-    - `parameters` - OpenAPI parameter objects for path/query/header/cookie.
-    - `request_body_schema` - schema of the request body model (or None).
-    - `form_fields` - `(alias, schema, required, is_file)` tuples for
-      `Form()` / `File()` params, consumed by `_extract_request_body`.
-    - `body_fields` - `(alias, schema, required)` tuples for `Body(embed=True)`
-      params, which the resolver reads as named keys of a JSON object body.
-    - `scalar_body` - `(schema, required)` for a non-embedded `Body()` over a
-      non-model, which the resolver fills from the whole JSON body.
+    Each field of the returned `_RouteParameters` is documented on the record
+    itself; `_extract_request_body` consumes the three body-shaped ones.
 
     Walks the same `HandlerPlan` the resolver executes (via
     `iter_param_descriptors`), so the documented contract matches the one the
     server enforces. Depends/Security and JSON `Body()` markers are not yielded
     as parameters - they belong to other parts of the operation object.
     """
-    parameters: list[dict] = []
-    request_body_schema: dict | None = None
-    form_fields: list[tuple[str, dict, bool, bool]] = []
-    body_fields: list[tuple[str, dict, bool]] = []
-    scalar_body: tuple[dict, bool] | None = None
+    parameters: list[dict[str, Any]] = []
+    request_body_schema: dict[str, Any] | None = None
+    form_fields: list[_FormField] = []
+    body_fields: list[_BodyField] = []
+    scalar_body: _ScalarBody | None = None
 
     for d in iter_param_descriptors(RouteContract.from_route_info(info)):
         marker = d.marker
@@ -930,17 +281,17 @@ def _extract_parameters(
                 body_schema = {"type": "array", "items": body_schema}
             if marker is not None:
                 _apply_marker_constraints(body_schema, marker)
-                body_required = not (marker.has_default or d.is_optional)
+                body_required = _is_required(d, marker)
                 body_alias = marker.alias or d.name
                 embedded = bool(getattr(marker, "embed", False))
             else:
-                body_required = not (d.has_default or d.is_optional)
+                body_required = _is_required(d, None)
                 body_alias = d.name
                 embedded = False
             if embedded:
-                body_fields.append((body_alias, body_schema, body_required))
+                body_fields.append(_BodyField(body_alias, body_schema, body_required))
             elif scalar_body is None:
-                scalar_body = (body_schema, body_required)
+                scalar_body = _ScalarBody(body_schema, body_required)
             continue
 
         if location == "form":
@@ -953,20 +304,25 @@ def _extract_parameters(
                     field_schema["description"] = marker.description
                 if getattr(marker, "title", None):
                     field_schema["title"] = marker.title
-                field_required = not (marker.has_default or d.is_optional)
+                field_required = _is_required(d, marker)
                 field_alias = marker.alias or d.name
             else:
                 # A bare `UploadFile`: optional when it carries a default or an
                 # `Optional` annotation - the resolver leaves the kwarg unset and
                 # the handler default applies, so the field is not required.
-                field_required = not (d.has_default or d.is_optional)
+                field_required = _is_required(d, None)
                 field_alias = d.name
-            form_fields.append((field_alias, field_schema, field_required, d.is_file))
+            form_fields.append(_FormField(field_alias, field_schema, field_required, d.is_file))
             continue
 
         # path / query / header / cookie parameter.
         param_schema: dict[str, Any]
-        if d.is_list:
+        if d.group_field and (grouped := _group_field_schema(d.model, d.wire_name)) is not None:
+            # The field's own declaration owns its constraints; rebuilding the
+            # schema from the annotation alone would publish a laxer contract
+            # than the resolver enforces.
+            param_schema = grouped
+        elif d.is_list:
             param_schema = {"type": "array", "items": _python_type_to_schema(d.target_type)}
         else:
             param_schema = _python_type_to_schema(d.target_type)
@@ -987,13 +343,13 @@ def _extract_parameters(
         if location == "path":
             required = True
         elif marker is not None:
-            required = not (marker.has_default or d.is_optional)
+            required = _is_required(d, marker)
             if marker.has_default and marker.default is not ...:
                 default_val = marker.default
                 if isinstance(default_val, (str, int, float, bool, type(None))):
                     param_schema["default"] = default_val
         else:
-            required = not (d.has_default or d.is_optional)
+            required = _is_required(d, None)
             if d.has_default:
                 default_val = d.default
                 if isinstance(default_val, (str, int, float, bool, type(None))):
@@ -1018,10 +374,10 @@ def _extract_parameters(
         parameters.append(param_info)
 
     _declare_undocumented_path_params(info, parameters)
-    return parameters, request_body_schema, form_fields, body_fields, scalar_body
+    return _RouteParameters(parameters, request_body_schema, form_fields, body_fields, scalar_body)
 
 
-def _declare_undocumented_path_params(info: Any, parameters: list[dict]) -> None:
+def _declare_undocumented_path_params(info: Any, parameters: list[dict[str, Any]]) -> None:
     """Document a path parameter no handler parameter declares.
 
     A route's path parameters are part of its contract whether or not the
@@ -1030,7 +386,7 @@ def _declare_undocumented_path_params(info: Any, parameters: list[dict]) -> None
     requires every template expression in the path to have a `path` parameter -
     so a caller reading the schema could not know to supply it at all.
     """
-    template = getattr(info, "path_template", None)
+    template = info.path_template
     if not template:
         return
     declared = {p["name"] for p in parameters if p["in"] == "path"}
@@ -1041,11 +397,11 @@ def _declare_undocumented_path_params(info: Any, parameters: list[dict]) -> None
 
 
 def _extract_request_body(
-    request_body_schema: dict | None,
-    form_fields: list[tuple[str, dict, bool, bool]],
-    body_fields: list[tuple[str, dict, bool]] | None = None,
-    scalar_body: tuple[dict, bool] | None = None,
-) -> dict | None:
+    request_body_schema: dict[str, Any] | None,
+    form_fields: list[_FormField],
+    body_fields: list[_BodyField] | None = None,
+    scalar_body: _ScalarBody | None = None,
+) -> dict[str, Any] | None:
     """Build the OpenAPI `requestBody` object, or `None` when no body params exist.
 
     A JSON Pydantic body takes precedence over form fields, matching the
@@ -1068,7 +424,10 @@ def _extract_request_body(
     if body_fields:
         embed_properties: dict[str, Any] = {}
         embed_required: list[str] = []
-        for bname, bschema, breq in body_fields:
+        for body_field in body_fields:
+            bname = body_field.alias
+            bschema = body_field.schema
+            breq = body_field.required
             embed_properties[bname] = bschema
             if breq:
                 embed_required.append(bname)
@@ -1082,18 +441,18 @@ def _extract_request_body(
     # A non-embedded `Body()` over a non-model receives the whole JSON body, so
     # the body schema is that value's own schema rather than an object wrapper.
     if scalar_body is not None:
-        schema, required = scalar_body
+        schema, required = scalar_body.schema, scalar_body.required
         return {"required": required, "content": {MIME_JSON: {"schema": schema}}}
     if not form_fields:
         return None
-    has_file = any(is_file for _, _, _, is_file in form_fields)
+    has_file = any(form_field.is_file for form_field in form_fields)
     media_type = MIME_MULTIPART_FORM_DATA if has_file else MIME_FORM_URLENCODED
     properties: dict[str, Any] = {}
     required_fields: list[str] = []
-    for fname, fschema, freq, _ in form_fields:
-        properties[fname] = fschema
-        if freq:
-            required_fields.append(fname)
+    for form_field in form_fields:
+        properties[form_field.alias] = form_field.schema
+        if form_field.required:
+            required_fields.append(form_field.alias)
     body_schema: dict[str, Any] = {"type": "object", "properties": properties}
     if required_fields:
         body_schema["required"] = required_fields
@@ -1104,10 +463,11 @@ def _extract_request_body(
 
 
 # Component-schema names for the auto-generated validation-error response. The
-# `{"detail": [{"loc", "msg", "type"}, ...]}` payload these describe is exactly
-# what `request_validation_exception_handler` renders for a 422, so the document
-# advertises the body the resolver actually returns when a path/query/header/
-# cookie/body/form parameter fails validation.
+# `{"detail": [{"loc", "msg", "type"}, ...], "status_code": 422}` payload these
+# describe is what the dispatcher emits for a failed path/query/header/cookie/
+# body/form parameter, so the document advertises the body a client receives.
+# (`request_validation_exception_handler` is exported for applications that want
+# to install it; it is not registered by default and is not this path.)
 _VALIDATION_ERROR_SCHEMA_NAME = "ValidationError"
 _HTTP_VALIDATION_ERROR_SCHEMA_NAME = "HTTPValidationError"
 
@@ -1148,7 +508,10 @@ _VALIDATION_ERROR_COMPONENT_SCHEMAS: dict[str, dict[str, Any]] = {
                 "type": "array",
                 "title": "Detail",
                 "items": {"$ref": f"#/components/schemas/{_VALIDATION_ERROR_SCHEMA_NAME}"},
-            }
+            },
+            # The dispatcher emits this alongside `detail`; a schema that omits
+            # it describes a body no client actually receives.
+            "status_code": {"type": "integer", "title": "Status Code"},
         },
     },
 }
@@ -1166,16 +529,6 @@ def _references_validation_error_schema(operation: dict[str, Any]) -> bool:
         return False
     schema = entry.get("content", {}).get(MIME_JSON, {}).get("schema", {})
     return isinstance(schema, dict) and schema.get("$ref") == _AUTO_VALIDATION_ERROR_REF
-
-
-def _unique_component_name(base: str, taken: dict[str, Any]) -> str:
-    """Return `base`, or `base_2`, `base_3`, ... when `base` is already a key."""
-    if base not in taken:
-        return base
-    i = 2
-    while f"{base}_{i}" in taken:
-        i += 1
-    return f"{base}_{i}"
 
 
 def _repoint_validation_error_refs(schema: dict[str, Any], http_name: str) -> None:
@@ -1205,9 +558,26 @@ def _repoint_validation_error_refs(schema: dict[str, Any], http_name: str) -> No
                     target["$ref"] = new_ref
 
 
+def _has_validatable_params(inputs: Any, request_body: Any, info: Any) -> bool:
+    """Whether this operation can raise `RequestValidationError`, and so advertise a 422.
+
+    Named rather than inlined because the parity test in
+    `tests/test_openapi_helper_split.py` has to pass `_extract_responses` the
+    same value the orchestrator does. It was a copy of this expression, and the
+    copy had already drifted - it omitted the dependency-graph disjunct, so a
+    route validated solely through a dependency was compared against the wrong
+    expectation, which is the thing that test exists to rule out.
+    """
+    return (
+        bool(inputs.parameters)
+        or request_body is not None
+        or _dependency_graph_has_validatable(info)
+    )
+
+
 def _extract_responses(
     info: Any, schemas_registry: SchemaRegistry, has_validatable_params: bool
-) -> dict[str, dict]:
+) -> dict[str, dict[str, Any]]:
     """Build the operation `responses` map.
 
     Seeds with the success response (re-keyed to `info.status_code` when
@@ -1221,7 +591,7 @@ def _extract_responses(
     request-bound parameter fails validation, so the documented responses match
     what the operation actually returns.
     """
-    responses: dict[str, dict] = {
+    responses: dict[str, dict[str, Any]] = {
         str(HTTP_200_OK): {"description": info.response_description},
     }
     primary_status = str(info.status_code if info.status_code else HTTP_200_OK)
@@ -1230,7 +600,12 @@ def _extract_responses(
         responses[primary_status] = responses.pop(str(HTTP_200_OK))
 
     if info.response_model is not None:
-        resp_schema = _response_model_to_schema(info.response_model, schemas_registry)
+        resp_schema = _response_model_to_schema(
+            info.response_model,
+            schemas_registry,
+            info.response_model_include,
+            info.response_model_exclude,
+        )
         if resp_schema is not None:
             responses[primary_status]["content"] = {MIME_JSON: {"schema": resp_schema}}
 
@@ -1240,7 +615,7 @@ def _extract_responses(
     # the operation later) - so a custom 422 shape / media type is preserved
     # rather than overwritten. Operations with no validatable parameter never
     # advertise a 422 the resolver cannot raise.
-    _openapi_extra_responses = (getattr(info, "openapi_extra", None) or {}).get("responses") or {}
+    _openapi_extra_responses = (info.openapi_extra or {}).get("responses") or {}
     if (
         has_validatable_params
         and _VALIDATION_ERROR_STATUS not in responses
@@ -1278,80 +653,50 @@ def _extract_responses(
 # ── Security scheme discovery ──────────────────────────────
 
 
-def _scheme_definition(scheme: Any) -> tuple[str, dict] | None:
+def _scheme_definition(scheme: Any) -> tuple[str, dict[str, Any]] | None:
     """Return `(name, OpenAPI security scheme object)` for a Security() target.
 
-    Returns `None` for unknown scheme classes. The name is derived from the
-    scheme class so duplicate registrations of the same scheme reuse the same
-    `components.securitySchemes` entry.
+    The scheme describes itself through `SecurityScheme.openapi_scheme`. A
+    nine-branch `isinstance` cascade over the built-in classes lived here and
+    returned `None` for everything else, so a user's own `SecurityScheme`
+    subclass authenticated correctly at runtime and was published as an
+    endpoint with no security requirement - a document asserting the route was
+    open. Asking the object means a scheme defined outside this package is
+    published like a built-in.
+
+    `None` still means "cannot be described", which the caller reports rather
+    than passing off as an unguarded route. The name is the scheme's class name
+    so repeated registrations share one `components.securitySchemes` entry.
     """
-    cls_name = type(scheme).__name__
-    if isinstance(scheme, OAuth2PasswordBearer):
-        return cls_name, {
-            "type": "oauth2",
-            "flows": {
-                OAUTH2_GRANT_TYPE_PASSWORD: {
-                    "tokenUrl": getattr(scheme, "token_url", ""),
-                    "scopes": getattr(scheme, "scopes", {}) or {},
-                }
-            },
-        }
-    if isinstance(scheme, OAuth2AuthorizationCodeBearer):
-        flow: dict[str, Any] = {
-            "authorizationUrl": getattr(scheme, "authorizationUrl", ""),
-            "tokenUrl": getattr(scheme, "tokenUrl", ""),
-            "scopes": getattr(scheme, "scopes", {}) or {},
-        }
-        refresh = getattr(scheme, "refreshUrl", None)
-        if refresh:
-            flow["refreshUrl"] = refresh
-        return cls_name, {
-            "type": "oauth2",
-            "flows": {"authorizationCode": flow},
-        }
-    if isinstance(scheme, OpenIdConnect):
-        return cls_name, {
-            "type": "openIdConnect",
-            "openIdConnectUrl": getattr(scheme, "openIdConnectUrl", ""),
-        }
-    if isinstance(scheme, HTTPBearer):
-        return cls_name, {
-            "type": "http",
-            "scheme": "bearer",
-        }
-    if isinstance(scheme, HTTPBasic):
-        return cls_name, {
-            "type": "http",
-            "scheme": "basic",
-        }
-    if isinstance(scheme, HTTPDigest):
-        return cls_name, {
-            "type": "http",
-            "scheme": "digest",
-        }
-    if isinstance(scheme, APIKeyHeader):
-        return cls_name, {
-            "type": "apiKey",
-            "in": "header",
-            "name": getattr(scheme, "name", ""),
-        }
-    if isinstance(scheme, APIKeyQuery):
-        return cls_name, {
-            "type": "apiKey",
-            "in": "query",
-            "name": getattr(scheme, "name", ""),
-        }
-    if isinstance(scheme, APIKeyCookie):
-        return cls_name, {
-            "type": "apiKey",
-            "in": "cookie",
-            "name": getattr(scheme, "name", ""),
-        }
-    return None
+    describe = getattr(scheme, "openapi_scheme", None)
+    if describe is None:
+        return None
+    definition = describe()
+    if not definition:
+        return None
+    return type(scheme).__name__, definition
+
+
+def _dependency_params(target: Any) -> collections.abc.Iterator[tuple[Any, Any, Any]]:
+    """Yield `(parameter, marker, annotation)` for each parameter of `target`.
+
+    The descent step both dependency-graph walkers take: introspect, then read
+    each parameter's marker however it was spelled. Written twice, a change to
+    how a marker is recognised reaches one walker and not the other - and the
+    two answer questions (which security schemes guard this route; does
+    anything here consume validated input) that must agree about what the graph
+    contains. The annotation is the resolved one, falling back to whatever the
+    signature carries. Yields nothing for a target that cannot be introspected.
+    """
+    sig, hints = _handler_intro(target)
+    if sig is None:
+        return
+    for param in sig.parameters.values():
+        yield param, _param_marker(param, hints), hints.get(param.name, param.annotation)
 
 
 def _collect_security_requirements(
-    info: Any, registry: dict[str, dict]
+    info: Any, registry: dict[str, dict[str, Any]]
 ) -> list[dict[str, list[str]]]:
     """Collect one OpenAPI security requirement per reachable `Security()`.
 
@@ -1379,6 +724,19 @@ def _collect_security_requirements(
                 # Don't recurse past a known scheme - its internals are
                 # implementation, not policy.
                 return
+            if isinstance(target, SecurityScheme):
+                # It guards the route but cannot say how. Publishing nothing
+                # asserts the route is open, which is the one thing that must
+                # not happen quietly - a generated client and the Authorize
+                # button both read this as "no credential needed".
+                warnings.warn(
+                    f"{type(target).__name__} guards a route but does not implement "
+                    "openapi_scheme(), so the route is published with no security "
+                    "requirement - readers of the schema will see it as unauthenticated. "
+                    "Return an OpenAPI Security Scheme Object from openapi_scheme().",
+                    stacklevel=2,
+                )
+                return
             # Generic dep - recurse into its handler signature.
             inner = target
         else:
@@ -1388,24 +746,15 @@ def _collect_security_requirements(
             return
         seen.add(id(inner))
 
-        sig, _ = _handler_intro(inner)
-        if sig is None:
-            return
-        for param in sig.parameters.values():
-            default = param.default
+        for _param, default, _annotation in _dependency_params(inner):
             if isinstance(default, Depends):
                 visit(default)
 
     # Route-level dependencies (the `dependencies=[Depends(...)]` kwarg).
-    for d in getattr(info, "dependencies", ()) or ():
+    for d in info.dependencies or ():
         visit(d)
     # Plus anything in the handler's own parameter defaults.
-    handler = info.handler
-    sig, _ = _handler_intro(handler)
-    if sig is None:
-        return requirements
-    for param in sig.parameters.values():
-        default = param.default
+    for _param, default, _annotation in _dependency_params(info.handler):
         if isinstance(default, Depends):
             visit(default)
     return requirements
@@ -1429,11 +778,7 @@ def _dependency_graph_has_validatable(info: Any) -> bool:
         if dep_callable is None or id(dep_callable) in seen:
             return False
         seen.add(id(dep_callable))
-        sig, hints = _handler_intro(dep_callable)
-        if sig is None:
-            return False
-        for param in sig.parameters.values():
-            default = param.default
+        for _param, default, annotation in _dependency_params(dep_callable):
             if isinstance(default, Depends):
                 target = default.dependency
                 if _scheme_definition(target) is not None:
@@ -1443,54 +788,71 @@ def _dependency_graph_has_validatable(info: Any) -> bool:
                 continue
             if isinstance(default, ParamBase):
                 return True
-            if _is_model_type(hints.get(param.name, param.annotation)):
+            if _is_model_type(annotation):
                 return True
         return False
 
-    for dep in getattr(info, "dependencies", None) or []:
+    for dep in info.dependencies or []:
         if isinstance(dep, Depends):
             target = dep.dependency
             if _scheme_definition(target) is None and visit(target):
                 return True
-    return visit(getattr(info, "handler", None))
+    return visit(info.handler)
 
 
-def _build_operation(
-    info: Any,
-    method_lower: str,
-    schemas_registry: SchemaRegistry,
-    security_schemes_registry: dict[str, dict],
-) -> dict[str, Any]:
-    """Assemble one OpenAPI operation object for a single route entry."""
+def _operation_base(info: Any, method_lower: str) -> dict[str, Any]:
+    """Build the operation fields a path operation and a webhook both carry.
+
+    Shared so a field added to one is not silently missing from the other; the
+    caller adds whatever its own kind of operation defines on top.
+    """
     # OpenAPI 3.1 Sec. 4.8.10 - operationId must be unique across the document.
     # Explicit override wins; default = `<name>_<method>`. Collisions among the
     # auto-generated form are resolved later in `_disambiguate_operation_ids`.
-    op_id = (
-        info.operation_id if getattr(info, "operation_id", None) else f"{info.name}_{method_lower}"
-    )
+    op_id = info.operation_id if info.operation_id else f"{info.name}_{method_lower}"
     operation: dict[str, Any] = {
         "summary": info.summary or info.name,
         "operationId": op_id,
         "responses": {"200": {"description": info.response_description}},
     }
-
     if info.description:
         operation["description"] = info.description
     if info.tags:
         operation["tags"] = info.tags
     if info.deprecated:
         operation["deprecated"] = True
+    return operation
+
+
+def _apply_openapi_extra(operation: dict[str, Any], info: Any) -> None:
+    """Deep-merge the author's `openapi_extra` over a finished operation.
+
+    Nested dicts merge key-by-key; scalars and lists in `openapi_extra` overwrite.
+    """
+    extra = info.openapi_extra
+    if extra:
+        _deep_merge(operation, extra)
+
+
+def _build_operation(
+    info: Any,
+    method_lower: str,
+    schemas_registry: SchemaRegistry,
+    security_schemes_registry: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Assemble one OpenAPI operation object for a single route entry."""
+    operation = _operation_base(info, method_lower)
     # OpenAPI 3.1 Sec. 4.8.8 - route-level `callbacks` map emitted verbatim.
-    if getattr(info, "callbacks", None):
+    if info.callbacks:
         operation["callbacks"] = info.callbacks
 
-    parameters, request_body_schema, form_fields, body_fields, scalar_body = _extract_parameters(
-        info, schemas_registry
-    )
-    if parameters:
-        operation["parameters"] = parameters
+    inputs = _extract_parameters(info, schemas_registry)
+    if inputs.parameters:
+        operation["parameters"] = inputs.parameters
 
-    request_body = _extract_request_body(request_body_schema, form_fields, body_fields, scalar_body)
+    request_body = _extract_request_body(
+        inputs.request_body_schema, inputs.form_fields, inputs.body_fields, inputs.scalar_body
+    )
     if request_body is not None:
         operation["requestBody"] = request_body
 
@@ -1505,22 +867,14 @@ def _build_operation(
     # or any validated input inside a `Depends(...)` sub-dependency. A handler
     # with none of these never raises `RequestValidationError`, so it must not
     # advertise a 422.
-    has_validatable_params = (
-        bool(parameters) or request_body is not None or _dependency_graph_has_validatable(info)
+    operation["responses"] = _extract_responses(
+        info, schemas_registry, _has_validatable_params(inputs, request_body, info)
     )
-    operation["responses"] = _extract_responses(info, schemas_registry, has_validatable_params)
-
-    # `openapi_extra` - deep-merge the user-supplied dict over the
-    # generated operation. Nested dicts merge key-by-key; scalars and
-    # lists in `openapi_extra` overwrite.
-    extra = getattr(info, "openapi_extra", None)
-    if extra:
-        _deep_merge(operation, extra)
-
+    _apply_openapi_extra(operation, info)
     return operation
 
 
-def _webhook_request_body(handler: Any, registry: SchemaRegistry) -> dict | None:
+def _webhook_request_body(handler: Any, registry: SchemaRegistry) -> dict[str, Any] | None:
     """Return the OpenAPI schema for a webhook handler's Pydantic body param.
 
     A webhook handler documents the payload an external caller will
@@ -1539,9 +893,10 @@ def _webhook_request_body(handler: Any, registry: SchemaRegistry) -> dict | None
 
 
 def _walk_webhooks(
-    app: Any,
+    app: Veloce,
     schemas_registry: SchemaRegistry,
     auto_ops: list[tuple[dict[str, Any], str, str]],
+    explicit_ops: list[tuple[dict[str, Any], str, str]] | None = None,
 ) -> dict[str, Any]:
     """Return the OpenAPI 3.1 `webhooks` map from `app.webhooks`.
 
@@ -1552,34 +907,38 @@ def _walk_webhooks(
     document-wide disambiguation pass as normal routes; two webhooks sharing a
     handler name (or a webhook colliding with a route) would otherwise emit a
     duplicate operationId, which is invalid for code generation (OpenAPI 3.1
-    Sec. 4.8.10).
+    Sec. 4.8.10). A webhook that pins its own `operation_id` goes to
+    `explicit_ops` instead, so the pass reserves it rather than renaming it.
+
+    `app.webhooks` is an ordinary `Blueprint` and each entry an ordinary
+    `RouteInfo`, so a webhook accepts every operation keyword a route does;
+    the shared `_operation_base` is what keeps them describing the same fields.
     """
     webhook_items: dict[str, Any] = {}
-    webhooks_router = getattr(app, "webhooks", None)
+    webhooks_router = app.webhooks
     walker = getattr(webhooks_router, "_walk_routes", None) if webhooks_router else None
     if walker is None:
         return webhook_items
     for wpath, wmethods, winfo in walker():
         event = wpath.strip("/") or wpath
         for wmethod in wmethods:
-            op: dict[str, Any] = {
-                "summary": winfo.summary or winfo.name,
-                "operationId": f"{winfo.name}_{wmethod.lower()}",
-                "responses": {"200": {"description": winfo.response_description}},
-            }
+            method_lower = wmethod.lower()
+            op = _operation_base(winfo, method_lower)
             # The disambiguator keys collisions on a deterministic identifier; a
             # webhook has no URL path, so its event name stands in as the
             # suffix source if a collision must be resolved.
-            auto_ops.append((op, event, wmethod.lower()))
-            if winfo.description:
-                op["description"] = winfo.description
+            if winfo.operation_id and explicit_ops is not None:
+                explicit_ops.append((op, event, method_lower))
+            else:
+                auto_ops.append((op, event, method_lower))
             body = _webhook_request_body(winfo.handler, schemas_registry)
             if body is not None:
                 op["requestBody"] = {
                     "required": True,
                     "content": {MIME_JSON: {"schema": body}},
                 }
-            webhook_items.setdefault(event, {})[wmethod.lower()] = op
+            _apply_openapi_extra(op, winfo)
+            webhook_items.setdefault(event, {})[method_lower] = op
     return webhook_items
 
 
@@ -1671,6 +1030,19 @@ def _validate_document(schema: dict[str, Any]) -> None:
     dangling `$ref` before the document reaches Swagger UI, raising a
     `ValueError` that names the offending path and method.
     """
+    # `info.title` and `info.version` are REQUIRED and are strings - OpenAPI 3.1
+    # Sec. 4.8.2. The pass checked `$ref`s and container shapes and never these,
+    # so `validate_openapi=True` accepted a document it was asked to reject.
+    info = schema.get("info")
+    if not isinstance(info, dict):
+        raise ValueError("OpenAPI document `info` must be an object")
+    for field in ("title", "version"):
+        value = info.get(field)
+        if not isinstance(value, str) or not value:
+            raise ValueError(
+                f"OpenAPI document `info.{field}` must be a non-empty string, got {value!r}"
+            )
+
     schemas = schema.get("components", {}).get("schemas", {})
     paths = schema.get("paths", {})
     if not isinstance(paths, dict):
@@ -1679,19 +1051,14 @@ def _validate_document(schema: dict[str, Any]) -> None:
     known_refs = {f"#/components/schemas/{name}" for name in schemas}
 
     def check_refs(node: Any, where: str) -> None:
-        if isinstance(node, dict):
-            ref = node.get("$ref")
+        for mapping in _iter_dicts(node):
+            ref = mapping.get("$ref")
             if (
                 isinstance(ref, str)
                 and ref.startswith("#/components/schemas/")
                 and ref not in known_refs
             ):
                 raise ValueError(f"{where}: unresolved schema $ref {ref!r}")
-            for value in node.values():
-                check_refs(value, where)
-        elif isinstance(node, list):
-            for item in node:
-                check_refs(item, where)
 
     for path, methods in paths.items():
         if not isinstance(methods, dict):
@@ -1714,27 +1081,32 @@ def _validate_document(schema: dict[str, Any]) -> None:
 # ── Public API ─────────────────────────────────────────────
 
 
+# `app` is `Any` rather than `Veloce`: `OpenAPIMixin.openapi()` calls this with
+# `self`, which only the assembled subclass declares to be a `Veloce`. Every
+# helper it hands the app to takes the concrete type, so the check is restored
+# one frame in.
 def get_openapi_schema(app: Any) -> dict[str, Any]:
     """Generate OpenAPI 3.1 schema from the app's registered routes."""
     schema: dict[str, Any] = {
-        "openapi": "3.1.0",
+        # `app.openapi_version` is documented as "the spec version string emitted
+        # in the document", and was emitted nowhere: setting it changed the
+        # attribute and not the document.
+        "openapi": app.openapi_version,
         "info": _build_info_object(app),
         "paths": {},
         "components": {"schemas": {}},
     }
 
-    if getattr(app, "servers", None):
+    if app.servers:
         schema["servers"] = app.servers
-    if getattr(app, "openapi_tags", None):
+    if app.openapi_tags:
         schema["tags"] = app.openapi_tags
     # OpenAPI 3.1 Sec. 4.8.11 - top-level `externalDocs` object.
-    if getattr(app, "openapi_external_docs", None):
+    if app.openapi_external_docs:
         schema["externalDocs"] = app.openapi_external_docs
 
-    schemas_registry = SchemaRegistry(
-        separate_input_output=getattr(app, "separate_input_output_schemas", True)
-    )
-    security_schemes_registry: dict[str, dict] = {}
+    schemas_registry = SchemaRegistry(separate_input_output=app.separate_input_output_schemas)
+    security_schemes_registry: dict[str, dict[str, Any]] = {}
 
     # Operations whose operationId was auto-generated (no explicit override),
     # recorded so a deterministic suffix can resolve duplicates afterwards.
@@ -1751,7 +1123,7 @@ def get_openapi_schema(app: Any) -> dict[str, Any]:
     # when something actually references them.
     needs_validation_error_schema = False
 
-    for method, path, info in app._collect_all_routes():
+    for method, path, info in app.iter_routes():
         # OpenAPI 3.1's Path Item Object has no `query` field, so a QUERY route
         # cannot be represented without emitting an invalid operation. Omit it
         # rather than produce an invalid document (native support awaits the
@@ -1767,7 +1139,7 @@ def get_openapi_schema(app: Any) -> dict[str, Any]:
         if _references_validation_error_schema(operation):
             needs_validation_error_schema = True
         schema["paths"][path][method_lower] = operation
-        if getattr(info, "operation_id", None):
+        if info.operation_id:
             explicit_ops.append((operation, path, method_lower))
         else:
             auto_ops.append((operation, path, method_lower))
@@ -1775,11 +1147,11 @@ def get_openapi_schema(app: Any) -> dict[str, Any]:
     # Webhook operations are appended to `auto_ops` so the disambiguation pass
     # below dedupes operationIds across BOTH routes and webhooks deterministically
     # (routes first in collection order, then webhooks in walker order).
-    webhook_items = _walk_webhooks(app, schemas_registry, auto_ops)
+    webhook_items = _walk_webhooks(app, schemas_registry, auto_ops, explicit_ops)
     if webhook_items:
         schema["webhooks"] = webhook_items
 
-    if getattr(app, "disambiguate_operation_ids", True):
+    if app.disambiguate_operation_ids:
         _disambiguate_operation_ids(auto_ops, explicit_ops)
 
     components_schemas = schemas_registry.finalize(schema)
@@ -1809,175 +1181,10 @@ def get_openapi_schema(app: Any) -> dict[str, Any]:
     if security_schemes_registry:
         schema["components"]["securitySchemes"] = security_schemes_registry
 
-    validate = getattr(app, "validate_openapi", None)
+    validate = app.validate_openapi
     if validate is None:
-        validate = bool(getattr(app, "debug", False))
+        validate = bool(app.debug)
     if validate:
         _validate_document(schema)
 
     return schema
-
-
-# ── Swagger UI / ReDoc templates ───────────────────────────
-
-
-# Byte-level escapes applied to orjson output before it is embedded inline in
-# a <script> block: the close-script breakout (`<`/`>`/`&`) and the U+2028 /
-# U+2029 line separators (valid in JSON, but break JS string literals). The
-# escapes are JSON-valid `\uXXXX` forms, so SwaggerUIBundle / JSON.parse read
-# them identically.
-_SCRIPT_ESCAPES = (
-    (b"<", b"\\u003c"),
-    (b">", b"\\u003e"),
-    (b"&", b"\\u0026"),
-    (b"\xe2\x80\xa8", b"\\u2028"),
-    (b"\xe2\x80\xa9", b"\\u2029"),
-)
-
-
-def _html_safe_orjson(value: Any) -> str:
-    """Serialise `value` to JSON safe to embed inline in a <script> block."""
-    raw = orjson.dumps(value)
-    for needle, repl in _SCRIPT_ESCAPES:
-        if needle in raw:
-            raw = raw.replace(needle, repl)
-    return raw.decode()
-
-
-SWAGGER_HTML = (
-    """<!DOCTYPE html>
-<html>
-<head>
-    <title>{title} - Swagger UI</title>
-    <meta charset="utf-8"/>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <link
-      rel="stylesheet"
-      href="https://cdnjs.cloudflare.com/ajax/libs/swagger-ui/__SUV__/swagger-ui.min.css"
-      integrity="__SUC__"
-      crossorigin="anonymous"
-      referrerpolicy="no-referrer"{nonce}>
-</head>
-<body>
-    <div id="swagger-ui"></div>
-    <script
-      src="https://cdnjs.cloudflare.com/ajax/libs/swagger-ui/__SUV__/swagger-ui-bundle.min.js"
-      integrity="__SUJ__"
-      crossorigin="anonymous"
-      referrerpolicy="no-referrer"{nonce}></script>
-    <script{nonce}>
-    const ui = SwaggerUIBundle({{
-        url: "{openapi_url}",
-        dom_id: '#swagger-ui',
-        presets: [SwaggerUIBundle.presets.apis],
-        layout: "BaseLayout",
-        {ui_params}
-    }});
-    {init_oauth}
-    </script>
-</body>
-</html>""".replace("__SUV__", _SWAGGER_UI_VERSION)
-    .replace("__SUC__", _SWAGGER_UI_CSS_INTEGRITY)
-    .replace("__SUJ__", _SWAGGER_UI_JS_INTEGRITY)
-)
-
-
-REDOC_HTML = """<!DOCTYPE html>
-<html>
-<head>
-    <title>{title} - ReDoc</title>
-    <meta charset="utf-8"/>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <link href="https://fonts.googleapis.com/css?family=Montserrat:300,400,700|Roboto:300,400,700" rel="stylesheet"{nonce}>
-    <style{nonce}>body {{ margin: 0; padding: 0; }}</style>
-</head>
-<body>
-    <redoc spec-url='{openapi_url}'></redoc>
-    <script
-      src="https://unpkg.com/redoc@__RDV__/bundles/redoc.standalone.js"
-      integrity="__RDJ__"
-      crossorigin="anonymous"
-      referrerpolicy="no-referrer"{nonce}></script>
-</body>
-</html>""".replace("__RDV__", _REDOC_VERSION).replace("__RDJ__", _REDOC_JS_INTEGRITY)
-
-
-def _nonce_attr(request: Any) -> str:
-    """Render the CSP `nonce` attribute for the docs pages, or an empty string.
-
-    `CSPMiddleware` arms a per-request nonce; the docs templates carry it on
-    every script, style, and stylesheet-link tag so a strict policy renders the
-    UI without allow-listing the asset hosts (a nonced element is permitted
-    regardless of its source per CSP Level 3). An app with no CSP nonce armed
-    gets an empty string, leaving the markup byte-identical to before.
-    """
-    # Imported here rather than at module top: `contrib.openapi` is loaded for
-    # every app that serves a schema, and this pulls the middleware package in
-    # only for apps that actually render the docs pages.
-    from veloce.middleware.security import csp_nonce
-
-    nonce = csp_nonce(request)
-    return f' nonce="{html.escape(nonce, quote=True)}"' if nonce else ""
-
-
-def setup_openapi_routes(
-    app: Any,
-    openapi_url: str = "/openapi.json",
-    docs_url: str | None = "/docs",
-    redoc_url: str | None = "/redoc",
-) -> None:
-    """Register OpenAPI schema and documentation routes.
-
-    `docs_url` / `redoc_url` of `None` disable the Swagger UI / ReDoc UI
-    respectively - the JSON schema route is still registered, so tooling
-    can consume the schema without a public interactive explorer.
-    """
-
-    @app.get(openapi_url, tags=["openapi"], name="openapi_schema")
-    async def openapi_schema(request: Any):
-        # Route through `app.openapi()` so a user override / customised
-        # `app.openapi_schema` flows to the JSON endpoint and Swagger UI.
-        return JSONResponse(app.openapi())
-
-    async def swagger_ui(request: Any):
-        # Render extra SwaggerUIBundle options inline as JSON literals.
-        # `orjson.dumps` returns bytes, so decode for string concatenation
-        # into the HTML template; the surrounding page is utf-8, so
-        # orjson's raw-UTF-8 output (vs json's ensure_ascii) is fine.
-        params = getattr(app, "swagger_ui_parameters", None) or {}
-        if params:
-            # Compact `key:value` join - orjson serialises nested values
-            # without spaces, so the outer separator stays spaceless to
-            # keep the rendered literal consistent throughout.
-            ui_params = ",".join(
-                f"{_html_safe_orjson(k)}:{_html_safe_orjson(v)}" for k, v in params.items()
-            )
-        else:
-            ui_params = ""
-
-        oauth_init = getattr(app, "swagger_ui_init_oauth", None)
-        init_oauth = f"ui.initOAuth({_html_safe_orjson(oauth_init)});" if oauth_init else ""
-
-        html_page = SWAGGER_HTML.format(
-            title=html.escape(app.title),
-            openapi_url=html.escape(openapi_url),
-            ui_params=ui_params,
-            init_oauth=init_oauth,
-            nonce=_nonce_attr(request),
-        )
-        return HTMLResponse(html_page)
-
-    async def redoc_ui(request: Any):
-        html_page = REDOC_HTML.format(
-            title=html.escape(app.title),
-            openapi_url=html.escape(openapi_url),
-            nonce=_nonce_attr(request),
-        )
-        return HTMLResponse(html_page)
-
-    # Register each interactive UI only when its URL is set - a `None`
-    # disables that UI while leaving the JSON schema route in place.
-    if docs_url is not None:
-        app.get(docs_url, tags=["openapi"], name="swagger_ui")(swagger_ui)
-    if redoc_url is not None:
-        app.get(redoc_url, tags=["openapi"], name="redoc_ui")(redoc_ui)

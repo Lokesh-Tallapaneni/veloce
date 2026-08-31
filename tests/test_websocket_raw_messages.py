@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import pytest
+
+from tests._native_ws import mark_accepted
 from veloce import Veloce
 from veloce.testclient import TestClient
 from veloce.websocket import WebSocket
@@ -40,14 +43,13 @@ def test_raw_send_forwards_message():
         assert ws.receive_text() == "from-raw-send"
 
 
-def test_raw_receive_non_asgi_raises():
+async def test_raw_receive_non_asgi_raises():
     # A transport-mode WebSocket has no ASGI receive callable.
     ws = WebSocket(transport=None, headers={})
     # Skip the handshake — `receive()` now enforces accept-before-receive,
     # which would fire first. This test pins the *other* check
     # (transport-mode → no ASGI escape hatch).
-    ws._accepted = True
-    import asyncio
+    mark_accepted(ws)
 
-    with __import__("pytest").raises(RuntimeError, match="ASGI-mode only"):
-        asyncio.new_event_loop().run_until_complete(ws.receive())
+    with pytest.raises(RuntimeError, match="ASGI-mode only"):
+        await ws.receive()

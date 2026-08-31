@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
-from veloce import Depends, OAuth2PasswordRequestFormStrict, Veloce
+from veloce import Depends, OAuth2PasswordRequestForm, OAuth2PasswordRequestFormStrict, Veloce
 from veloce.exceptions import HTTPException
 from veloce.http.request import Request
 from veloce.testclient import TestClient
@@ -66,7 +66,6 @@ def test_wrong_grant_type_is_422():
 
 
 def test_strict_is_subclass_of_non_strict():
-    from veloce import OAuth2PasswordRequestForm
 
     assert issubclass(OAuth2PasswordRequestFormStrict, OAuth2PasswordRequestForm)
 

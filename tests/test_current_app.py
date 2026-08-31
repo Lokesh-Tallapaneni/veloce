@@ -14,13 +14,38 @@ def test_current_app_unbound_outside_request_raises():
 
 
 def test_current_app_unbound_is_falsy():
-    """The proxy supports truthiness so `if current_app:` works."""
-    # We can only assert this if no test before us has left a binding.
-    # Since contextvars are per-task, this is safe in isolation.
-    assert bool(current_app) is False or bool(current_app) is True  # never raises
+    """The proxy supports truthiness so `if current_app:` works.
+
+    The assertion here used to be `bool(x) is False or bool(x) is True`, which
+    holds for any object whose `__bool__` returns a bool - it proved only that
+    the call did not raise, never that an unbound proxy is falsy. The binding
+    is a contextvar, so an unbound context is the default and can be asserted
+    directly.
+    """
+    assert bool(current_app) is False
 
 
-@pytest.mark.asyncio
+def test_current_app_unbound_takes_the_else_branch():
+    """The behaviour the truthiness exists for, rather than the value it returns."""
+    taken = "then" if current_app else "else"
+    assert taken == "else"
+
+
+def test_current_app_bound_is_truthy():
+    """The negative: a proxy that was falsy always would pass the test above."""
+    app = Veloce(openapi_url=None)
+    with app.app_context():
+        assert bool(current_app) is True
+        assert ("then" if current_app else "else") == "then"
+
+
+def test_the_binding_does_not_outlive_the_context():
+    app = Veloce(openapi_url=None)
+    with app.app_context():
+        pass
+    assert bool(current_app) is False
+
+
 async def test_current_app_bound_inside_handler():
     app = Veloce(debug=True, openapi_url=None)
     app.config["MY_KEY"] = "value-from-config"
@@ -39,19 +64,6 @@ async def test_current_app_bound_inside_handler():
     assert resp.status_code == 200
     assert seen["app_title"] == app.title
     assert seen["my_key"] == "value-from-config"
-
-
-def test_current_app_via_testclient():
-    """End-to-end check that current_app works through the ASGI dispatch."""
-    app = Veloce(debug=True, openapi_url=None)
-
-    @app.get("/who")
-    async def who():
-        return {"title": current_app.title}
-
-    resp = TestClient(app).get("/who")
-    assert resp.status_code == 200
-    assert resp.json() == {"title": app.title}
 
 
 def test_two_apps_bind_independently():
@@ -79,14 +91,8 @@ def test_current_app_repr():
     assert "current_app" in r
 
 
-def test_current_app_in_veloce_exports():
-    """`from veloce import current_app` works."""
-    from veloce import current_app as ca
-
-    assert ca is current_app
-
-
-def test_current_app_proxy_resolves_in_request_context():
+def test_current_app_resolves_through_a_testclient_request():
+    """End-to-end: the proxy resolves during ASGI dispatch, not just directly."""
     app = Veloce(openapi_url=None)
     app.config["SENTINEL"] = "I-resolved"
     observed = {}
@@ -99,8 +105,3 @@ def test_current_app_proxy_resolves_in_request_context():
     with TestClient(app) as client:
         client.get("/cfg")
     assert observed["sentinel"] == "I-resolved"
-
-
-def test_current_app_proxy_outside_request_raises():
-    with pytest.raises(RuntimeError):
-        _ = current_app.config

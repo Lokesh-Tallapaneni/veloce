@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from veloce import Query, Veloce
+from veloce import Depends, Query, Veloce
 from veloce.contrib.openapi import get_openapi_schema
 
 _HTTP_VALIDATION_REF = "#/components/schemas/HTTPValidationError"
@@ -154,7 +154,6 @@ def test_bytes_model_field_documented_as_base64_byte_format() -> None:
 def test_sub_dependency_validation_gets_422() -> None:
     """A handler with no top-level params but a `Depends(...)` whose sub-dependency
     validates input still advertises the 422 the resolver can raise."""
-    from veloce import Depends
 
     def dep(n: int = Query(default=1)):
         return n

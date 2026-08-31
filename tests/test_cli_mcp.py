@@ -10,10 +10,10 @@ name" without launching a client to ask.
 from __future__ import annotations
 
 import sys
-import textwrap
 
 import pytest
 
+from veloce import TestClient
 from veloce.cli import build_parser, main
 
 _APP_SOURCE = """
@@ -44,12 +44,9 @@ async def restock_note(part: str) -> str:
 
 
 @pytest.fixture
-def mcp_app(tmp_path, monkeypatch) -> str:
+def mcp_app(app_module) -> str:
     """Write an importable app module and return its reference."""
-    (tmp_path / "cli_mcp_app.py").write_text(textwrap.dedent(_APP_SOURCE))
-    monkeypatch.syspath_prepend(str(tmp_path))
-    sys.modules.pop("cli_mcp_app", None)
-    return "cli_mcp_app:app"
+    return app_module(_APP_SOURCE, "cli_mcp_app")
 
 
 # ── The parser ───────────────────────────────────────────────────────
@@ -113,44 +110,37 @@ def test_list_prints_the_descriptions_an_agent_reads(mcp_app, capsys):
     assert "Count the units on hand" in capsys.readouterr().out
 
 
-def test_list_says_so_when_there_is_nothing_to_serve(tmp_path, monkeypatch, capsys):
-    (tmp_path / "cli_bare_app.py").write_text(
-        "from veloce import Veloce\napp = Veloce(openapi_url=None)\n"
+def test_list_says_so_when_there_is_nothing_to_serve(app_module, capsys):
+    reference = app_module(
+        "from veloce import Veloce\napp = Veloce(openapi_url=None)\n", "cli_bare_app"
     )
-    monkeypatch.syspath_prepend(str(tmp_path))
-    sys.modules.pop("cli_bare_app", None)
-    assert main(["mcp", "list", "cli_bare_app:app"]) == 0
+    assert main(["mcp", "list", reference]) == 0
     assert "No MCP tools" in capsys.readouterr().out
 
 
-def test_list_omits_a_section_with_nothing_in_it(tmp_path, monkeypatch, capsys):
-    (tmp_path / "cli_tools_only.py").write_text(
-        textwrap.dedent(
-            """
-            from veloce import Veloce
-            app = Veloce(openapi_url=None)
+def test_list_omits_a_section_with_nothing_in_it(app_module, capsys):
+    reference = app_module(
+        """
+        from veloce import Veloce
+        app = Veloce(openapi_url=None)
 
-            @app.mcp_tool(description="Only a tool")
-            async def solo() -> int:
-                return 1
-            """
-        )
+        @app.mcp_tool(description="Only a tool")
+        async def solo() -> int:
+            return 1
+        """,
+        "cli_tools_only",
     )
-    monkeypatch.syspath_prepend(str(tmp_path))
-    sys.modules.pop("cli_tools_only", None)
-    main(["mcp", "list", "cli_tools_only:app"])
+    main(["mcp", "list", reference])
     out = capsys.readouterr().out
     assert "TOOLS" in out
     assert "RESOURCES" not in out
     assert "PROMPTS" not in out
 
 
-def test_a_target_that_is_not_an_app_is_refused(tmp_path, monkeypatch):
-    (tmp_path / "cli_not_an_app.py").write_text("app = object()\n")
-    monkeypatch.syspath_prepend(str(tmp_path))
-    sys.modules.pop("cli_not_an_app", None)
+def test_a_target_that_is_not_an_app_is_refused(app_module):
+    reference = app_module("app = object()\n", "cli_not_an_app")
     with pytest.raises(SystemExit, match="mount_mcp"):
-        main(["mcp", "list", "cli_not_an_app:app"])
+        main(["mcp", "list", reference])
 
 
 # ── Serving ──────────────────────────────────────────────────────────
@@ -162,7 +152,6 @@ def _serves_mcp_at(app, path: str) -> bool:
     The transport registers its endpoint `include_in_schema=False`, so it is
     deliberately absent from `app.routes`; asking it to serve is the check.
     """
-    from veloce import TestClient
 
     response = TestClient(app).post(
         path,
@@ -182,7 +171,8 @@ def test_run_serves_stdio_by_handing_the_coroutine_to_asyncio(mcp_app, monkeypat
 
     monkeypatch.setattr("veloce.cli.asyncio.run", fake_run)
     assert main(["mcp", "run", mcp_app]) == 0
-    assert served["awaited"].startswith("Veloce.mount_mcp")
+    # Named by the mixin that defines it, like every other `Veloce` method.
+    assert "mount_mcp" in served["awaited"]
 
 
 def test_run_mounts_the_http_transport_and_serves_that_app(mcp_app, monkeypatch):

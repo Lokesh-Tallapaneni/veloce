@@ -1,9 +1,10 @@
 """Shared string-literal constants — one canonical spelling per duplicated value.
 
 Centralises the MIME types, Title-Case HTTP header names, verbatim
-error/log message strings, and ``request._state`` keys that appear in two or
-more places across the framework so that casing and spelling cannot drift
-between call sites.
+error/log message strings, the handful of message *templates* whose wording
+is shared but whose subject is interpolated at the raise site, and
+``request._state`` keys that appear in two or more places across the
+framework so that casing and spelling cannot drift between call sites.
 
 These names are internal (leading-underscore module): they are not part
 of the public API, are not exported from ``veloce/__init__.py``'s
@@ -113,8 +114,9 @@ HEADER_VALUE_ATTACHMENT = "attachment"
 HEADER_VALUE_BYTES = "bytes"
 HEADER_VALUE_CHUNKED = "chunked"
 HEADER_VALUE_DENY = "DENY"
-HEADER_VALUE_GZIP = "gzip"
 HEADER_VALUE_KEEP_ALIVE = "keep-alive"
+# The `Connection` value for a response after which the socket closes.
+HEADER_VALUE_CLOSE = "close"
 HEADER_VALUE_NO_CACHE = "no-cache"
 HEADER_VALUE_NOSNIFF = "nosniff"
 HEADER_VALUE_PUBLIC = "public"
@@ -133,6 +135,15 @@ MSG_NOT_FOUND = "Not Found"
 MSG_RECEIVER_RAISED = "Receiver %r for signal %r raised %s"
 MSG_REQUEST_BODY_EXCEEDS_MAX = "Request body exceeds MAX_CONTENT_LENGTH"
 MSG_SUCCESSFUL_RESPONSE = "Successful Response"
+
+# ── Duplicated message templates ──────────────────────────
+# Formatted at the raise site rather than emitted verbatim. Both are reported
+# by the interpreted resolver (`dependency.py`) and by the generated one
+# (`_resolver_codegen.py`), which additionally embeds the formatted result in
+# the source it compiles - so the two resolvers cannot answer one route with
+# differently-worded errors.
+MSG_MISSING_PARAMETER = "Missing required parameter: {name}"
+MSG_YIELD_NO_VALUE = "yield dependency {dependency!r} returned without yielding a value"
 
 # ── Duplicated CRLF-rejection context labels ──────────────
 MSG_LABEL_COOKIE_DOMAIN = "cookie domain"

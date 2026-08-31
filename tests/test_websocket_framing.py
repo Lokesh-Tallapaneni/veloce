@@ -11,42 +11,16 @@ import struct
 
 import pytest
 
+from tests._native_ws import delivered, nothing_delivered
+from tests._protocol import _FakeTransport
+from tests._ws_frames import client_frame as _client_frame
 from veloce.exceptions import WebSocketDisconnect
 from veloce.websocket import WebSocket
-
-
-class _FakeTransport:
-    """Minimal asyncio.Transport stand-in for WebSocket tests."""
-
-    def __init__(self) -> None:
-        self.writes: list[bytes] = []
-        self.closed = False
-
-    def write(self, data: bytes) -> None:
-        self.writes.append(data)
-
-    def close(self) -> None:
-        self.closed = True
 
 
 def _make_ws() -> tuple[WebSocket, _FakeTransport]:
     transport = _FakeTransport()
     return WebSocket(transport, {"sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ=="}), transport
-
-
-def _client_frame(opcode: int, payload: bytes, fin: bool = True) -> bytes:
-    """Build one masked client→server WebSocket frame (RFC 6455 §5)."""
-    mask = b"\x12\x34\x56\x78"
-    masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
-    b0 = (0x80 if fin else 0x00) | opcode
-    n = len(payload)
-    if n < 126:
-        header = bytes([b0, 0x80 | n])
-    elif n < 65536:
-        header = bytes([b0, 0x80 | 126]) + struct.pack("!H", n)
-    else:
-        header = bytes([b0, 0x80 | 127]) + struct.pack("!Q", n)
-    return header + mask + masked
 
 
 async def test_frame_split_across_two_feed_data_chunks():
@@ -58,10 +32,10 @@ async def test_frame_split_across_two_feed_data_chunks():
     # the rest of the payload in chunk two.
     cut = 9
     ws.feed_data(frame[:cut])
-    assert ws._receive_queue.empty()  # incomplete — nothing delivered yet
+    assert nothing_delivered(ws)  # incomplete — nothing delivered yet
     ws.feed_data(frame[cut:])
-    assert ws._receive_queue.get_nowait() == b"split-across-reads"
-    assert ws._receive_queue.empty()
+    assert delivered(ws)[0] == b"split-across-reads"
+    assert nothing_delivered(ws)
 
 
 async def test_two_frames_in_one_feed_data_call():
@@ -69,9 +43,11 @@ async def test_two_frames_in_one_feed_data_call():
     ws, _ = _make_ws()
     payload = _client_frame(0x1, b"first") + _client_frame(0x2, b"second")
     ws.feed_data(payload)
-    assert ws._receive_queue.get_nowait() == b"first"
-    assert ws._receive_queue.get_nowait() == b"second"
-    assert ws._receive_queue.empty()
+    # One drain: both frames must be buffered after the single `feed_data`, and
+    # in order. Reading them one at a time would not distinguish that from the
+    # second arriving later.
+    assert delivered(ws) == [b"first", b"second"]
+    assert nothing_delivered(ws)
 
 
 async def test_fragmented_message_reassembled_across_chunks():
@@ -81,8 +57,8 @@ async def test_fragmented_message_reassembled_across_chunks():
     ws.feed_data(_client_frame(0x1, b"frag-", fin=False))
     ws.feed_data(_client_frame(0x0, b"men", fin=False))
     ws.feed_data(_client_frame(0x0, b"ted", fin=True))
-    assert ws._receive_queue.get_nowait() == b"frag-mented"
-    assert ws._receive_queue.empty()
+    assert delivered(ws)[0] == b"frag-mented"
+    assert nothing_delivered(ws)
 
 
 async def test_ping_interleaved_between_fragments_in_one_chunk():
@@ -99,8 +75,8 @@ async def test_ping_interleaved_between_fragments_in_one_chunk():
     # Ping answered with a pong (FIN + opcode 0xA → first byte 0x8A).
     assert any(w[0] == 0x8A for w in transport.writes)
     # The fragmented message reassembled cleanly around the ping.
-    assert ws._receive_queue.get_nowait() == b"AAAABBBB"
-    assert ws._receive_queue.empty()
+    assert delivered(ws)[0] == b"AAAABBBB"
+    assert nothing_delivered(ws)
 
 
 async def test_close_frame_split_across_chunks_still_disconnects():

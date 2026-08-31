@@ -42,7 +42,8 @@ Veloce is a from-scratch async Python web framework — not a wrapper around Sta
   registration into a `HandlerPlan`; the per-request hot path performs
   no reflection.
 * **Radix-tree routing** with typed path converters (`int`, `float`,
-  `uuid`, `path`, plus custom).
+  `string`, `uuid`, `path`, `date`, `datetime`, `time`, `timedelta`,
+  `decimal`, `any`, plus custom).
 * **Typed dependency injection** via `Depends`, `Security`,
   `SecurityScopes`, including `yield`-style dependencies with teardown.
 * **OpenAPI 3.1** generated from Pydantic models, served through
@@ -54,9 +55,8 @@ Veloce is a from-scratch async Python web framework — not a wrapper around Sta
 
 Python 3.10+.
 
-Veloce depends on a small native-extension stack: `orjson`,
-`httptools`, `pydantic` v2, `python-multipart`, `multidict`, and
-`uvloop` on non-Windows platforms.
+Veloce depends on `orjson`, `httptools`, `pydantic` v2, `python-multipart`,
+`multidict`, `jinja2`, and `uvloop` on non-Windows platforms.
 
 ## Installation
 
@@ -90,11 +90,15 @@ async def read_item(item_id: int) -> dict[str, int]:
     return {"item_id": item_id}
 ```
 
-Run it with the built-in server (no extra dependencies):
+Run it:
 
 ```bash
 veloce run main:app
 ```
+
+`veloce run` serves under `uvicorn` when it is installed and falls back to the
+built-in server, which needs no extra dependencies. To pin the built-in server
+regardless, call `app.run()`.
 
 `uvicorn` is an optional extra — install it (`pip install veloceframework[uvicorn]`)
 to serve under it or any other ASGI server, or use `app.run()` / the gunicorn
@@ -118,11 +122,17 @@ Open <http://127.0.0.1:8000/items/42> to see `{"item_id": 42}`, or
 | Validation        | Pydantic v2 query / path / header / cookie / body, structured 422 errors                    |
 | OpenAPI           | OpenAPI 3.1, Swagger UI, ReDoc, security schemes, webhooks, callbacks, `operation_id`       |
 | WebSockets        | full ASGI surface, dependency injection, subprotocol negotiation (under an ASGI server), typed iter helpers |
-| Middleware        | CORS, GZip, TrustedHost, HTTPSRedirect, ProxyFix, Session, CSRF, `BaseHTTPMiddleware`       |
+| Middleware        | CORS, compression (zstd/brotli/gzip), TrustedHost, HTTPSRedirect, ProxyFix, Session, CSRF, CSP, security headers, conditional GET, request IDs, logging, `BaseHTTPMiddleware` |
 | Templating        | Jinja2 with `url_for` / `g` / `current_app` globals, async render, context processors       |
 | Sessions          | signed cookies, server-side backend, `permanent_lifetime`, secret rotation                  |
+| Streaming         | Server-Sent Events (`EventSourceResponse`, `ServerSentEvent`), streamed request bodies      |
+| Signals           | `request_started` / `request_finished` / `got_request_exception` and the app-context pair    |
+| Security          | password hashing (`hash_password`, `is_strong_password`), signing, JWT, OAuth2 flows        |
+| Rate limiting     | `FixedWindow` / `SlidingWindow` / `TokenBucket`, per-route `@rate_limit`, Redis backend      |
+| Caching           | `Cache` / `InMemoryCache`, the `@cached` decorator, Redis backend                            |
+| Agents (MCP)      | expose routes as Model Context Protocol tools, resources, prompts; HTTP / SSE / stdio transports |
 | Testing           | in-memory `TestClient`, multipart, cookies, follow-redirects, `session_transaction`         |
-| Tooling           | `veloce run`, `veloce routes`, `veloce shell` (argparse-based CLI)                          |
+| Tooling           | `veloce new` / `generate` scaffolding, `run`, `routes`, `check`, `mcp`, `shell`              |
 
 The full Tier 0/1/2 feature matrix and per-feature design notes live in
 [`docs/`](docs/).

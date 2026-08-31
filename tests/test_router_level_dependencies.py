@@ -1,17 +1,17 @@
-"""R5 — router-level `dependencies=` apply to every route."""
+"""router-level `dependencies=` apply to every route."""
 
 from __future__ import annotations
 
-import pytest
+import orjson
 
+from tests.conftest import make_request
 from veloce import Blueprint, Depends, Request, Router, Veloce
 
 
 def _req(path: str = "/x") -> Request:
-    return Request(method="GET", path=path, query_string="", headers={}, body=b"")
+    return make_request(method="GET", path=path, query_string="", headers={}, body=b"")
 
 
-@pytest.mark.asyncio
 async def test_router_level_dependency_fires_for_each_route():
     """A `dependencies=[Depends(...)]` on the Router runs for every route."""
     calls: list[str] = []
@@ -38,7 +38,6 @@ async def test_router_level_dependency_fires_for_each_route():
     assert calls == ["gate", "gate"]
 
 
-@pytest.mark.asyncio
 async def test_router_and_route_dependencies_both_run():
     """Per-route deps append after router-level deps."""
     order: list[str] = []
@@ -62,7 +61,6 @@ async def test_router_and_route_dependencies_both_run():
     assert order == ["outer", "inner"]
 
 
-@pytest.mark.asyncio
 async def test_router_dependency_value_available_via_depends():
     """Router-level dep's return value still flows through DI for handlers
     that ask for it explicitly with `Depends`."""
@@ -78,8 +76,6 @@ async def test_router_dependency_value_available_via_depends():
 
     app = Veloce(debug=True, openapi_url=None)
     app.register_blueprint(bp)
-
-    import orjson
 
     resp = await app.handle_request(_req("/api/x"))
     assert orjson.loads(resp.body) == {"connected": True}

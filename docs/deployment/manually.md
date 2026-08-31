@@ -118,7 +118,7 @@ app.run(
     host=None,             # None -> "127.0.0.1" (or "0.0.0.0" when bind_all=True)
     port=8000,
     workers=1,             # must be 1
-    access_log=True,       # print the startup banner ("Listening on ...")
+    access_log=True,       # startup banner + a per-request access line
     ssl_context=None,      # an ssl.SSLContext enables HTTPS
     bind_all=False,        # True binds 0.0.0.0; conflicts with host=
 )
@@ -144,14 +144,14 @@ editable install.
 | --- | --- | --- |
 | `--host` | `127.0.0.1` | Interface to bind. |
 | `--port` | `8000` | Port to bind. |
-| `--reload` | off | Auto-reload on code changes (uvicorn only). |
+| `--reload` | off | Auto-reload on code changes (both serving paths). |
 | `--workers` | `1` | Worker processes (uvicorn only). |
 | `--log-level` | `info` | Log level passed to uvicorn. |
 
-!!! note "`--reload` and `--workers` need uvicorn"
-    Both are uvicorn features. With uvicorn absent, `--reload` raises an
-    error pointing at `pip install veloceframework[uvicorn]`, and
-    `--workers N` is ignored — the built-in server runs a single process.
+!!! note "`--workers` needs uvicorn; `--reload` does not"
+    `--reload` is supported on both paths — uvicorn's reloader when it is
+    installed, the built-in one otherwise. `--workers N` is a uvicorn feature and
+    is ignored without it: the built-in server runs a single process.
 
 Install the extra to get reload, multi-worker, and the recommended
 production server:

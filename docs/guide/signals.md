@@ -10,8 +10,8 @@ receiver connects to a named signal; whenever something sends that
 signal, every connected receiver fires. Veloce uses signals internally
 for request-lifecycle notifications, and you can define your own.
 
-Signals are not exported from the top-level `veloce` package — import
-them from `veloce.signals`.
+The built-in signals, plus `Signal` and `Namespace`, are exported from the
+top-level `veloce` package; `veloce.signals` works too.
 
 ```python
 from veloce.signals import request_finished

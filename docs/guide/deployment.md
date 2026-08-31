@@ -44,7 +44,34 @@ app = Veloce()
 app.config["REQUEST_TIMEOUT"] = 15     # drop a half-sent request after 15s
 app.config["KEEP_ALIVE_TIMEOUT"] = 30  # close an idle connection after 30s
 app.config["MAX_CONCURRENT_CONNECTIONS"] = 1000  # reject beyond this (default 1000)
+app.config["MAX_PIPELINED_REQUESTS"] = 64        # queue depth per connection
 ```
+
+An over-`MAX_CONTENT_LENGTH` upload that announces its size up front is refused
+with a `413` that runs through the app's response phase, so it carries the same
+CORS and security headers a served response would — a cross-origin upload that
+trips the limit reaches the client as a `413`, not as an opaque CORS failure.
+
+Refusals that happen before a request exists — a malformed request line, an
+over-long request line or header block, the concurrent-connection reject — are
+framed directly and carry no middleware headers. There is nothing to run
+middleware against at that point, and this matches what an ASGI server does with
+the same conditions.
+
+!!! note "Changed in version 0.13"
+    The built-in server's `413` runs the response phase. It previously carried
+    only a `Content-Type`, so `app.run()` and `VeloceWorker` served a different
+    refusal surface than uvicorn for the same app.
+
+A connection also stops reading its socket once `MAX_PIPELINED_REQUESTS`
+(default **64**) parsed requests are waiting to be served, and resumes as the
+queue drains. Requests are throttled, never dropped: every one still gets its
+response, in order. Transport flow control is otherwise driven by the request
+body buffer, and a pipelined bodiless `GET` has no body — so without this a peer
+could queue one request object per 27 bytes it wrote.
+
+!!! note "Added in version 0.13"
+    `MAX_PIPELINED_REQUESTS`, and the pipelining depth bound it configures.
 
 !!! note "Concurrent-connection cap"
     The built-in server admits at most `MAX_CONCURRENT_CONNECTIONS` simultaneous
@@ -216,7 +243,7 @@ the same port still works. WebSocket routes are served on both paths.
 
 ## Extending the CLI with plugins
 
-The `veloce` command ships with `run`, `routes`, `check`, `shell`, and
+The `veloce` command ships with `new`, `generate` (`g`), `run`, `mcp`, `routes`, `check`, `shell`, and
 `custom`. A distribution can add its own subcommands by advertising a
 callable under the `veloce.commands` entry-point group — useful for
 deployment helpers, database migrations, or any operational task you want
@@ -258,14 +285,75 @@ Once the package is installed, `veloce deploy prod` runs your command.
 
 ### Hardening checklist
 
-- Call `app.use_secure_defaults()` (secure session cookies +
-  `SecurityHeadersMiddleware`) for any internet-facing deployment.
+- Pass `secure=True` to your session middleware, and register
+  `SecurityHeadersMiddleware(hsts_max_age=31536000)`, for any
+  internet-facing deployment.
 - Run `veloce check your_module:app` before deploying — it flags
   `DEBUG`, a missing `SECRET_KEY`, insecure session cookies, and missing
   security headers.
 - Set `MAX_CONTENT_LENGTH` so oversized uploads are refused.
 - Keep `debug=False` for anything reachable beyond `localhost` — debug
   tracebacks leak source and internals.
+
+### What the audit can and cannot see
+
+Middleware reports on itself. The audit walks the registered middleware and
+asks each one, so a middleware written outside Veloce is audited on the same
+terms as a built-in. Severity decides what a finding *does*:
+
+| severity | at startup | `veloce check` |
+| --- | --- | --- |
+| `error` | refuses to serve (`AuditFailed`) | exits 1 |
+| `warning` | logged in debug | exits 1 |
+| `info` | logged in debug | reported, exits 0 |
+
+```python
+from veloce import Finding, Middleware
+
+class TenantAuthMiddleware(Middleware):
+    def audit(self, ctx):
+        if not ctx.app.config.get("TENANT_SIGNING_KEY"):
+            yield Finding(
+                "TENANT_SIGNING_KEY is not set - tenant headers are unverified.",
+                severity="error",
+                fix="set TENANT_SIGNING_KEY",
+                id="tenant-signing-key-missing",
+            )
+```
+
+Anything adding hardening headers declares it, and satisfies the headers check
+without being a `SecurityHeadersMiddleware`:
+
+```python
+class MyHeadersMiddleware(Middleware):
+    sets_hardening_headers = True
+```
+
+A session backend gets its cookie check by subclassing
+[`SessionMiddlewareBase`](../reference/middleware.md), which also carries the
+`session.permanent` lifetime rule.
+
+!!! note "Checks that read the route table"
+
+    `veloce check` imports your app without starting it, so routes registered
+    during startup do not exist yet. A check that reads `ctx.app`'s routes must
+    set `audit_needs_routes = True`; it is then skipped until startup rather
+    than reporting a live route as missing.
+
+### Silencing an accepted finding
+
+Turn off one finding by id, so the audit stays on for everything else:
+
+```python
+app.config["SILENCED_AUDIT_IDS"] = ("hardening-headers-missing",)
+```
+
+!!! warning "A clean audit is not a proof"
+
+    The audit reports on this app's middleware. Hardening the app does not
+    own — TLS terminated at a reverse proxy, headers added by a CDN — is
+    invisible to it, as is a middleware that reports nothing. Verify those
+    separately.
 
 ### Regex constraints and ReDoS
 

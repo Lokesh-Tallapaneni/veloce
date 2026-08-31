@@ -14,6 +14,7 @@ import re
 import pytest
 from pydantic import BaseModel
 
+from tests._openapi import document
 from veloce import ORJSONResponse, TestClient, Veloce
 
 msgspec = pytest.importorskip("msgspec")
@@ -252,7 +253,7 @@ def test_openapi_includes_struct_schema():
     async def listing():
         return []
 
-    spec = TestClient(app).get("/openapi.json").json()
+    spec = document(app)
     schemas = spec["components"]["schemas"]
     # Both the model and its nested struct get component schemas.
     assert "User" in schemas
@@ -352,8 +353,8 @@ def test_mcp_msgspec_body_input_schema_is_object():
     `tools/call` delivers (MCP does not inline a struct's fields the way it does
     a Pydantic model).
     """
+    from veloce import Body
     from veloce.contrib.mcp.registry import build_registry
-    from veloce.routing.params import Body
 
     app = Veloce(openapi_url=None)
 

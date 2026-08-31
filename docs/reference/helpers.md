@@ -25,5 +25,6 @@ The request-scoped proxies, response shortcuts, and control-flow helpers.
 ::: veloce.send_from_directory
 ::: veloce.send_from_directory_async
 ::: veloce.stream_with_context
+::: veloce.url_for
 ::: veloce.Markup
 ::: veloce.escape

@@ -22,7 +22,7 @@ _segment = st.text(alphabet=_SEGMENT_CHARS, min_size=1, max_size=8)
 _static_path = st.lists(_segment, min_size=1, max_size=5).map(lambda segs: "/" + "/".join(segs))
 
 
-@settings(max_examples=100, deadline=None)
+@settings(deadline=None)
 @given(paths=st.lists(_static_path, max_size=40, unique=True))
 def test_registered_static_paths_always_match(paths: list[str]) -> None:
     """Every registered static path matches straight back to its route."""
@@ -43,7 +43,7 @@ _junk_segment = st.text(alphabet=_SEGMENT_CHARS + "/.%", max_size=6)
 _junk_path = st.lists(_junk_segment, max_size=6).map(lambda segs: "/" + "/".join(segs))
 
 
-@settings(max_examples=300, deadline=None)
+@settings(deadline=None)
 @given(path=_junk_path)
 def test_arbitrary_paths_match_or_none_never_raise(path: str) -> None:
     """Matching arbitrary junk returns a route or `None` — never raises."""

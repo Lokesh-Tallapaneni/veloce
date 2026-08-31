@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from tests.conftest import make_request
 from veloce import Request
 
 
 def _req(headers: dict) -> Request:
-    return Request(method="GET", path="/x", query_string="", headers=headers, body=b"")
+    return make_request(method="GET", path="/x", query_string="", headers=headers, body=b"")
 
 
 def test_missing_returns_empty():

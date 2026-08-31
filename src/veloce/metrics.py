@@ -132,7 +132,7 @@ def _rewrite_duplicate(err: ValueError, prefix: str, is_global: bool) -> ValueEr
 def instrument_with_prometheus(
     app: Veloce,
     *,
-    registry: Any | None = None,
+    registry: Any = None,
     prefix: str = "http",
     buckets: Sequence[float] | None = None,
     group_status: bool = True,

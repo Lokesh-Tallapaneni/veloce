@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from veloce._internal import _require_slots
+
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.server import MCPServer, MethodHandler
 
@@ -22,25 +24,55 @@ class Capability:
 
     __slots__ = ()
 
+    #: Methods of this capability that the modern revision retired. The server
+    #: refuses them with method-not-found there, so a client discovers the
+    #: surface it actually has.
+    #:
+    #: Declared here rather than in a name table in the dispatcher: withholding
+    #: a method from `advertise(modern=True)` and refusing it at dispatch are two
+    #: halves of one rule, and split across two files a capability author edits
+    #: one and the server then advertises what it refuses.
+    handshake_only_methods: frozenset[str] = frozenset()
+
     def __init_subclass__(cls, **kwargs: Any) -> None:
         # A slotted base whose subclass forgets `__slots__` silently regains a
         # per-instance `__dict__`; fail loudly so the discipline is structural.
         super().__init_subclass__(**kwargs)
-        if "__slots__" not in cls.__dict__:
-            raise TypeError(f"{cls.__name__} must declare __slots__")
+        _require_slots(cls)
 
-    def advertise(self) -> dict[str, Any] | None:
+    def advertise(self, *, modern: bool = False) -> dict[str, Any] | None:
         """Return this capability's entry for the `initialize` capabilities object.
 
         A single-key mapping (e.g. ``{"tools": {"listChanged": False}}``) merged
         into the advertised capabilities, or `None` when the app exposes nothing
         for this area so the client does not probe an empty primitive.
+
+        Declare a `modern` keyword parameter to vary the entry by protocol
+        revision - the server passes it when the signature accepts it, so a
+        capability whose methods a revision retired can withhold or narrow what
+        it advertises rather than promising something the dispatcher refuses.
         """
         raise NotImplementedError
 
     def handlers(self) -> dict[str, MethodHandler]:
         """Return the ``{json_rpc_method: handler}`` map this capability answers."""
         raise NotImplementedError
+
+    def extensions(self) -> dict[str, Any] | None:
+        """Return this capability's entry for the advertised extensions object.
+
+        `None` - the default - means this capability contributes no extension,
+        which is true of most of them. A capability contributes an entry only
+        when the feature it names is actually available, so a server with no
+        task-capable tool advertises no tasks extension and a client will never
+        offer one.
+
+        Declared here rather than resolved by `getattr` on the server side,
+        which would leave the third member of the contract invisible to anyone
+        reading the base class - and this class is the documented seam an
+        out-of-tree capability implements against.
+        """
+        return None
 
 
 class _ServerCapability(Capability):

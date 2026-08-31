@@ -1,4 +1,4 @@
-"""message_flashed signal — fires on every flash() call (SI3)."""
+"""message_flashed signal — fires on every flash() call."""
 
 from __future__ import annotations
 

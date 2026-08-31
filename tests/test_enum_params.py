@@ -2,14 +2,13 @@
 
 import enum
 
-import pytest
+import orjson
 
 from tests.conftest import make_request
 from veloce import Veloce
 
 
 class TestEnumParams:
-    @pytest.mark.asyncio
     async def test_enum_path_param(self):
         class Color(str, enum.Enum):
             RED = "red"
@@ -23,11 +22,8 @@ class TestEnumParams:
             return {"color": color.value}
 
         resp = await app.handle_request(make_request(path="/color/red"))
-        import orjson
-
         assert orjson.loads(resp.body)["color"] == "red"
 
-    @pytest.mark.asyncio
     async def test_enum_invalid(self):
         class Status(str, enum.Enum):
             ACTIVE = "active"

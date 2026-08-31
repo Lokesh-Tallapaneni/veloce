@@ -40,20 +40,23 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from veloce.contrib.mcp.session import MCPSession
+from veloce.contrib.mcp.transports._common import _SESSION_ID_ENTROPY_BYTES
 
 if TYPE_CHECKING:  # pragma: no cover
     from collections.abc import Callable
 
-# Bytes of entropy per session id. `secrets.token_urlsafe` yields URL-safe base64
-# (characters within the MCP-mandated visible-ASCII range 0x21-0x7E), so the id is
-# globally unique and cryptographically secure per the transport spec.
-_SESSION_ID_ENTROPY_BYTES = 24
+# Live sessions held per worker. Generous for any real deployment; the point is
+# that the count has a ceiling that does not depend on clients behaving.
+_DEFAULT_MAX_SESSIONS = 10_000
 
 # Idle seconds a session is retained without being touched before it is reclaimed.
 # A client that initializes and disappears (never sending `DELETE`) would otherwise
 # leak its id and its `MCPSession` for the process lifetime; eviction runs lazily
 # on session resolution so no background timer is needed.
 _DEFAULT_IDLE_TTL_SECONDS = 3600.0
+
+
+# ── Records and backends ──────────────────────────────────
 
 
 @dataclass(slots=True)
@@ -111,6 +114,9 @@ class SessionBackend(Protocol):
         ...
 
 
+# ── The store ─────────────────────────────────────────────
+
+
 class _LiveSession:
     """One live `Mcp-Session-Id`: its `MCPSession` and last-touched timestamp."""
 
@@ -124,16 +130,23 @@ class _LiveSession:
 class HttpSessionStore:
     """Track live `Mcp-Session-Id` values and their sessions for the HTTP transport."""
 
-    __slots__ = ("_live", "_idle_ttl", "_on_evict", "_backend")
+    __slots__ = ("_live", "_idle_ttl", "_max_sessions", "_on_evict", "_backend")
 
     def __init__(
         self,
         idle_ttl: float = _DEFAULT_IDLE_TTL_SECONDS,
         on_evict: Callable[[MCPSession], None] | None = None,
         backend: SessionBackend | None = None,
+        max_sessions: int = _DEFAULT_MAX_SESSIONS,
     ) -> None:
+        if max_sessions < 1:
+            raise ValueError("max_sessions must be >= 1")
         self._live: dict[str, _LiveSession] = {}
         self._idle_ttl = idle_ttl
+        # Live sessions are bounded independently of the idle TTL. Minting a
+        # session costs a client one request, so within one TTL window an
+        # unauthenticated caller could otherwise accumulate them without limit.
+        self._max_sessions = max_sessions
         # Where session records are shared with other workers. `None` - the
         # default - keeps sessions in this process, which is what a single-worker
         # deployment wants and costs nothing.
@@ -146,6 +159,17 @@ class HttpSessionStore:
     async def create(self) -> tuple[str, MCPSession]:
         """Mint a new session id with its `MCPSession`, record it, and return both."""
         self._evict_idle()
+        # At capacity, reclaim the least-recently-touched session rather than
+        # refusing the new one: `_live` is ordered oldest-touched-first (see
+        # `_touch`), so the victim is the entry least likely to be in active use,
+        # and a flood cannot lock legitimate clients out of the transport
+        # entirely. `_on_evict` fires as it does for an idle reclaim, so the
+        # transport still releases what the session owned.
+        while len(self._live) >= self._max_sessions:
+            oldest_id, oldest = next(iter(self._live.items()))
+            del self._live[oldest_id]
+            if self._on_evict is not None:
+                self._on_evict(oldest.session)
         session_id = secrets.token_urlsafe(_SESSION_ID_ENTROPY_BYTES)
         session = MCPSession()
         self._live[session_id] = _LiveSession(session)
@@ -170,7 +194,7 @@ class HttpSessionStore:
             entry = self._live.get(session_id)
             if entry is None:
                 return None
-            entry.touched_at = time.monotonic()
+            self._touch(session_id, entry)
             return entry.session
 
         record = await self._backend.read(session_id)
@@ -183,7 +207,7 @@ class HttpSessionStore:
             entry = _LiveSession(MCPSession())
             self._live[session_id] = entry
         else:
-            entry.touched_at = time.monotonic()
+            self._touch(session_id, entry)
         session = entry.session
         session.initialized = record.initialized
         session.client_capabilities = record.client_capabilities
@@ -222,12 +246,28 @@ class HttpSessionStore:
         if entry is not None and self._on_evict is not None:
             self._on_evict(entry.session)
 
+    def _touch(self, session_id: str, entry: _LiveSession) -> None:
+        """Refresh an entry's deadline and move it to the end of `_live`.
+
+        The move is what keeps `_evict_idle` off a full scan: with every touch
+        re-inserting, `_live` is ordered oldest-first, so the sweep stops at the
+        first entry still inside the window.
+        """
+        entry.touched_at = time.monotonic()
+        del self._live[session_id]
+        self._live[session_id] = entry
+
     def _evict_idle(self) -> None:
         """Reclaim sessions untouched past the idle time-to-live.
 
         This reclaims what this worker holds. A shared record is left for its own
         expiry: another worker may still be serving the session, and dropping the
         record because *this* worker went quiet would end a live conversation.
+
+        `_live` is ordered oldest-touched first (see `_touch`), so this walks only
+        the entries it actually reclaims and stops at the first live one. It runs
+        on `resolve`, which is every MCP request, and a full scan there cost one
+        pass over every live session per request.
         """
         if not self._live:
             return
@@ -235,10 +275,16 @@ class HttpSessionStore:
         # ("evict on next access") and a coarse monotonic clock (Windows' ~15ms
         # granularity can read the same value twice), a strict `<` would never fire.
         deadline = time.monotonic() - self._idle_ttl
-        expired = [sid for sid, entry in self._live.items() if entry.touched_at <= deadline]
-        for sid in expired:
-            entry = self._live.pop(sid, None)
-            if entry is not None and self._on_evict is not None:
+        expired: list[tuple[str, _LiveSession]] = []
+        # Iterated lazily and stopped at the first live entry, so the walk is the
+        # length of what is being reclaimed - not of the whole map.
+        for sid, entry in self._live.items():
+            if entry.touched_at > deadline:
+                break
+            expired.append((sid, entry))
+        for sid, entry in expired:
+            del self._live[sid]
+            if self._on_evict is not None:
                 self._on_evict(entry.session)
 
 

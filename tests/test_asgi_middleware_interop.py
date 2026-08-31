@@ -69,7 +69,7 @@ def test_asgi_middleware_class_not_added_to_native_pipeline():
     app = Veloce(openapi_url=None)
     app.add_middleware(_HeaderMiddleware)
     assert len(app._asgi_middleware) == 1
-    assert app._middlewares == []
+    assert app.middlewares == ()
 
 
 # ── ordering ──────────────────────────────────────────────────────────
@@ -161,7 +161,7 @@ def test_native_middleware_class_still_uses_the_pipeline():
 
     # A `Middleware` subclass goes to the native pipeline, not the ASGI stack.
     assert app._asgi_middleware == []
-    assert len(app._middlewares) == 1
+    assert len(app.middlewares) == 1
 
     resp = app.test_client().get("/")
     assert resp.headers.get("X-Native") == "1"

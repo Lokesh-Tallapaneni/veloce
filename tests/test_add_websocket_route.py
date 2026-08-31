@@ -43,7 +43,6 @@ def test_websocket_route_is_websocket_alias():
 def test_websocket_exposes_the_application():
     # `ws.app` mirrors `request.app` so a handler reaches app state directly;
     # the ASGI `scope` carries no `app` key, so this is the supported accessor.
-    from veloce import Veloce
 
     app = Veloce(openapi_url=None)
     app.state.marker = "value"

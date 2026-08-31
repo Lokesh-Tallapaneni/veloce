@@ -210,7 +210,7 @@ def test_returns_registered_hook() -> None:
     hook = instrument_with_prometheus(app, registry=CollectorRegistry())
     # The returned hook is the exact object appended to the app's instrumentation
     # list — mirroring the otel bridge's return-hook contract.
-    assert app._instrumentation[-1] is hook
+    assert app.instrumentation_hooks[-1] is hook
 
 
 def test_custom_prefix() -> None:

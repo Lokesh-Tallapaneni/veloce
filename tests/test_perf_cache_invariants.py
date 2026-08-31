@@ -30,6 +30,7 @@ import gc
 import weakref
 
 from veloce import Depends, Veloce
+from veloce.app import _exc_handler_sig_cache
 from veloce.testclient import TestClient
 
 
@@ -67,7 +68,6 @@ def test_exc_handler_sig_cache_is_weak_key_dictionary():
     """Structural pin: the exception-handler signature flag cache uses
     weak keys, so a churning test suite that registers and tears down
     handlers doesn't accumulate dead entries."""
-    from veloce.app import _exc_handler_sig_cache
 
     assert isinstance(_exc_handler_sig_cache, weakref.WeakKeyDictionary)
 
@@ -77,7 +77,6 @@ def test_exc_handler_sig_cache_evicts_on_handler_release():
     to the handler — so WeakKey eviction works cleanly here even though
     it doesn't for `_override_subplans` (whose values back-ref via the
     plan)."""
-    from veloce.app import _exc_handler_sig_cache
 
     def handler(request, exc):
         return None

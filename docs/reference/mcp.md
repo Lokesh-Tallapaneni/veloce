@@ -18,6 +18,14 @@ The Model Context Protocol server, registries, and transports. Most applications
 ::: veloce.contrib.mcp.ResourceRegistry
 ::: veloce.contrib.mcp.PromptRegistry
 ::: veloce.contrib.mcp.TaskRegistry
+The seam an out-of-tree spec area implements against: subclass `Capability`, annotate the handler map with `MethodHandler`, and pass an instance to `MCPServer(capabilities=[...])`.
+
+::: veloce.contrib.mcp.Capability
+::: veloce.contrib.mcp.MethodHandler
+::: veloce.contrib.mcp.ToolsCapability
+::: veloce.contrib.mcp.ResourcesCapability
+::: veloce.contrib.mcp.PromptsCapability
+::: veloce.contrib.mcp.LoggingCapability
 ::: veloce.contrib.mcp.TasksCapability
 ::: veloce.contrib.mcp.SubscriptionsCapability
 ::: veloce.contrib.mcp.CompletionsCapability
@@ -50,7 +58,10 @@ The content a tool, resource, or prompt may return beyond plain text.
 
 Transports, and the store that lets HTTP sessions outlive one worker.
 
+::: veloce.contrib.mcp.Transport
+::: veloce.contrib.mcp.BidirectionalTransport
 ::: veloce.contrib.mcp.register_http_transport
+::: veloce.contrib.mcp.register_sse_transport
 ::: veloce.contrib.mcp.StdioTransport
 ::: veloce.contrib.mcp.serve_stdio
 ::: veloce.contrib.mcp.SessionBackend
@@ -79,6 +90,7 @@ Errors. A handler raising one of these surfaces it to the client as the JSON-RPC
 ::: veloce.contrib.mcp.MCPCapabilityError
 ::: veloce.contrib.mcp.OriginNotAllowedError
 ::: veloce.contrib.mcp.ProtocolVersionError
+::: veloce.contrib.mcp.HeaderMismatchError
 ::: veloce.contrib.mcp.SessionRequiredError
 ::: veloce.contrib.mcp.SessionNotFoundError
 ::: veloce.contrib.mcp.MCPRequestError

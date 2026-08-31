@@ -162,30 +162,30 @@ def test_cookie_session_without_partitioned_omits_the_attribute():
     assert "Partitioned" not in _set_cookie_line(client.get("/write"))
 
 
-def test_render_cookie_matches_set_cookie_for_every_partitioned_combination():
+@pytest.mark.parametrize("secure", [True, False])
+@pytest.mark.parametrize("partitioned", [True, False])
+def test_render_cookie_matches_set_cookie_for_every_partitioned_combination(secure, partitioned):
     """`_render_cookie` and `Response.set_cookie` agree on whether `Partitioned`
     is emitted, for every (secure, partitioned) pairing - including the invalid
     ones the constructor guard currently makes unreachable."""
     mw = SessionMiddleware(secret_key="k" * 32, secure=True, samesite="none", partitioned=True)
-    for secure in (True, False):
-        for partitioned in (True, False):
-            mw.secure = secure
-            mw.partitioned = partitioned
-            rendered = mw._render_cookie("s", "v", 60, prefix=False)
-            probe = Response()
-            probe.set_cookie(
-                "s",
-                "v",
-                max_age=60,
-                path=mw.path,
-                secure=secure,
-                httponly=mw.httponly,
-                samesite="None",
-                partitioned=partitioned,
-            )
-            assert ("; Partitioned" in rendered) == (
-                "; Partitioned" in probe.headers["Set-Cookie"]
-            ), (secure, partitioned)
+    # Assigned after construction on purpose: the guard rejects the invalid
+    # pairings, and this pins what the renderer does if one is ever reached.
+    mw.secure = secure
+    mw.partitioned = partitioned
+    rendered = mw._render_cookie("s", "v", 60, prefix=False)
+    probe = Response()
+    probe.set_cookie(
+        "s",
+        "v",
+        max_age=60,
+        path=mw.path,
+        secure=secure,
+        httponly=mw.httponly,
+        samesite="None",
+        partitioned=partitioned,
+    )
+    assert ("; Partitioned" in rendered) == ("; Partitioned" in probe.headers["Set-Cookie"])
 
 
 def test_partitioned_without_secure_emits_no_partitioned_attribute():

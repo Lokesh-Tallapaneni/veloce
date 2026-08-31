@@ -2,70 +2,65 @@
 
 from __future__ import annotations
 
-import pytest
-
 from tests.conftest import make_request
 from veloce import Blueprint, JSONResponse, Request, Response, TestClient, Veloce
 from veloce.helpers import after_this_request
 
 
-class TestRequestHooks:
-    @pytest.mark.asyncio
-    async def test_before_request(self):
-        app = Veloce(openapi_url=None)
-        log = []
+async def test_before_request():
+    app = Veloce(openapi_url=None)
+    log = []
 
-        @app.before_request
-        async def log_request(request: Request):
-            log.append(f"{request.method} {request.path}")
-            return None  # Continue to handler
+    @app.before_request
+    async def log_request(request: Request):
+        log.append(f"{request.method} {request.path}")
+        return None  # Continue to handler
 
-        @app.get("/test")
-        async def test(request: Request):
-            return {"ok": True}
+    @app.get("/test")
+    async def test(request: Request):
+        return {"ok": True}
 
-        await app.handle_request(make_request(path="/test"))
-        assert log == ["GET /test"]
+    await app.handle_request(make_request(path="/test"))
+    assert log == ["GET /test"]
 
-    @pytest.mark.asyncio
-    async def test_before_request_short_circuit(self):
-        app = Veloce(openapi_url=None)
 
-        @app.before_request
-        async def block(request: Request):
-            if request.path == "/blocked":
-                return JSONResponse({"error": "blocked"}, status_code=403)
-            return None
+async def test_before_request_short_circuit():
+    app = Veloce(openapi_url=None)
 
-        @app.get("/blocked")
-        async def blocked(request: Request):
-            return {"should_not": "reach"}
+    @app.before_request
+    async def block(request: Request):
+        if request.path == "/blocked":
+            return JSONResponse({"error": "blocked"}, status_code=403)
+        return None
 
-        resp = await app.handle_request(make_request(path="/blocked"))
-        assert resp.status_code == 403
+    @app.get("/blocked")
+    async def blocked(request: Request):
+        return {"should_not": "reach"}
 
-    @pytest.mark.asyncio
-    async def test_after_request(self):
-        app = Veloce(openapi_url=None)
+    resp = await app.handle_request(make_request(path="/blocked"))
+    assert resp.status_code == 403
 
-        @app.after_request
-        async def add_header(request: Request, response: Response):
-            response.headers["X-Custom"] = "added"
-            response._encoded = None
-            return response
 
-        @app.get("/data")
-        async def data(request: Request):
-            return {"data": True}
+async def test_after_request():
+    app = Veloce(openapi_url=None)
 
-        resp = await app.handle_request(make_request(path="/data"))
-        assert resp.headers.get("X-Custom") == "added"
+    @app.after_request
+    async def add_header(request: Request, response: Response):
+        response.headers["X-Custom"] = "added"
+        return response
+
+    @app.get("/data")
+    async def data(request: Request):
+        return {"data": True}
+
+    resp = await app.handle_request(make_request(path="/data"))
+    assert resp.headers.get("X-Custom") == "added"
 
 
 # ── An after-request hook is called by its own signature ─────────────
 
 
-def _app_with(hook, *, blueprint=False):
+def _app_with(hook):
     app = Veloce(openapi_url=None)
     app.after_request(hook)
 

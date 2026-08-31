@@ -1,11 +1,15 @@
-"""CORS spec-compliance tests (M4)."""
+"""CORS spec-compliance tests."""
 
 from __future__ import annotations
+
+import inspect
+import textwrap
 
 import pytest
 
 from veloce import CORSMiddleware, Middleware, Veloce
 from veloce.http.header_set import HeaderSet
+from veloce.http.response import Response
 from veloce.testclient import TestClient
 
 # ── Construction validation ────────────────────────────────────────────
@@ -128,7 +132,6 @@ def test_vary_appended_not_replaced():
 
     @app.get("/x")
     async def x():
-        from veloce.http.response import Response
 
         return Response(body=b"ok", content_type="text/plain", headers={"Vary": "Accept"})
 
@@ -340,7 +343,11 @@ def test_cors_rejects_wildcard_regex_with_credentials(pattern):
     """R1 #58: a trivially-wildcard regex with credentials is the same
     security mistake as `allow_origins=["*"]` with credentials and must
     fail at construction with the same diagnostic."""
-    with pytest.raises(ValueError, match=r"allow_credentials=True"):
+    # Matched on the regex guard's own wording, not just "allow_credentials=True":
+    # `allow_headers` defaults to `["*"]`, so the separate wildcard-headers guard
+    # raises for ANY credentialed construction and a looser match passes with this
+    # guard removed entirely.
+    with pytest.raises(ValueError, match=r"wildcard allow_origin_regex"):
         CORSMiddleware(allow_origin_regex=pattern, allow_credentials=True)
 
 
@@ -554,3 +561,58 @@ def test_a_duplicate_contribution_is_not_repeated():
     with TestClient(app) as client:
         response = client.get("/", headers={"Origin": "https://good.test"})
     assert _exposed(response) == {"X-Board-Page"}
+
+
+# ── the CORS usage example runs ───────────────────────────────
+#
+# Moved here from `test_unswept_scope_findings.py`, a module named for the audit
+# batch that produced it rather than for the source it covers.
+
+
+def _usage_block(obj) -> str:
+    doc = inspect.getdoc(obj) or ""
+    after = doc.split("Usage::", 1)[1]
+    lines, started = [], False
+    for line in after.splitlines():
+        if not line.strip():
+            if started:
+                lines.append("")
+            continue
+        if line.startswith((" ", "\t")):
+            started = True
+            lines.append(line)
+        elif started:
+            break
+    return textwrap.dedent("\n".join(lines)).strip()
+
+
+def test_the_cors_usage_example_constructs():
+    """The defect: it raised `ValueError` at construction."""
+    namespace = {"CORSMiddleware": CORSMiddleware, "app": Veloce(openapi_url=None)}
+    exec(compile(_usage_block(CORSMiddleware), "<cors usage>", "exec"), namespace)
+
+
+def test_the_cors_usage_example_declares_allow_headers():
+    """Omitting it is the wildcard that made the example raise."""
+    assert "allow_headers" in _usage_block(CORSMiddleware)
+
+
+def test_credentials_with_wildcard_headers_is_still_refused():
+    """The guard the example was tripping must stay."""
+    with pytest.raises(ValueError, match="allow_credentials"):
+        CORSMiddleware(allow_origins=["https://example.com"], allow_credentials=True)
+
+
+def test_the_example_actually_answers_a_cors_request():
+    """Constructing is not enough - it has to do the job it advertises."""
+    app = Veloce(openapi_url=None)
+    namespace = {"CORSMiddleware": CORSMiddleware, "app": app}
+    exec(compile(_usage_block(CORSMiddleware), "<cors usage>", "exec"), namespace)
+
+    @app.get("/x")
+    async def x() -> dict:
+        return {}
+
+    response = TestClient(app).get("/x", headers={"Origin": "https://example.com"})
+    allowed = [v for k, v in response.headers.items() if k.lower() == "access-control-allow-origin"]
+    assert allowed == ["https://example.com"]

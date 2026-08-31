@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
-import time
+import gc
+import warnings
+from typing import Any
 
 import pytest
 
+from tests.conftest import make_request
 from veloce import Request, Veloce
 from veloce.signals import (
     ANY_SENDER,
     Namespace,
     Signal,
+    SignalResult,
     got_request_exception,
     request_finished,
     request_started,
@@ -21,7 +25,7 @@ from veloce.signals import (
 
 
 def _req(path: str = "/x") -> Request:
-    return Request(method="GET", path=path, query_string="", headers={}, body=b"")
+    return make_request(method="GET", path=path, query_string="", headers={}, body=b"")
 
 
 # ── Signal class ─────────────────────────────────────────────────────
@@ -61,8 +65,6 @@ def test_has_receivers_for_true_when_connected():
 
 def test_weak_ref_dies_when_owner_collected():
     """Weak-ref receivers don't pin the owner."""
-    import gc
-
     sig = Signal()
 
     class Owner:
@@ -120,7 +122,6 @@ def test_namespace_doc_arg_is_accepted():
 # ── Framework integration ────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_request_started_fires_on_dispatch():
     app = Veloce(debug=True, openapi_url=None)
     fired = []
@@ -141,7 +142,6 @@ async def test_request_started_fires_on_dispatch():
         request_started.disconnect(on_start)
 
 
-@pytest.mark.asyncio
 async def test_request_finished_fires_with_response():
     app = Veloce(debug=True, openapi_url=None)
     captured = []
@@ -162,7 +162,6 @@ async def test_request_finished_fires_with_response():
         request_finished.disconnect(on_done)
 
 
-@pytest.mark.asyncio
 async def test_request_tearing_down_always_fires():
     """Even on a clean request, teardown signal fires."""
     app = Veloce(debug=True, openapi_url=None)
@@ -184,7 +183,6 @@ async def test_request_tearing_down_always_fires():
         request_tearing_down.disconnect(on_tear)
 
 
-@pytest.mark.asyncio
 async def test_got_request_exception_fires_on_error():
     app = Veloce(debug=True, openapi_url=None)
     seen = []
@@ -270,8 +268,6 @@ def test_send_robust_returns_exceptions_and_continues():
 
 def test_send_robust_rejects_async_receiver_with_typeerror():
     """Sync send_robust + async receiver → TypeError entry, no unawaited coroutine."""
-    import warnings
-
     sig = Signal("sync-only")
 
     async def async_handler(sender, **kwargs):
@@ -322,39 +318,63 @@ async def test_send_robust_async_mixed_sync_async_with_failure():
     assert results[2] == (async_ok, "async-value")
 
 
-#: How long each probe receiver sleeps. Concurrent dispatch starts them all at
-#: once; sequential dispatch spaces the starts a whole delay apart.
-_RECEIVER_DELAY = 0.05
+#: Failure bound for the rendezvous below - not a synchronisation delay. A
+#: sequential dispatch never reaches it and fails here instead of hanging.
+_RENDEZVOUS_TIMEOUT = 5.0
+
+
+class _Rendezvous:
+    """Every receiver must arrive before any is released.
+
+    Concurrency was previously inferred from the wall-clock spread between
+    receiver start times against a hard 25 ms threshold - "flaky by
+    construction" on a loaded machine, and a threshold that says nothing about
+    the property on a fast one. A rendezvous states the property directly:
+    under concurrent dispatch all receivers arrive and the last one releases
+    them; under sequential dispatch the first blocks forever, which the timeout
+    turns into a clear failure rather than a hang.
+
+    `asyncio.Barrier` would say this in one line but landed in 3.11, and this
+    project supports 3.10.
+    """
+
+    def __init__(self, parties: int) -> None:
+        self.parties = parties
+        self.arrived: list[str] = []
+        self._all_here = asyncio.Event()
+
+    async def wait(self, marker: str) -> None:
+        self.arrived.append(marker)
+        if len(self.arrived) == self.parties:
+            self._all_here.set()
+        await asyncio.wait_for(self._all_here.wait(), timeout=_RENDEZVOUS_TIMEOUT)
 
 
 # ── asend: concurrent async dispatch ────────────────────────────────
 
 
 async def test_asend_runs_async_receivers_concurrently():
-    sig = Signal("concurrent")
-    starts: list[float] = []
+    """All three receivers are in flight at once, proved by rendezvous.
 
-    async def make(marker: str):
+    No wall-clock threshold: each receiver blocks until every receiver has
+    arrived, which only a concurrent dispatch can satisfy.
+    """
+    sig = Signal("concurrent")
+    rendezvous = _Rendezvous(parties=3)
+
+    def make(marker: str):
         async def receiver(sender, **kwargs):
-            starts.append(time.perf_counter())
-            await asyncio.sleep(_RECEIVER_DELAY)
+            await rendezvous.wait(marker)
             return marker
 
         return receiver
 
     for marker in ("a", "b", "c"):
-        sig.connect(await make(marker), weak=False)
+        sig.connect(make(marker), weak=False)
 
     results = await sig.asend("s")
 
-    # The robust measure is when each receiver *began*, not how long the whole
-    # dispatch took: total elapsed jitters under a loaded scheduler, while the
-    # spread between concurrently-scheduled starts stays small. Sequential
-    # dispatch would space them a whole delay apart.
-    assert len(starts) == 3
-    assert max(starts) - min(starts) < _RECEIVER_DELAY / 2, (
-        f"receivers did not start concurrently: spread={max(starts) - min(starts):.4f}s"
-    )
+    assert sorted(rendezvous.arrived) == ["a", "b", "c"]
     assert [value for _, value in results] == ["a", "b", "c"]
 
 
@@ -426,22 +446,20 @@ async def test_asend_runs_all_async_receivers_before_raising():
 
 
 async def test_send_robust_async_concurrent_and_robust():
+    """Concurrent *and* robust: one receiver raising does not stop the others."""
     sig = Signal("robust-concurrent")
-    starts: list[float] = []
+    rendezvous = _Rendezvous(parties=3)
 
     async def ok_a(sender, **kwargs):
-        starts.append(time.perf_counter())
-        await asyncio.sleep(_RECEIVER_DELAY)
+        await rendezvous.wait("a")
         return "a"
 
     async def raiser(sender, **kwargs):
-        starts.append(time.perf_counter())
-        await asyncio.sleep(_RECEIVER_DELAY)
+        await rendezvous.wait("raiser")
         raise RuntimeError("boom")
 
     async def ok_b(sender, **kwargs):
-        starts.append(time.perf_counter())
-        await asyncio.sleep(_RECEIVER_DELAY)
+        await rendezvous.wait("b")
         return "b"
 
     sig.connect(ok_a, weak=False)
@@ -457,12 +475,8 @@ async def test_send_robust_async_concurrent_and_robust():
     assert isinstance(results[1][1], RuntimeError)
     assert str(results[1][1]) == "boom"
     assert results[2] == (ok_b, "b")
-    # Concurrency measured by start spread rather than total elapsed - see the
-    # note on `test_asend_runs_async_receivers_concurrently`.
-    assert len(starts) == 3
-    assert max(starts) - min(starts) < _RECEIVER_DELAY / 2, (
-        f"receivers did not start concurrently: spread={max(starts) - min(starts):.4f}s"
-    )
+    # Every receiver reached the rendezvous, so all three were in flight at once.
+    assert sorted(rendezvous.arrived) == ["a", "b", "raiser"]
 
 
 async def test_asend_propagates_contextvars_snapshot():
@@ -538,8 +552,6 @@ async def test_send_robust_async_async_receiver_sees_pre_sync_mutation_context()
 
 def test_connect_is_async_classification_does_not_break_sync_paths():
     """The 4-tuple `_subs` change leaves sync send/send_robust unchanged."""
-    import warnings
-
     sig = Signal("classify")
 
     def sync_ok(sender, **kwargs):
@@ -564,7 +576,6 @@ def test_connect_is_async_classification_does_not_break_sync_paths():
 
 def test_iter_live_targets_prunes_dead_weakref_after_single_send():
     """Both send and send_robust prune dead weakrefs via _iter_live_targets."""
-    import gc
 
     class Owner:
         def handle(self, sender, **kw):
@@ -576,11 +587,11 @@ def test_iter_live_targets_prunes_dead_weakref_after_single_send():
     drop = Owner()
     sig_a.connect(keep.handle, weak=True)
     sig_a.connect(drop.handle, weak=True)
-    assert len(sig_a._subs) == 2
+    assert sig_a.receiver_count() == 2
     del drop
     gc.collect()
     sig_a.send("x")
-    assert len(sig_a._subs) == 1
+    assert sig_a.receiver_count() == 1
 
     # send_robust() path
     sig_b = Signal("prune-robust")
@@ -588,11 +599,11 @@ def test_iter_live_targets_prunes_dead_weakref_after_single_send():
     drop2 = Owner()
     sig_b.connect(keep2.handle, weak=True)
     sig_b.connect(drop2.handle, weak=True)
-    assert len(sig_b._subs) == 2
+    assert sig_b.receiver_count() == 2
     del drop2
     gc.collect()
     sig_b.send_robust("x")
-    assert len(sig_b._subs) == 1
+    assert sig_b.receiver_count() == 1
 
 
 def test_send_prunes_when_only_receiver_is_dead():
@@ -603,7 +614,6 @@ def test_send_prunes_when_only_receiver_is_dead():
     dead weakrefs would strand them forever. send() now resolves to the empty
     fast-path only when _subs is truly empty, so the dead entry is dropped.
     """
-    import gc
 
     class Owner:
         def handle(self, sender, **kw):
@@ -612,7 +622,7 @@ def test_send_prunes_when_only_receiver_is_dead():
     sig = Signal("prune-only-dead")
     drop = Owner()
     sig.connect(drop.handle, weak=True)
-    assert len(sig._subs) == 1
+    assert sig.receiver_count() == 1
     assert sig.has_receivers_for("x") is True
     del drop
     gc.collect()
@@ -620,7 +630,7 @@ def test_send_prunes_when_only_receiver_is_dead():
     # does not prune. send() fires nothing yet prunes the stranded entry.
     assert sig.has_receivers_for("x") is False
     assert sig.send("x") == []
-    assert sig._subs == []
+    assert sig.receiver_count() == 0
 
 
 def test_send_robust_logs_failures(caplog):
@@ -699,6 +709,144 @@ def test_signal_disconnect_targets_the_correct_subscription():
     # The ANY_SENDER subscription must survive — a send for an
     # unrelated sender should still find it.
     assert sig.has_receivers_for("anything")
-    # The per-sender one is gone (only one subscription remains).
-    assert len(sig._subs) == 1
-    assert sig._subs[0][0] is ANY_SENDER
+    # The per-sender one is gone, and the survivor is the ANY_SENDER binding:
+    # a "login"-only subscription could not answer `has_receivers_for("anything")`.
+    assert sig.receiver_count() == 1
+
+
+def test_signal_result_is_alias_for_list_of_tuples() -> None:
+    # `SignalResult = list[tuple[Callable, Any]]` resolves to a
+    # `types.GenericAlias` at runtime — inspect the origin / args.
+    origin = getattr(SignalResult, "__origin__", None)
+    assert origin is list
+    (inner,) = SignalResult.__args__
+    assert getattr(inner, "__origin__", None) is tuple
+    callable_arg, any_arg = inner.__args__
+    # `Callable` from collections.abc is what the type alias resolves to.
+    from collections.abc import Callable
+
+    assert callable_arg is Callable
+    assert any_arg is Any
+
+
+# ── send_robust with async receivers ─────────────────────────────────
+#
+# Moved here from `test_app_protocol_signals_e2e.py`, a module named for a fix
+# batch rather than a subject.
+
+
+async def test_send_robust_async_mixed_receivers():
+    sig = Signal("mixed")
+    fired: list[str] = []
+
+    def sync_recv(sender, **kw):
+        fired.append("sync")
+        return "sync-ok"
+
+    async def async_raise(sender, **kw):
+        fired.append("async-raise")
+        raise RuntimeError("boom-async")
+
+    async def async_ok(sender, **kw):
+        fired.append("async-ok")
+        return "async-ok"
+
+    sig.connect(sync_recv, weak=False)
+    sig.connect(async_raise, weak=False)
+    sig.connect(async_ok, weak=False)
+
+    results = await sig.send_robust_async("sender")
+
+    assert fired == ["sync", "async-raise", "async-ok"], fired
+    assert len(results) == 3
+    receivers = [r for r, _ in results]
+    values = [v for _, v in results]
+    assert sync_recv in receivers
+    assert async_raise in receivers
+    assert async_ok in receivers
+    # The async-raise receiver's value is the captured exception.
+    raised_value = next(v for r, v in results if r is async_raise)
+    assert isinstance(raised_value, RuntimeError)
+    assert "boom-async" in str(raised_value)
+    # async_ok awaited cleanly.
+    assert "async-ok" in values
+
+
+def test_send_robust_rejects_async_receiver(recwarn):
+    sig = Signal("sync-only")
+
+    async def async_recv(sender, **kw):
+        return "should-not-be-awaited"
+
+    sig.connect(async_recv, weak=False)
+    results = sig.send_robust("sender")
+
+    assert len(results) == 1
+    receiver, value = results[0]
+    assert receiver is async_recv
+    assert isinstance(value, TypeError), value
+    # No unawaited-coroutine RuntimeWarning slipped through.
+    unawaited = [
+        w
+        for w in recwarn.list
+        if issubclass(w.category, RuntimeWarning) and "never awaited" in str(w.message)
+    ]
+    assert not unawaited, [str(w.message) for w in unawaited]
+
+
+# ── a signal keeps its documentation ─────────────────────────────────
+#
+# `Namespace.signal(name, doc=...)` discarded `doc`. It is a Blinker-compat
+# parameter, so code being ported passes it and got nothing back.
+
+
+def test_a_signal_records_its_doc():
+    """The defect: `doc` was discarded."""
+    assert Namespace().signal("probe", doc="what it is for").doc == "what it is for"
+
+
+def test_a_signal_without_a_doc_has_none():
+    assert Namespace().signal("probe").doc is None
+
+
+def test_a_bare_signal_has_none():
+    assert Signal("probe").doc is None
+
+
+def test_a_signal_constructed_directly_can_carry_one():
+    assert Signal("probe", "why").doc == "why"
+
+
+def test_the_same_name_returns_the_same_instance():
+    """Memoisation is the existing contract and must not change."""
+    namespace = Namespace()
+    first = namespace.signal("probe", doc="first")
+    assert namespace.signal("probe") is first
+
+
+def test_the_first_doc_wins():
+    """A later call must not rewrite a signal other code already holds."""
+    namespace = Namespace()
+    namespace.signal("probe", doc="first")
+    assert namespace.signal("probe", doc="second").doc == "first"
+
+
+def test_a_signal_still_sends():
+    """The negative: adding a slot must not disturb delivery."""
+    namespace = Namespace()
+    signal = namespace.signal("probe", doc="d")
+    seen = []
+
+    def receiver(sender, **kw):
+        seen.append(kw.get("value"))
+
+    # Held in a local: `connect` keeps a weak reference by default, so a lambda
+    # with no other referent is collected before `send` runs.
+    signal.connect(receiver)
+    signal.send(None, value=7)
+    assert seen == [7]
+
+
+def test_two_names_are_two_signals():
+    namespace = Namespace()
+    assert namespace.signal("a", doc="x") is not namespace.signal("b", doc="y")

@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import pytest
 
+from tests._mcp import INVALID_REQUEST
+from tests._mcp_source import calls, membership_tests, tree
 from veloce import TestClient, Veloce
-
-_INVALID_REQUEST = -32600
+from veloce.contrib.mcp.server import MCPServer
+from veloce.contrib.mcp.session import MCPSession
 
 
 def _client() -> TestClient:
@@ -42,15 +44,17 @@ def _post(client: TestClient, payload: dict):
 
 
 @pytest.mark.parametrize(
-    ("payload", "label"),
+    "payload",
     [
-        ({"jsonrpc": "2.0", "id": 99, "result": {"ok": True}}, "result"),
-        ({"jsonrpc": "2.0", "id": 99, "error": {"code": -1, "message": "no"}}, "error"),
-        ({"jsonrpc": "2.0", "id": "str-id", "result": {}}, "string id"),
-        ({"jsonrpc": "2.0", "id": 0, "result": {}}, "falsy id"),
+        pytest.param({"jsonrpc": "2.0", "id": 99, "result": {"ok": True}}, id="result"),
+        pytest.param(
+            {"jsonrpc": "2.0", "id": 99, "error": {"code": -1, "message": "no"}}, id="error"
+        ),
+        pytest.param({"jsonrpc": "2.0", "id": "str-id", "result": {}}, id="string id"),
+        pytest.param({"jsonrpc": "2.0", "id": 0, "result": {}}, id="falsy id"),
     ],
 )
-def test_a_posted_response_is_accepted_with_no_body(payload: dict, label: str):
+def test_a_posted_response_is_accepted_with_no_body(payload: dict):
     response = _post(_client(), payload)
     assert response.status_code == 202
     assert response.body == b""
@@ -72,19 +76,19 @@ def test_a_response_carrying_an_unknown_id_is_still_accepted():
 
 
 @pytest.mark.parametrize(
-    ("payload", "label"),
+    "payload",
     [
-        ({"jsonrpc": "2.0", "id": 99}, "id but neither method nor result"),
-        ({"jsonrpc": "2.0"}, "nothing at all"),
-        ({"id": 99, "result": {}}, "no jsonrpc version"),
-        ({"jsonrpc": "1.0", "id": 99, "result": {}}, "wrong jsonrpc version"),
-        ({"jsonrpc": "2.0", "method": 42, "id": 1}, "non-string method"),
+        pytest.param({"jsonrpc": "2.0", "id": 99}, id="id but neither method nor result"),
+        pytest.param({"jsonrpc": "2.0"}, id="nothing at all"),
+        pytest.param({"id": 99, "result": {}}, id="no jsonrpc version"),
+        pytest.param({"jsonrpc": "1.0", "id": 99, "result": {}}, id="wrong jsonrpc version"),
+        pytest.param({"jsonrpc": "2.0", "method": 42, "id": 1}, id="non-string method"),
     ],
 )
-def test_something_that_is_neither_a_request_nor_a_response_is_refused(payload: dict, label: str):
+def test_something_that_is_neither_a_request_nor_a_response_is_refused(payload: dict):
     response = _post(_client(), payload)
     assert response.status_code == 200
-    assert response.json()["error"]["code"] == _INVALID_REQUEST
+    assert response.json()["error"]["code"] == INVALID_REQUEST
 
 
 # ── Requests are unaffected ──────────────────────────────────────────
@@ -114,8 +118,6 @@ def test_a_tool_call_is_still_answered():
 
 async def test_the_dispatcher_returns_nothing_for_a_response():
     """`None` is what tells a transport there is nothing to send back."""
-    from veloce.contrib.mcp.server import MCPServer
-    from veloce.contrib.mcp.session import MCPSession
 
     app = Veloce(title="Dispatch", openapi_url=None)
 
@@ -131,10 +133,9 @@ async def test_the_dispatcher_returns_nothing_for_a_response():
 
 async def test_stdio_still_resolves_a_reply_before_dispatch():
     """stdio owns pending requests, so it must keep intercepting replies itself."""
-    import inspect
-
-    from veloce.contrib.mcp.transports import stdio
-
-    source = inspect.getsource(stdio)
-    assert '"method" not in message' in source
-    assert "_resolve_reply" in source
+    # Against the parsed module, not its text: `"method" not in message` is one
+    # `ruff format` reflow away from failing a green suite, and the same
+    # condition restated with different spacing walked straight past it.
+    module = tree("transports", "stdio.py")
+    assert "message" in membership_tests(module, "method", negated=True)
+    assert calls(module, "_resolve_reply")

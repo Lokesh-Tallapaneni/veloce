@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import pytest
-
 from tests.conftest import make_request
 from veloce import Request, Veloce
 
 
 class TestTupleResponse:
-    @pytest.mark.asyncio
     async def test_tuple_body_status(self):
         app = Veloce(openapi_url=None)
 
@@ -20,7 +17,6 @@ class TestTupleResponse:
         resp = await app.handle_request(make_request(method="POST", path="/items"))
         assert resp.status_code == 201
 
-    @pytest.mark.asyncio
     async def test_tuple_body_status_headers(self):
         app = Veloce(openapi_url=None)
 

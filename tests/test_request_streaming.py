@@ -10,17 +10,16 @@ from __future__ import annotations
 
 import tempfile
 
+from tests.conftest import make_request
 from veloce import Request, UploadFile, Veloce
 
 
-def make_request(body: bytes = b"", headers: dict | None = None) -> Request:
-    return Request(
-        method="POST",
-        path="/",
-        query_string="",
-        headers=headers or {},
-        body=body,
-    )
+def _post(body: bytes = b"", headers: dict | None = None) -> Request:
+    """A POST carrying `body`. Named apart from the shared `make_request`
+    factory it wraps: this module always wants a POST, and shadowing the
+    conftest name under a different signature is what made three modules look
+    interchangeable when they were not."""
+    return make_request(method="POST", body=body, headers=headers)
 
 
 # ── request.stream() yields bounded chunks ────────────────────────────
@@ -28,19 +27,19 @@ def make_request(body: bytes = b"", headers: dict | None = None) -> Request:
 
 async def test_stream_yields_bounded_chunks():
     big = b"x" * 200_000  # spans several 64 KiB chunks
-    chunks = [chunk async for chunk in make_request(body=big).stream()]
+    chunks = [chunk async for chunk in _post(body=big).stream()]
     assert len(chunks) >= 3
     assert all(len(c) <= 65536 for c in chunks)
     assert b"".join(chunks) == big
 
 
 async def test_stream_small_body_is_one_chunk():
-    chunks = [chunk async for chunk in make_request(body=b"small").stream()]
+    chunks = [chunk async for chunk in _post(body=b"small").stream()]
     assert chunks == [b"small"]
 
 
-async def test_stream_empty_body_yields_nothing():
-    chunks = [chunk async for chunk in make_request(body=b"").stream()]
+async def test_an_empty_body_streams_zero_chunks():
+    chunks = [chunk async for chunk in _post(body=b"").stream()]
     assert chunks == []
 
 

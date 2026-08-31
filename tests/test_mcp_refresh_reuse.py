@@ -19,6 +19,8 @@ from veloce.contrib.mcp.authorization import (
     AccessToken,
     InMemoryAuthorizationStore,
     _digest,
+    _revoke_family,
+    _spent_family,
 )
 
 
@@ -143,7 +145,6 @@ async def test_an_unknown_token_is_not_reported_as_reuse():
 
 async def test_a_store_without_the_optional_methods_degrades():
     """Requiring them would break every custom store on upgrade."""
-    from veloce.contrib.mcp.authorization import _revoke_family, _spent_family
 
     class Old:
         """A store written before reuse detection existed."""

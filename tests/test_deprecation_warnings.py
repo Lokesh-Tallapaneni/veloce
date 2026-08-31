@@ -10,6 +10,8 @@ category a user can silence in one line.
 
 from __future__ import annotations
 
+import ast
+import pathlib
 import subprocess
 import sys
 import textwrap
@@ -85,16 +87,120 @@ def test_a_deprecation_reached_from_an_application_module_is_visible(tmp_path):
     assert "on_event" in result.stderr
 
 
-def test_every_deprecation_in_the_source_uses_the_veloce_category():
-    """A new deprecation added with the stdlib category would be silent again."""
-    import pathlib
+def _deprecation_lines(source: str) -> list[int]:
+    """Lines in `source` referencing the bare stdlib `DeprecationWarning`.
 
+    The scan itself, so the guard below and the tests that check its failure
+    modes exercise one implementation. Written out twice, a test could assert
+    what its own copy does while the guard did something else.
+
+    A bare name (`DeprecationWarning`) or a qualified one
+    (`builtins.DeprecationWarning`); `VeloceDeprecationWarning` is a different
+    node either way, so it is excluded structurally rather than by substring.
+    """
+    return [
+        node.lineno
+        for node in ast.walk(ast.parse(source))
+        if (isinstance(node, ast.Name) and node.id == "DeprecationWarning")
+        or (isinstance(node, ast.Attribute) and node.attr == "DeprecationWarning")
+    ]
+
+
+def _stdlib_deprecation_uses() -> list[str]:
+    """Every reference to the bare stdlib `DeprecationWarning` in `src/veloce`.
+
+    Found by walking the AST rather than matching source lines. The previous
+    version of this guard compared each *stripped line* against
+    `"DeprecationWarning"` / `"DeprecationWarning,"`, so it saw only the name
+    when a formatter had put it on a line of its own - and the single-line
+    spelling this guard exists to catch,
+
+        warnings.warn("...", DeprecationWarning, stacklevel=2)
+
+    was invisible to it. `VeloceDeprecationWarning` is a distinct `Name`, so it
+    is excluded structurally rather than by substring.
+    """
     root = pathlib.Path(__file__).resolve().parent.parent / "src" / "veloce"
     offenders = []
-    for path in root.rglob("*.py"):
-        text = path.read_text(encoding="utf-8")
-        for index, line in enumerate(text.splitlines(), 1):
-            stripped = line.strip()
-            if stripped == "DeprecationWarning," or stripped == "DeprecationWarning":
-                offenders.append(f"{path.relative_to(root)}:{index}")
+    for path in sorted(root.rglob("*.py")):
+        for lineno in _deprecation_lines(path.read_text(encoding="utf-8")):
+            offenders.append(f"{path.relative_to(root)}:{lineno}")
+    return offenders
+
+
+def test_every_deprecation_in_the_source_uses_the_veloce_category():
+    """A new deprecation added with the stdlib category would be silent again."""
+    offenders = _stdlib_deprecation_uses()
     assert not offenders, f"raise VeloceDeprecationWarning instead: {offenders}"
+
+
+def test_the_guard_sees_a_single_line_deprecation():
+    """The guard's own failure mode, checked.
+
+    The line-matching version it replaced returned nothing for this file, so it
+    could not have caught the spelling it was written for.
+    """
+    source = 'import warnings\nwarnings.warn("gone", DeprecationWarning, stacklevel=2)\n'
+    assert _deprecation_lines(source) == [2]
+
+    stripped_line_match = [
+        index
+        for index, line in enumerate(source.splitlines(), 1)
+        if line.strip() in ("DeprecationWarning", "DeprecationWarning,")
+    ]
+    assert stripped_line_match == [], "the retired line scan would miss this"
+
+
+def test_the_guard_does_not_flag_the_veloce_category():
+    """The negative: `VeloceDeprecationWarning` must not trip it, or the guard
+    would fail on every correct deprecation in the tree."""
+    source = 'warnings.warn("x", VeloceDeprecationWarning, stacklevel=2)\n'
+    assert _deprecation_lines(source) == []
+
+
+def test_the_guard_actually_reads_the_package():
+    """A guard that silently walked nothing would pass forever."""
+    root = pathlib.Path(__file__).resolve().parent.parent / "src" / "veloce"
+    assert len(list(root.rglob("*.py"))) > 50
+
+
+# ── the retired event-registration API ────────────────────────
+#
+# Moved here from `test_polish_e2e.py`, a module named for a fix wave rather
+# than a subject.
+
+
+def test_on_event_decorator_emits_deprecation_warning():
+    app = Veloce(openapi_url=None)
+    with pytest.warns(VeloceDeprecationWarning, match="on_startup"):
+
+        @app.on_event("startup")
+        async def boot() -> None:
+            return None
+
+    assert boot in app._on_startup
+    assert callable(boot)
+
+
+def test_add_event_handler_emits_deprecation_warning():
+    app = Veloce(openapi_url=None)
+
+    async def boot() -> None:
+        return None
+
+    with pytest.warns(VeloceDeprecationWarning, match="on_startup"):
+        app.add_event_handler("startup", boot)
+
+    assert boot in app._on_startup
+
+
+def test_on_startup_decorator_does_not_warn():
+    app = Veloce(openapi_url=None)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+
+        @app.on_startup
+        async def boot() -> None:
+            return None
+
+    assert boot in app._on_startup

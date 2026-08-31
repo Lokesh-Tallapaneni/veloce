@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from tests.conftest import make_request
 from veloce import Request
 
 
 def _req(path: str = "/", query: str = "", host: str = "example.com") -> Request:
-    return Request(
+    return make_request(
         method="GET",
         path=path,
         query_string=query,
@@ -15,7 +16,7 @@ def _req(path: str = "/", query: str = "", host: str = "example.com") -> Request
     )
 
 
-# ── Q14: full_path ────────────────────────────────────────────────────
+# ── full_path ─────────────────────────────────────────────────────────
 
 
 def test_full_path_with_query_string():
@@ -30,7 +31,7 @@ def test_full_path_always_contains_question_mark_even_when_empty():
     assert req.full_path == "/users?"
 
 
-# ── Q15: url_root + host_url ──────────────────────────────────────────
+# ── url_root + host_url ───────────────────────────────────────────────
 
 
 def test_url_root_no_path_or_query():
@@ -51,7 +52,7 @@ def test_host_url_aliases_url_root():
 
 
 def test_url_root_respects_https_via_x_forwarded_proto():
-    req = Request(
+    req = make_request(
         method="GET",
         path="/",
         query_string="",
@@ -62,7 +63,7 @@ def test_url_root_respects_https_via_x_forwarded_proto():
 
 
 def test_url_root_includes_port_when_non_default():
-    req = Request(
+    req = make_request(
         method="GET",
         path="/",
         query_string="",

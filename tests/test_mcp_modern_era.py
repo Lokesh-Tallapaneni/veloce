@@ -11,7 +11,9 @@ from __future__ import annotations
 import orjson
 import pytest
 
-from veloce import Veloce
+from tests._mcp import INVALID_PARAMS, UNSUPPORTED_PROTOCOL_VERSION, initialize
+from veloce import TestClient, Veloce
+from veloce.contrib.mcp.errors import ProtocolVersionError
 from veloce.contrib.mcp.server import (
     MODERN_PROTOCOL_VERSION,
     SERVED_PROTOCOL_VERSIONS,
@@ -101,16 +103,7 @@ async def test_a_legacy_result_never_carries_result_type():
     out = await _drive(
         _app(),
         [
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2025-11-25",
-                    "capabilities": {},
-                    "clientInfo": {"name": "legacy", "version": "1"},
-                },
-            },
+            initialize("2025-11-25", id=1, client_info={"name": "legacy", "version": "1"}),
             {"jsonrpc": "2.0", "method": "notifications/initialized"},
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
         ],
@@ -135,7 +128,7 @@ async def test_an_unserved_version_is_rejected_recoverably(version: str):
         ],
     )
     error = out[0]["error"]
-    assert error["code"] == -32022
+    assert error["code"] == UNSUPPORTED_PROTOCOL_VERSION
     assert error["data"]["requested"] == version
     assert error["data"]["supported"] == list(SERVED_PROTOCOL_VERSIONS)
 
@@ -143,18 +136,7 @@ async def test_an_unserved_version_is_rejected_recoverably(version: str):
 async def test_the_legacy_handshake_still_serves_its_own_revision():
     out = await _drive(
         _app(),
-        [
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2025-06-18",
-                    "capabilities": {},
-                    "clientInfo": {"name": "legacy", "version": "1"},
-                },
-            }
-        ],
+        [initialize(id=1, client_info={"name": "legacy", "version": "1"})],
     )
     assert out[0]["result"]["protocolVersion"] == "2025-06-18"
 
@@ -178,14 +160,59 @@ async def test_a_modern_notification_with_a_bad_version_gets_no_response():
     assert out == []
 
 
-def test_the_http_transport_accepts_the_modern_version_header():
-    """On HTTP the version also travels in `MCP-Protocol-Version`; rejecting the
-    modern value there would block a modern client before dispatch."""
-    from veloce.contrib.mcp.server import _SERVED_VERSION_SET
+@pytest.mark.parametrize("version", SERVED_PROTOCOL_VERSIONS)
+def test_the_http_transport_accepts_a_served_version_header(version):
+    """On HTTP the version also travels in `MCP-Protocol-Version`.
 
-    assert MODERN_PROTOCOL_VERSION in _SERVED_VERSION_SET
-    for version in SERVED_PROTOCOL_VERSIONS:
-        assert version in _SERVED_VERSION_SET
+    Rejecting a served value there would block the client before dispatch. The
+    check this used to make - that each served version is in the frozenset the
+    source builds *from those versions* - could not fail; this drives the
+    transport.
+    """
+    app = _app()
+    app.mount_mcp(transport="http", path="/mcp")
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/mcp",
+            json={"jsonrpc": "2.0", "id": 1, "method": "ping"},
+            headers={
+                "MCP-Protocol-Version": version,
+                # The modern revision cross-checks the method against the body
+                # as an anti-smuggling measure, so it travels too.
+                "MCP-Method": "ping",
+                "Accept": "application/json, text/event-stream",
+            },
+        )
+
+    assert response.status_code == 200, response.body
+    # The reply may be a bare JSON body or an SSE frame depending on what the
+    # client accepts; either way it must not carry a JSON-RPC error.
+    assert b'"error"' not in response.body, response.body
+
+
+def test_the_http_transport_refuses_an_unserved_version_header():
+    """The other side of the gate, which nothing was covering."""
+    app = _app()
+    app.mount_mcp(transport="http", path="/mcp")
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/mcp",
+            json={"jsonrpc": "2.0", "id": 1, "method": "ping"},
+            headers={
+                "MCP-Protocol-Version": "1999-01-01",
+                "MCP-Method": "ping",
+                "Accept": "application/json, text/event-stream",
+            },
+        )
+
+    # Not `status >= 400 or "error" in body`: an unrelated 500 or a generic
+    # -32603 satisfies that while the gate misattributes its refusal.
+    assert response.status_code == 400, response.body
+    error = response.json()["error"]
+    assert error["code"] == ProtocolVersionError.code, error
+    assert "1999-01-01" in error["message"], error
 
 
 # ── Argument validation is a tool execution error ─────────────────
@@ -233,7 +260,7 @@ async def test_an_unknown_tool_stays_on_the_protocol_error_channel():
     """Unknown tool is a protocol error per the spec - the model cannot fix it
     by adjusting arguments, so it does not belong in-band."""
     out = await _call_tool(_app(), "nosuch", {})
-    assert out["error"]["code"] == -32602
+    assert out["error"]["code"] == INVALID_PARAMS
 
 
 async def test_the_validation_message_is_not_redacted_when_debug_is_off():

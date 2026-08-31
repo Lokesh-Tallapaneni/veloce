@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import json
 import logging
+from collections.abc import Callable, Iterator
+
+import pytest
 
 from veloce import Veloce
+from veloce.http.response import StreamingResponse
 from veloce.observability import instrument_access_log, log_requests_as_json
+
+_MakeLogger = Callable[..., tuple[logging.Logger, "_Capture"]]
 
 
 class _Capture(logging.Handler):
@@ -19,14 +26,45 @@ class _Capture(logging.Handler):
         self.records.append(record)
 
 
-def _logger(name: str, level: int = logging.INFO) -> tuple[logging.Logger, _Capture]:
-    logger = logging.getLogger(name)
-    logger.handlers.clear()
-    logger.setLevel(level)
-    cap = _Capture()
-    logger.addHandler(cap)
-    logger.propagate = False
-    return logger, cap
+@contextlib.contextmanager
+def _captured_loggers() -> Iterator[_MakeLogger]:
+    """Yield a capture-logger factory, putting the global registry back on exit.
+
+    `logging.getLogger(name)` returns a process-global object, and this clears
+    its handlers, sets its level and disables propagation. Without the restore a
+    later test asserting on log output through the same name silently sees
+    nothing - the failure mode is a passing test, not a noisy one.
+
+    Written as a context manager rather than inline in the fixture so a test can
+    drive the restore and assert on it, which is not possible from inside a test
+    the fixture is still holding open.
+    """
+    restore: list[tuple[logging.Logger, list[logging.Handler], int, bool]] = []
+
+    def _make(name: str, level: int = logging.INFO) -> tuple[logging.Logger, _Capture]:
+        logger = logging.getLogger(name)
+        restore.append((logger, list(logger.handlers), logger.level, logger.propagate))
+        logger.handlers.clear()
+        logger.setLevel(level)
+        cap = _Capture()
+        logger.addHandler(cap)
+        logger.propagate = False
+        return logger, cap
+
+    try:
+        yield _make
+    finally:
+        for logger, handlers, level, propagate in reversed(restore):
+            logger.handlers[:] = handlers
+            logger.setLevel(level)
+            logger.propagate = propagate
+
+
+@pytest.fixture
+def make_logger() -> Iterator[_MakeLogger]:
+    """Build a capture logger, and put the global registry back afterwards."""
+    with _captured_loggers() as factory:
+        yield factory
 
 
 def _app() -> Veloce:
@@ -45,9 +83,9 @@ def test_import_observability_module_succeeds():
     assert hasattr(module, "instrument_access_log")
 
 
-def test_emits_one_json_record_per_request():
+def test_emits_one_json_record_per_request(make_logger):
     app = _app()
-    logger, cap = _logger("test.obs.json1")
+    logger, cap = make_logger("test.obs.json1")
     log_requests_as_json(app, logger=logger)
     app.test_client().get("/items/7")
     assert len(cap.records) == 1
@@ -60,26 +98,26 @@ def test_emits_one_json_record_per_request():
     assert "path" not in payload
 
 
-def test_include_path_adds_concrete_path():
+def test_include_path_adds_concrete_path(make_logger):
     app = _app()
-    logger, cap = _logger("test.obs.json2")
+    logger, cap = make_logger("test.obs.json2")
     log_requests_as_json(app, logger=logger, include_path=True)
     app.test_client().get("/items/7")
     payload = json.loads(cap.records[0].getMessage())
     assert payload["path"] == "/items/7"
 
 
-def test_muted_logger_emits_nothing():
+def test_muted_logger_emits_nothing(make_logger):
     app = _app()
-    logger, cap = _logger("test.obs.json3", level=logging.WARNING)
+    logger, cap = make_logger("test.obs.json3", level=logging.WARNING)
     log_requests_as_json(app, logger=logger)
     app.test_client().get("/items/7")
     assert cap.records == []
 
 
-def test_unmatched_request_logs_null_route():
+def test_unmatched_request_logs_null_route(make_logger):
     app = _app()
-    logger, cap = _logger("test.obs.json4")
+    logger, cap = make_logger("test.obs.json4")
     log_requests_as_json(app, logger=logger)
     app.test_client().get("/nope")
     payload = json.loads(cap.records[0].getMessage())
@@ -87,19 +125,19 @@ def test_unmatched_request_logs_null_route():
     assert payload["status"] == 404
 
 
-def test_hook_returned_for_introspection():
+def test_hook_returned_for_introspection(make_logger):
     app = _app()
-    logger, _ = _logger("test.obs.json5")
+    logger, _ = make_logger("test.obs.json5")
     hook = log_requests_as_json(app, logger=logger)
-    assert app._instrumentation[-1] is hook
+    assert app.instrumentation_hooks[-1] is hook
 
 
 # -- instrument_access_log ----------------------------------------
 
 
-def test_access_log_uses_route_template():
+def test_access_log_uses_route_template(make_logger):
     app = _app()
-    logger, cap = _logger("test.obs.acc1")
+    logger, cap = make_logger("test.obs.acc1")
     instrument_access_log(app, logger=logger)
     app.test_client().get("/items/7")
     msg = cap.records[0].getMessage()
@@ -107,21 +145,21 @@ def test_access_log_uses_route_template():
     assert "/items/7" not in msg
 
 
-def test_access_log_unmatched_falls_back_to_path():
+def test_access_log_unmatched_falls_back_to_path(make_logger):
     app = _app()
-    logger, cap = _logger("test.obs.acc2")
+    logger, cap = make_logger("test.obs.acc2")
     instrument_access_log(app, logger=logger)
     app.test_client().get("/nope")
     assert "/nope" in cap.records[0].getMessage()
 
 
-def test_access_log_unmatched_path_sanitizes_control_chars():
+def test_access_log_unmatched_path_sanitizes_control_chars(make_logger):
     # A CR/LF in an unmatched (404) request path must be escaped, not written
     # raw, so it cannot forge or split a text access-log line (CWE-117).
     import types
 
     app = _app()
-    logger, cap = _logger("test.obs.sanitize")
+    logger, cap = make_logger("test.obs.sanitize")
     emit = instrument_access_log(app, logger=logger)
     emit(
         types.SimpleNamespace(
@@ -139,9 +177,9 @@ def test_access_log_unmatched_path_sanitizes_control_chars():
     assert "\\x0a" in msg
 
 
-def test_access_log_json_mode():
+def test_access_log_json_mode(make_logger):
     app = _app()
-    logger, cap = _logger("test.obs.acc3")
+    logger, cap = make_logger("test.obs.acc3")
     instrument_access_log(app, logger=logger, json=True)
     app.test_client().get("/items/7")
     payload = json.loads(cap.records[0].getMessage())
@@ -149,16 +187,15 @@ def test_access_log_json_mode():
     assert payload["route"] == "/items/{item_id}"
 
 
-def test_access_log_muted_does_no_work():
+def test_access_log_muted_does_no_work(make_logger):
     app = _app()
-    logger, cap = _logger("test.obs.acc4", level=logging.WARNING)
+    logger, cap = make_logger("test.obs.acc4", level=logging.WARNING)
     instrument_access_log(app, logger=logger)
     app.test_client().get("/items/7")
     assert cap.records == []
 
 
-def test_access_log_streamed_skipped_when_disabled():
-    from veloce.http.response import StreamingResponse
+def test_access_log_streamed_skipped_when_disabled(make_logger):
 
     app = Veloce(openapi_url=None)
 
@@ -169,14 +206,60 @@ def test_access_log_streamed_skipped_when_disabled():
 
         return StreamingResponse(gen())
 
-    logger, cap = _logger("test.obs.acc5")
+    logger, cap = make_logger("test.obs.acc5")
     instrument_access_log(app, logger=logger, include_streamed=False)
     app.test_client().get("/stream")
     assert cap.records == []
 
 
-def test_access_log_hook_returned():
+def test_access_log_hook_returned(make_logger):
     app = _app()
-    logger, _ = _logger("test.obs.acc6")
+    logger, _ = make_logger("test.obs.acc6")
     hook = instrument_access_log(app, logger=logger)
-    assert app._instrumentation[-1] is hook
+    assert app.instrumentation_hooks[-1] is hook
+
+
+def test_the_logger_capture_restores_the_global_registry():
+    """The registry is put back, so a later test still sees its own output.
+
+    Driven directly rather than through the `make_logger` fixture: a test the
+    fixture is holding open cannot observe that fixture's teardown, which is why
+    the assertion this replaces could not fail.
+    """
+    name = "test.obs.restoration"
+    original = logging.getLogger(name)
+    sentinel = logging.NullHandler()
+    original.addHandler(sentinel)
+    original.setLevel(logging.CRITICAL)
+    original.propagate = True
+    try:
+        with _captured_loggers() as make_logger:
+            logger, _cap = make_logger(name)
+            assert logger is original
+            assert sentinel not in logger.handlers, "the capture did not take over"
+            assert logger.level == logging.INFO
+            assert logger.propagate is False
+
+        assert original.handlers == [sentinel], "handlers were not put back"
+        assert original.level == logging.CRITICAL, "the level was not put back"
+        assert original.propagate is True, "propagation was not put back"
+    finally:
+        original.removeHandler(sentinel)
+        original.setLevel(logging.NOTSET)
+
+
+def test_a_restored_logger_still_emits():
+    """The point of restoring: output through the same name is not swallowed."""
+    name = "test.obs.restoration.emits"
+    captured = _Capture()
+    with _captured_loggers() as make_logger:
+        make_logger(name)
+    logger = logging.getLogger(name)
+    logger.addHandler(captured)
+    logger.setLevel(logging.INFO)
+    try:
+        logger.info("visible")
+        assert [record.getMessage() for record in captured.records] == ["visible"]
+    finally:
+        logger.removeHandler(captured)
+        logger.setLevel(logging.NOTSET)

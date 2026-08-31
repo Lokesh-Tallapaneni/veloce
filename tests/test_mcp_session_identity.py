@@ -13,9 +13,12 @@ token as well.
 
 from __future__ import annotations
 
+import contextlib
+import multiprocessing as mp
 import re
 
 from veloce.contrib.mcp.session import MCPSession
+from veloce.contrib.mcp.session import MCPSession as Fresh
 
 
 def test_the_public_id_is_a_string():
@@ -49,9 +52,6 @@ def test_sessions_in_different_processes_do_not_collide():
     Each process re-imports the module, so the counter restarts - and before the
     fix both processes reported the same id for their first connection.
     """
-    import contextlib
-    import multiprocessing as mp
-
     if mp.get_start_method(allow_none=True) is None:
         with contextlib.suppress(RuntimeError):
             mp.set_start_method("spawn")
@@ -71,6 +71,5 @@ def pool_int_suffixes(ids: list[str]) -> list[int]:
 
 def _first_public_id(_: object) -> str:
     """Return the first session's public id in a fresh interpreter."""
-    from veloce.contrib.mcp.session import MCPSession as Fresh
 
     return Fresh().public_id

@@ -22,8 +22,9 @@ What it implements, and what it deliberately does not:
   asking for `plain`, is refused: this server issues to public clients, where a
   code intercepted on the redirect is the whole attack.
 - **Audience binding.** The `resource` parameter (RFC 8707) is recorded on the
-  token and checked on validation, so a token minted for one MCP server cannot be
-  replayed against another.
+  token, and `verifier(resource=...)` checks it, so a token minted for one MCP
+  server cannot be replayed against another. Building the verifier without
+  `resource=` leaves the check off and warns.
 
 Storage is behind `AuthorizationStore`; the bundled `InMemoryAuthorizationStore`
 is for a single process and is lost on restart. Anything durable is the
@@ -37,6 +38,7 @@ import hmac
 import logging
 import secrets
 import time
+import warnings
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -46,14 +48,15 @@ from veloce._internal import _b64encode
 from veloce._protocol_constants import HTTP_METHOD_GET, HTTP_METHOD_POST
 from veloce.http.response import JSONResponse, RedirectResponse, Response
 from veloce.principal import Principal
+from veloce.safe import constant_time_compare
 from veloce.status import HTTP_302_FOUND
-
-_logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:  # pragma: no cover
     from collections.abc import Iterable, Sequence
 
     from veloce.http.request import Request
+
+_logger = logging.getLogger(__name__)
 
 # RFC 8414 well-known path for authorization server metadata.
 AUTHORIZATION_SERVER_METADATA_PATH = "/.well-known/oauth-authorization-server"
@@ -350,19 +353,48 @@ class MCPAuthorizationServer:
 
     # ── Issuing ───────────────────────────────────────────
 
-    def verifier(self) -> Callable[[str], Awaitable[Principal | None]]:
+    def verifier(
+        self, *, resource: str | None = None
+    ) -> Callable[[str], Awaitable[Principal | None]]:
         """Return the token verifier to hand `MCPAuth(verify=...)`.
 
         Resolves an opaque token to its `Principal`, refusing one that has expired
-        or was minted for a different resource.
-        """
+        or that was minted for a different resource.
 
-        async def verify(token: str, resource: str | None = None) -> Principal | None:
+        `resource` is this server's canonical URI - the same value passed as
+        `MCPAuth(resource_server_url=...)`. Give it, and a token whose RFC 8707
+        `resource` names a different server is refused: that is the audience
+        binding, and it is what stops a token obtained for one MCP server being
+        replayed against another sharing the authorization server.
+
+        Omitting it leaves audience binding off, and says so: the check cannot be
+        performed without knowing which server this is, and silently accepting
+        another server's token is the failure the parameter exists to prevent.
+        """
+        if resource is None:
+            warnings.warn(
+                "MCPAuthorizationServer.verifier() was built without resource=, so "
+                "audience binding (RFC 8707) is not enforced and a token minted for "
+                "another MCP server sharing this authorization server is accepted. "
+                "Pass the same URI given as MCPAuth(resource_server_url=...).",
+                stacklevel=2,
+            )
+
+        async def verify(token: str) -> Principal | None:
             record = await self.store.get_token(_digest(token))
             if record is None:
                 return None
             if record.expires_at <= _now():
                 await self.store.delete_token(_digest(token))
+                return None
+            # An audience-bound token names the server it was minted for; one that
+            # names a different server is not ours to accept. Neither is one that
+            # names nothing: `resource` is optional at `/authorize` (RFC 8707
+            # Sec. 2), so exempting an unbound token let a client reach every
+            # server sharing this authorization server by asking for less than
+            # the binding requires. A verifier built without `resource=` enforces
+            # no audience at all and warns about it above.
+            if resource is not None and record.resource != resource:
                 return None
             return Principal(
                 subject=record.subject,
@@ -450,12 +482,22 @@ def _redirect_uri_is_allowed(uri: str) -> bool:
 
 def _verify_pkce(verifier: str, challenge: str) -> bool:
     """Whether `verifier` hashes to `challenge` under S256."""
-    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    # RFC 7636 Sec. 4.1 confines a verifier to unreserved ASCII, so a non-ASCII
+    # one cannot match any challenge - but it arrives unauthenticated at the
+    # token endpoint, and letting `encode("ascii")` raise turned it into a 500
+    # rather than a refusal.
+    try:
+        verifier_bytes = verifier.encode("ascii")
+    except UnicodeEncodeError:
+        return False
+    digest = hashlib.sha256(verifier_bytes).digest()
     # RFC 7636 Sec. 4.2 specifies BASE64URL-ENCODE(SHA256(verifier)) - the
     # RFC 4648 Sec. 5 alphabet with padding stripped, which is exactly what
     # `_b64encode` produces for JWS (RFC 7515 Sec. 2) elsewhere in the tree.
     computed = _b64encode(digest)
-    return hmac.compare_digest(computed, challenge)
+    # `challenge` is caller-supplied too, and `hmac.compare_digest` raises on a
+    # `str` holding non-ASCII; `constant_time_compare` encodes first.
+    return constant_time_compare(computed, challenge)
 
 
 def register_authorization_server(
@@ -627,12 +669,35 @@ async def _authenticate_client(
     return client, None
 
 
+#: The grant types this token endpoint implements. A registration naming
+#: anything else is refused rather than silently narrowed to these.
+SUPPORTED_GRANT_TYPES = ("authorization_code", "refresh_token")
+
+
+def _refuse_unregistered_grant(client: OAuthClient, grant_type: str) -> Response | None:
+    """Refuse a grant the client is not registered for, per RFC 6749 Sec. 5.2.
+
+    `grant_types` was recorded and never read, so a client registered for
+    `authorization_code` alone could still refresh. The registration is the
+    contract; this is where it binds.
+    """
+    if grant_type in client.grant_types:
+        return None
+    return _error_response(
+        "unauthorized_client",
+        f"this client is not registered for the {grant_type!r} grant type",
+    )
+
+
 async def _grant_authorization_code(server: MCPAuthorizationServer, form: Any) -> Response:
     """Redeem a code: single-use, PKCE-verified, and bound to its own request."""
     client, failure = await _authenticate_client(server, form)
     if failure is not None:
         return failure
     assert client is not None
+    refused = _refuse_unregistered_grant(client, "authorization_code")
+    if refused is not None:
+        return refused
 
     code = form.get("code")
     verifier = form.get("code_verifier")
@@ -687,6 +752,9 @@ async def _grant_refresh_token(server: MCPAuthorizationServer, form: Any) -> Res
     if failure is not None:
         return failure
     assert client is not None
+    refused = _refuse_unregistered_grant(client, "refresh_token")
+    if refused is not None:
+        return refused
 
     refresh = form.get("refresh_token")
     if not refresh:
@@ -749,6 +817,24 @@ async def _handle_register(server: MCPAuthorizationServer, request: Request) -> 
                 f"{uri!r} must be https, a loopback http address, or a private-use scheme",
             )
 
+    # RFC 7591 Sec. 2. Omitted keeps the historical default rather than the
+    # spec's narrower `["authorization_code"]`: narrowing silently would stop
+    # refresh working for every client already registered without the key.
+    grants = body.get("grant_types", list(SUPPORTED_GRANT_TYPES))
+    if not isinstance(grants, list) or not all(isinstance(g, str) for g in grants):
+        return _error_response("invalid_client_metadata", "grant_types must be a list of strings")
+    unsupported = [g for g in grants if g not in SUPPORTED_GRANT_TYPES]
+    if unsupported:
+        return _error_response(
+            "invalid_client_metadata",
+            f"unsupported grant_types: {' '.join(sorted(unsupported))}",
+        )
+    if "authorization_code" not in grants:
+        return _error_response(
+            "invalid_client_metadata",
+            "grant_types must include 'authorization_code'; it is the only way to obtain a token",
+        )
+
     requested = frozenset((body.get("scope") or "").split())
     allowed = frozenset(server.scopes_supported)
     if requested - allowed:
@@ -762,24 +848,28 @@ async def _handle_register(server: MCPAuthorizationServer, request: Request) -> 
     # what proves it. `token_endpoint_auth_method: "none"` is how it says so.
     wants_secret = body.get("token_endpoint_auth_method", "none") != "none"
     secret = secrets.token_urlsafe(_CREDENTIAL_ENTROPY_BYTES) if wants_secret else None
-    await server.store.save_client(
-        OAuthClient(
-            client_id=client_id,
-            redirect_uris=tuple(uris),
-            client_secret_digest=_digest(secret) if secret is not None else None,
-            client_name=body.get("client_name"),
-            scopes=requested or allowed,
-        )
+    stored = OAuthClient(
+        client_id=client_id,
+        redirect_uris=tuple(uris),
+        client_secret_digest=_digest(secret) if secret is not None else None,
+        client_name=body.get("client_name"),
+        scopes=requested or allowed,
+        grant_types=tuple(grants),
     )
+    await server.store.save_client(stored)
     registered: dict[str, Any] = {
         "client_id": client_id,
         "redirect_uris": list(uris),
         "token_endpoint_auth_method": "client_secret_post" if secret else "none",
-        "grant_types": ["authorization_code", "refresh_token"],
+        # What was stored, not a fixed pair: a client told it holds a grant it
+        # does not have cannot tell a refusal from a bug.
+        "grant_types": list(grants),
         "response_types": ["code"],
     }
-    if body.get("client_name"):
-        registered["client_name"] = body["client_name"]
+    # From the stored client, like `grant_types` above: the registration response
+    # describes the registration, not the request that asked for it.
+    if stored.client_name:
+        registered["client_name"] = stored.client_name
     if secret is not None:
         # The only time the secret is ever readable; only its digest is kept.
         registered["client_secret"] = secret

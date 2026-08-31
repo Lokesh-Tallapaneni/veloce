@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import functools
+
 import pytest
 
-from veloce import Request, Veloce, View
+from tests.conftest import make_request
+from veloce import MethodView, Request, Veloce, View
 from veloce.testclient import TestClient
 
 
 def _req(method: str = "GET") -> Request:
-    return Request(method=method, path="/", query_string="", headers={}, body=b"")
+    return make_request(method=method)
 
 
 def test_view_dispatch_request_routed():
@@ -27,13 +30,24 @@ def test_view_dispatch_request_routed():
 
 
 def test_view_base_dispatch_not_implemented_raises():
-    class Bare(View):
-        pass
+    """A view that omits `dispatch_request` is refused where it is written.
 
-    import asyncio
+    This used to construct and raise `NotImplementedError` on the first request
+    to the route it was registered for. `View.__init_subclass__` now catches it
+    at class definition, so the omission surfaces on import instead.
+    """
+    with pytest.raises(TypeError, match="dispatch_request"):
+
+        class Bare(View):
+            pass
+
+
+async def test_view_base_dispatch_still_raises_when_called_directly():
+    """The base's own method keeps its `NotImplementedError` body - the guard
+    sits in front of it rather than replacing it."""
 
     with pytest.raises(NotImplementedError):
-        asyncio.new_event_loop().run_until_complete(Bare().dispatch_request(_req()))
+        await View().dispatch_request(_req())
 
 
 def test_as_view_sets_name_and_view_class():
@@ -92,8 +106,6 @@ def test_init_every_request_false_reuses_instance():
 
 
 def test_decorators_are_applied():
-    import functools
-
     calls: list[str] = []
 
     def log_decorator(fn):
@@ -119,6 +131,5 @@ def test_decorators_are_applied():
 
 
 def test_methodview_still_subclasses_view():
-    from veloce import MethodView
 
     assert issubclass(MethodView, View)

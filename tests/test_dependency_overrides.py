@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import pytest
+import orjson
 
 from tests.conftest import make_request
 from veloce import Depends, Veloce
@@ -72,31 +72,24 @@ def test_provider_method_and_property_share_storage():
     assert app.dependency_overrides_provider() is app.dependency_overrides
 
 
-class TestDependencyOverrides:
-    @pytest.mark.asyncio
-    async def test_override(self):
-        app = Veloce(openapi_url=None)
+async def test_an_override_replaces_the_dependency_for_a_direct_dispatch():
+    app = Veloce(openapi_url=None)
 
-        def get_db():
-            return {"real": True}
+    def get_db():
+        return {"real": True}
 
-        def get_mock_db():
-            return {"mock": True}
+    def get_mock_db():
+        return {"mock": True}
 
-        @app.get("/db")
-        async def db_route(db=Depends(get_db)):
-            return db
+    @app.get("/db")
+    async def db_route(db=Depends(get_db)):
+        return db
 
-        # Without override
-        resp = await app.handle_request(make_request(path="/db"))
-        import orjson
+    # Without override
+    resp = await app.handle_request(make_request(path="/db"))
+    assert orjson.loads(resp.body)["real"] is True
 
-        assert orjson.loads(resp.body)["real"] is True
-
-        # With override
-        app._dependency_overrides[get_db] = get_mock_db
-        resp = await app.handle_request(make_request(path="/db"))
-        assert orjson.loads(resp.body)["mock"] is True
-
-        # Clean up
-        del app._dependency_overrides[get_db]
+    # With override
+    app.dependency_overrides[get_db] = get_mock_db
+    resp = await app.handle_request(make_request(path="/db"))
+    assert orjson.loads(resp.body)["mock"] is True

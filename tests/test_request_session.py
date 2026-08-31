@@ -1,14 +1,16 @@
-"""Request.session property tests (S5)."""
+"""Request.session property tests."""
 
 from __future__ import annotations
 
 import pytest
 
+from tests.conftest import make_request
 from veloce import Request, SessionMiddleware, Veloce
+from veloce.testclient import TestClient
 
 
 def _req(path: str = "/") -> Request:
-    return Request(method="GET", path=path, query_string="", headers={}, body=b"")
+    return make_request(method="GET", path=path, query_string="", headers={}, body=b"")
 
 
 # ── Without SessionMiddleware ─────────────────────────────────────────
@@ -24,7 +26,6 @@ def test_session_unavailable_raises_runtime_error():
 # ── With SessionMiddleware ────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_session_is_writable_dict_inside_handler():
     app = Veloce(debug=True, openapi_url=None)
     app.add_middleware(SessionMiddleware(secret_key="x" * 32))
@@ -42,7 +43,6 @@ async def test_session_is_writable_dict_inside_handler():
     assert captured["initial"] == {}
 
 
-@pytest.mark.asyncio
 async def test_session_mutations_are_visible_via_state():
     """The property and `_state["session"]` are the same dict — mutating
     one shows up in the other."""
@@ -54,7 +54,7 @@ async def test_session_mutations_are_visible_via_state():
     @app.get("/x")
     async def x(request: Request):
         request.session["k"] = "v"
-        captured["state"] = dict(request._state.get("session", {}))
+        captured["state"] = dict(request.state.get("session", {}))
         return {}
 
     await app.handle_request(_req("/x"))
@@ -74,8 +74,6 @@ def test_session_round_trip_via_signed_cookie():
     @app.get("/get")
     async def get_it(request: Request):
         return {"count": request.session.get("count")}
-
-    from veloce.testclient import TestClient
 
     client = TestClient(app)
     client.get("/set")

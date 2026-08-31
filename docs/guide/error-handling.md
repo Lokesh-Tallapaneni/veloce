@@ -296,6 +296,44 @@ def create_app() -> Veloce:
     `app.exception_handler` is also available under the alias
     `app.errorhandler` (one word). The two are identical.
 
+## Handlers registered against a status code
+
+A handler can be registered against an `int` status code instead of an exception
+class. It then answers for that status whatever produced it - an
+`HTTPException` you raised, an unhandled exception that became a 500, or a
+request to a path that exists under a different method:
+
+```python
+from veloce import JSONResponse, Request, Veloce
+
+app = Veloce()
+
+
+@app.exception_handler(500)
+async def handle_500(request: Request, exc: Exception):
+    return JSONResponse({"error": "server_error", "kind": type(exc).__name__}, 500)
+```
+
+`exc` is the exception that actually failed where there is one, so the handler
+above reports `RuntimeError` for a crashing route and `HTTPException` for a
+`raise HTTPException(500)`. On a path with no underlying exception - a `405`,
+for instance - it receives an `HTTPException` carrying that status.
+
+The second parameter is optional. A handler declared with only `request` is
+called with only the request:
+
+```python
+@app.exception_handler(404)
+async def handle_404(request: Request):
+    return JSONResponse({"error": "not_found", "path": request.path}, 404)
+```
+
+!!! note "Changed in version 0.18"
+
+    A status-code handler taking `(request, exc)` used to raise `TypeError` when
+    reached from the unhandled-exception or `405` path, because only the
+    `HTTPException` path adapted to the handler's signature.
+
 ## Custom error pages
 
 An error handler can return any response shape, so HTML error pages are
@@ -355,6 +393,12 @@ one entry per failed field with `loc` (where it failed), `msg`, and `type`:
 }
 ```
 
+`loc` is the path to the failing value. Its parts are strings for field and key
+names and **integers for array indices**, so an error inside the second element
+of a list reports `["body", "lines", 1, "qty"]`. That union is what the
+generated `ValidationError` schema declares, and it keeps an index `1` distinct
+from a dict key `"1"`.
+
 The exported [`request_validation_exception_handler`](../reference/exceptions.md#veloce.request_validation_exception_handler)
 renders the same per-field `detail` list as `{"detail": [...]}` (without the
 top-level `status_code` field the default dispatch adds). Register it explicitly,
@@ -385,6 +429,37 @@ references a shared `HTTPValidationError` component schema (the
 
 Operations with no validatable parameter never advertise a `422`, and an explicit
 `422` declared through `responses=` or `openapi_extra` is kept as-is.
+
+## Unhandled exceptions are logged
+
+An exception no handler catches becomes a generic `500` — and is recorded on the
+app's logger at `ERROR` level, with the traceback and the request that failed:
+
+```
+Exception on /orders/42 [POST]
+Traceback (most recent call last):
+  ...
+RuntimeError: connection pool exhausted
+```
+
+This needs no logging setup: Python's handler of last resort puts an unconfigured
+`ERROR` record on stderr. It is the app's own logger — `logging.getLogger(app.import_name)`
+— so it is configured, routed or silenced like any other:
+
+```python
+import logging
+
+logging.getLogger("myapp").setLevel(logging.CRITICAL)   # silence it
+logging.getLogger("myapp").addHandler(my_handler)       # or route it
+```
+
+A **handled** exception is not logged: registering `@app.exception_handler(...)`
+for it means the application dealt with it. Neither is an `HTTPException` such as
+`abort(404)`, which is an outcome rather than a failure. A propagated exception
+(below) is not logged either — it carries its own traceback to the caller.
+
+To ship these somewhere else, subscribe to the `got_request_exception` signal;
+it fires for the same exceptions and is how an error tracker hooks in.
 
 ## Propagating exceptions during tests
 

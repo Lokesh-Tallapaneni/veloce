@@ -1,4 +1,4 @@
-"""PEP 593 `Annotated[T, Depends(...)]` support (D11).
+"""PEP 593 `Annotated[T, Depends(...)]` support.
 
 NOTE: this test file deliberately does NOT use
 `from __future__ import annotations`. PEP 593 metadata that carries
@@ -12,17 +12,17 @@ from typing import Annotated
 
 import pytest
 
-from veloce import Depends, Header, Query, Request, Security, Veloce
+from tests.conftest import make_request
+from veloce import Depends, Header, Query, Request, Security, SecurityScopes, Veloce
 
 
 def _req(path: str = "/x", query: str = "") -> Request:
-    return Request(method="GET", path=path, query_string=query, headers={}, body=b"")
+    return make_request(method="GET", path=path, query_string=query, headers={}, body=b"")
 
 
 # ── Annotated + Depends ───────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_annotated_depends_resolves():
     """`db: Annotated[Session, Depends(get_db)]` works without a default value."""
     app = Veloce(debug=True, openapi_url=None)
@@ -39,7 +39,6 @@ async def test_annotated_depends_resolves():
     assert b'"connected":true' in resp.body
 
 
-@pytest.mark.asyncio
 async def test_annotated_depends_with_sub_depends():
     """Annotated form composes — sub-dependencies still resolve."""
     app = Veloce(debug=True, openapi_url=None)
@@ -62,10 +61,8 @@ async def test_annotated_depends_with_sub_depends():
 # ── Annotated + Security ──────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_annotated_security_passes_scopes():
     """Annotated form preserves Security.scopes for the scope stack."""
-    from veloce import SecurityScopes
 
     app = Veloce(debug=True, openapi_url=None)
     captured: dict = {}
@@ -85,7 +82,6 @@ async def test_annotated_security_passes_scopes():
 # ── Annotated + Query / Header / Path markers ─────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_annotated_query_marker():
     app = Veloce(debug=True, openapi_url=None)
 
@@ -97,7 +93,6 @@ async def test_annotated_query_marker():
     assert b'"hello"' in resp.body
 
 
-@pytest.mark.asyncio
 async def test_annotated_query_uses_default_when_missing():
     app = Veloce(debug=True, openapi_url=None)
 
@@ -109,7 +104,6 @@ async def test_annotated_query_uses_default_when_missing():
     assert b'"fallback"' in resp.body
 
 
-@pytest.mark.asyncio
 async def test_annotated_header_marker_with_alias():
     app = Veloce(debug=True, openapi_url=None)
 
@@ -131,7 +125,6 @@ async def test_annotated_header_marker_with_alias():
 # ── Default-value form still wins when both are set ───────────────────
 
 
-@pytest.mark.asyncio
 async def test_default_value_wins_over_annotated_when_both_present():
     """When both `Annotated[T, Depends(a)]` AND `= Depends(b)` are set,
     the default-value form takes precedence (matches user intent on the
@@ -157,7 +150,6 @@ async def test_default_value_wins_over_annotated_when_both_present():
 # ── Mixed with regular annotations ────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_annotated_does_not_break_plain_query_params():
     """Non-Depends Annotated metadata is ignored; the inner type is used
     for query coercion."""

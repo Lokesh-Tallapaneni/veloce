@@ -29,6 +29,7 @@ from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 from veloce._internal import _current_request_var
+from veloce.contrib.mcp._helpers import _text_result
 from veloce.contrib.mcp.errors import MCPCapabilityError, MCPError
 from veloce.contrib.mcp.sampling import (
     _NO_MORE_TOOLS,
@@ -36,10 +37,11 @@ from veloce.contrib.mcp.sampling import (
     SamplingRun,
     content_blocks,
 )
+from veloce.principal import current_principal
 
 if TYPE_CHECKING:  # pragma: no cover
+    from veloce.contrib.mcp.server import MCPServer
     from veloce.contrib.mcp.session import MCPSession
-from veloce.principal import current_principal
 
 # What a sampling request may ask the client to attach to the prompt. The client
 # MAY ignore the request, so this is a hint; a value outside the set is a typo the
@@ -62,17 +64,21 @@ _LIST_CHANGED_BY_KIND = (
 # the client, so it is unguessable rather than sequential.
 _ELICITATION_ID_ENTROPY_BYTES = 16
 
+# ── Per-call state a handler reads through `MCPContext` ─────
+
+# Each of these backs a property on the class below, so they are declared beside
+# it; the dispatch core's own per-call vars (notifier, log level, request id,
+# protocol era) live in `_helpers`, which every transport can reach without
+# importing the dispatch core.
+
 # Whether the current call is running as a background task rather than inline.
 # Set by the task runner; read by `MCPContext.is_background_task` and by the stdio
-# transport. It lives here rather than in `_helpers` because `_helpers` imports this
-# module, so the dependency has to run in this direction.
+# transport.
 _in_task_var: ContextVar[bool] = ContextVar("_mcp_in_task", default=False)
 
 # The id of the task this call is running as, and the id of the `tools/call`
 # that created it. Both are set by the task runner alongside `_in_task_var`, and
-# both stay `None` for an inline call. They live here for the same reason as
-# `_in_task_var`: `_helpers` imports this module, so the dependency has to run
-# in this direction.
+# both stay `None` for an inline call.
 _task_id_var: ContextVar[str | None] = ContextVar("_mcp_task_id", default=None)
 _origin_request_id_var: ContextVar[Any] = ContextVar("_mcp_origin_request_id", default=None)
 
@@ -80,17 +86,16 @@ _origin_request_id_var: ContextVar[Any] = ContextVar("_mcp_origin_request_id", d
 # it starts serving. `None` for a bare off-transport construction.
 _transport_var: ContextVar[str | None] = ContextVar("_mcp_transport", default=None)
 
-# `_meta` the handler asked to send back on this call's result. It lives here for
-# the same reason as `_in_task_var`: `_helpers` imports this module, so the
-# dependency has to run in this direction. `None` means the handler asked for
-# nothing, which is the common case and costs one lookup.
+# `_meta` the handler asked to send back on this call's result. `None` means the
+# handler asked for nothing, which is the common case and costs one lookup.
 _result_meta_var: ContextVar[dict[str, Any] | None] = ContextVar("_mcp_result_meta", default=None)
 
-# The session of the connection being served, when the transport keeps one. It
-# lives here for the same reason as the vars above: `_helpers` imports this
-# module, so the dependency has to run in this direction. `None` off a stateful
-# transport, where there is no connection to carry state.
+# The session of the connection being served, when the transport keeps one.
+# `None` off a stateful transport, where there is no connection to carry state.
 _session_var: ContextVar[MCPSession | None] = ContextVar("_mcp_session", default=None)
+
+
+# ── Logging levels ──────────────────────────────────────────
 
 # Suppresses every `notifications/message`, whatever its level. The modern revision
 # sets the log level per request and requires a server to send no log notifications
@@ -114,8 +119,6 @@ _LOG_RANKS = {
 
 def _error_content(message: str) -> dict[str, Any]:
     """Shape a failed sampled tool call the way a tool's own error result is shaped."""
-    from veloce.contrib.mcp._helpers import _text_result  # breaks _helpers->context cycle
-
     return _text_result(message, is_error=True)
 
 
@@ -156,8 +159,8 @@ class MCPContext:
         log_level: str | None = None,
         requester: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]] | None = None,
         client_capabilities: dict[str, Any] | None = None,
-        session: Any = None,
-        server: Any = None,
+        session: MCPSession | None = None,
+        server: MCPServer | None = None,
         request_meta: dict[str, Any] | None = None,
         request_id: Any = None,
     ) -> None:
@@ -402,7 +405,7 @@ class MCPContext:
 
     # ── Reading the server's own components ───────────────────
 
-    def _require_server(self, what: str) -> Any:
+    def _require_server(self, what: str) -> MCPServer:
         """Return the serving `MCPServer`, or explain why it is unavailable."""
         server = self._server
         if server is None:
@@ -440,15 +443,25 @@ class MCPContext:
         return rendered
 
     def list_resources(self) -> list[dict[str, Any]]:
-        """List this server's registered resources, as `resources/list` reports them."""
+        """List this server's registered resources, as `resources/list` reports them.
+
+        Routed through the one listing builder rather than a private twin, so a
+        primitive this connection hid with `hide()` is absent here too - the
+        twin applied scope narrowing and not the hidden set, so a handler
+        enumerating the catalogue contradicted what the client's own listing
+        showed. Unpaged: a handler cannot ask again for the next page.
+        """
         server = self._require_server("list_resources")
-        resources: list[dict[str, Any]] = server._resources_list()["resources"]
+        resources: list[dict[str, Any]] = server._resource_listing({}, page_size=None)["resources"]
         return resources
 
     def list_prompts(self) -> list[dict[str, Any]]:
-        """List this server's registered prompts, as `prompts/list` reports them."""
+        """List this server's registered prompts, as `prompts/list` reports them.
+
+        Hidden-aware and unpaged, for the reasons `list_resources` gives.
+        """
         server = self._require_server("list_prompts")
-        prompts: list[dict[str, Any]] = server._prompts_list()["prompts"]
+        prompts: list[dict[str, Any]] = server._prompt_listing({}, page_size=None)["prompts"]
         return prompts
 
     async def send_notification(self, method: str, params: dict[str, Any] | None = None) -> None:
@@ -604,7 +617,7 @@ class MCPContext:
             transcript.append({"role": "user", "content": results})
         raise AssertionError("unreachable: the final round always returns")
 
-    def _declare_tools(self, server: Any, names: list[str]) -> list[dict[str, Any]]:
+    def _declare_tools(self, server: MCPServer, names: list[str]) -> list[dict[str, Any]]:
         """Return the `tools/list` entries for the named tools of this server."""
         declared: list[dict[str, Any]] = []
         for name in names:
@@ -618,7 +631,7 @@ class MCPContext:
         return declared
 
     async def _run_sampled_tool(
-        self, server: Any, block: dict[str, Any], allowed: frozenset[str]
+        self, server: MCPServer, block: dict[str, Any], allowed: frozenset[str]
     ) -> SampledToolCall:
         """Execute one tool the model asked for, as `tools/call` would.
 
@@ -706,6 +719,8 @@ class MCPContext:
         roots = result.get("roots")
         return roots if isinstance(roots, list) else []
 
+    # ── Per-connection visibility ─────────────────────────────
+
     async def hide(self, *names: str) -> None:
         """Hide tools, prompts or resources from this connection's listings.
 
@@ -770,6 +785,8 @@ class MCPContext:
                 kinds.add("resources")
         return frozenset(kinds)
 
+    # ── Call-scoped result metadata ───────────────────────────
+
     @property
     def result_meta(self) -> dict[str, Any]:
         """Scratch `_meta` sent back on this call's result.
@@ -785,6 +802,9 @@ class MCPContext:
         """
         meta = _result_meta_var.get()
         if meta is None:
+            # Only outside a served call - the server binds the slot before the
+            # handler runs, so a write from a sync (offloaded) handler mutates a
+            # dict both contexts share rather than one this copy would discard.
             meta = {}
             _result_meta_var.set(meta)
         return meta
@@ -795,7 +815,10 @@ class MCPContext:
         """Issue a server->client request, gated on the client's advertised capability."""
         if self._requester is None:
             raise RuntimeError(f"{method} requires a bidirectional transport")
-        if capability not in self._client_capabilities:
+        # Through `client_supports`, so the two really are one lookup: a plain
+        # `in` test accepted a client that advertised `"sampling": false`, which
+        # is a client explicitly declining, and issued the request anyway.
+        if not self.client_supports(capability):
             raise MCPCapabilityError(capability)
         return await self._requester(method, params)
 

@@ -27,7 +27,7 @@ from __future__ import annotations
 import re
 from re import Pattern
 
-from veloce import status
+import veloce.status as status
 from veloce._constants import (
     HEADER_ACCESS_CONTROL_ALLOW_CREDENTIALS,
     HEADER_ACCESS_CONTROL_ALLOW_HEADERS,
@@ -51,7 +51,7 @@ from veloce._protocol_constants import (
 )
 from veloce.http.header_set import HeaderSet
 from veloce.http.request import Request
-from veloce.http.response import Response
+from veloce.http.response import Response, header_pop
 from veloce.middleware.base import Middleware
 
 # Fast-path literals that match every possible origin. Anchors and the
@@ -98,9 +98,14 @@ class CORSMiddleware(Middleware):
             CORSMiddleware(
                 allow_origins=["https://example.com"],
                 allow_methods=["GET", "POST"],
+                allow_headers=["Authorization", "Content-Type"],
                 allow_credentials=True,
             )
         )
+
+    `allow_headers` defaults to `["*"]`, and the Fetch standard forbids a
+    wildcard alongside credentials, so it must be listed explicitly whenever
+    `allow_credentials=True` - omitting it raises at construction.
     """
 
     def __init__(
@@ -170,14 +175,22 @@ class CORSMiddleware(Middleware):
         # - it is `", ".join`-ed into the response header.
         self._allow_origins_set: frozenset[str] = frozenset(self.allow_origins)
         self._allow_origins_has_star = "*" in self._allow_origins_set
+        # Whether `Access-Control-Allow-Origin` can differ between two callers,
+        # which is exactly when `Vary: Origin` is required. Only a bare `*`
+        # allow-list without credentials answers every caller identically; a
+        # regex, an explicit list, or credentials (which force echoing the exact
+        # origin) all vary. Settled here rather than per response: the answer
+        # cannot change once configured, and it must hold for a *refused* origin
+        # too, whose response carries no header to infer it from.
+        self._varies_by_origin = bool(
+            self.allow_origin_regex or allow_credentials or not self._allow_origins_has_star
+        )
         self._allow_headers_lower: frozenset[str] = frozenset(h.lower() for h in self.allow_headers)
         self._allow_headers_has_star = "*" in self.allow_headers
-        # Uppercased method set for the preflight requested-method check.
-        # HTTP methods are case-sensitive tokens; browsers send them in the
-        # canonical uppercase form, so an exact-set membership test is correct.
-        # Uppercased for the preflight check: browsers send the requested method
-        # in canonical case (`GET`) in `Access-Control-Request-Method`, so a
-        # lower-cased `allow_methods` config must still match.
+        # HTTP methods are case-sensitive tokens and browsers send the
+        # canonical uppercase form in `Access-Control-Request-Method`, so an
+        # exact-set membership test is correct - provided a lower-cased
+        # `allow_methods` config is folded up to meet it.
         self._allow_methods_set: frozenset[str] = frozenset(m.upper() for m in self.allow_methods)
         # Precompute the joined header strings - these are constant for
         # the middleware lifetime, so the per-response `", ".join(...)`
@@ -285,7 +298,18 @@ class CORSMiddleware(Middleware):
 
     async def process_response(self, request: Request, response: Response) -> Response:
         """Add CORS response headers."""
-        origin = request._state.get("_cors_origin", "")
+        # `_cors_origin` is a cache `process_request` writes, so it is missing
+        # whenever the response phase runs without the request phase - which is
+        # what a refusal is. An over-`MAX_CONTENT_LENGTH` body is rejected
+        # before dispatch, against a request built only to give this phase
+        # something to run against, and reading `""` there sent the 413 out with
+        # no `Access-Control-Allow-Origin`: the browser reports an opaque CORS
+        # failure and the status saying what was wrong never reaches the client.
+        # Reading the header is not the same as running the request phase: the
+        # refusal still refuses before reading the body, it just stops losing
+        # the one header the client needs to be allowed to see the refusal.
+        cached = request._state.get("_cors_origin")
+        origin: str = cached if cached is not None else request.headers.get(HEADER_ORIGIN, "")
         # Plain (non-preflight) cross-origin responses still need
         # Access-Control-Allow-Origin and Vary: Origin if the value
         # depends on the request origin.
@@ -299,10 +323,13 @@ class CORSMiddleware(Middleware):
         if allow_origin is not None:
             response.headers[HEADER_ACCESS_CONTROL_ALLOW_ORIGIN] = allow_origin
 
-        # `Vary: Origin` is required whenever the response value depends on
-        # the request origin (i.e. anything other than literal `*` without
-        # credentials). Cache poisoning class is real here.
-        if allow_origin is not None and allow_origin != "*":
+        # `Vary: Origin` is required whenever the response value depends on the
+        # request origin. Dependence is a property of the *configuration*, not of
+        # this request's outcome: gating on `allow_origin is not None` left the
+        # refused and no-Origin responses unmarked, so a shared cache could store
+        # one under an unkeyed entry and later hand it to an allowed origin,
+        # whose browser then blocks a request that should have succeeded.
+        if self._varies_by_origin:
             response.add_vary(HEADER_ORIGIN)
 
         if preflight:
@@ -330,13 +357,14 @@ class CORSMiddleware(Middleware):
             # `Response.add_vary` exists for). Assigning discarded those entries
             # silently, and whichever middleware ran last won - so a header a
             # route meant to expose simply never reached the browser.
-            # `Response.headers` is a plain dict, so a contribution written
-            # under a different casing is invisible to a single lookup - the
-            # same reason `_downgrade_to_304` pops both spellings.
+            # `Response.headers` is a plain dict, so a contribution written under
+            # a different casing is invisible to a single lookup. Checking the
+            # canonical spelling and then the lower-case one covered two casings
+            # and dropped the rest: a middleware contributing under
+            # `ACCESS-CONTROL-EXPOSE-HEADERS` had its entry silently discarded,
+            # which is the failure this merge exists to prevent.
             headers = response.headers
-            existing = headers.get(HEADER_ACCESS_CONTROL_EXPOSE_HEADERS)
-            if existing is None:
-                existing = headers.pop("access-control-expose-headers", None)
+            existing = header_pop(headers, HEADER_ACCESS_CONTROL_EXPOSE_HEADERS)
             if existing:
                 merged = HeaderSet(existing)
                 merged.update(self.expose_headers)

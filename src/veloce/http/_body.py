@@ -30,11 +30,14 @@ from collections import deque
 from collections.abc import Callable
 from typing import Any
 
+from veloce._constants import MSG_REQUEST_BODY_EXCEEDS_MAX
+from veloce._internal import _require_methods
+from veloce._protocol_constants import (
+    ASGI_EVENT_HTTP_DISCONNECT,
+    ASGI_EVENT_HTTP_REQUEST,
+)
 from veloce.exceptions import RequestEntityTooLarge
-
-# ASGI message types consumed by the pull-based body source below.
-_ASGI_HTTP_REQUEST = "http.request"
-_ASGI_HTTP_DISCONNECT = "http.disconnect"
+from veloce.status import HTTP_413_CONTENT_TOO_LARGE
 
 # Bound on unconsumed body chunks. Reaching the high-water mark pauses socket
 # reading; draining back to the low-water mark resumes it. The gap (hysteresis)
@@ -43,7 +46,82 @@ DEFAULT_HIGH_WATER_CHUNKS = 16
 DEFAULT_LOW_WATER_CHUNKS = 4
 
 
-class RequestBodySource:
+def body_too_large(limit: int | None) -> RequestEntityTooLarge:
+    """Build the refusal a body source raises, carrying the limit it tripped.
+
+    The limit rides on the exception so the rendered body matches the one the
+    eager refusal paths emit through `too_large_payload`. Without it a streamed
+    body's 413 answered `{detail, status_code}` while the declared-length and
+    buffered refusals answered `{detail, status_code, limit}` - the same refusal
+    described two ways, which is exactly what `too_large_payload` exists to
+    prevent.
+    """
+    exc = RequestEntityTooLarge(MSG_REQUEST_BODY_EXCEEDS_MAX)
+    exc.limit = limit
+    return exc
+
+
+def too_large_payload(limit: int | None) -> dict[str, Any]:
+    """Build the body both transports answer a `MAX_CONTENT_LENGTH` refusal with.
+
+    Built here so the two paths cannot describe the same refusal differently.
+    The ASGI path answered `{detail, status_code, limit}` as JSON while the
+    native server wrote the plain bytes `Content Too Large` with no content
+    type, so a client parsing the documented error shape got text from
+    `app.run()` and JSON from uvicorn - for the same request against the same app.
+    """
+    return {
+        "detail": MSG_REQUEST_BODY_EXCEEDS_MAX,
+        "status_code": HTTP_413_CONTENT_TOO_LARGE,
+        "limit": limit,
+    }
+
+
+class BodySource:
+    """The consumer interface a request body source presents, on any transport.
+
+    `Request` is transport-agnostic: it holds whichever source built it and
+    consumes through this interface alone. The two implementations arrive at it
+    from opposite directions - the native one is push-fed by the HTTP/1.1 parser,
+    the ASGI one pulls from a `receive` channel - so what they have in common is
+    stated here rather than left for a consumer to probe for.
+
+    `disconnected` is the part that is easy to leave half-implemented: it is
+    `False` for a body that completed and `True` for one cut short by the peer
+    going away, and a source that cannot tell them apart makes
+    `request.is_disconnected()` answer `False` for a client that is gone.
+    """
+
+    __slots__ = ()
+
+    #: What a source must supply. Checked at definition rather than left to
+    #: fail on the first streamed request: a source missing one of these works
+    #: until a handler reaches for it, and then fails mid-body.
+    _required = ("__aiter__", "__anext__", "read", "disconnected")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        _require_methods(cls, BodySource, BodySource._required)
+
+    def __aiter__(self) -> BodySource:
+        """Iterate the body chunk by chunk, as the transport delivers it."""
+        raise NotImplementedError
+
+    async def __anext__(self) -> bytes:
+        """Return the next chunk, or raise `StopAsyncIteration` at EOF."""
+        raise NotImplementedError
+
+    async def read(self) -> bytes:
+        """Pull every remaining chunk to EOF and return the joined bytes."""
+        raise NotImplementedError
+
+    @property
+    def disconnected(self) -> bool:
+        """`True` when the stream ended because the peer went away."""
+        raise NotImplementedError
+
+
+class RequestBodySource(BodySource):
     """Async producer/consumer queue for one request's body bytes.
 
     The protocol calls `feed(chunk)` from `on_body` and `feed_eof()` from
@@ -81,6 +159,7 @@ class RequestBodySource:
         "_resume",
         "_paused",
         "_draining",
+        "_disconnected",
     )
 
     def __init__(
@@ -110,6 +189,8 @@ class RequestBodySource:
         # never re-pauses while this is set, otherwise a re-pause mid-drain
         # would stop the remaining body (and EOF) from ever arriving.
         self._draining = False
+        # Set only by `feed_eof(disconnected=True)`; see that method.
+        self._disconnected = False
 
     def set_flow_control(self, pause: Callable[[], None], resume: Callable[[], None]) -> None:
         """Wire pause/resume callbacks (the transport's flow control).
@@ -170,10 +251,23 @@ class RequestBodySource:
             self._paused = True
             self._pause()
 
-    def feed_eof(self) -> None:
-        """Signal that no more body bytes will arrive."""
+    def feed_eof(self, *, disconnected: bool = False) -> None:
+        """Signal that no more body bytes will arrive.
+
+        `disconnected=True` says the peer went away rather than the body
+        completing. Both end the stream for a consumer, but only the second is
+        an ordinary end - `request.is_disconnected()` is the difference, and
+        without the distinction it answers `False` for a client that is gone.
+        """
         self._eof = True
+        if disconnected:
+            self._disconnected = True
         self._event.set()
+
+    @property
+    def disconnected(self) -> bool:
+        """`True` when the stream ended because the peer went away."""
+        return self._disconnected
 
     def _maybe_resume(self) -> None:
         """Resume socket reading once the buffer drains to the low-water mark."""
@@ -184,9 +278,10 @@ class RequestBodySource:
 
     def _check_overflow(self) -> None:
         if self._overflow:
-            raise RequestEntityTooLarge(f"Request body exceeds the {self._max}-byte limit")
+            raise body_too_large(self._max)
 
     def __aiter__(self) -> RequestBodySource:
+        """Iterate the fed chunks, waiting when the queue is empty."""
         return self
 
     async def __anext__(self) -> bytes:
@@ -237,7 +332,7 @@ class RequestBodySource:
         self._chunks.clear()
 
 
-class ASGIBodySource:
+class ASGIBodySource(BodySource):
     """Pull-based body source over an ASGI `receive` channel.
 
     The native `RequestBodySource` is push-fed by the HTTP/1.1 parser; under an
@@ -266,6 +361,11 @@ class ASGIBodySource:
         # for a streaming route, where the client really can go away mid-handler.
         self._disconnected = False
 
+    @property
+    def disconnected(self) -> bool:
+        """`True` when the stream ended because the peer went away."""
+        return self._disconnected
+
     def __aiter__(self) -> ASGIBodySource:
         return self
 
@@ -275,11 +375,11 @@ class ASGIBodySource:
                 raise StopAsyncIteration
             message = await self._receive()
             mtype = message.get("type")
-            if mtype == _ASGI_HTTP_DISCONNECT:
+            if mtype == ASGI_EVENT_HTTP_DISCONNECT:
                 self._done = True
                 self._disconnected = True
                 raise StopAsyncIteration
-            if mtype != _ASGI_HTTP_REQUEST:
+            if mtype != ASGI_EVENT_HTTP_REQUEST:
                 # Ignore any non-body control message and keep pulling.
                 continue
             chunk = message.get("body", b"") or b""
@@ -288,7 +388,7 @@ class ASGIBodySource:
             if chunk:
                 self._size += len(chunk)
                 if self._max is not None and self._size > self._max:
-                    raise RequestEntityTooLarge(f"Request body exceeds the {self._max}-byte limit")
+                    raise body_too_large(self._max)
                 return chunk
             if self._done:
                 raise StopAsyncIteration
@@ -308,11 +408,11 @@ class ASGIBodySource:
         while not self._done:
             message = await self._receive()
             mtype = message.get("type")
-            if mtype == _ASGI_HTTP_DISCONNECT:
+            if mtype == ASGI_EVENT_HTTP_DISCONNECT:
                 self._done = True
                 self._disconnected = True
                 break
-            if mtype != _ASGI_HTTP_REQUEST:
+            if mtype != ASGI_EVENT_HTTP_REQUEST:
                 continue
             last = not message.get("more_body", False)
             if last:
@@ -321,7 +421,7 @@ class ASGIBodySource:
             if chunk:
                 self._size += len(chunk)
                 if self._max is not None and self._size > self._max:
-                    raise RequestEntityTooLarge(f"Request body exceeds the {self._max}-byte limit")
+                    raise body_too_large(self._max)
                 if parts is None:
                     if last:
                         # Whole body arrived in one message: skip the list/join.

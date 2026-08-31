@@ -191,7 +191,7 @@ async def positional():
 
 Passing both positional and keyword arguments raises `TypeError`. When
 called inside a request, `jsonify` honours two `app.config` flags:
-`JSON_SORT_KEYS` (default `True`) sorts dict keys, and
+`JSON_SORT_KEYS` (default `False`) sorts dict keys, and
 `JSONIFY_PRETTYPRINT_REGULAR` (default `False`) indents the output.
 
 ## redirect
@@ -224,8 +224,8 @@ method.
 
 [`make_response`](../reference/helpers.md#veloce.make_response) coerces a body, status
 code, and headers into a [`Response`](../reference/responses.md#veloce.Response), picking
-the response type from the body. A `str` becomes an HTML response, `bytes` an
-octet-stream, and a `dict` or `list` a JSON response:
+the response type from the body. A `str` or `bytes` becomes an HTML response, and a
+`dict` or `list` a JSON response:
 
 ```python
 from veloce import Veloce, make_response
@@ -245,9 +245,30 @@ async def created():
     return make_response({"id": 1}, 201)
 ```
 
-The signature is `make_response(body=b"", status_code=200, headers=None,
+The signature is `make_response(body=b"", status_code=None, headers=None,
 content_type=None)`. A Pydantic model (anything with `model_dump`) is
 serialised to JSON.
+
+An omitted `status_code` means `200` for a plain body, and leaves an existing
+`Response` alone: `make_response(resp)` passes it straight through, while
+`make_response(resp, 403)` sets the status on it.
+
+```python
+@app.get("/forbidden")
+async def forbidden():
+    return make_response(jsonify({"error": "forbidden"}), 403)
+```
+
+A tuple body is unpacked as `(body, status)`, `(body, headers)` or
+`(body, status, headers)` - the same shapes a handler may return, read from the
+same table as [`Veloce.make_response`](../reference/application.md#veloce.Veloce.make_response)
+and the dispatcher. A tuple of any other length is not a response tuple and is
+serialised as data.
+
+!!! note "Changed in version 0.18"
+
+    A one- or four-element tuple is answered as data. A four-element tuple
+    previously dropped its status and headers in silence.
 
 ## send_file
 
@@ -293,7 +314,7 @@ auto-generated ETag, and `max_age=` to add a `Cache-Control` header.
 !!! warning "send_file blocks inside async handlers"
     `send_file` calls the blocking [`FileResponse`](../reference/responses.md#veloce.FileResponse)
     constructor, which reads file metadata synchronously and emits a
-    `DeprecationWarning` when invoked from an `async def` handler on a running
+    `VeloceDeprecationWarning` when invoked from an `async def` handler on a running
     event loop. Inside async routes use the async-safe alternatives instead:
     `async_send_file` (the async counterpart of `send_file`, same arguments),
     `await FileResponse.from_path(...)` for a lower-level single file, or

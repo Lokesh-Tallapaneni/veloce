@@ -14,11 +14,11 @@ import warnings
 
 import pytest
 
-from veloce import Query, Veloce
+from veloce import Header, Query, Veloce
 from veloce._handler_plan import build_plan
+from veloce._params import ParamBase
 from veloce._resolver_codegen import compile_param_resolver
 from veloce.dependency import RequestValidationError, _coerce_value
-from veloce.routing.params import Header, ParamBase
 from veloce.testclient import TestClient
 
 # ── Marker-level behaviour ────────────────────────────────────────────
@@ -256,3 +256,132 @@ def test_factory_param_is_optional_with_no_static_default_in_schema():
     # A factory-backed param is optional but advertises no static default.
     assert tags_param["required"] is False
     assert "default" not in tags_param.get("schema", {})
+
+
+# ── Marker-carried mutable defaults ───────────────────────────────────
+#
+# The plain `tags: list[str] = []` form above is guarded at registration. The
+# marker form declares the same thing more explicitly and was the one that
+# leaked: `Query(default=[])` handed every request the one list on the marker,
+# so a handler appending to it grew the default for every later request. The
+# marker now wraps a mutable static default in a copying factory itself, which
+# is the single point the interpreter and both compiled resolvers read.
+
+
+def test_marker_list_default_is_per_request_via_handler():
+    app = Veloce(openapi_url=None)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+
+        @app.get("/items")
+        async def handler(tags: list[str] = Query(default=[])) -> dict:
+            tags.append("x")
+            return {"tags": tags}
+
+    client = TestClient(app)
+    assert client.get("/items").json() == {"tags": ["x"]}
+    assert client.get("/items").json() == {"tags": ["x"]}
+
+
+def test_marker_dict_default_is_per_request_via_handler():
+    app = Veloce(openapi_url=None)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+
+        @app.get("/cfg")
+        async def handler(opts: dict = Query(default={})) -> dict:
+            opts["seen"] = opts.get("seen", 0) + 1
+            return opts
+
+    client = TestClient(app)
+    assert client.get("/cfg").json() == {"seen": 1}
+    assert client.get("/cfg").json() == {"seen": 1}
+
+
+def test_a_header_markers_mutable_default_is_per_request():
+    """Every marker shares the base, so the guard must reach all of them."""
+    app = Veloce(openapi_url=None)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+
+        @app.get("/seen")
+        async def handler(seen: list[str] = Header(default=[], alias="x-seen")) -> dict:
+            seen.append("x")
+            return {"seen": seen}
+
+    client = TestClient(app)
+    assert client.get("/seen").json() == {"seen": ["x"]}
+    assert client.get("/seen").json() == {"seen": ["x"]}
+
+
+def test_a_mutable_marker_default_is_not_handed_out_by_identity():
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        marker = Query(default=[])
+
+    first = marker.resolve_default()
+    second = marker.resolve_default()
+    assert first == second == []
+    assert first is not second
+
+
+def test_a_nested_mutable_marker_default_is_copied_deeply():
+    """A shallow copy would still alias the inner container."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        marker = Query(default={"tags": []})
+
+    resolved = marker.resolve_default()
+    resolved["tags"].append("x")
+    assert marker.resolve_default() == {"tags": []}
+
+
+def test_the_declared_default_is_still_readable_on_the_marker():
+    """The copying factory must not erase what the author declared."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        marker = Query(default=[1, 2])
+
+    assert marker.default == [1, 2]
+    assert marker.has_default is True
+
+
+def test_compiled_resolver_copies_a_mutable_marker_default():
+    """Codegen reads the marker's own state, so it is the path that baked it in."""
+
+    def handler(tags: list = Query(default=[])):  # type: ignore[assignment]
+        return tags
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        resolver = compile_param_resolver(
+            build_plan(handler), _coerce_value, RequestValidationError
+        )
+    assert resolver is not None, "this must exercise the compiled path, not the interpreter"
+
+    class _Req:
+        class query_params:
+            @staticmethod
+            def get(_name):
+                return None
+
+            @staticmethod
+            def getall(_name):
+                return []
+
+    first = resolver(_Req(), {})["tags"]
+    first.append("x")
+    assert resolver(_Req(), {})["tags"] == []
+
+
+def test_marker_mutable_default_still_warns_at_registration():
+    """Fixed, but the explicit spelling is still the one to reach for."""
+
+    def handler(tags: list[str] = Query(default=[])):
+        return tags
+
+    with pytest.warns(UserWarning, match="default_factory=list"):
+        build_plan(handler)

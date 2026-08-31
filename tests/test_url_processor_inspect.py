@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from veloce import Veloce
+from veloce.blueprints import Blueprint
 
 
 def test_url_value_preprocessors_starts_empty():
@@ -67,8 +68,7 @@ def test_url_default_functions_returns_snapshot():
 
 
 def test_url_processors_collected_from_blueprints():
-    """Blueprint-registered processors are flattened into the app list."""
-    from veloce.blueprints import Blueprint
+    """Blueprint-registered processors are bucketed under the blueprint's name."""
 
     app = Veloce()
     bp = Blueprint("api", url_prefix="/api")
@@ -82,6 +82,8 @@ def test_url_processors_collected_from_blueprints():
         pass
 
     app.register_blueprint(bp)
-    # Flattened into the app's None-keyed list (one gated wrapper each).
-    assert len(app.url_value_preprocessors[None]) == 1
-    assert len(app.url_default_functions[None]) == 1
+    # Under the blueprint's name, unwrapped - the app's own list stays empty.
+    assert app.url_value_preprocessors[None] == []
+    assert app.url_default_functions[None] == []
+    assert app.url_value_preprocessors["api"] == [pull_v]
+    assert app.url_default_functions["api"] == [add_v]

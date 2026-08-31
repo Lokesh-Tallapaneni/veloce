@@ -6,6 +6,7 @@ from typing import Annotated
 
 from pydantic import BaseModel
 
+from tests._openapi import document
 from veloce import Body, Veloce
 
 
@@ -14,7 +15,7 @@ class BodyModel(BaseModel):
 
 
 def _request_body(app: Veloce, path: str) -> dict | None:
-    spec = app.test_client().get("/openapi.json").json()
+    spec = document(app)
     return spec["paths"][path]["post"].get("requestBody")
 
 

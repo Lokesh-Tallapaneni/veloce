@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import Depends, Request, Veloce
+from veloce import Depends, Path, Request, Veloce
 
 
 def _params(app: Veloce, path: str, method: str = "get") -> list[dict]:
@@ -115,7 +115,6 @@ def test_a_declared_path_parameter_is_documented_once():
 
 def test_a_declared_parameter_keeps_its_own_documentation():
     """The signature is the more precise source, so it is not overwritten."""
-    from veloce import Path
 
     app = _app()
 

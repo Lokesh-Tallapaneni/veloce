@@ -95,17 +95,40 @@ def test_debug_false_returns_json_error_no_source_leak():
 
 
 def test_debug_page_has_no_interactive_or_eval_affordance():
+    """The served HTML page offers nothing to post back or execute.
+
+    This asked for `/boom` with no `Accept` header, which returns the
+    **plain-text** traceback - so every `"<form" not in body` assertion held
+    trivially and the HTML page named in the test's own title was never
+    fetched. `Accept: text/html` is what selects it.
+    """
     app = _boom_app()
     with TestClient(app) as client:
-        resp = client.get("/boom")
+        resp = client.get("/boom", headers={"Accept": "text/html"})
 
     body = resp.text.lower()
+    # The premise: assert we are looking at the HTML page at all, so this
+    # cannot quietly revert to checking the plain-text body again.
+    assert "text/html" in resp.headers["content-type"]
+    assert "<html" in body
+
     # No-eval contract: the page must not post back or execute code.
     assert "<form" not in body
     assert "<input" not in body
     assert "<script" not in body
     assert "<textarea" not in body
     assert "eval(" not in body
+    assert "onclick" not in body
+
+
+def test_the_plain_text_traceback_is_served_without_an_html_accept():
+    """The other branch, which is what the test above used to exercise."""
+    app = _boom_app()
+    with TestClient(app) as client:
+        resp = client.get("/boom")
+
+    assert "text/plain" in resp.headers["content-type"]
+    assert "<html" not in resp.text.lower()
 
 
 def test_render_traceback_html_is_self_contained_document():
@@ -291,3 +314,68 @@ def test_render_traceback_html_renders_chained_cause_within_group_child():
     assert "root-cause" in page
     assert "wrapped-error" in page
     assert "The above exception was the direct cause" in page
+
+
+# ── `debug` is bound to config["DEBUG"] ───────────────────────
+#
+# Moved here from `test_app.py`, where these sat in a bare-function tail whose
+# sections were labelled by internal batch id (`S7:`, `P-6:`).
+
+
+def test_debug_attr_writes_config():
+
+    app = Veloce(openapi_url=None)
+    app.debug = True
+    assert app.config["DEBUG"] is True
+
+
+def test_config_debug_reflected_in_attr():
+
+    app = Veloce(openapi_url=None)
+    app.config["DEBUG"] = True
+    assert app.debug is True
+
+
+def test_debug_constructor_seeds_config():
+
+    assert Veloce(debug=True, openapi_url=None).config["DEBUG"] is True
+    assert Veloce(openapi_url=None).config["DEBUG"] is False
+
+
+def test_post_construction_debug_enables_html_traceback():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/boom")
+    async def boom():
+        raise RuntimeError("kaboom")
+
+    app.config["DEBUG"] = True  # flip AFTER construction
+    with TestClient(app) as client:
+        resp = client.get("/boom", headers={"accept": "text/html"})
+    # Flipping config["DEBUG"] after construction now serves the HTML debug
+    # traceback page (the path that reads self.debug, now bound to the config
+    # key) instead of the production JSON error.
+    assert resp.status_code == 500
+    assert "text/html" in resp.content_type
+    assert "RuntimeError" in resp.text
+
+
+def test_debug_string_false_is_falsey():
+    # A dotenv-loaded `DEBUG=false` is the string "false"; it must read as False,
+    # not truthy. Guards the bool("false") regression on string-based config.
+
+    app = Veloce(openapi_url=None)
+    app.config["DEBUG"] = "false"
+    assert app.debug is False
+    app.config["DEBUG"] = "true"
+    assert app.debug is True
+
+
+def test_debug_setter_coerces_string():
+    # `app.debug = "false"` (string from an env source) must store False.
+
+    app = Veloce(openapi_url=None)
+    app.debug = "false"
+    assert app.debug is False and app.config["DEBUG"] is False
+    app.debug = "true"
+    assert app.debug is True

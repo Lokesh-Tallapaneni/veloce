@@ -1,4 +1,4 @@
-"""Path converters — match-time validation and coercion of URL segments.
+"""Path converters — segment coercion, and the rest of what a template says.
 
 Two segment syntaxes are accepted: the angle-bracket form
 (`<int:id>`, `<path:p>`, `<any(a,b):x>`) and the brace form
@@ -8,6 +8,13 @@ A converter:
   - `match(segment)` returns `(ok, coerced_value)`.
   - `greedy` is True for the `path` converter which consumes the remainder
     of the URL (including slashes) instead of one segment.
+
+Beyond match-time coercion the module owns the rest of what a route template
+says about itself: placeholder scanning (`_iter_placeholders`), the decision of
+whether a path is tree-expressible or needs a compiled regex (`is_regex_path`,
+`build_route_regex`, `extract_regex_converters`), and the JSON-Schema fragment
+each parameter contributes (`path_param_schemas`), which the OpenAPI and MCP
+packages both import.
 
 When a route declares `{name:converter}`, the radix node holding that param
 keeps the converter and applies it during the match traversal. A segment
@@ -23,7 +30,21 @@ import decimal
 import math
 import re
 import uuid
+import warnings
 from typing import Any
+
+from veloce._internal import _SCALAR_JSON_SCHEMAS, _require_methods
+
+# The module's one optional dependency: a C ISO-8601 parser that
+# `_parse_datetime` selects over the stdlib when it is installed. Declared here
+# rather than beside the two parsers it chooses between, so the header states
+# every import the module has.
+try:  # pragma: no cover - one branch per environment
+    from ciso8601 import parse_datetime as _parse_datetime_ciso
+
+    _HAS_CISO8601 = True
+except ImportError:  # pragma: no cover
+    _HAS_CISO8601 = False
 
 # UUID format per RFC 4122 (8-4-4-4-12 hex digits, case-insensitive). This is
 # the body (un-anchored) form, reused when translating a `{id:uuid}` placeholder
@@ -48,11 +69,20 @@ _BUILTIN_REGEX: dict[str, str] = {
     "str": r"[^/]+",
     "string": r"[^/]+",
     "int": r"-?\d+",
-    "float": r"-?\d+\.\d+",
+    # A superset of what `FloatConverter.match` accepts: an optional sign, and a
+    # dot with digits on either side or both. It was `-?\d+\.\d+`, which is
+    # *stricter* than the converter, so `+1.5`, `.5` and `5.` were rejected
+    # before the converter was consulted - the same route matched on the radix
+    # tree and 404'd on the regex fallback. The dot stays required so a float
+    # placeholder does not also match what an `int` one would.
+    "float": r"[+-]?(?:\d+\.\d*|\.\d+)",
     "uuid": _UUID_PATTERN,
     "path": r".+",
-    # Single-segment (no slash) fragments for the regex fallback; the
-    # converter re-validates the matched group, so these stay permissive.
+    # Single-segment (no slash) fragments for the regex fallback. Each must be a
+    # SUPERSET of what its converter accepts - the converter re-validates the
+    # matched group, so a fragment narrower than its converter silently rejects
+    # values the converter would have taken, and `_match_regex` moves on to the
+    # next route instead.
     "date": r"\d{4}-\d{2}-\d{2}",
     "datetime": r"\d{4}-\d{2}-\d{2}[T ][\d:.]+(?:[+-][\d:]+|Z)?",
     "time": r"\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:[+-][\d:]+|Z)?",
@@ -69,18 +99,51 @@ _MAX_INT_DIGITS = 20
 # ── Converters ────────────────────────────────────────────
 
 
-class _Converter:
+class Converter:
     """Base class - subclasses override `match` and may set `greedy`."""
 
     __slots__ = ()
     greedy = False
+
+    #: How restrictive this converter is. When two parameter segments compete
+    #: for the same position, the lower value is tried first, so
+    #: `/items/{id:int}` beats `/items/{slug:str}` however they were declared.
+    #:
+    #: Declared on the converter rather than in a table the router keeps: a
+    #: table only knows the classes someone remembered to add, and a converter
+    #: missing from it ties with `str`, which makes route resolution depend on
+    #: the order the decorators appear in the file. A custom converter that
+    #: does not declare one is assumed no
+    #: more restrictive than `str`, which is the only safe assumption about a
+    #: pattern the framework cannot see.
+    specificity = 50
+
+    #: The method a subclass must supply, checked at definition rather than left
+    #: to fail at call time - a converter that cannot match refuses every
+    #: segment, so the route it was registered for would silently 404 instead of
+    #: reporting the omission.
+    _required = ("match",)
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        _require_methods(cls, Converter, Converter._required)
+        # Every converter here is slotted, so a subclass that omits `__slots__`
+        # silently regains a per-instance `__dict__` and stops matching the
+        # shape the base declares. Warned rather than raised: a third-party
+        # converter written before this check would otherwise fail at import.
+        if "__slots__" not in cls.__dict__:
+            warnings.warn(
+                f"{cls.__name__} does not declare __slots__; add `__slots__ = ()` "
+                "so its instances stay slotted like every other Converter",
+                stacklevel=2,
+            )
 
     def match(self, value: str) -> tuple[bool, Any]:
         """Validate (and coerce) `value`. Return (ok, coerced)."""
         raise NotImplementedError
 
 
-class StringConverter(_Converter):
+class StringConverter(Converter):
     """Default. Accepts a single non-empty segment (slashes excluded).
 
     Optional constraints bound the segment length so a violation is a route
@@ -91,6 +154,8 @@ class StringConverter(_Converter):
     """
 
     __slots__ = ("_minlength", "_maxlength")
+    #: Any single non-empty segment - the baseline.
+    specificity = 50
 
     _minlength: int
     _maxlength: int | None
@@ -128,7 +193,7 @@ class StringConverter(_Converter):
         return True, value
 
 
-class IntConverter(_Converter):
+class IntConverter(Converter):
     """Matches a decimal integer; coerces to Python int.
 
     Optional constraints participate in matching rather than the handler
@@ -138,6 +203,8 @@ class IntConverter(_Converter):
     """
 
     __slots__ = ("_min", "_max", "_signed")
+    #: Digits only, optionally signed.
+    specificity = 20
 
     def __init__(
         self,
@@ -171,7 +238,7 @@ class IntConverter(_Converter):
         return True, coerced
 
 
-class FloatConverter(_Converter):
+class FloatConverter(Converter):
     """Matches a decimal float (no scientific notation); coerces to float.
 
     Optional `min`/`max` bound the value during matching and `signed=False`
@@ -179,6 +246,10 @@ class FloatConverter(_Converter):
     """
 
     __slots__ = ("_min", "_max", "_signed")
+    #: Digits with a required fractional part - a strict subset of what
+    #: `decimal` accepts, so it is the more restrictive of the two and is
+    #: tried first.
+    specificity = 40
 
     def __init__(
         self,
@@ -217,10 +288,12 @@ class FloatConverter(_Converter):
         return True, f
 
 
-class UUIDConverter(_Converter):
+class UUIDConverter(Converter):
     """Matches a canonical UUID per RFC 4122; coerces to uuid.UUID."""
 
     __slots__ = ()
+    #: A fixed 36-character format; almost nothing else matches.
+    specificity = 10
 
     def match(self, value: str) -> tuple[bool, Any]:
         """Accept a canonical RFC 4122 UUID segment; coerce to `uuid.UUID`."""
@@ -232,10 +305,12 @@ class UUIDConverter(_Converter):
             return False, None
 
 
-class PathConverter(_Converter):
+class PathConverter(Converter):
     """Greedy converter - consumes the rest of the URL, including slashes."""
 
     __slots__ = ()
+    #: Greedy: consumes the rest of the URL. Always tried last.
+    specificity = 90
     greedy = True
 
     def match(self, value: str) -> tuple[bool, Any]:
@@ -250,7 +325,11 @@ class PathConverter(_Converter):
 # common reject. The actual validation is delegated to the stdlib
 # `fromisoformat` parsers (3.10-compatible after Z normalization).
 _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}$")
-_DATETIME_RE = re.compile(r"\d{4}-\d{2}-\d{2}[T ][\d:.]+(?:[+-][\d:]+|Z)?$")
+# The numeric offset is captured, not just matched: the parse below needs to
+# know whether one is present, and the prefilter has already scanned past it.
+# A trailing `Z` is deliberately outside the group - it is UTC, which both
+# parsers represent identically.
+_DATETIME_RE = re.compile(r"\d{4}-\d{2}-\d{2}[T ][\d:.]+(?:([+-][\d:]+)|Z)?$")
 _TIME_RE = re.compile(r"\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:[+-][\d:]+|Z)?$")
 # ISO 8601 duration: at least one component required.
 _TIMEDELTA_RE = re.compile(
@@ -275,10 +354,46 @@ def _normalize_z(value: str) -> str:
     return value
 
 
-class DateConverter(_Converter):
+def _parse_datetime_stdlib(value: str, offset: str | None) -> datetime.datetime:
+    """Parse an admitted datetime segment with the stdlib.
+
+    `offset` is unused here; the signature matches `_parse_datetime_accelerated`
+    so `_parse_datetime` can select either.
+    """
+    return datetime.datetime.fromisoformat(_normalize_z(value))
+
+
+def _parse_datetime_accelerated(value: str, offset: str | None) -> datetime.datetime:
+    """Parse through ciso8601 where it answers exactly as the stdlib does.
+
+    ciso8601 parses the same shapes in C and handles `Z` itself, but it returns
+    its own `FixedOffset` for a *numeric* offset where the stdlib returns a
+    `datetime.timezone`. The datetimes compare equal and render the same
+    `isoformat()`, yet `type(dt.tzinfo)` differs - and it would differ according
+    to whether an optional package happened to be installed, which is a worse
+    property than either behaviour chosen deliberately.
+
+    So the accelerated path takes only the values with no numeric offset: naive
+    ones and `Z`, for which ciso8601 yields a real `datetime.timezone`. Whether
+    there is one is already known - `_DATETIME_RE` captured it - so the split
+    costs a group read rather than a second scan of the string. Anything with an
+    offset falls through to exactly the call this converter has always made,
+    which keeps 3.10's `Z` handling with it.
+    """
+    if offset is None:
+        return _parse_datetime_ciso(value)
+    return datetime.datetime.fromisoformat(_normalize_z(value))
+
+
+_parse_datetime = _parse_datetime_accelerated if _HAS_CISO8601 else _parse_datetime_stdlib
+
+
+class DateConverter(Converter):
     """Matches an ISO 8601 date; coerces to datetime.date."""
 
     __slots__ = ()
+    #: A fixed ISO-8601 shape.
+    specificity = 31
 
     def match(self, value: str) -> tuple[bool, Any]:
         """Accept an ISO 8601 date segment; coerce to `datetime.date`."""
@@ -290,25 +405,32 @@ class DateConverter(_Converter):
             return False, None
 
 
-class DateTimeConverter(_Converter):
+class DateTimeConverter(Converter):
     """Matches an ISO 8601 datetime; coerces to datetime.datetime."""
 
     __slots__ = ()
+    #: A fixed ISO-8601 shape.
+    specificity = 30
 
     def match(self, value: str) -> tuple[bool, Any]:
         """Accept an ISO 8601 datetime segment; coerce to `datetime.datetime`."""
-        if not _DATETIME_RE.match(value):
+        matched = _DATETIME_RE.match(value)
+        if matched is None:
             return False, None
         try:
-            return True, datetime.datetime.fromisoformat(_normalize_z(value))
+            # Read off the module so the accelerated and stdlib parsers can be
+            # swapped in a test and required to answer identically.
+            return True, _parse_datetime(value, matched.group(1))
         except ValueError:
             return False, None
 
 
-class TimeConverter(_Converter):
+class TimeConverter(Converter):
     """Matches an ISO 8601 time; coerces to datetime.time."""
 
     __slots__ = ()
+    #: A fixed ISO-8601 shape.
+    specificity = 32
 
     def match(self, value: str) -> tuple[bool, Any]:
         """Accept an ISO 8601 time segment; coerce to `datetime.time`."""
@@ -320,7 +442,7 @@ class TimeConverter(_Converter):
             return False, None
 
 
-class TimeDeltaConverter(_Converter):
+class TimeDeltaConverter(Converter):
     """Matches an ISO 8601 duration or `str(timedelta)`; coerces to timedelta.
 
     Stricter than Litestar: a bare number such as `60` is rejected. An ISO
@@ -331,6 +453,8 @@ class TimeDeltaConverter(_Converter):
     """
 
     __slots__ = ()
+    #: A fixed duration shape.
+    specificity = 33
 
     def match(self, value: str) -> tuple[bool, Any]:
         """Accept an ISO 8601 duration or `str(timedelta)` segment; coerce to `timedelta`."""
@@ -358,10 +482,13 @@ class TimeDeltaConverter(_Converter):
         )
 
 
-class DecimalConverter(_Converter):
+class DecimalConverter(Converter):
     """Matches a decimal literal; coerces to decimal.Decimal."""
 
     __slots__ = ()
+    #: Digits with an optional fractional part, so it accepts everything
+    #: `float` does and more; the looser of the pair sorts after it.
+    specificity = 41
 
     def match(self, value: str) -> tuple[bool, Any]:
         """Accept a decimal-literal segment; coerce to `decimal.Decimal`."""
@@ -373,10 +500,12 @@ class DecimalConverter(_Converter):
             return False, None
 
 
-class AnyConverter(_Converter):
+class AnyConverter(Converter):
     """Matches one of a fixed set of literal values: `{x:any(red,blue)}`."""
 
     __slots__ = ("_choices",)
+    #: An explicit set of literals - only those values match.
+    specificity = 25
 
     def __init__(self, choices: tuple[str, ...]) -> None:
         self._choices = frozenset(choices)
@@ -389,10 +518,12 @@ class AnyConverter(_Converter):
 # ── Registry and parsing ──────────────────────────────────
 
 
-# Public base-class alias - subclass `Converter` to build a custom one.
-Converter = _Converter
+# The pre-rename spelling of `Converter`, kept so an importer of the private
+# name still resolves. `Converter` is the class itself, so a user subclass's
+# MRO, its `repr()` and any traceback name the documented public symbol.
+_Converter = Converter
 
-_BUILTIN: dict[str, type[_Converter]] = {
+_BUILTIN: dict[str, type[Converter]] = {
     "str": StringConverter,
     "string": StringConverter,
     "int": IntConverter,
@@ -408,7 +539,7 @@ _BUILTIN: dict[str, type[_Converter]] = {
 
 # User-registered converters - `register_converter(name, cls)` populates
 # this; `parse_converter` consults it after the built-ins.
-_CUSTOM: dict[str, type[_Converter]] = {}
+_CUSTOM: dict[str, type[Converter]] = {}
 
 # Converter names that accept the `name(args)` constraint grammar. `any(...)`
 # is handled separately because its arguments are a literal value list, not
@@ -485,23 +616,40 @@ def _parse_converter_args(body: str) -> tuple[list[Any], dict[str, Any]]:
     return args, kwargs
 
 
-def register_converter(name: str, converter_cls: type[_Converter]) -> None:
+def register_converter(name: str, converter_cls: type[Converter]) -> None:
     """Register a custom path converter.
 
     After `register_converter("slug", SlugConverter)`, routes may use
     `{post:slug}` and the radix tree validates/coerces the segment via
     `SlugConverter().match(...)`. `converter_cls` must subclass
-    `Converter` (= `_Converter`). A built-in name cannot be shadowed -
+    `Converter`. A built-in name cannot be shadowed -
     that raises `ValueError`.
     """
     if name in _BUILTIN:
         raise ValueError(f"cannot override built-in converter {name!r}")
-    if not (isinstance(converter_cls, type) and issubclass(converter_cls, _Converter)):
+    if not (isinstance(converter_cls, type) and issubclass(converter_cls, Converter)):
         raise TypeError("converter_cls must be a subclass of Converter")
     _CUSTOM[name] = converter_cls
 
 
-def parse_converter(spec: str | None) -> _Converter:
+def unregister_converter(name: str) -> None:
+    """Remove a converter registered with `register_converter`.
+
+    No-op when `name` was never registered. A built-in name is refused with
+    `ValueError`, matching `register_converter`: the built-ins are not the
+    caller's to remove, and silently ignoring the attempt would leave a test
+    or a plugin believing it had.
+
+    Routes already registered against the converter keep the instance they were
+    built with - `parse_converter` runs at registration time, not at match
+    time - so this affects only routes registered afterwards.
+    """
+    if name in _BUILTIN:
+        raise ValueError(f"cannot unregister built-in converter {name!r}")
+    _CUSTOM.pop(name, None)
+
+
+def parse_converter(spec: str | None) -> Converter:
     """Build a converter from the `:spec` portion of `{name:spec}`.
 
     `None` or empty `spec` -> StringConverter (the default).
@@ -711,7 +859,7 @@ def is_regex_path(path: str) -> bool:
     return False
 
 
-def extract_regex_converters(path: str) -> dict[str, _Converter]:
+def extract_regex_converters(path: str) -> dict[str, Converter]:
     """Return the built-in converter for each placeholder in a regex route.
 
     Bare `{name}` and raw-regex placeholders (`{id:[0-9]+}`) have no built-in
@@ -722,7 +870,7 @@ def extract_regex_converters(path: str) -> dict[str, _Converter]:
     `is_regex_path` rejects them in regex-forced segments because they have no
     regex representation.
     """
-    converters: dict[str, _Converter] = {}
+    converters: dict[str, Converter] = {}
     for ph in _iter_placeholders(path):
         spec = ph.spec
         if not spec:
@@ -783,14 +931,14 @@ def build_route_regex(path: str) -> re.Pattern[str]:
 # a raw-regex spec and any user-registered converter - is carried as a string,
 # which is what the segment is before coercion.
 _CONVERTER_JSON_TYPES: dict[str, dict[str, Any]] = {
-    "int": {"type": "integer"},
-    "float": {"type": "number"},
-    "decimal": {"type": "number"},
-    "uuid": {"type": "string", "format": "uuid"},
-    "date": {"type": "string", "format": "date"},
-    "datetime": {"type": "string", "format": "date-time"},
-    "time": {"type": "string", "format": "time"},
-    "path": {"type": "string", "format": "path"},
+    "int": _SCALAR_JSON_SCHEMAS["integer"],
+    "float": _SCALAR_JSON_SCHEMAS["number"],
+    "decimal": _SCALAR_JSON_SCHEMAS["number"],
+    "uuid": _SCALAR_JSON_SCHEMAS["uuid"],
+    "date": _SCALAR_JSON_SCHEMAS["date"],
+    "datetime": _SCALAR_JSON_SCHEMAS["date-time"],
+    "time": _SCALAR_JSON_SCHEMAS["time"],
+    "path": _SCALAR_JSON_SCHEMAS["path"],
 }
 
 

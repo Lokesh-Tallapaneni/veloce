@@ -8,7 +8,8 @@ caching the build until a route mutation drops the instance. Public surface:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from collections.abc import Iterator
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.app import Veloce
@@ -17,10 +18,10 @@ if TYPE_CHECKING:  # pragma: no cover
 class URLRule:
     """A single registered URL rule view object.
 
-    Iterable over its fields as `(rule, methods, endpoint)` so callers
-    that just want tuple-unpack semantics work; full attribute access
-    gives `rule`, `methods`, `endpoint`, `defaults`, `host`, etc. for
-    introspection.
+    Iterable over its fields as `(rule, methods, endpoint)` so callers that just
+    want tuple-unpack semantics work; the same three are available as attributes
+    for introspection. Slotted, so there are no others - read anything further
+    off the route table itself.
     """
 
     __slots__ = ("rule", "methods", "endpoint")
@@ -30,14 +31,14 @@ class URLRule:
         self.methods = methods
         self.endpoint = endpoint
 
-    def __iter__(self) -> Any:
+    def __iter__(self) -> Iterator[str | list[str]]:
         return iter((self.rule, self.methods, self.endpoint))
 
     def __repr__(self) -> str:
         return f"<URLRule {self.endpoint}: {','.join(self.methods)} {self.rule}>"
 
 
-class _URLMap:
+class URLMap:
     """Veloce's read-only `Map`-style route-table wrapper.
 
     Iterating yields `URLRule` objects in registration order (grouped
@@ -81,7 +82,7 @@ class _URLMap:
         self._by_endpoint = by_endpoint
         return result
 
-    def __iter__(self) -> Any:
+    def __iter__(self) -> Iterator[URLRule]:
         return iter(self._build())
 
     def __len__(self) -> int:

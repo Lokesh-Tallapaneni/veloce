@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import orjson
 import pytest
 
+from tests.conftest import make_request
 from veloce import Request, Veloce
 
 
 def _req(path: str = "/x") -> Request:
-    return Request(method="GET", path=path, query_string="", headers={}, body=b"")
+    return make_request(method="GET", path=path, query_string="", headers={}, body=b"")
 
 
 # ── test_cli_runner ──────────────────────────────────────────────────
@@ -43,7 +45,6 @@ def test_test_cli_runner_drives_app_cli_command():
 # ── dispatch_request / full_dispatch_request ─────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_dispatch_request_alias_runs_handler():
     app = Veloce(debug=True, openapi_url=None)
 
@@ -52,12 +53,9 @@ async def test_dispatch_request_alias_runs_handler():
         return {"hit": True}
 
     resp = await app.dispatch_request(_req())
-    import orjson
-
     assert orjson.loads(resp.body) == {"hit": True}
 
 
-@pytest.mark.asyncio
 async def test_full_dispatch_request_alias_runs_handler():
     app = Veloce(debug=True, openapi_url=None)
 
@@ -66,6 +64,4 @@ async def test_full_dispatch_request_alias_runs_handler():
         return {"hit": True}
 
     resp = await app.full_dispatch_request(_req())
-    import orjson
-
     assert orjson.loads(resp.body) == {"hit": True}

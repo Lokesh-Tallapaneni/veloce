@@ -61,10 +61,25 @@ URL_SCHEME_HTTPS = "https"
 URL_SCHEME_WS = "ws"
 URL_SCHEME_WSS = "wss"
 
+# The schemes that mean "this connection is encrypted". Single source, so a
+# guard cannot recognise one of them and miss the other: an HTTPS redirect that
+# knew `wss` while `Request.is_secure` did not gave two answers about one
+# connection. Compared against the already-lowercased `URL.scheme`; RFC 3986
+# Sec. 3.1 makes a scheme case-insensitive, so normalisation happens once where
+# the scheme is resolved rather than at each comparison.
+SECURE_URL_SCHEMES = frozenset({URL_SCHEME_HTTPS, URL_SCHEME_WSS})
+
 # Lower-case raw header bytes used on ASGI / protocol paths
 RAW_HEADER_CONTENT_LENGTH = b"content-length"
 RAW_HEADER_CONTENT_TYPE = b"content-type"
 RAW_HEADER_SET_COOKIE = b"set-cookie"
+
+# Framework lifecycle events
+LIFECYCLE_STARTUP = "startup"
+LIFECYCLE_SHUTDOWN = "shutdown"
+
+# Internal multi-cookie join separator
+SET_COOKIE_JOINER = "\r\nSet-Cookie: "
 
 # W3C trace-context header names
 TRACE_HEADER_TRACEPARENT = "traceparent"
@@ -86,11 +101,3 @@ def build_trace_carrier(traceparent: str | None, tracestate: str | None) -> dict
     if tracestate is not None:
         carrier[TRACE_HEADER_TRACESTATE] = tracestate
     return carrier
-
-
-# Framework lifecycle events
-LIFECYCLE_STARTUP = "startup"
-LIFECYCLE_SHUTDOWN = "shutdown"
-
-# Internal multi-cookie join separator
-SET_COOKIE_JOINER = "\r\nSet-Cookie: "

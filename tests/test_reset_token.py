@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-import time
+import hashlib
 
 import pytest
 
+import veloce.signing
 from veloce import check_reset_token, make_reset_token
 from veloce.security.reset_token import RESET_TOKEN_SALT
+from veloce.signing import Signer
 
 SECRET = "server-secret"
 STATE_A = b"user42:hashA"
@@ -24,10 +26,20 @@ def test_state_change_invalidates():
     assert check_reset_token(token, STATE_B, secret=SECRET, max_age=3600) is False
 
 
-def test_expired_returns_false():
+def test_expired_returns_false(monkeypatch):
+    """Mint the token in the past rather than sleeping into the future.
+
+    `Signer` stamps and checks whole seconds, so proving `max_age=0` expiry by
+    real elapsed time meant `time.sleep(1.1)` - a second and a bit of wall clock
+    for one assertion, and the module's whole runtime. Moving the clock back for
+    the minting call is exact and instant.
+    """
+
+    real = veloce.signing.time.time
+    monkeypatch.setattr(veloce.signing.time, "time", lambda: real() - 600)
     token = make_reset_token(STATE_A, secret=SECRET)
-    # max_age=0 with even a tiny elapsed time is expired; sleep a hair.
-    time.sleep(1.1)
+    monkeypatch.undo()
+
     assert check_reset_token(token, STATE_A, secret=SECRET, max_age=0) is False
 
 
@@ -70,16 +82,12 @@ def test_non_bytes_state_raises_typeerror():
 
 
 def test_version_mismatch_returns_false():
-    from veloce.signing import Signer
 
     signer = Signer(SECRET, RESET_TOKEN_SALT)
-    import hashlib
-
     fp = hashlib.blake2b(STATE_A, digest_size=32).hexdigest()
     token = signer.dumps([99, fp])
     assert check_reset_token(token, STATE_A, secret=SECRET, max_age=3600) is False
 
 
 def test_public_exports():
-    from veloce import check_reset_token, make_reset_token  # noqa: F401
     from veloce.security import make_reset_token as _mrt  # noqa: F401

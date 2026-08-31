@@ -27,6 +27,7 @@ import importlib
 import pathlib
 
 import veloce
+from veloce.exceptions import NotImplemented_
 
 PACKAGE_ROOT = pathlib.Path(veloce.__file__).parent
 
@@ -54,6 +55,7 @@ SUBPACKAGE_ONLY: dict[str, str] = {
     "header_key": "raw ASGI header-list helper, used when building responses",
     "header_get": "raw ASGI header-list helper, used when building responses",
     "header_present": "raw ASGI header-list helper, used when building responses",
+    "header_pop": "raw ASGI header-list helper, used when building responses",
     "parse_multipart_form": "standalone parser; `request.form` is the normal entry point",
     # `veloce.routing` — route-table introspection types. Returned by the
     # router, never constructed by application code.
@@ -68,10 +70,26 @@ SUBPACKAGE_ONLY: dict[str, str] = {
 # Public classes and functions defined in a top-level leaf module that are
 # deliberately not exported anywhere.
 UNEXPORTED: dict[str, str] = {
+    # `audit.py` — public, but deliberately module-qualified. A bare `run` in the
+    # top-level namespace would read as the server (`Veloce.run`); the audit is
+    # called as `veloce.audit.run(app)`, which says what it runs.
+    "audit.run": "public as veloce.audit.run; a top-level `run` would collide with Veloce.run",
+    # `http/response.py` — one rule the three emit paths share (`Response.encode`
+    # and both ASGI branches), which each used to recompute and disagree about for
+    # a 304. Not underscore-prefixed because `app/asgi.py` imports it across a
+    # subpackage boundary, which guardrails L173 forbids for a private name; not
+    # exported because it describes an emit-time detail no user chooses.
+    "http.response.advertised_length": "shared by the three emit paths; internal to the transport, not a user-facing name",
     # `cli.py` — console-script entry points, reached through `[project.scripts]`
     # by dotted string, never imported by application code.
     "cli.build_parser": "console-script entry point, referenced by dotted path",
     "cli.main": "console-script entry point, referenced by dotted path",
+    # `json_provider.py` — the shared JSON encoders. Framework-internal: every
+    # surface that sends JSON to a client routes through them so an
+    # application's dialect cannot reach some and miss others. Public-named
+    # rather than underscored because `app/` imports them across a subpackage
+    # boundary, which guardrails forbid for a private symbol.
+    "json_provider.resolve_dumps": "internal hot-path resolver, crosses a subpackage boundary",
     # `debug.py` — the debug traceback renderer, wired by the app when
     # `DEBUG` is set.
     "debug.render_traceback_html": "internal debug-page renderer wired by the app",
@@ -102,18 +120,141 @@ UNEXPORTED: dict[str, str] = {
     # `status.py` — a predicate over the status constants, used by the response
     # encoders to decide whether a body may be emitted.
     "status.status_permits_body": "internal predicate used by the response encoders",
-    # `testclient.py` — the response type `TestClient` returns. Reachable as
-    # `veloce.testclient.TestResponse` for a typed test helper.
-    "testclient.TestResponse": "test-only type; reachable as veloce.testclient.TestResponse",
     # `websocket.py` — handshake internals. `WebSocket` is the public object.
     "websocket.compute_accept": "RFC 6455 handshake internals",
-    "websocket.WebSocketState": "connection-state enum used by the dispatch core",
-    "websocket.build_listener_handler": "internal handler factory",
     # `workers.py` — the gunicorn worker class, named to gunicorn by dotted
     # string on the command line, never imported.
     "workers.VeloceWorker": "gunicorn worker, referenced by dotted path",
     "workers.build_protocol_factory": "gunicorn worker internals",
     "workers.build_ssl_context": "gunicorn worker internals",
+    # ── public type aliases and tuning constants ─────────────────
+    # Surfaced when the scan learned to see `Subscript`/`Name`/`BinOp` values.
+    # Three of the nineteen it found type an exported surface a user must be
+    # able to annotate against - `Severity` on `Finding.severity`,
+    # `RateLimitState` in `RateLimitStrategy.evaluate`, `SignalResult` from
+    # `Signal.send` - and are now exported. The rest are recorded here.
+    #
+    # Tuning defaults: buffer and chunk sizes, settable through `Config` or a
+    # keyword rather than by importing the constant.
+    "config.DEFAULT_WRITE_BUFFER_HIGH_WATER": "tuning default; set through Config, not by import",
+    "http.formparsers.DEFAULT_MAX_MULTIPART_PART_SIZE": "tuning default for the multipart parser",
+    "http.formparsers.MULTIPART_SPOOL_MAX_SIZE": "tuning default for the multipart parser",
+    "http.response.FILE_STREAM_CHUNK": "file-response read size; an implementation constant",
+    "serving.protocol.WRITE_BUFFER_HIGH_WATER": "raw-transport tuning; `app.run()` is the public entry point",
+    # Callback aliases whose owning object is itself unexported, so the alias
+    # is written as `veloce.health.ReadinessCheck` if it is written at all.
+    "health.ReadinessCheck": "callback alias for a health check; used as veloce.health.ReadinessCheck",
+    # `routing/route_info.py`, `_node.py` and `_regex.py` - the record, tree and
+    # fallback layers split out of `router.py`. `router.py` re-imports each, so
+    # the old `veloce.routing.router.X` paths still resolve; these are the names
+    # under their new home.
+    "routing.route_info.MCPRouteOptions": "the record behind RouteInfo.mcp; read through its properties",
+    "routing.route_info.RouteHandler": "router-internal handler alias; RouteInfo/RouteMatch are equally internal",
+    "testclient.StreamBody": "accepted shape of TestClient's `stream=`; callers pass an iterable, not the alias",
+    # MCP integration internals, consistent with the other names from these
+    # modules above.
+    "contrib.mcp.auth.TokenVerifier": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.authorization.Authenticator": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.registry.ToolFilter": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.server.MethodHandler": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.subscriptions.Sink": "internal to the MCP integration; not part of its published surface",
+    # `exceptions.NotImplemented_` is the back-compat alias described above; it
+    # is a `Name` value, so the widened scan now reports it as a definition.
+    "exceptions.NotImplemented_": "back-compat alias for the exported ServerNotImplemented",
+    # ── app/ mixins ──────────────────────────────────────────────
+    # `Veloce` is composed of these; they are never constructed or imported
+    # by application code, and `veloce.app` exports only `Veloce` itself.
+    "app.asgi.AsgiMixin": "composition unit of Veloce; not constructed by application code",
+    "app.background.BackgroundTasksMixin": "composition unit of Veloce; not constructed by application code",
+    "app.dispatch.DispatchMixin": "composition unit of Veloce; not constructed by application code",
+    "app.errors.ErrorsMixin": "composition unit of Veloce; not constructed by application code",
+    "app.introspection.IntrospectionMixin": "composition unit of Veloce; not constructed by application code",
+    "app.lifecycle.LifecycleMixin": "composition unit of Veloce; not constructed by application code",
+    "app.mcp.MCPMixin": "composition unit of Veloce; not constructed by application code",
+    "app.middleware.MiddlewareMixin": "composition unit of Veloce; not constructed by application code",
+    "app.mounting.MountingMixin": "composition unit of Veloce; not constructed by application code",
+    "app.openapi.OpenAPIMixin": "composition unit of Veloce; not constructed by application code",
+    "app.plugins.PluginsMixin": "composition unit of Veloce; not constructed by application code",
+    "app.serving.ServingMixin": "composition unit of Veloce; not constructed by application code",
+    "app.templating.TemplatingMixin": "composition unit of Veloce; not constructed by application code",
+    "app.testing.TestingMixin": "composition unit of Veloce; not constructed by application code",
+    # ── contrib/mcp internals ────────────────────────────────────
+    # Reached across the MCP package's own submodules. `contrib` is exempt
+    # from the re-export rule (guardrails L173), so these stay module-local.
+    "contrib.mcp.completion.attach_completers": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.composition.T": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.composition.mount_namespace": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.composition.renamed": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.composition.mcp_mounts": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.descriptors.MCPDescriptor": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.errors.parse_error": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.errors.invalid_request_error": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.errors.internal_error": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.errors.UnsupportedProtocolVersionError": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.icons.coerce_icons": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.icons.render_icons": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.pagination.T": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.pagination.encode_cursor": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.pagination.decode_cursor": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.pagination.paginate": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.plan_bridge.build_input_schema": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.plan_bridge.build_output_schema": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.plan_bridge.bind_arguments": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.safety.require_mcp_description": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.safety.TOOL_ANNOTATION_HINTS": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.safety.validate_tool_annotations": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.sampling.content_blocks": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.server.is_modern_version": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.subscriptions.resource_updated_notification": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.subscriptions.resources_list_changed_notification": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.subscriptions.subscription_acknowledged_notification": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.subscriptions.subscription_closed_response": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.subscriptions.ConnectionRegistry": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.tasks.TASK_STATUSES": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.tasks.task_ttl_ms": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.tasks.new_task": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.tasks.create_task_result": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.tasks.status_notification": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.toolsearch.ToolStep": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.toolsearch.ToolSearch": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.transports.event_store.SSEEventStore": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.transports.session_store.HttpSessionStore": "internal to the MCP integration; not part of its published surface",
+    # ── routing/converters concrete classes ──────────────────────
+    # `veloce.routing` publishes the `Converter` base and `register_converter`;
+    # the built-in converters are implementations reached through that seam,
+    # and the parsing helpers serve the router alone.
+    "routing.converters.StringConverter": "implementation behind the Converter base / register_converter seam",
+    "routing.converters.IntConverter": "implementation behind the Converter base / register_converter seam",
+    "routing.converters.FloatConverter": "implementation behind the Converter base / register_converter seam",
+    "routing.converters.UUIDConverter": "implementation behind the Converter base / register_converter seam",
+    "routing.converters.PathConverter": "implementation behind the Converter base / register_converter seam",
+    "routing.converters.DateConverter": "implementation behind the Converter base / register_converter seam",
+    "routing.converters.DateTimeConverter": "implementation behind the Converter base / register_converter seam",
+    "routing.converters.TimeConverter": "implementation behind the Converter base / register_converter seam",
+    "routing.converters.TimeDeltaConverter": "implementation behind the Converter base / register_converter seam",
+    "routing.converters.DecimalConverter": "implementation behind the Converter base / register_converter seam",
+    "routing.converters.AnyConverter": "implementation behind the Converter base / register_converter seam",
+    "routing.converters.parse_converter": "implementation behind the Converter base / register_converter seam",
+    "routing.converters.is_regex_path": "implementation behind the Converter base / register_converter seam",
+    "routing.converters.extract_regex_converters": "implementation behind the Converter base / register_converter seam",
+    "routing.converters.build_route_regex": "implementation behind the Converter base / register_converter seam",
+    "routing.converters.path_param_schemas": "implementation behind the Converter base / register_converter seam",
+    # ── remaining leaf internals ─────────────────────────────────
+    "app.mcp.MCPToolRegistration": "one @app.mcp_tool registration, read at mount time",
+    "app.mcp.MCPPromptRegistration": "one @app.mcp_prompt registration, read at mount time",
+    "app.mcp.MCPCompleterRegistration": "one @app.mcp_completer registration, read at mount time",
+    "contrib.docs_ui.SWAGGER_HTML": "template body for the built-in docs route",
+    "contrib.docs_ui.REDOC_HTML": "template body for the built-in docs route",
+    "exceptions.http_exception_payload": "shared error-body builder for the in-tree emit paths",
+    "http.cookies.iter_cookies": "the single cookie parser; users read request.cookies",
+    "http.cookies.parse_cookie": "header-level helper behind Request.cookies",
+    "http.cookies.dump_cookie": "header-level helper behind Response.set_cookie",
+    "http.dates.http_date": "header-level date formatting behind the response helpers",
+    "http.dates.parse_date": "header-level date parsing behind the request helpers",
+    "http.response.header_pop": "raw header-list helper used by the emit paths",
+    "middleware.base.Auditable": "protocol the startup audit checks middleware against",
+    "serving.reloader.is_reloader_child": "reloader process-role probe, used by the runner",
+    "serving.reloader.run_with_reloader": "reloader entry point, reached through Veloce.run",
 }
 
 
@@ -141,15 +282,30 @@ _NON_SURFACE_MODULES = frozenset({"__future__", "typing"})
 
 
 def _imported_names(tree: ast.Module) -> set[str]:
-    """Public names a module binds through `from X import Y`."""
+    """Public names a module binds through a top-level `from X import Y`.
+
+    Only a module-level import binds a module attribute, which is what makes a
+    name reachable as `veloce.X` and therefore what `__all__` has to account
+    for. An import inside a function binds a local and is invisible either way,
+    so it is not part of the surface this checks.
+    """
     names: set[str] = set()
-    for node in ast.walk(tree):
+    for node in tree.body:
         if isinstance(node, ast.ImportFrom) and node.module not in _NON_SURFACE_MODULES:
             for alias in node.names:
                 bound = alias.asname or alias.name
                 if not bound.startswith("_"):
                     names.add(bound)
     return names
+
+
+#: What a module-level assignment must evaluate to for the name to count as a
+#: definition. A `Call` was the whole set, which made every public type alias
+#: structurally invisible: `Callable[...]`, `dict[str, float]` and
+#: `Literal["a", "b"]` are `Subscript` nodes, a re-export alias is a `Name`, and
+#: a union alias is a `BinOp`. Nineteen public aliases had therefore never been
+#: through the export-or-record decision this module exists to force.
+_DEFINING_VALUE = (ast.Call, ast.Subscript, ast.Name, ast.BinOp)
 
 
 def _defined_public_names(tree: ast.Module) -> list[str]:
@@ -163,11 +319,11 @@ def _defined_public_names(tree: ast.Module) -> list[str]:
     for node in tree.body:
         if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
             names.append(node.name)
-        elif isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+        elif isinstance(node, ast.Assign) and isinstance(node.value, _DEFINING_VALUE):
             names += [t.id for t in node.targets if isinstance(t, ast.Name)]
         elif (
             isinstance(node, ast.AnnAssign)
-            and isinstance(node.value, ast.Call)
+            and isinstance(node.value, _DEFINING_VALUE)
             and isinstance(node.target, ast.Name)
         ):
             names.append(node.target.id)
@@ -229,17 +385,47 @@ def test_no_leaf_module_declares_all():
     assert not offenders, f"leaf modules must not declare __all__: {offenders}"
 
 
+def _gateway_names(rel: pathlib.Path) -> set[str]:
+    """Names exported by the nearest package gateway above `rel`.
+
+    The repository rule is that an `__init__.py` gateway owns the public
+    surface, so a leaf name re-exported by its own subpackage gateway is
+    published - it does not additionally have to appear in the top-level
+    `__all__`.
+    """
+    parts = rel.parts[:-1]
+    package = "veloce" + ("." + ".".join(parts) if parts else "")
+    try:
+        module = importlib.import_module(package)
+    except Exception:  # pragma: no cover - an optional integration's deps
+        return set()
+    return set(getattr(module, "__all__", ()) or ())
+
+
 def test_leaf_module_public_names_are_exported_or_recorded():
+    """Every public leaf name is exported through a gateway or written down.
+
+    This walked `PACKAGE_ROOT.glob("*.py")` - not `rglob` - so it enforced the
+    rule on the package root only and exempted all eight subpackages, while the
+    sibling `__all__` guard two functions above already used `rglob`. Eighty-three
+    public names across `app/`, `contrib/`, `http/`, `middleware/`, `routing/`
+    and `serving/` had never been through this decision.
+    """
     top = set(veloce.__all__)
     unrecorded: list[str] = []
-    for path in sorted(PACKAGE_ROOT.glob("*.py")):
+    for path in sorted(PACKAGE_ROOT.rglob("*.py")):
         if path.name == "__init__.py" or path.name.startswith("_"):
             continue
-        stem = path.stem
+        rel = path.relative_to(PACKAGE_ROOT).with_suffix("")
+        # A private subpackage (`_internal`-style) is out of scope entirely.
+        if any(part.startswith("_") for part in rel.parts):
+            continue
+        dotted = ".".join(rel.parts)
+        gateway = _gateway_names(rel)
         for name in _defined_public_names(_parse(path)):
-            if name in top or f"{stem}.{name}" in UNEXPORTED:
+            if name in top or name in gateway or f"{dotted}.{name}" in UNEXPORTED:
                 continue
-            unrecorded.append(f"{stem}.{name}")
+            unrecorded.append(f"{dotted}.{name}")
     assert not unrecorded, (
         "public in a leaf module but neither exported nor recorded in "
         f"UNEXPORTED with a reason: {unrecorded}"
@@ -247,14 +433,22 @@ def test_leaf_module_public_names_are_exported_or_recorded():
 
 
 def test_unexported_entries_are_still_defined():
-    """A recorded exception whose symbol is gone, or now exported, is stale."""
+    """A recorded exception whose symbol is gone, or now exported, is stale.
+
+    Walks the same tree as the guard it complements, so a subpackage entry is
+    validated rather than silently accepted.
+    """
     top = set(veloce.__all__)
     defined: set[str] = set()
-    for path in sorted(PACKAGE_ROOT.glob("*.py")):
+    for path in sorted(PACKAGE_ROOT.rglob("*.py")):
         if path.name == "__init__.py" or path.name.startswith("_"):
             continue
-        defined |= {f"{path.stem}.{n}" for n in _defined_public_names(_parse(path))}
-    stale = sorted(key for key in UNEXPORTED if key not in defined or key.split(".", 1)[1] in top)
+        rel = path.relative_to(PACKAGE_ROOT).with_suffix("")
+        if any(part.startswith("_") for part in rel.parts):
+            continue
+        dotted = ".".join(rel.parts)
+        defined |= {f"{dotted}.{n}" for n in _defined_public_names(_parse(path))}
+    stale = sorted(key for key in UNEXPORTED if key not in defined or key.rsplit(".", 1)[1] in top)
     assert not stale, f"UNEXPORTED records names that are gone or now exported: {stale}"
 
 
@@ -325,7 +519,6 @@ def test_promoted_names_are_all_exported():
 
 
 def test_server_not_implemented_aliases_the_underscore_spelling():
-    from veloce.exceptions import NotImplemented_
 
     assert veloce.ServerNotImplemented is NotImplemented_
 
@@ -355,3 +548,62 @@ def test_request_attribute_types_are_all_top_level():
     for attribute, value in attribute_types.items():
         name = type(value).__name__
         assert name in top, f"request.{attribute} is a {name}, which is not top level"
+
+
+# ── a public member must not return a name the docs cannot render ────
+
+
+#: `member -> private return type` pairs that stay private, with the reason.
+#: mkdocstrings filters `!^_` (mkdocs.yml), so a public method annotated with a
+#: private class documents a type the reader cannot look up.
+PRIVATE_RETURNS: dict[str, str] = {
+    "LifecycleMixin.lifespan_context": "entered with `async with`, never named by a caller",
+    "TestingMixin.app_context": "entered with `with`, never named by a caller",
+    "TestingMixin.test_request_context": "entered with `with`, never named by a caller",
+    "TestClient.cookies": "a mapping the caller indexes, never annotates",
+    "AsyncTestClient.cookies": "a mapping the caller indexes, never annotates",
+    "TestClient.websocket_connect": "entered with `with`, never named by a caller",
+}
+
+
+def _public_members_returning_private() -> list[str]:
+    """`Class.member -> _Private` for every public member of a public class."""
+    found: list[str] = []
+    for path in sorted(PACKAGE_ROOT.rglob("*.py")):
+        if any(part.startswith("_") for part in path.relative_to(PACKAGE_ROOT).parts[:-1]):
+            continue
+        for cls in [
+            node
+            for node in ast.walk(_parse(path))
+            if isinstance(node, ast.ClassDef) and not node.name.startswith("_")
+        ]:
+            for member in cls.body:
+                if not isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                if member.name.startswith("_") or member.returns is None:
+                    continue
+                rendered = ast.unparse(member.returns)
+                if rendered.lstrip('"').startswith("_") or "._" in rendered:
+                    found.append(f"{cls.name}.{member.name}")
+    return found
+
+
+def test_a_public_member_returning_a_private_type_is_recorded():
+    """The class `URLMap` was renamed out of: a documented return nobody can read.
+
+    `Veloce.url_map` returned `_URLMap`, which mkdocstrings filters out, so the
+    docs named a type with no page. It is `URLMap` now. The six that remain are
+    entered or indexed rather than annotated, and each says so here.
+    """
+    unrecorded = sorted(set(_public_members_returning_private()) - set(PRIVATE_RETURNS))
+    assert not unrecorded, (
+        "these public members return a private type the docs cannot render - "
+        f"rename and export it, or record it in PRIVATE_RETURNS with a reason: {unrecorded}"
+    )
+
+
+def test_the_private_return_records_are_still_accurate():
+    """A record for a member that is gone, or now public, is stale."""
+    live = set(_public_members_returning_private())
+    stale = sorted(key for key in PRIVATE_RETURNS if key not in live)
+    assert not stale, f"PRIVATE_RETURNS records members that no longer match: {stale}"

@@ -64,11 +64,12 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from veloce._protocol_constants import LIFECYCLE_SHUTDOWN, LIFECYCLE_STARTUP
-
-_logger = logging.getLogger(__name__)
+from veloce.app.serving import _resolve_listen_backlog
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.app import Veloce
+
+_logger = logging.getLogger(__name__)
 
 # gunicorn is optional and POSIX-only. Import its worker base at module load
 # so the subclass below can extend it, but tolerate its absence: a box without
@@ -104,6 +105,11 @@ def build_protocol_factory(app: Veloce, loop: asyncio.AbstractEventLoop) -> func
     path allocation-light. Factored out so it can be unit-tested without a
     running loop or gunicorn present.
     """
+    # Deferred for import cost, not for a cycle: `serving/protocol.py` imports
+    # `veloce.app` only under TYPE_CHECKING. Hoisting it pulls httptools and
+    # the protocol module into `import veloce.workers`, which a process that
+    # only imports the worker class to inspect it would then pay. The three
+    # other sites in this module share this deferral.
     from veloce.serving.protocol import HttpProtocol
 
     return functools.partial(HttpProtocol, app, loop)
@@ -270,7 +276,9 @@ class VeloceWorker(_GunicornWorker):
             raise ImportError(_INSTALL_HINT) from _GUNICORN_IMPORT_ERROR
         super().__init__(*args, **kwargs)
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._server: asyncio.AbstractServer | None = None
+        # Every bound listener, published only once all of them bound: a
+        # partial bind must not leave a live server behind for `_shutdown`.
+        self._servers: list[asyncio.AbstractServer] = []
         # Set when gunicorn asks the worker to stop, so the serve loop reacts
         # immediately instead of waiting out its heartbeat sleep.
         self._stop = asyncio.Event()
@@ -360,6 +368,7 @@ class VeloceWorker(_GunicornWorker):
         # once per dispatched request. Set on the protocol class (process-wide);
         # each forked worker installs its own bound method, and only one worker
         # runs per process so there is no cross-worker contention.
+        # Deferred for the reason `build_protocol_factory` states.
         from veloce.serving.protocol import HttpProtocol
 
         HttpProtocol.on_request_complete = self._count_request
@@ -469,7 +478,17 @@ class VeloceWorker(_GunicornWorker):
         servers: list[asyncio.AbstractServer] = []
         try:
             for gsock in self.sockets:
-                servers.append(await loop.create_server(factory, sock=gsock.sock, ssl=ssl_context))
+                # `create_server` re-`listen()`s the socket it is handed, so
+                # omitting `backlog` here silently replaced the depth gunicorn
+                # configured with asyncio's default of 100.
+                servers.append(
+                    await loop.create_server(
+                        factory,
+                        sock=gsock.sock,
+                        backlog=_resolve_listen_backlog(),
+                        ssl=ssl_context,
+                    )
+                )
         except BaseException:
             for server in servers:
                 server.close()
@@ -477,8 +496,7 @@ class VeloceWorker(_GunicornWorker):
                 await server.wait_closed()
             raise
 
-        self._server = servers[0]
-        extra_servers = servers[1:]
+        self._servers = servers
 
         # gunicorn watches a per-worker heartbeat: notify() must be called
         # within `timeout` or the master kills the worker as hung. The loop
@@ -510,14 +528,13 @@ class VeloceWorker(_GunicornWorker):
             # app's shutdown hooks never fire, and in-flight work is cut.
             # Draining first closes those idle connections at once, which is
             # exactly what makes the wait below return promptly.
+            # Deferred for the reason `build_protocol_factory` states.
             from veloce.serving.protocol import HttpProtocol
 
             HttpProtocol.start_graceful_drain()
-            self._server.close()
-            for server in extra_servers:
+            for server in self._servers:
                 server.close()
-            await self._server.wait_closed()
-            for server in extra_servers:
+            for server in self._servers:
                 await server.wait_closed()
 
     async def _shutdown(self) -> None:
@@ -527,6 +544,7 @@ class VeloceWorker(_GunicornWorker):
         bounded window to finish, cancel any stragglers, then run the app's
         shutdown hooks so resources opened at startup are released.
         """
+        # Deferred for the reason `build_protocol_factory` states.
         from veloce.serving.protocol import HttpProtocol
 
         app = self._veloce_app()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
+from tests._openapi import document
 from veloce import Request, Veloce
 from veloce.testclient import TestClient
 
@@ -17,7 +18,7 @@ def test_no_webhooks_key_when_none_registered():
     app = Veloce()
 
     with TestClient(app) as client:
-        schema = client.get("/openapi.json").json()
+        schema = document(client)
 
     assert "webhooks" not in schema
 
@@ -30,7 +31,7 @@ def test_webhook_appears_in_schema():
         pass
 
     with TestClient(app) as client:
-        schema = client.get("/openapi.json").json()
+        schema = document(client)
 
     assert "new-subscription" in schema["webhooks"]
     assert "post" in schema["webhooks"]["new-subscription"]
@@ -44,7 +45,7 @@ def test_webhook_request_body_schema():
         pass
 
     with TestClient(app) as client:
-        schema = client.get("/openapi.json").json()
+        schema = document(client)
 
     op = schema["webhooks"]["new-subscription"]["post"]
     ref = op["requestBody"]["content"]["application/json"]["schema"]["$ref"]
@@ -81,6 +82,6 @@ def test_multiple_webhooks():
         pass
 
     with TestClient(app) as client:
-        schema = client.get("/openapi.json").json()
+        schema = document(client)
 
     assert set(schema["webhooks"]) == {"created", "deleted"}

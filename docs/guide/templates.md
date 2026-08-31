@@ -120,10 +120,14 @@ async def missing(request: Request):
 ```
 
 !!! warning
-    `render_template`, `render_template_string`, and `stream_template` require
-    an active application context. Calling them outside a request handler (or
-    without a bound `Jinja2Templates`) raises `RuntimeError`. Inside a handler
-    you are always within an app context.
+    `render_template` and `stream_template` require an active application
+    context — they resolve a template by name from the app's loader, so calling
+    them outside a request handler (or without a bound `Jinja2Templates`) raises
+    `RuntimeError`. Inside a handler you are always within an app context.
+
+    `render_template_string` carries its own source, so it falls back to a
+    standalone environment and returns normally outside a context. Context
+    processors do not run there.
 
 ## Inline string templates
 

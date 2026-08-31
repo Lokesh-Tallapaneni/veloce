@@ -107,9 +107,26 @@ class ProxyFix(Middleware):
             proto = fwd.get("proto")
             host = fwd.get("host")
         else:
-            client = self._pick_hop(request.headers.get(HEADER_X_FORWARDED_FOR), self.x_for)
-            proto = self._pick_hop(request.headers.get(HEADER_X_FORWARDED_PROTO), self.x_proto)
-            host = self._pick_hop(request.headers.get(HEADER_X_FORWARDED_HOST), self.x_host)
+            # Each lookup is gated on its own trust depth. `_pick_hop` returns
+            # `None` for a depth of 0, so an ungated call still pays the header
+            # lookup to reach a foregone answer - and `x_host`, `x_port` and
+            # `x_prefix` are 0 by default, which is three lookups a stock
+            # configuration cannot use.
+            client = (
+                self._pick_hop(request.headers.get(HEADER_X_FORWARDED_FOR), self.x_for)
+                if self.x_for
+                else None
+            )
+            proto = (
+                self._pick_hop(request.headers.get(HEADER_X_FORWARDED_PROTO), self.x_proto)
+                if self.x_proto
+                else None
+            )
+            host = (
+                self._pick_hop(request.headers.get(HEADER_X_FORWARDED_HOST), self.x_host)
+                if self.x_host
+                else None
+            )
         # Port and prefix keep their fallback, because RFC 7239 Sec. 4 defines
         # no directive for either: a `Forwarded` hop carries the public port
         # inside `host="example.com:8443"` (so it survives the Host splice
@@ -119,15 +136,24 @@ class ProxyFix(Middleware):
         # would break real deployments to close nothing - unlike `for`,
         # `proto` and `host` above, where the RFC does define a directive and
         # the fallback let a refused hop through.
-        port = self._pick_hop(request.headers.get(HEADER_X_FORWARDED_PORT), self.x_port)
-        prefix = fwd.get("prefix") or self._pick_hop(
-            request.headers.get(HEADER_X_FORWARDED_PREFIX), self.x_prefix
+        port = (
+            self._pick_hop(request.headers.get(HEADER_X_FORWARDED_PORT), self.x_port)
+            if self.x_port
+            else None
+        )
+        prefix = fwd.get("prefix") or (
+            self._pick_hop(request.headers.get(HEADER_X_FORWARDED_PREFIX), self.x_prefix)
+            if self.x_prefix
+            else None
         )
 
         # Reject CR / LF / NUL in any trusted proxy value before it lands on
         # the request. These values flow into response headers (Location,
         # Set-Cookie, OpenAPI server URLs) via request.host / scheme /
-        # script_root and would otherwise enable header injection.
+        # script_root and would otherwise enable header injection. Written out
+        # per header rather than looped over a `(value, header)` sequence: this
+        # middleware runs on every request through it, and building that
+        # sequence would allocate a tuple per request to save five lines.
         if client:
             _reject_header_crlf(client, HEADER_X_FORWARDED_FOR)
         if proto:
@@ -166,6 +192,13 @@ class ProxyFix(Middleware):
             # ASGI scope says "http" (TLS terminated upstream) but the
             # trusted hop tells us the original scheme was "https".
             request.headers[HEADER_X_FORWARDED_PROTO] = proto
+            # Normalise on the way in. RFC 7239 Sec. 4 makes the `proto`
+            # directive case-insensitive and RFC 3986 Sec. 3.1 says the same of
+            # a URI scheme, so a proxy spelling `HTTPS` names the same scheme -
+            # but written verbatim it reached every consumer that compares the
+            # raw scope value, and an uppercase hop made a guard read an
+            # encrypted connection as cleartext.
+            proto = proto.lower()
             # `Request.scope` is a framework-owned field always set in __init__
             # (to `scope or {}`), so access it directly; only the dict shape is
             # checked before mutating the scheme key.

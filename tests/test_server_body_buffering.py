@@ -19,35 +19,10 @@ from __future__ import annotations
 import asyncio
 import json
 
-from veloce import Veloce
+from tests._protocol import _FakeTransport
+from veloce import Veloce, request
 from veloce.serving.protocol import HttpProtocol
-
-
-class _FakeTransport(asyncio.Transport):
-    """Collect what the protocol writes, without a socket."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.writes: list[bytes] = []
-        self.closed = False
-
-    def write(self, data: bytes) -> None:
-        self.writes.append(data)
-
-    def close(self) -> None:
-        self.closed = True
-
-    def is_closing(self) -> bool:
-        return self.closed
-
-    def get_extra_info(self, name: str, default: object = None) -> object:
-        return default
-
-    def pause_reading(self) -> None:
-        return None
-
-    def resume_reading(self) -> None:
-        return None
+from veloce.testclient import AsyncTestClient
 
 
 async def _serve(app: Veloce, *chunks: bytes) -> str:
@@ -84,26 +59,22 @@ def _app() -> Veloce:
 
     @app.post("/json")
     async def read_json():
-        from veloce import request
 
         return {"got": request.get_json()}
 
     @app.post("/data")
     async def read_data():
-        from veloce import request
 
         return {"length": len(request.data)}
 
     @app.post("/form")
     async def read_form():
-        from veloce import request
 
         form = await request.form()
         return {"name": form.get("name")}
 
     @app.get("/nobody")
     async def nobody():
-        from veloce import request
 
         return {"length": len(request.data)}
 
@@ -207,7 +178,6 @@ async def test_a_streaming_route_is_not_pre_drained():
     seen: list[int] = []
 
     async def echo():
-        from veloce import request
 
         total = 0
         async for chunk in request.stream():
@@ -233,7 +203,6 @@ async def test_a_streaming_route_is_not_pre_drained():
 
 async def test_both_transports_agree_on_the_same_handler():
     """The defect was a divergence, so the regression test is a comparison."""
-    from veloce.testclient import AsyncTestClient
 
     payload = {"a": 1, "b": "two"}
     async with AsyncTestClient(_app()) as client:

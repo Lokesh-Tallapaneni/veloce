@@ -11,13 +11,14 @@ expansion forms mean different things, and both now do:
 
 from __future__ import annotations
 
+import orjson
 import pytest
 
+from tests._mcp import RESOURCE_NOT_FOUND
 from veloce import Veloce
+from veloce.contrib.mcp.resources import _template_specificity, build_resource_registry
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.session import MCPSession
-
-_RESOURCE_NOT_FOUND = -32002
 
 
 def _app(uri: str, path: str = "/files/{path}") -> Veloce:
@@ -38,8 +39,6 @@ async def _read(app: Veloce, uri: str) -> dict:
 
 
 async def _value(app: Veloce, uri: str) -> str:
-    import orjson
-
     response = await _read(app, uri)
     assert "error" not in response, response["error"]
     return orjson.loads(response["result"]["contents"][0]["text"])["received"]
@@ -59,7 +58,7 @@ async def test_a_reserved_variable_also_matches_one_segment():
 async def test_a_simple_variable_still_matches_only_one_segment():
     """Simple expansion is one segment; a path is what `{+name}` is for."""
     response = await _read(_app("file://{path}"), "file://a/b/c.py")
-    assert response["error"]["code"] == _RESOURCE_NOT_FOUND
+    assert response["error"]["code"] == RESOURCE_NOT_FOUND
 
 
 async def test_a_simple_variable_matches_a_single_segment():
@@ -131,8 +130,6 @@ def _two_template_app(greedy_first: bool) -> Veloce:
 @pytest.mark.parametrize("greedy_first", [True, False])
 async def test_a_specific_template_wins_over_a_greedy_one(greedy_first: bool):
     """A greedy template matches everything, so it must not win on order."""
-    import orjson
-
     response = await _read(_two_template_app(greedy_first), "file://report/meta")
     payload = orjson.loads(response["result"]["contents"][0]["text"])
     assert payload["matched"] == "specific"
@@ -141,8 +138,6 @@ async def test_a_specific_template_wins_over_a_greedy_one(greedy_first: bool):
 
 @pytest.mark.parametrize("greedy_first", [True, False])
 async def test_the_greedy_template_still_serves_what_nothing_else_matches(greedy_first: bool):
-    import orjson
-
     response = await _read(_two_template_app(greedy_first), "file://a/b/c.py")
     payload = orjson.loads(response["result"]["contents"][0]["text"])
     assert payload["matched"] == "greedy"
@@ -160,8 +155,6 @@ async def test_a_static_resource_still_wins_over_a_greedy_template():
     )
     async def config() -> dict:
         return {"matched": "static"}
-
-    import orjson
 
     response = await _read(app, "file://config")
     payload = orjson.loads(response["result"]["contents"][0]["text"])
@@ -185,14 +178,12 @@ async def test_the_listing_advertises_the_template_verbatim():
 
 def test_a_reserved_variable_binds_its_path_parameter():
     """`{+path}` names `path`, so the operator is not part of the name."""
-    from veloce.contrib.mcp.resources import build_resource_registry
 
     registry = build_resource_registry(_app("file://{+path}"))
     assert registry.templates()[0].uri_param_names == ("path",)
 
 
 def test_a_template_variable_that_names_no_path_parameter_is_refused():
-    from veloce.contrib.mcp.resources import build_resource_registry
 
     with pytest.raises(ValueError, match="must match its path parameters"):
         build_resource_registry(_app("file://{+wrong}"))
@@ -200,7 +191,6 @@ def test_a_template_variable_that_names_no_path_parameter_is_refused():
 
 def test_an_unrecognised_placeholder_is_not_taken_as_a_variable():
     """`{-x}` is not an RFC 6570 form this server serves; it is not a binding."""
-    from veloce.contrib.mcp.resources import build_resource_registry
 
     with pytest.raises(ValueError, match="must match its path parameters"):
         build_resource_registry(_app("file://{-x}"))
@@ -220,8 +210,6 @@ async def test_a_template_may_mix_both_forms():
     )
     async def blob(repo: str, path: str) -> dict:
         return {"repo": repo, "path": path}
-
-    import orjson
 
     response = await _read(app, "repo://veloce/blob/src/veloce/app/core.py")
     payload = orjson.loads(response["result"]["contents"][0]["text"])
@@ -267,8 +255,6 @@ def _two_greedy_app(catch_all_first: bool) -> Veloce:
 @pytest.mark.parametrize("catch_all_first", [True, False])
 async def test_the_longer_template_wins_between_two_catch_alls(catch_all_first: bool):
     """Both span segments, so only specificity separates them - not order."""
-    import orjson
-
     response = await _read(_two_greedy_app(catch_all_first), "docs://a/b/c.md/meta")
     payload = orjson.loads(response["result"]["contents"][0]["text"])
     assert payload["matched"] == "meta"
@@ -277,15 +263,12 @@ async def test_the_longer_template_wins_between_two_catch_alls(catch_all_first: 
 
 @pytest.mark.parametrize("catch_all_first", [True, False])
 async def test_the_catch_all_still_serves_the_rest(catch_all_first: bool):
-    import orjson
-
     response = await _read(_two_greedy_app(catch_all_first), "docs://a/b/c.md")
     payload = orjson.loads(response["result"]["contents"][0]["text"])
     assert payload["matched"] == "catch-all"
 
 
 def test_specificity_counts_the_literal_characters():
-    from veloce.contrib.mcp.resources import _template_specificity
 
     assert _template_specificity("docs://{+path}/meta") > _template_specificity("docs://{+path}")
     assert _template_specificity("docs://index") == len("docs://index")

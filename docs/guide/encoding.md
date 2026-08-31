@@ -59,6 +59,76 @@ a [`JSONResponse`](../reference/responses.md#veloce.JSONResponse) when you want 
 See [Requests and responses](requests-responses.md) for the full return-value
 rules.
 
+### NaN and Infinity become `null`
+
+JSON has no representation for `NaN`, `Infinity` or `-Infinity` — RFC 8259
+forbids all three — so an encoder has to choose. Veloce's default serialiser
+writes `null`:
+
+```python
+@app.get("/stats")
+async def stats() -> dict:
+    return {"mean": float("nan")}   # -> {"mean": null}
+```
+
+The response stays valid JSON and the request succeeds. The trade-off is that a
+non-finite value is indistinguishable from a genuine `null` at the client, and
+that is usually a bug upstream — a division by zero or an empty aggregate.
+Guard it where the value is produced:
+
+```python
+import math
+
+
+@app.get("/stats")
+async def stats() -> dict:
+    mean = compute_mean()
+    return {"mean": mean if math.isfinite(mean) else None}
+```
+
+If you would rather a non-finite value fail loudly, give the app a provider that
+refuses one and return through it — see
+[Choosing the serialiser with JSONProvider](#choosing-the-serialiser-with-jsonprovider):
+
+```python
+import json
+
+from veloce import JSONProvider, Veloce, jsonify
+
+
+class StrictJSONProvider(JSONProvider):
+    def dumps(self, obj, **kwargs) -> bytes:
+        return json.dumps(obj, allow_nan=False, separators=(",", ":")).encode()
+
+    def loads(self, data):
+        return json.loads(data)
+
+
+app = Veloce()
+app.json_provider_class = StrictJSONProvider
+
+
+@app.get("/stats")
+async def stats():
+    return jsonify({"mean": float("nan")})   # -> 500, and logged
+```
+
+The `jsonify(...)` is optional here: a bare `dict` return goes through the
+provider too, so both forms get the same treatment.
+
+!!! note "Why this is not the default"
+    The `null` is not a preference so much as the shape of the problem. An
+    encoder has three choices and each gives something up: write `NaN` and
+    `Infinity` literals (what the standard library does by default — a strict
+    client cannot parse the result), refuse and fail the request, or write
+    `null`. Veloce's default is the only one of the three that always produces
+    parseable JSON.
+
+    Refusing by default is not cheaply available either: the underlying
+    serialiser has no option for non-finite floats and never consults a
+    `default=` hook for a native `float`, so detecting one would mean walking
+    every response payload on every request.
+
 ## jsonable_encoder
 
 Use [`jsonable_encoder`](../reference/openapi.md#veloce.jsonable_encoder) when you need
@@ -106,10 +176,22 @@ The built-in conversions:
 
 ### Filtering fields
 
-`include` and `exclude` are sets of key names applied at **every depth**, not
-just the top level. `exclude_unset`, `exclude_defaults`, and `exclude_none`
-forward to Pydantic's `model_dump` for model inputs; `exclude_none` also drops
-`None`-valued keys from plain dicts.
+Every filter applies at **every depth**, not just the top level.
+
+`include` and `exclude` are sets of key names. Because they filter keys at all
+depths, a nesting key must itself be listed in `include` or the branch holding
+the value is dropped — `include={"name"}` applied to `{"user": {"name": "x"}}`
+yields `{}`.
+
+`exclude_unset`, `exclude_defaults`, and `exclude_none` forward to Pydantic's
+`model_dump`, and reach a model nested inside a dict or list as well as one
+passed in directly. `exclude_none` additionally drops `None`-valued keys from
+plain dicts and from an arbitrary object's attributes.
+
+!!! note "Changed in version 0.18"
+    `exclude_unset` and `exclude_defaults` previously applied only to a model
+    passed in directly and were ignored for a nested one; `exclude_none` was
+    ignored for an arbitrary object's attributes.
 
 ```python
 from pydantic import BaseModel
@@ -231,12 +313,21 @@ Subclass `JSONProvider` to plug in a different serialiser, then point the app at
 it. Set `app.json_provider_class` to a class (instantiated lazily) or assign
 `app.json` an instance directly.
 
-!!! warning "A bare `dict` return does not go through the provider"
-    A handler returning a bare `dict` or `list` is serialised on the direct
-    orjson path, which does not consult `app.json`. A custom dialect - key
-    sorting, a house encoder - therefore applies to `jsonify(...)`,
-    `app.json.response(...)` and explicit `JSONResponse`, but not to those
-    returns. Return `jsonify(...)` from any handler whose dialect must apply.
+!!! note "Which responses the provider reaches"
+    Every value a handler returns — a `dict`, a `list`, a model, a msgspec
+    struct, a `(body, status)` tuple, `jsonify(...)`, or a `JSONResponse`
+    subclass named by `response_class` — is serialised by the active provider,
+    as are `ws.send_json(...)` frames and `ServerSentEvent.json(...)` events, so
+    one dialect covers the whole application.
+
+    An app that configures nothing keeps the direct orjson path, so the default
+    pays nothing for the indirection.
+
+    What the provider does **not** reach is the framework's own wire formats:
+    cache keys (which always sort, so equal mappings hash alike), signed
+    cookies, JWTs, and protocol frames. Those are not the application's to
+    restyle. A `JSONResponse` you construct yourself outside a request has no
+    application to consult and stays on the direct path.
 
 ```python title="app.py"
 import json
@@ -282,7 +373,7 @@ cannot drift.
 
 | Config key | orjson option | Effect |
 | --- | --- | --- |
-| `JSON_SORT_KEYS` | `OPT_SORT_KEYS` | Sort object keys for deterministic output. |
+| `JSON_SORT_KEYS` | `OPT_SORT_KEYS` | Sort object keys for deterministic output. Off by default. |
 | `JSONIFY_PRETTYPRINT_REGULAR` | `OPT_INDENT_2` | Indent output by two spaces. |
 
 ```python title="app.py"

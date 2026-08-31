@@ -276,7 +276,6 @@ async def test_verify_and_needs_update_async_matches_sync():
     assert await verify_and_needs_update_async(stored, "wrong") == (False, False)
 
 
-@pytest.mark.asyncio
 async def test_hash_and_verify_password_async_round_trip():
     """`hash_password_async` / `verify_password_async` are async-safe
     wrappers around the scrypt KDF. Round-tripping a credential must
@@ -288,21 +287,40 @@ async def test_hash_and_verify_password_async_round_trip():
     assert await verify_password_async(stored, "wrong-password") is False
 
 
-@pytest.mark.asyncio
 async def test_hash_password_async_does_not_block_the_loop():
-    """A handler calling `hash_password_async` must leave the loop
-    free for other tasks. Without the executor hop, scrypt would stall
-    the loop for ~100 ms and the ticker below would not advance."""
-    ticked = 0
+    """A handler calling `hash_password_async` leaves the loop free meanwhile.
+
+    The ticker counts only the turns it gets **while the hash is still in
+    flight**, which is the property. Counting turns over a fixed 50 ms window
+    and asserting `ticked > 0` - as this did - holds either way: a synchronous
+    scrypt blocks the ticker until it finishes and the ticker then runs its
+    whole window, so the count is comfortably positive with the loop having been
+    stalled throughout.
+
+    Measured on this machine: 35 ticks against the executor hop, 0 against a
+    synchronous `hash_password`. The threshold is set far below that gap so a
+    loaded machine cannot fail it spuriously, while a lost executor hop takes the
+    count to zero.
+    """
+    hashing_done = asyncio.Event()
+    ticks_while_hashing = 0
 
     async def ticker() -> None:
-        nonlocal ticked
-        # 50 ms is enough that a synchronous scrypt would clearly block
-        # past the first tick; we observe several.
-        deadline = asyncio.get_running_loop().time() + 0.05
-        while asyncio.get_running_loop().time() < deadline:
-            await asyncio.sleep(0.005)
-            ticked += 1
+        nonlocal ticks_while_hashing
+        while not hashing_done.is_set():
+            await asyncio.sleep(0.001)
+            ticks_while_hashing += 1
 
-    _, _ = await asyncio.gather(hash_password_async("hunter2"), ticker())
-    assert ticked > 0
+    async def hasher() -> str:
+        try:
+            return await hash_password_async("hunter2")
+        finally:
+            hashing_done.set()
+
+    digest, _ = await asyncio.gather(hasher(), ticker())
+    assert ticks_while_hashing >= 3, (
+        f"the loop only got {ticks_while_hashing} turns while hashing - "
+        "`hash_password_async` is not hopping to a thread"
+    )
+    # And it still produced a usable hash rather than merely yielding.
+    assert verify_password(digest, "hunter2")

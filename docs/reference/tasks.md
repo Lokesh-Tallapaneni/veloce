@@ -15,6 +15,7 @@ Work that runs after the response, the cache interface, rate-limit strategies, a
 ::: veloce.RateLimitBackend
 ::: veloce.InMemoryRateLimitBackend
 ::: veloce.RateLimitResult
+::: veloce.RateLimitState
 ::: veloce.RateLimitStrategy
 ::: veloce.FixedWindow
 ::: veloce.SlidingWindow

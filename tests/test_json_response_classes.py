@@ -1,11 +1,13 @@
-"""ORJSONResponse + UJSONResponse tests (Q34)."""
+"""ORJSONResponse + UJSONResponse tests."""
 
 from __future__ import annotations
 
 import importlib.util
 
+import orjson
 import pytest
 
+import veloce
 from veloce import JSONResponse, ORJSONResponse, UJSONResponse, Veloce
 from veloce.testclient import TestClient
 
@@ -155,8 +157,6 @@ _HAS_UJSON = importlib.util.find_spec("ujson") is not None
 
 @pytest.mark.skipif(not _HAS_UJSON, reason="ujson not installed")
 def test_ujson_response_serialises_dict():
-    import orjson
-
     resp = UJSONResponse({"a": 1})
     assert resp.content_type == "application/json"
     # Compare via re-decode; ujson and orjson differ in whitespace.
@@ -173,8 +173,6 @@ def test_ujson_response_raises_when_ujson_missing():
 
 
 def test_classes_in_veloce_exports():
-    from veloce import ORJSONResponse as _ORJ
-    from veloce import UJSONResponse as _UJ
-
-    assert _ORJ is ORJSONResponse
-    assert _UJ is UJSONResponse
+    # The module-top `from veloce import ...` already proves the names are
+    # importable; what needs asserting is that they are advertised.
+    assert {"ORJSONResponse", "UJSONResponse"} <= set(veloce.__all__)

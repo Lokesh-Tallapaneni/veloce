@@ -10,6 +10,7 @@ from veloce import (
     TestClient,
     Veloce,
 )
+from veloce.http.request import Request
 
 
 def test_synthesized_weak_etag_and_304():
@@ -69,19 +70,27 @@ def test_auto_etag_false_still_forwards_handler_etag():
 
     client = TestClient(app)
     r1 = client.get("/")
-    assert not r1.headers.get("ETag", "").startswith("W/") if r1.headers.get("ETag") else True
+    # Two assertions, not one conditional: the version this replaces read
+    # `... if r1.headers.get("ETag") else True`, which passes when the handler's
+    # ETag is missing altogether - the case it exists to rule out.
+    assert r1.headers.get("ETag") == '"abc"', "the handler's ETag was not forwarded"
+    assert not r1.headers["ETag"].startswith("W/"), "it was weakened on the way through"
     r2 = client.get("/", headers={"If-None-Match": '"abc"'})
     assert r2.status_code == 304
-    # No synthesis on a plain body.
-    app2 = Veloce(openapi_url=None)
-    app2.add_middleware(ConditionalGetMiddleware(auto_etag=False))
 
-    @app2.get("/plain")
+
+def test_auto_etag_false_synthesises_no_etag_for_a_plain_body():
+    """The other half of `auto_etag=False`: nothing is invented for a body that
+    arrived without an ETag of its own."""
+    app = Veloce(openapi_url=None)
+    app.add_middleware(ConditionalGetMiddleware(auto_etag=False))
+
+    @app.get("/plain")
     async def plain(request):
         return Response(body=b"y")
 
-    r3 = TestClient(app2).get("/plain")
-    assert not (r3.headers.get("ETag") or r3.headers.get("etag"))
+    r = TestClient(app).get("/plain")
+    assert not (r.headers.get("ETag") or r.headers.get("etag"))
 
 
 def test_mixedcase_no_store_skips_synthesis():
@@ -146,11 +155,15 @@ def test_streaming_passes_through():
     assert not (r.headers.get("ETag") or r.headers.get("etag"))
 
 
-def test_streaming_with_etag_not_downgraded_to_304():
-    # A StreamingResponse carrying its own ETag must NOT be downgraded to a
-    # bodiless 304 on a matching If-None-Match: make_conditional() clears `body`
-    # but not `_stream`, so a 304 would still emit the chunks - protocol-invalid
-    # per RFC 9110 Sec. 15.4.5. The stream passes through unchanged (200).
+def test_streaming_with_etag_is_downgraded_to_304():
+    # This pinned the opposite, on the ground that `make_conditional()` cleared
+    # `body` but not `_stream`, so a 304 would still emit the chunks -
+    # protocol-invalid per RFC 9110 Sec. 15.4.5. The hazard was real; refusing to
+    # downgrade was the wrong remedy for it, and it cost every asset past
+    # `FileResponse`'s streaming threshold its revalidation - a large file
+    # re-sent in full on every request while the small one beside it answered
+    # 304. `_downgrade_to_304` clears the stream as well as the body now, so the
+    # invalid response it guarded against cannot be constructed.
     app = Veloce(openapi_url=None)
     app.add_middleware(ConditionalGetMiddleware())
 
@@ -164,8 +177,8 @@ def test_streaming_with_etag_not_downgraded_to_304():
 
     client = TestClient(app)
     r = client.get("/", headers={"If-None-Match": '"stream-tag"'})
-    assert r.status_code == 200
-    assert r.body == b"chunk-data"
+    assert r.status_code == 304
+    assert r.body == b"", "the 304 carried the stream's chunks"
 
 
 def test_compose_with_gzip():
@@ -182,10 +195,7 @@ def test_compose_with_gzip():
     assert r.status_code == 200
 
 
-def test_unit_method_gate_and_skips():
-    import asyncio
-
-    from veloce.http.request import Request
+async def test_unit_method_gate_and_skips():
 
     mw = ConditionalGetMiddleware()
 
@@ -194,7 +204,7 @@ def test_unit_method_gate_and_skips():
 
     # POST gate
     resp = Response(body=b"x")
-    out = asyncio.new_event_loop().run_until_complete(mw.process_response(_req("POST"), resp))
+    out = await mw.process_response(_req("POST"), resp)
     assert out is resp
     assert not out.headers.get("ETag")
 

@@ -2,13 +2,9 @@
 
 from __future__ import annotations
 
-from veloce import Veloce
-from veloce.routing.params import Header
+from tests._openapi import document, parameters
+from veloce import Header, Veloce
 from veloce.testclient import TestClient
-
-
-def _params(schema: dict, path: str, method: str = "get") -> list[dict]:
-    return schema["paths"][path][method].get("parameters", [])
 
 
 def test_unaliased_header_documents_hyphenated():
@@ -19,8 +15,8 @@ def test_unaliased_header_documents_hyphenated():
         return {}
 
     with TestClient(app) as client:
-        schema = client.get("/openapi.json").json()
-    params = _params(schema, "/a")
+        schema = document(client)
+    params = parameters(schema, "/a")
     headers = [p for p in params if p["in"] == "header"]
     names = {p["name"] for p in headers}
     assert "x-token" in names
@@ -35,8 +31,8 @@ def test_convert_underscores_false_keeps_raw():
         return {}
 
     with TestClient(app) as client:
-        schema = client.get("/openapi.json").json()
-    headers = [p for p in _params(schema, "/b") if p["in"] == "header"]
+        schema = document(client)
+    headers = [p for p in parameters(schema, "/b") if p["in"] == "header"]
     assert {p["name"] for p in headers} == {"x_token"}
 
 
@@ -48,6 +44,6 @@ def test_explicit_alias_wins():
         return {}
 
     with TestClient(app) as client:
-        schema = client.get("/openapi.json").json()
-    headers = [p for p in _params(schema, "/c") if p["in"] == "header"]
+        schema = document(client)
+    headers = [p for p in parameters(schema, "/c") if p["in"] == "header"]
     assert {p["name"] for p in headers} == {"X-Custom"}

@@ -211,6 +211,15 @@ files.STREAM_THRESHOLD = 256 * 1024  # stream files >= 256 KiB
 app.mount("/media", files)
 ```
 
+The threshold applies to the number of bytes being sent, not to whether a
+`Range` was asked for. `Range: bytes=0-` is a well-formed range over the whole
+file, so it streams; a small slice of a large file stays a single buffered
+response, which is cheaper than chunked transfer for a bounded read.
+
+!!! note "Changed in version 0.13"
+    A byte range at or above `STREAM_THRESHOLD` streams. It was previously
+    always buffered, so `Range: bytes=0-` read the entire file into memory.
+
 ## Security
 
 Path resolution is traversal-safe. Requests containing `..`, absolute path
@@ -276,7 +285,7 @@ async def favicon(request: Request):
 
 !!! warning
     The synchronous [`app.send_static_file`](../reference/application.md#veloce.Veloce.send_static_file)
-    reads the file on the calling thread and emits a `DeprecationWarning` when
+    reads the file on the calling thread and emits a `VeloceDeprecationWarning` when
     invoked on a running event loop. From async handlers, use
     `app.send_static_file_async` (above) or
     [`send_from_directory_async`](../reference/helpers.md#veloce.send_from_directory_async).

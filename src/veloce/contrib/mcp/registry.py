@@ -8,9 +8,18 @@ A `ToolRegistry` is assembled once, at `mount_mcp` time, from two sources:
 
 Each entry carries the handler, its precompiled `HandlerPlan` (reused from
 route registration, or built on demand for an MCP-only tool), the derived
-input JSON Schema, and the LLM-facing description. The safety policy is
-enforced here: a mutating route is never auto-exposed, and every exposed
-handler must carry a non-empty description.
+input JSON Schema, and the LLM-facing description.
+
+The safety policy is **default-closed, not verb-based**: nothing is exposed
+unless its author passes `expose_as_mcp_tool=True`, and a route that does pass
+it is exposed **whatever its HTTP method** - a `DELETE` becomes a tool exactly
+as a `GET` does. What the registry enforces is the one registration-time rule
+in `safety.py`: every exposed handler must carry a non-empty description.
+
+There is no verb-based gate here: the HTTP method a route is registered for has
+no bearing on whether it can be exposed. Exposure is per-route and explicit, so
+an author exposing a `DELETE` is taking that decision themselves - `safety.py`
+holds the checks that do apply.
 """
 
 from __future__ import annotations
@@ -26,7 +35,11 @@ from veloce.contrib.mcp._registry_base import Registry
 from veloce.contrib.mcp.composition import mcp_mounts, renamed
 from veloce.contrib.mcp.descriptors import MCPDescriptor
 from veloce.contrib.mcp.icons import Icon, coerce_icons
-from veloce.contrib.mcp.plan_bridge import build_input_schema, build_output_schema
+from veloce.contrib.mcp.plan_bridge import (
+    _plan_reaches_context,
+    build_input_schema,
+    build_output_schema,
+)
 from veloce.contrib.mcp.safety import require_mcp_description, validate_tool_annotations
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -47,6 +60,17 @@ class MCPTool(MCPDescriptor):
     handler: Callable
     plan: HandlerPlan
     input_schema: dict[str, Any]
+    # Set by a tool whose handler can produce a second message by a route the
+    # plan cannot show - above all one that dispatches OTHER tools, whose own
+    # handlers may take a context this tool's signature never mentions. The walk
+    # reads a signature; it cannot read where a handler sends the call next.
+    dispatches_tools: bool = False
+    # Whether a call to this tool can produce more than its own single response;
+    # see `_needs_stream`, which is where it is read. Derived in `__post_init__`
+    # from the plan, the route dependency plans and the flag above, never passed
+    # in - `init=False` so a caller cannot assert a tool is streamless that is
+    # not, and out of `repr`/`compare` like the sibling derived field below.
+    may_stream: bool = field(default=True, init=False, repr=False, compare=False)
     # Route-level dependencies (`dependencies=[...]` on the route / router /
     # blueprint). These run before the handler's own `Depends` graph, exactly
     # as the HTTP and WebSocket dispatch paths run them, so a route-level guard
@@ -66,6 +90,13 @@ class MCPTool(MCPDescriptor):
     # `request.method` sees the route's real verb, not the MCP origin. `None`
     # for a pure `@app.mcp_tool`, which keeps the synthetic MCP method.
     route_method: str | None = None
+    # The published inputs declared inside a `Depends` sub-dependency, by name.
+    # `bind_arguments` coerces its own top-level slots but seeds these onto the
+    # synthetic request for the HTTP resolver to read, and that resolver reads a
+    # query string - where "1" and "yes" have to mean true. An agent sends typed
+    # JSON, and this tool's own `inputSchema` says so, so the door holds them to
+    # the declared type rather than to query-string rules.
+    dependency_inputs: dict[str, Any] = field(default_factory=dict)
     # Every HTTP method the route serves (a multi-verb route yields several).
     # The annotation hints are computed conservatively across this whole set so
     # a `GET`+`DELETE` route is flagged destructive even though its leading verb
@@ -126,6 +157,17 @@ class MCPTool(MCPDescriptor):
     # mount or by anything else starts with an empty history rather than
     # advertising versions the copy's registry cannot serve.
     version_history: tuple[str, ...] = field(default=(), init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        # Decided once, here, rather than per call: whether a tool can reach the
+        # context is a property of its plan, and the plan is fixed from
+        # registration onward. A copy made by `dataclasses.replace` re-derives
+        # rather than carrying a value its new plan may not support.
+        self.may_stream = (
+            self.dispatches_tools
+            or _plan_reaches_context(self.plan)
+            or any(_plan_reaches_context(dep) for dep in self.route_dep_plans)
+        )
 
 
 # Where a tool's version is published in its `_meta`, and where a call names the
@@ -289,7 +331,8 @@ def _register_explicit_tool(
     tool_name = f"{namespace}_{base}" if namespace else base
     desc = require_mcp_description(tool_name, description)
     plan = build_plan(handler)
-    schema = build_input_schema(plan, registry.schemas)
+    dependency_inputs: dict[str, Any] = {}
+    schema = build_input_schema(plan, registry.schemas, dependency_inputs=dependency_inputs)
     output_schema, output_model = _output_schema_for(handler, None, registry.schemas)
     registry.add(
         MCPTool(
@@ -298,6 +341,7 @@ def _register_explicit_tool(
             handler=handler,
             plan=plan,
             input_schema=schema,
+            dependency_inputs=dependency_inputs,
             output_schema=output_schema,
             output_model=output_model,
             required_scopes=scopes or frozenset(),
@@ -327,7 +371,10 @@ def _tool_from_route(
     tool_name = _tool_name_from_route_name(info.name)
     desc = require_mcp_description(tool_name, info.mcp_description)
     plan = info.handler_plan if info.handler_plan is not None else build_plan(info.handler)
-    schema = build_input_schema(plan, schemas_registry, info.path_template)
+    dependency_inputs: dict[str, Any] = {}
+    schema = build_input_schema(
+        plan, schemas_registry, info.path_template, dependency_inputs=dependency_inputs
+    )
     output_schema, output_model = _output_schema_for(info.handler, info, schemas_registry)
     return MCPTool(
         name=tool_name,
@@ -336,6 +383,7 @@ def _tool_from_route(
         handler=info.handler,
         plan=plan,
         input_schema=schema,
+        dependency_inputs=dependency_inputs,
         meta=getattr(info, "mcp_meta", None),
         output_schema=output_schema,
         output_model=output_model,
@@ -354,35 +402,22 @@ def build_registry(app: Any) -> ToolRegistry:
     """Assemble the tool registry from explicit tools plus exposed routes."""
     registry = ToolRegistry()
 
-    # Explicit @app.mcp_tool registrations, recorded on the app at decoration
-    # time as `(handler, name, description, namespace, scopes, tags, icons,
-    # task_support, annotations, meta, version)` tuples.
-    for (
-        handler,
-        name,
-        description,
-        namespace,
-        scopes,
-        tags,
-        icons,
-        task_support,
-        declared_annotations,
-        declared_meta,
-        version,
-    ) in getattr(app, "_mcp_tools", ()):
+    # Explicit `@app.mcp_tool` registrations, recorded on the app at decoration
+    # time as `MCPToolRegistration` records.
+    for tool in getattr(app, "_mcp_tools", ()):
         _register_explicit_tool(
             registry,
-            handler,
-            name=name,
-            description=description,
-            namespace=namespace,
-            scopes=scopes,
-            tags=tags,
-            icons=icons,
-            task_support=task_support,
-            annotations=declared_annotations,
-            meta=declared_meta,
-            version=version,
+            tool.handler,
+            name=tool.name,
+            description=tool.description,
+            namespace=tool.namespace,
+            scopes=tool.scopes,
+            tags=tool.tags,
+            icons=tool.icons,
+            task_support=tool.task_support,
+            annotations=tool.annotations,
+            meta=tool.meta,
+            version=tool.version,
         )
 
     # Routes flagged for exposure. Walk every route (including those hidden
@@ -391,20 +426,19 @@ def build_registry(app: Any) -> ToolRegistry:
     #
     # A route declared with several methods (`methods=["GET", "POST"]`) shares a
     # single `RouteInfo` object across its method entries, so the walk yields it
-    # once per method. Deduplicate by `RouteInfo` identity to expose that one
-    # route a single time - never by the handler callable, which would silently
-    # drop a function intentionally mounted as two distinct named routes (or on
-    # two blueprints). Two distinct routes that derive the same tool name still
-    # collide at `registry.add`, preserving duplicate-tool-name detection.
-    # Group the yielded methods by `RouteInfo` identity, preserving first-seen
-    # order, so the route is exposed once: its leading verb drives the synthetic
-    # request method and its full verb set drives the conservative annotation
-    # hints. Dedup by identity, never by handler callable - that would drop a
+    # once per method. Group by `RouteInfo` identity, preserving first-seen
+    # order, to expose that one route a single time: its leading verb drives the
+    # synthetic request method and its full verb set drives the conservative
+    # annotation hints.
+    #
+    # By identity, never by the handler callable - that would silently drop a
     # function intentionally mounted as two distinct named routes (or on two
-    # blueprints). Exposure stays default-closed (`expose_as_mcp_tool=True`).
+    # blueprints). Two distinct routes deriving the same tool name still collide
+    # at `registry.add`, so duplicate-tool-name detection is unaffected.
+    # Exposure stays default-closed (`expose_as_mcp_tool=True`).
     exposed: dict[int, Any] = {}
     methods_by_route: dict[int, list[str]] = {}
-    for method, _path, info in app._collect_all_routes(include_hidden=True):
+    for method, _path, info in app.iter_routes(include_hidden=True):
         if method == ROUTE_METHOD_WEBSOCKET or not info.expose_as_mcp_tool:
             continue
         route_id = id(info)

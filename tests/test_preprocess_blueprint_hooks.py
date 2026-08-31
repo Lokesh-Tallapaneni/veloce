@@ -11,9 +11,12 @@ extensions, or tests.
 
 from __future__ import annotations
 
+import asyncio
+
 from veloce import Veloce
 from veloce.blueprints import Blueprint
 from veloce.http.request import Request
+from veloce.http.response import Response
 
 
 def _make_request(endpoint: str) -> Request:
@@ -40,8 +43,6 @@ def test_preprocess_request_runs_matched_blueprint_hooks():
         return {"ok": True}
 
     app.register_blueprint(bp)
-
-    import asyncio
 
     asyncio.run(app.preprocess_request(_make_request("bp.handler")))
     assert fired == ["app", "bp"]
@@ -72,8 +73,6 @@ def test_preprocess_request_skips_non_matching_blueprint():
     app.register_blueprint(bp_a)
     app.register_blueprint(bp_b)
 
-    import asyncio
-
     asyncio.run(app.preprocess_request(_make_request("bp_a.ha")))
     assert fired == ["a"]
 
@@ -99,10 +98,6 @@ def test_process_response_runs_matched_blueprint_hooks_reversed():
 
     app.register_blueprint(bp)
 
-    import asyncio
-
-    from veloce.http.response import Response
-
     asyncio.run(app.process_response(_make_request("bp.handler"), Response()))
     # Reversed: app-level reverse-iterates first, then bp bucket reverse-iterates.
     assert fired == ["app", "bp"]
@@ -127,8 +122,6 @@ def test_blueprint_teardown_runs_when_resolve_exits_early_without_before_hooks()
         return {}
 
     app.register_blueprint(bp)
-
-    import asyncio
 
     req = Request(
         method="GET",

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from email.utils import formatdate
 
+from tests.conftest import make_request
 from veloce import Request
 
 
 def _req(headers: dict[str, str]) -> Request:
-    return Request(method="GET", path="/", query_string="", headers=headers, body=b"")
+    return make_request(method="GET", path="/", query_string="", headers=headers, body=b"")
 
 
 # ── if_modified_since ─────────────────────────────────────────────────

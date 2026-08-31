@@ -5,7 +5,7 @@ from __future__ import annotations
 import contextvars
 import inspect
 from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from weakref import WeakKeyDictionary
 
 from veloce._internal import _current_app_var
@@ -14,6 +14,9 @@ from veloce.helpers import current_app, g, get_flashed_messages, request
 from veloce.http.response import HTMLResponse, Response
 from veloce.middleware.security import csp_nonce
 from veloce.status import HTTP_200_OK
+
+if TYPE_CHECKING:  # pragma: no cover
+    from jinja2 import Environment
 
 
 class _CSPNonceGlobal:
@@ -102,13 +105,13 @@ _HELPER_SYNC_TOKEN_ATTR = "_veloce_helper_sync_token"
 # Memoized transient Jinja Environment for `render_template_string`'s
 # no-app fallback path. Built once on first fallback render and reused
 # thereafter so repeated string renders skip per-call env construction.
-_fallback_env: Any = None
+_fallback_env: Environment | None = None
 # One transient environment per app, so an app's filters never resolve in
 # another app's render. Weak-keyed: an app that goes away takes its env with it.
 _app_fallback_envs: WeakKeyDictionary[Any, Any] = WeakKeyDictionary()
 
 
-def _sync_app_jinja_helpers(env: Any) -> None:
+def _sync_app_jinja_helpers(env: Environment) -> None:
     """Copy filters/globals/tests registered on the active app into `env`.
 
     Also injects the standard template globals - `url_for`, `g`,
@@ -151,9 +154,11 @@ def _sync_app_jinja_helpers(env: Any) -> None:
 
 
 def _gather_context_processors(extra: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Run every `@app.context_processor` registered on the current app and
-    merge their returned dicts. Returns an empty dict when no app is bound
-    (e.g. rendering outside a request context).
+    """Run the current app's `@app.context_processor`s and merge the results.
+
+    With no app bound (rendering outside a request context) there is nothing to
+    run, so the caller's own `extra` is returned unchanged rather than
+    discarded.
 
     context-processor outputs are merged in registration order;
     the caller's explicit context (passed to `TemplateResponse`) wins over
@@ -280,7 +285,7 @@ class Jinja2Templates:
             from jinja2 import Environment, FileSystemLoader, select_autoescape
         except ImportError as err:
             raise ImportError(
-                "jinja2 is required for templating. Install it: pip install jinja2"
+                "jinja2 is required for templating. Install it with: pip install jinja2"
             ) from err
         # the built-in default: autoescape HTML-shaped extensions. Matches
         # `select_autoescape(["html", "htm", "xhtml", "xml"])`. Pass an
@@ -311,24 +316,35 @@ class Jinja2Templates:
         self._async_directory = directory
         self._async_auto_reload = initial_reload
         self._async_autoescape = autoescape
-        self._async_env: Any = None
+        self._async_env: Environment | None = None
         # Memoizes the winning name of a resolved fallback list per
         # `(id(env), candidates)` when `env.auto_reload` is False, so a
         # production render of a candidate sequence skips Jinja's
         # `select_template` stat walk after the first resolution.
         self._resolved_cache: dict[tuple[int, tuple[str, ...]], str] = {}
 
-    def _apply_auto_reload(self, env: Any) -> None:
-        """When `auto_reload` was left unset, track the bound app's
-        `debug` flag - production (`debug=False`) skips the per-render
-        template `stat`. Explicit settings are left untouched."""
+    def _prepare_env(self, env: Environment) -> None:
+        """Bring `env` up to date for one render.
+
+        Every render entry point opens with this, so a step added to render
+        setup - a new implicit global, a new env tweak - reaches all of them.
+        """
+        self._apply_auto_reload(env)
+        _sync_app_jinja_helpers(env)
+
+    def _apply_auto_reload(self, env: Environment) -> None:
+        """Track the bound app's `debug` flag when `auto_reload` was left unset.
+
+        Production (`debug=False`) skips the per-render template `stat`.
+        Explicit settings are left untouched.
+        """
         if self._auto_reload is not None:
             return
         app = _current_app_var.get()
         if app is not None:
             env.auto_reload = bool(getattr(app, "debug", False))
 
-    def _resolve_template(self, env: Any, name: str | Sequence[str]) -> Any:
+    def _resolve_template(self, env: Environment, name: str | Sequence[str]) -> Any:
         """Load `name`, or the first existing template when `name` is a list.
 
         A plain `str` takes Jinja's `get_template` fast path unchanged. A
@@ -353,10 +369,14 @@ class Jinja2Templates:
             # entirely - a natural way for a user to turn it off - and the
             # `>= 1` guard means `next(iter(...))` is never called on an empty
             # dict; the `while` also absorbs the cap being lowered at runtime.
-            if self.RESOLVED_CACHE_MAX >= 1:
+            # `select_template` resolves one of the candidate *names*, so what it
+            # returns always carries one; Jinja types `Template.name` as optional
+            # for the loader-less construction this path cannot produce.
+            winner_name = tpl.name
+            if self.RESOLVED_CACHE_MAX >= 1 and winner_name is not None:
                 while len(self._resolved_cache) >= self.RESOLVED_CACHE_MAX:
                     del self._resolved_cache[next(iter(self._resolved_cache))]
-                self._resolved_cache[key] = tpl.name
+                self._resolved_cache[key] = winner_name
             return tpl
         return env.get_template(winner)
 
@@ -370,10 +390,11 @@ class Jinja2Templates:
         media_type: str | None = None,
         background: Any = None,
     ) -> Response:
-        """Render a template and return a response, optionally overriding the
-        content type and attaching a background task."""
-        self._apply_auto_reload(self.env)
-        _sync_app_jinja_helpers(self.env)
+        """Render a template and return a response.
+
+        The content type may be overridden and a background task attached.
+        """
+        self._prepare_env(self.env)
         template = self._resolve_template(self.env, name)
         merged = _gather_context_processors(context)
         html = template.render(merged)
@@ -398,8 +419,7 @@ class Jinja2Templates:
         `render_template(name, **ctx)` helper can plug in
         without building an HTMLResponse around the result.
         """
-        self._apply_auto_reload(self.env)
-        _sync_app_jinja_helpers(self.env)
+        self._prepare_env(self.env)
         template = self._resolve_template(self.env, name)
         merged = _gather_context_processors(context or {})
         return template.render(merged)
@@ -420,16 +440,14 @@ class Jinja2Templates:
         emission instead of raising "working outside of application context".
         The returned iterator is still synchronous, preserving the contract.
         """
-        self._apply_auto_reload(self.env)
-        _sync_app_jinja_helpers(self.env)
+        self._prepare_env(self.env)
         template = self._resolve_template(self.env, name)
         merged = _gather_context_processors(context or {})
         return _context_preserving_iter(template.generate(merged))
 
     def render_string(self, source: str, context: dict[str, Any]) -> str:
         """Render a template from string."""
-        self._apply_auto_reload(self.env)
-        _sync_app_jinja_helpers(self.env)
+        self._prepare_env(self.env)
         template = self.env.from_string(source)
         merged = _gather_context_processors(context)
         return template.render(merged)
@@ -454,19 +472,51 @@ class Jinja2Templates:
                 autoescape=self._async_autoescape,
             )
             self._async_env.context_class = _veloce_context_class()
-        self._apply_auto_reload(self._async_env)
-        _sync_app_jinja_helpers(self._async_env)
+        self._prepare_env(self._async_env)
         template = self._resolve_template(self._async_env, name)
         merged = await _gather_context_processors_async(context or {})
         return await template.render_async(merged)
 
     def get_template(self, name: str | Sequence[str]) -> Any:
-        """Get a raw Jinja2 template object, resolving a fallback list to the
-        first existing template."""
+        """Return a raw Jinja2 template object.
+
+        A fallback list resolves to the first template that exists.
+        """
         return self._resolve_template(self.env, name)
 
 
 # ── Module-level helpers ──────────────────────────────────
+
+
+def _templates_for(caller: str) -> Any:
+    """Return the current app's `Jinja2Templates`, or raise saying which is missing.
+
+    Both module-level helpers need the same two things and raised the same two
+    messages, differing only in the verb naming the caller - so the messages had
+    two places to be edited and one of them would eventually be missed.
+    """
+    app = _current_app_var.get()
+    if app is None:
+        raise RuntimeError(
+            f"{caller} requires an active application context "
+            "(use it inside a request handler or `app.app_context()`)."
+        )
+    templates = getattr(app, "_templates", None)
+    if templates is None:
+        raise RuntimeError(
+            f"{caller} requires templates, which the app does not have. "
+            'Construct it with a template folder: Veloce(template_folder="templates").'
+        )
+    return templates
+
+
+def _new_fallback_env() -> Any:
+    """Build the minimal environment the string helper falls back to."""
+    from jinja2 import Environment, select_autoescape
+
+    env = Environment(autoescape=select_autoescape(["html", "htm", "xml", "xhtml"]))
+    env.context_class = _veloce_context_class()
+    return env
 
 
 def render_template(template_name: str | Sequence[str], **context: Any) -> str:
@@ -478,19 +528,7 @@ def render_template(template_name: str | Sequence[str], **context: Any) -> str:
     Returns the rendered string; callers wrap in a `Response` themselves
     if they need one.
     """
-    app = _current_app_var.get()
-    if app is None:
-        raise RuntimeError(
-            "render_template requires an active application context "
-            "(use it inside a request handler or `app.app_context()`)."
-        )
-    templates = getattr(app, "_templates", None)
-    if templates is None:
-        raise RuntimeError(
-            "render_template requires templates, which the app does not have. "
-            'Construct it with a template folder: Veloce(template_folder="templates").'
-        )
-    return templates.render(template_name, context)
+    return _templates_for("render_template").render(template_name, context)
 
 
 def stream_template(template_name: str | Sequence[str], **context: Any) -> Any:
@@ -509,19 +547,7 @@ def stream_template(template_name: str | Sequence[str], **context: Any) -> Any:
         async def big(request):
             return StreamingResponse(stream_template("big.html", rows=rows))
     """
-    app = _current_app_var.get()
-    if app is None:
-        raise RuntimeError(
-            "stream_template requires an active application context "
-            "(use it inside a request handler or `app.app_context()`)."
-        )
-    templates = getattr(app, "_templates", None)
-    if templates is None:
-        raise RuntimeError(
-            "stream_template requires templates, which the app does not have. "
-            'Construct it with a template folder: Veloce(template_folder="templates").'
-        )
-    return templates.stream(template_name, context)
+    return _templates_for("stream_template").stream(template_name, context)
 
 
 def render_template_string(source: str, **context: Any) -> str:
@@ -555,12 +581,3 @@ def render_template_string(source: str, **context: Any) -> str:
         env = _app_fallback_envs[app] = _new_fallback_env()
     _sync_app_jinja_helpers(env)
     return env.from_string(source).render(context)
-
-
-def _new_fallback_env() -> Any:
-    """Build the minimal environment the string helper falls back to."""
-    from jinja2 import Environment, select_autoescape
-
-    env = Environment(autoescape=select_autoescape(["html", "htm", "xml", "xhtml"]))
-    env.context_class = _veloce_context_class()
-    return env

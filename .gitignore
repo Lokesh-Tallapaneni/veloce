@@ -65,3 +65,8 @@ bench/
 
 # Local MCP client config for the gitignored examples/ demo server.
 .mcp.json
+
+# Hypothesis example database and codspeed benchmark dumps — each ships its own
+# nested .gitignore, which a delete of the directory would take with it.
+.hypothesis/
+.codspeed/

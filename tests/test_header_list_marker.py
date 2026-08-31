@@ -6,36 +6,19 @@ import asyncio
 
 import orjson
 
+from tests._asgi_drive import body_of, drive
 from veloce import Header, Veloce
 from veloce.testclient import TestClient
 
 
 def _run_http(app: Veloce, path: str, raw_headers: list[tuple[bytes, bytes]]) -> bytes:
-    """Drive one HTTP request through the ASGI surface, returning the body."""
-    scope = {
-        "type": "http",
-        "method": "GET",
-        "path": path,
-        "raw_path": path.encode(),
-        "query_string": b"",
-        "headers": raw_headers,
-        "scheme": "http",
-    }
-    incoming = [{"type": "http.request", "body": b"", "more_body": False}]
-    sent: list[dict] = []
+    """Drive one HTTP request through the ASGI surface, returning the body.
 
-    async def receive() -> dict:
-        return incoming.pop(0) if incoming else {"type": "http.disconnect"}
-
-    async def send(message: dict) -> None:
-        sent.append(message)
-
-    loop = asyncio.new_event_loop()
-    try:
-        loop.run_until_complete(app(scope, receive, send))
-    finally:
-        loop.close()
-    return b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
+    The scope and the message-capturing driver come from `tests/_asgi_drive`;
+    this used to be twenty-six lines written out here, verbatim in two modules.
+    """
+    messages = asyncio.run(drive(app, path=path, headers=raw_headers))
+    return body_of(messages)
 
 
 def test_single_header_value_is_one_item_list():

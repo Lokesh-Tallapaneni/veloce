@@ -1,15 +1,17 @@
-"""Parsed `Request.auth` / Authorization tests (Q26)."""
+"""Parsed `Request.auth` / Authorization tests."""
 
 from __future__ import annotations
 
 import base64
 
-from veloce import Authorization, Request
+from tests.conftest import make_request
+from veloce import Request, Veloce
+from veloce.testclient import TestClient
 
 
 def _req(authz: str | None = None) -> Request:
     headers = {"authorization": authz} if authz else {}
-    return Request(method="GET", path="/", query_string="", headers=headers, body=b"")
+    return make_request(method="GET", path="/", query_string="", headers=headers, body=b"")
 
 
 # ── Basic ─────────────────────────────────────────────────────────────
@@ -31,11 +33,20 @@ def test_basic_with_empty_password():
     assert auth.password == ""
 
 
-def test_basic_without_colon_keeps_token_only():
+def test_basic_without_colon_yields_no_credentials():
+    """RFC 7617 Sec. 2 makes the colon mandatory, so this is a malformed header.
+
+    This previously asserted `username == "justname"`, pinning a defect: the
+    scheme that consumes the same header, `HTTPBasic`, answered it with a 401,
+    so code reading `request.auth` saw a username for credentials the
+    application had refused. A malformed payload now parses like undecodable
+    base64 already did in the next test - scheme reported, credentials not.
+    """
     creds = base64.b64encode(b"justname").decode()
     auth = _req(f"Basic {creds}").auth
-    assert auth.username == "justname"
-    assert auth.password == ""
+    assert auth.type == "basic"
+    assert auth.username is None
+    assert auth.password is None
 
 
 def test_basic_invalid_base64_returns_type_only():
@@ -47,7 +58,7 @@ def test_basic_invalid_base64_returns_type_only():
 # ── Bearer ────────────────────────────────────────────────────────────
 
 
-def test_bearer_extracts_token():
+def test_bearer_token_reaches_the_auth_property():
     auth = _req("Bearer abc.def.ghi").auth
     assert auth.type == "bearer"
     assert auth.token == "abc.def.ghi"
@@ -102,7 +113,7 @@ def test_no_header_returns_none():
     assert _req().auth is None
 
 
-def test_empty_header_returns_none():
+def test_an_empty_header_leaves_the_auth_property_none():
     assert _req("").auth is None
 
 
@@ -123,15 +134,6 @@ def test_scheme_preserves_original_case():
     assert auth.type == "bearer"
 
 
-# ── Module export ─────────────────────────────────────────────────────
-
-
-def test_authorization_in_veloce_exports():
-    from veloce import Authorization as AuthClass
-
-    assert AuthClass is Authorization
-
-
 # ── Cached identity ───────────────────────────────────────────────────
 
 
@@ -143,3 +145,55 @@ def test_auth_cached_identity():
     miss = _req()
     assert miss.auth is None
     assert miss.auth is miss.auth
+
+
+def test_auth_property_cached_across_repeat_access():
+    """The end-to-end counterpart of `test_auth_cached_identity`.
+
+    Caching also holds on a `Request` the ASGI path built, not only on
+    one this module builds by hand.
+    """
+    app = Veloce(openapi_url=None)
+    observed = {}
+
+    @app.get("/auth")
+    async def auth_route(request: Request):
+        a1 = request.auth
+        a2 = request.auth
+        observed["same"] = a1 is a2
+        observed["scheme"] = a1.type if a1 else None
+        return {"ok": True}
+
+    with TestClient(app) as client:
+        client.get("/auth", headers={"Authorization": "Bearer abc"})
+    assert observed["same"] is True
+    assert observed["scheme"] == "bearer"
+
+
+# ── Digest parameter decoding ────────────────────────────────────────
+#
+# Moved here from `test_openapi_through_the_client.py`, which is named and
+# documented for OpenAPI emission and which this test does not touch.
+
+
+def test_authorization_digest_backslash_escaped_quote_decoded() -> None:
+    app = Veloce(openapi_url=None)
+    observed: dict = {}
+
+    @app.get("/whoami")
+    async def whoami(request: Request):
+        auth = request.auth
+        observed["type"] = auth.type if auth else None
+        observed["params"] = dict(auth.params) if auth else {}
+        return {"ok": True}
+
+    header_value = (
+        'Digest username="a\\"b", realm="test", nonce="abc", uri="/whoami", response="deadbeef"'
+    )
+    with TestClient(app) as client:
+        resp = client.get("/whoami", headers={"Authorization": header_value})
+
+    assert resp.status_code == 200
+    assert observed["type"] == "digest"
+    assert observed["params"]["username"] == 'a"b'
+    assert observed["params"]["realm"] == "test"

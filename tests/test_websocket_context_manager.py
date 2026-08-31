@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 
+from tests._ws_drive import run_ws
 from veloce import Veloce, WebSocket, WebSocketException
 from veloce.websocket import WebSocket as RawWebSocket
 
@@ -23,27 +22,6 @@ def _asgi_ws() -> tuple[RawWebSocket, list[dict]]:
 
     ws = RawWebSocket.from_asgi({"type": "websocket", "path": "/ws"}, receive, send)
     return ws, sent
-
-
-def _run_ws(app: Veloce, path: str) -> list[dict]:
-    scope = {"type": "websocket", "path": path, "headers": [], "query_string": b""}
-    incoming = [{"type": "websocket.connect"}]
-    sent: list[dict] = []
-
-    async def receive() -> dict:
-        if incoming:
-            return incoming.pop(0)
-        return {"type": "websocket.disconnect", "code": 1000}
-
-    async def send(message: dict) -> None:
-        sent.append(message)
-
-    loop = asyncio.new_event_loop()
-    try:
-        loop.run_until_complete(app(scope, receive, send))
-    finally:
-        loop.close()
-    return sent
 
 
 async def test_async_with_closes_on_normal_exit():
@@ -85,7 +63,7 @@ def test_async_with_preserves_dispatcher_close_code():
             await ws.accept()
             raise WebSocketException(1008, "nope")
 
-    sent = _run_ws(app, "/ws")
+    sent = run_ws(app, "/ws")
     close = [m for m in sent if m["type"] == _WS_CLOSE][0]
     assert close["code"] == 1008
     assert close["reason"] == "nope"
@@ -102,23 +80,6 @@ def test_async_with_maps_unhandled_error_to_1011():
             await ws.accept()
             raise RuntimeError("boom")
 
-    scope = {"type": "websocket", "path": "/ws", "headers": [], "query_string": b""}
-    incoming = [{"type": "websocket.connect"}]
-    sent: list[dict] = []
-
-    async def receive() -> dict:
-        if incoming:
-            return incoming.pop(0)
-        return {"type": "websocket.disconnect", "code": 1000}
-
-    async def send(message: dict) -> None:
-        sent.append(message)
-
-    loop = asyncio.new_event_loop()
-    try:
-        with pytest.raises(RuntimeError):
-            loop.run_until_complete(app(scope, receive, send))
-    finally:
-        loop.close()
+    sent = run_ws(app, "/ws", raises=RuntimeError)
     close = [m for m in sent if m["type"] == _WS_CLOSE][0]
     assert close["code"] == 1011

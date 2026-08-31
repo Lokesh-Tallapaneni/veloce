@@ -2,19 +2,21 @@
 
 from __future__ import annotations
 
+from tests._openapi import parameters
 from veloce import Query, Veloce
 from veloce.contrib.openapi import get_openapi_schema
 
 
 def _params(app: Veloce, path: str, method: str = "get") -> list[dict]:
-    schema = get_openapi_schema(app)
-    return schema["paths"][path][method].get("parameters", [])
+    # `get_openapi_schema`, not the served document: this module is about what
+    # generation emits.
+    return parameters(get_openapi_schema(app), path, method)
 
 
 def _schema_for(params: list[dict], name: str) -> dict:
-    for p in params:
-        if p["name"] == name:
-            return p["schema"]
+    for candidate in params:
+        if candidate["name"] == name:
+            return candidate["schema"]
     raise AssertionError(f"parameter {name!r} not found")
 
 

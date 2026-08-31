@@ -14,9 +14,10 @@ undeclared names would reject calls that legitimately work.
 from __future__ import annotations
 
 import orjson
+import pytest
 from pydantic import BaseModel
 
-from veloce import Depends, Veloce
+from veloce import Depends, Query, Veloce
 from veloce.contrib.mcp.registry import build_registry
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.session import MCPSession
@@ -245,7 +246,7 @@ async def test_a_number_where_a_string_is_declared_is_refused():
     assert is_error is True
 
 
-async def test_the_refusal_names_the_argument_and_both_types():
+async def test_the_binding_refusal_names_the_argument_and_both_types():
     """A model can only correct what it is told; the message is the retry."""
     _is_error, text = await _call(MCPServer(_typed_app()), "probe", {"city": 5, "count": 1})
     assert "city" in text
@@ -374,3 +375,247 @@ async def test_the_refusal_names_the_argument_and_what_was_expected():
     assert "flag" in text
     assert "expected a boolean" in text
     assert "got a number" in text
+
+
+# ── Array arguments are as strict as scalar ones ─────────────────────
+#
+# The binder refuses a wrong scalar type on the stated grounds that a mismatch
+# is the model's mistake to correct and passing it through leaves the handler
+# holding a type it never declared. The array branch used to wrap ANY non-list
+# in a one-element list instead, so a tool told to filter by `'["a","b"]'` - a
+# shape models really do send - filtered by one nonsense tag and returned a
+# plausible empty result, with nothing in the trace to say why.
+
+
+def _array_app() -> Veloce:
+    app = Veloce(title="ArrayProbe", openapi_url=None)
+
+    @app.mcp_tool(description="Filter by tags")
+    async def search(tags: list[str]) -> dict:
+        return {"tags": tags, "types": [type(t).__name__ for t in tags]}
+
+    @app.mcp_tool(description="Sum some numbers")
+    async def total(values: list[int]) -> dict:
+        return {"values": values}
+
+    @app.mcp_tool(description="Filter by optional tags")
+    async def optional_tags(tags: list[str] | None = None) -> dict:
+        return {"tags": tags}
+
+    @app.mcp_tool(description="Take a list whose members may be null")
+    async def nullable_members(items: list[str | None]) -> dict:
+        return {"items": items}
+
+    return app
+
+
+def _array_server() -> MCPServer:
+    return MCPServer(_array_app())
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        '["a","b"]',  # the stringified array a model most often sends
+        "a",
+        42,
+        4.5,
+        True,
+        {"tags": ["a"]},
+    ],
+)
+async def test_a_non_array_is_refused_rather_than_wrapped(value):
+    failed, message = await _call(_array_server(), "search", {"tags": value})
+    assert failed
+    assert "expected an array" in message
+
+
+async def test_an_actual_array_is_still_accepted():
+    failed, message = await _call(_array_server(), "search", {"tags": ["a", "b"]})
+    assert not failed
+    assert orjson.loads(message)["tags"] == ["a", "b"]
+
+
+async def test_an_empty_array_is_accepted():
+    """Empty is a legitimate array, not a missing one."""
+    failed, message = await _call(_array_server(), "search", {"tags": []})
+    assert not failed
+    assert orjson.loads(message)["tags"] == []
+
+
+@pytest.mark.parametrize("member", [42, 4.5, True, ["nested"], {"k": "v"}])
+async def test_a_member_of_the_wrong_type_is_refused(member):
+    """`list[str]` means every member is a string, not just the first."""
+    failed, message = await _call(_array_server(), "search", {"tags": ["ok", member]})
+    assert failed
+    assert "expected a string" in message
+
+
+async def test_a_null_member_is_refused_when_the_inner_type_is_not_nullable():
+    failed, _ = await _call(_array_server(), "search", {"tags": [None]})
+    assert failed
+
+
+async def test_a_null_member_is_accepted_when_the_inner_type_is_nullable():
+    """`list[str | None]` declares members that may be null; they are."""
+    failed, message = await _call(_array_server(), "nullable_members", {"items": ["a", None]})
+    assert not failed
+    assert orjson.loads(message)["items"] == ["a", None]
+
+
+async def test_a_nullable_member_list_still_refuses_a_wrong_type():
+    failed, _ = await _call(_array_server(), "nullable_members", {"items": [42]})
+    assert failed
+
+
+async def test_an_optional_array_accepts_an_explicit_null():
+    """The parameter itself is nullable, so the array is simply absent."""
+    failed, message = await _call(_array_server(), "optional_tags", {"tags": None})
+    assert not failed
+    assert orjson.loads(message)["tags"] is None
+
+
+async def test_an_optional_array_may_be_omitted_entirely():
+    failed, message = await _call(_array_server(), "optional_tags", {})
+    assert not failed
+    assert orjson.loads(message)["tags"] is None
+
+
+async def test_an_optional_array_still_refuses_a_non_array():
+    """Nullable is not the same as untyped."""
+    failed, message = await _call(_array_server(), "optional_tags", {"tags": "a"})
+    assert failed
+    assert "expected an array" in message
+
+
+async def test_an_optional_array_still_refuses_a_null_member():
+    """The parameter's nullability is not its members'."""
+    failed, _ = await _call(_array_server(), "optional_tags", {"tags": [None]})
+    assert failed
+
+
+async def test_array_members_get_the_same_coercion_a_bare_parameter_gets():
+    """Strictness means matching the scalar contract, not exceeding it."""
+    failed, message = await _call(_array_server(), "total", {"values": [7, 8.0]})
+    assert not failed
+    assert orjson.loads(message)["values"] == [7, 8]
+
+
+async def test_a_member_that_would_lose_precision_is_refused():
+    failed, message = await _call(_array_server(), "total", {"values": [7.5]})
+    assert failed
+    assert "fractional" in message
+
+
+async def test_a_declared_member_model_is_validated_onto_it():
+    """`list[Model]` members are models, not the raw mappings that were sent."""
+    app = Veloce(title="ModelArray", openapi_url=None)
+
+    @app.mcp_tool(description="Take several items")
+    async def take(items: list[Item]) -> dict:
+        return {"kinds": [type(i).__name__ for i in items], "names": [i.name for i in items]}
+
+    failed, message = await _call(
+        MCPServer(app), "take", {"items": [{"name": "a"}, {"name": "b", "qty": 3}]}
+    )
+    assert not failed
+    assert orjson.loads(message) == {"kinds": ["Item", "Item"], "names": ["a", "b"]}
+
+
+async def test_a_member_model_that_does_not_validate_is_reported():
+    app = Veloce(title="ModelArray", openapi_url=None)
+
+    @app.mcp_tool(description="Take several items")
+    async def take(items: list[Item]) -> dict:
+        return {"count": len(items)}
+
+    failed, _ = await _call(MCPServer(app), "take", {"items": [{"qty": 1}]})
+    assert failed
+
+
+# ── A parameter behind Depends is held to the schema that published it ──
+#
+# The MCP door coerces its own top-level slots strictly: an agent sends typed
+# JSON, so a parameter declared `bool` takes `true`, not `"yes"`. A parameter
+# declared inside a `Depends` was seeded onto the synthetic request instead and
+# read back by the HTTP resolver, which applies query-string rules - where "1"
+# and "yes" have to mean true because a query string has nothing else to offer.
+#
+# Both are published in the same `inputSchema`, so the tool advertised
+# `{"type": "boolean"}` and then accepted a string for it. Moving a parameter
+# behind a dependency silently changed whether a value was accepted.
+
+
+def _both_doors_app() -> Veloce:
+    app = Veloce(openapi_url=None)
+
+    def flag_dep(flag: bool = Query(False)):
+        return flag
+
+    @app.mcp_tool(description="Bool declared on the handler")
+    async def top(flag: bool = False) -> dict:
+        return {"flag": flag}
+
+    @app.mcp_tool(description="Bool declared inside a dependency")
+    async def nested(flag: bool = Depends(flag_dep)) -> dict:
+        return {"flag": flag}
+
+    return app
+
+
+async def _call_flag(server: MCPServer, tool: str, value: object):
+    out = await server.handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": tool, "arguments": {"flag": value}},
+        }
+    )
+    result = out.get("result", {})
+    if result.get("isError"):
+        return "refused"
+    return orjson.loads(result["content"][0]["text"])["flag"]
+
+
+def test_both_doors_publish_the_parameter():
+    """The premise: the dependency's parameter is part of the tool's contract."""
+    registry = build_registry(_both_doors_app())
+    for name in ("top", "nested"):
+        props = registry.tools[name].input_schema["properties"]
+        assert props["flag"]["type"] == "boolean", name
+
+
+@pytest.mark.parametrize("value", ["yes", "1", "true", 1, 0, "maybe"])
+async def test_a_declared_bool_refuses_a_non_boolean_behind_depends(value):
+    """The defect: these were accepted behind a dependency and refused in front."""
+    server = MCPServer(_both_doors_app())
+    assert await _call_flag(server, "nested", value) == "refused"
+
+
+@pytest.mark.parametrize("value", ["yes", "1", "true", 1, 0, "maybe"])
+async def test_both_doors_agree_on_every_rejected_value(value):
+    """Agreement is half of it; the other half is *what* they agree on.
+
+    Asserting only that the two answers match passes just as well if both
+    doors accept the value, which is the failure this module exists to rule
+    out.
+    """
+    server = MCPServer(_both_doors_app())
+    top = await _call_flag(server, "top", value)
+    nested = await _call_flag(server, "nested", value)
+    assert top == nested
+    assert top == "refused", f"{value!r} was accepted by both doors"
+
+
+@pytest.mark.parametrize("value", [True, False])
+async def test_a_real_boolean_is_accepted_by_both_doors(value):
+    """Strictness must not cost the tool its actual contract."""
+    server = MCPServer(_both_doors_app())
+    assert await _call_flag(server, "top", value) is value
+    assert await _call_flag(server, "nested", value) is value
+
+
+async def test_a_tool_with_no_dependency_inputs_is_unaffected():
+    server = MCPServer(_both_doors_app())
+    assert await _call_flag(server, "top", True) is True

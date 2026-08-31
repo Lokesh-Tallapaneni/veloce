@@ -43,6 +43,9 @@ _RESOURCE_METHODS = frozenset({HTTP_METHOD_GET, HTTP_METHOD_HEAD})
 _URI_TEMPLATE_VAR = re.compile(r"\{(\+?)([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
+# ── Descriptor and registry ───────────────────────────────
+
+
 @dataclass(slots=True)
 class MCPResource(MCPDescriptor):
     """One registered MCP resource (a read-only route addressed by URI)."""
@@ -136,6 +139,9 @@ class ResourceRegistry(Registry[MCPResource]):
         return None
 
 
+# ── URI templates ─────────────────────────────────────────
+
+
 def _uri_template_vars(uri: str) -> list[str]:
     """Return the RFC 6570 variable names declared in a URI template."""
     return [name for _operator, name in _URI_TEMPLATE_VAR.findall(uri)]
@@ -174,6 +180,9 @@ def _decode_values(values: dict[str, str]) -> dict[str, str]:
     the usual case.
     """
     return {name: unquote(value) if "%" in value else value for name, value in values.items()}
+
+
+# ── Building the registry ─────────────────────────────────
 
 
 def _resource_from_route(
@@ -237,7 +246,7 @@ def build_resource_registry(app: Any) -> ResourceRegistry:
     registry = ResourceRegistry()
     exposed: dict[int, Any] = {}
     methods_by_route: dict[int, list[str]] = {}
-    for method, _path, info in app._collect_all_routes(include_hidden=True):
+    for method, _path, info in app.iter_routes(include_hidden=True):
         if method == ROUTE_METHOD_WEBSOCKET or not info.expose_as_mcp_resource:
             continue
         route_id = id(info)

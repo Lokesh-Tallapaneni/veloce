@@ -2,19 +2,22 @@
 
 from __future__ import annotations
 
+import orjson
 import pytest
 
+from tests.conftest import make_request
 from veloce import Request, Response, Veloce
+from veloce.helpers import make_response as helpers_make_response
+from veloce.testclient import TestClient
 
 
 def _req() -> Request:
-    return Request(method="GET", path="/", query_string="", headers={}, body=b"")
+    return make_request(method="GET", path="/", query_string="", headers={}, body=b"")
 
 
 # ── preprocess_request ───────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_preprocess_runs_hooks_in_order():
     app = Veloce()
     calls: list[int] = []
@@ -32,7 +35,6 @@ async def test_preprocess_runs_hooks_in_order():
     assert calls == [1, 2]
 
 
-@pytest.mark.asyncio
 async def test_preprocess_short_circuits_on_first_non_none():
     app = Veloce()
 
@@ -51,7 +53,6 @@ async def test_preprocess_short_circuits_on_first_non_none():
 # ── process_response ─────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_process_response_runs_hooks_reversed():
     app = Veloce()
     order: list[int] = []
@@ -72,7 +73,6 @@ async def test_process_response_runs_hooks_reversed():
     assert order == [2, 1]
 
 
-@pytest.mark.asyncio
 async def test_process_response_replaces_when_hook_returns_new():
     app = Veloce()
 
@@ -85,7 +85,6 @@ async def test_process_response_replaces_when_hook_returns_new():
     assert out.body == b"replaced"
 
 
-@pytest.mark.asyncio
 async def test_process_response_keeps_response_when_hook_returns_none():
     app = Veloce()
 
@@ -123,16 +122,12 @@ def test_make_response_bytes_wraps_html():
 def test_make_response_dict_json_encodes():
     app = Veloce()
     resp = app.make_response({"a": 1})
-    import orjson
-
     assert orjson.loads(resp.body) == {"a": 1}
 
 
 def test_make_response_list_json_encodes():
     app = Veloce()
     resp = app.make_response([1, 2, 3])
-    import orjson
-
     assert orjson.loads(resp.body) == [1, 2, 3]
 
 
@@ -156,10 +151,25 @@ def test_make_response_tuple_headers_only():
     assert resp.headers["X-Foo"] == "bar"
 
 
-def test_make_response_unsupported_raises():
-    app = Veloce()
-    with pytest.raises(TypeError):
-        app.make_response(object())
+def test_make_response_matches_dispatch_for_an_unserialisable_value():
+    """`app.make_response` used to raise where a handler returning the same
+    value was answered `200`. It now agrees with dispatch, whose fallback
+    stringifies an unknown object through `orjson_default`. Whether that
+    stringification is the right default is a separate question - the point
+    here is that one framework gives one answer.
+    """
+
+    app = Veloce(openapi_url=None)
+
+    @app.get("/o")
+    async def unserialisable():
+        return object()
+
+    via_dispatch = TestClient(app).get("/o")
+    via_helper = app.make_response(object())
+    assert via_dispatch.status_code == via_helper.status_code == 200
+    assert via_dispatch.text.startswith('"<object object at')
+    assert via_helper.body.decode().startswith('"<object object at')
 
 
 def test_bare_str_return_and_make_response_str_share_content_type():
@@ -176,3 +186,74 @@ def test_bare_str_return_and_make_response_str_share_content_type():
 
     client = app.test_client()
     assert client.get("/a").content_type == client.get("/b").content_type
+
+
+# ── One coercion table ───────────────────────────────────────────────
+
+
+#: Every tuple shape the three entry points can be handed, including the two
+#: that used to be answered three different ways.
+_TUPLE_SHAPES = [
+    (b"x",),
+    (b"x", 201, {"a": "b"}, "extra"),
+    (),
+    ("body", 201),
+    ("body", {"X-Foo": "bar"}),
+    ("body", 202, {"X-Foo": "bar"}),
+    ({"k": 1}, 201),
+    ("body", [("X-Foo", "bar")]),
+    ("body", "404"),
+    ("body", 204, [("X-Foo", "bar")]),
+]
+
+
+@pytest.mark.parametrize("shape", _TUPLE_SHAPES, ids=lambda s: f"len{len(s)}")
+def test_the_three_coercers_answer_a_tuple_alike(shape):
+    """`app.make_response`, `veloce.make_response` and dispatch share one table.
+
+    They kept three copies of it and had drifted where nothing tested them:
+    `(b"x",)` was the body to two of them and a one-item JSON array to the
+    third, and a four-element tuple lost its status and headers in silence
+    rather than being answered as data. Both shapes were reachable from user
+    code, under a docstring asserting the three agreed.
+    """
+    app = Veloce(openapi_url=None)
+    answers = [
+        app.make_response(shape),
+        helpers_make_response(shape),
+        app._coerce_response(shape, None),
+    ]
+    bodies = {resp.status_code: resp.body for resp in answers}
+    assert len({(r.status_code, r.body) for r in answers}) == 1, bodies
+
+
+def test_a_tuple_that_is_not_a_response_tuple_is_data():
+    """Only two- and three-element tuples carry a status or headers.
+
+    A four-element tuple silently dropped its status and headers; answering it
+    as data at least does not discard what the caller wrote.
+    """
+    app = Veloce(openapi_url=None)
+    resp = app.make_response((b"x", 201, {"a": "b"}, "extra"))
+    assert resp.status_code == 200
+    assert b"201" in resp.body, resp.body
+    assert b"extra" in resp.body, resp.body
+
+
+def test_a_handler_may_return_a_body_and_a_header_list():
+    """`return "x", [("X-Foo", "y")]` reached dispatch as a status and 500'd.
+
+    The two `make_response` entry points read the same pair list as headers, so
+    one tuple was a working response through one door and a `TypeError` through
+    the other.
+    """
+    app = Veloce(openapi_url=None)
+
+    @app.get("/pairs")
+    async def pairs():
+        return "x", [("X-Foo", "bar")]
+
+    resp = TestClient(app).get("/pairs")
+    assert resp.status_code == 200
+    assert resp.headers["X-Foo"] == "bar"
+    assert resp.text == "x"

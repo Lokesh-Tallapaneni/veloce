@@ -23,6 +23,7 @@ from veloce._handler_plan import (
     K_BG_TASKS,
     K_BODY_MODEL,
     K_DEPENDS,
+    K_MODEL_GROUP,
     K_PARAM_MARKER,
     K_QUERY,
     K_QUERY_LIST,
@@ -30,7 +31,9 @@ from veloce._handler_plan import (
     K_RESPONSE,
     K_SECURITY_SCOPES,
     MK_BODY,
+    _unwrap_optional,
 )
+from veloce._internal import _current_request_var
 from veloce._model_backend import (
     ModelBackend,
     adapter_for,
@@ -38,12 +41,13 @@ from veloce._model_backend import (
     is_pydantic_model,
 )
 from veloce._route_contract import describe_slot
-from veloce.contrib.mcp.context import MCPContext
-from veloce.contrib.openapi import (
+from veloce.contrib._jsonschema import (
     _adapted_to_schema,
+    _apply_marker_constraints,
     _pydantic_to_schema,
     _python_type_to_schema,
 )
+from veloce.contrib.mcp.context import MCPContext
 from veloce.dependency import DependencyResolver, SecurityScopes, _coerce_value
 from veloce.exceptions import RequestValidationError
 from veloce.http.datastructures import FormData, QueryParams
@@ -64,6 +68,7 @@ _INPUT_KINDS = frozenset({K_BODY_MODEL, K_QUERY_LIST, K_PARAM_MARKER, K_QUERY})
 _ANNOTATION_KEYWORDS = frozenset({"description", "title", "default"})
 
 
+# ── Reading the handler plan ──────────────────────────────
 def _is_context_slot(slot: _Slot) -> bool:
     """Whether `slot` binds the MCPContext rather than an agent input.
 
@@ -75,6 +80,38 @@ def _is_context_slot(slot: _Slot) -> bool:
     guard scopes the check.
     """
     return slot.kind == K_QUERY and slot.target_type is MCPContext
+
+
+def _plan_reaches_context(plan: Any, _seen: set[int] | None = None) -> bool:
+    """Whether this plan, or anything it depends on, binds the `MCPContext`.
+
+    A `tools/call` answers with more than one message only if the handler can
+    emit one - progress, logging, a sampling or elicitation request - and every
+    one of those is reached through `MCPContext`. A tool whose handler and whole
+    dependency graph never bind it therefore produces exactly one response, and
+    the transport can say so before the call runs (see `_needs_stream`).
+
+    This reads a signature, so it cannot see a handler that dispatches to
+    another handler - `MCPTool.dispatches_tools` carries that case instead.
+    Answers `True` for a plan it cannot walk, so an unrecognised shape keeps the
+    streaming response. Cycle-guarded the way `_slot_parallel_safe` guards its
+    own walk.
+    """
+    if plan is None:
+        return True
+    slots = getattr(plan, "slots", None)
+    if slots is None:
+        return True
+    _seen = set() if _seen is None else _seen
+    if id(plan) in _seen:
+        return False
+    _seen.add(id(plan))
+    for slot in slots:
+        if _is_context_slot(slot):
+            return True
+        if slot.kind == K_DEPENDS and _plan_reaches_context(slot.sub_plan, _seen):
+            return True
+    return False
 
 
 # OpenAPI component ref prefix `_pydantic_to_schema` emits; an MCP input
@@ -89,10 +126,13 @@ _MCP_REF_PREFIX = "#/$defs/"
 JSON_SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
 
 
+# ── Schema generation ─────────────────────────────────────
 def build_input_schema(
     plan: HandlerPlan,
     schemas_registry: dict[str, dict[str, Any]],
     path_template: str | None = None,
+    *,
+    dependency_inputs: dict[str, _Slot] | None = None,
 ) -> dict[str, Any]:
     """Build the MCP tool input JSON Schema from a handler plan.
 
@@ -112,6 +152,14 @@ def build_input_schema(
     input is merged in by name; the `Depends` slots themselves (and other
     inject-only slots) are never inputs.
 
+    `dependency_inputs`, when given, is filled with the published inputs that
+    are declared *inside* a `Depends` sub-dependency, keyed by name. Those are
+    the ones `bind_arguments` does not coerce itself - it seeds them onto the
+    synthetic request for the HTTP resolver to read - so the caller needs them
+    to hold the call to the same declared types this schema advertises.
+    Collected here rather than by a second walk, because this is already the one
+    traversal that decides what a tool publishes.
+
     `path_template` is the backing route's path, for a tool exposed from one. Its
     parameters are part of the call's contract whether or not a signature names
     them - a dependency reading `request.path_params` consumes the same value -
@@ -122,7 +170,9 @@ def build_input_schema(
     properties: dict[str, Any] = {}
     required: list[str] = []
 
-    _collect_input_slots(plan.slots, properties, required, schemas_registry, set())
+    _collect_input_slots(
+        plan.slots, properties, required, schemas_registry, set(), input_slots=dependency_inputs
+    )
     if path_template:
         for name, param_schema in path_param_schemas(path_template).items():
             if name not in properties:
@@ -207,6 +257,8 @@ def _collect_input_slots(
     schemas_registry: dict[str, dict[str, Any]],
     seen_plans: set[int],
     in_depends: bool = False,
+    *,
+    input_slots: dict[str, _Slot] | None = None,
 ) -> None:
     """Accumulate client-supplied input properties from a slot list.
 
@@ -230,7 +282,13 @@ def _collect_input_slots(
                 continue
             seen_plans.add(plan_id)
             _collect_input_slots(
-                sub_plan.slots, properties, required, schemas_registry, seen_plans, True
+                sub_plan.slots,
+                properties,
+                required,
+                schemas_registry,
+                seen_plans,
+                True,
+                input_slots=input_slots,
             )
             continue
 
@@ -245,6 +303,14 @@ def _collect_input_slots(
             _spread_model_fields(slot.model, properties, required, schemas_registry)
             continue
 
+        # `Annotated[Filters, Query(group=True)]` reads each of the model's
+        # fields off its own wire key, so the tool's inputs are those fields -
+        # the same spread, for the same reason. Declaring `filters` instead
+        # published a nested object no call path accepts.
+        if slot.kind == K_MODEL_GROUP and is_pydantic_model(slot.model):
+            _spread_model_fields(slot.model, properties, required, schemas_registry)
+            continue
+
         # A name already declared (by an earlier sibling or sub-dependency)
         # is the same client-supplied value; declare it once.
         if slot.name in properties:
@@ -256,6 +322,8 @@ def _collect_input_slots(
         properties[slot.name] = prop_schema
         if is_required:
             required.append(slot.name)
+        if in_depends and input_slots is not None:
+            input_slots[slot.name] = slot
 
 
 def _collect_defs(
@@ -311,8 +379,10 @@ def _rewrite_refs(node: Any) -> set[str]:
 
 
 def _deepcopy_schema(node: Any) -> Any:
-    """Copy a JSON-Schema fragment so in-place ref rewriting never mutates the
-    shared component registry."""
+    """Copy a JSON-Schema fragment before any in-place ref rewriting.
+
+    Keeps the shared component registry from being mutated.
+    """
     if isinstance(node, dict):
         return {key: _deepcopy_schema(value) for key, value in node.items()}
     if isinstance(node, list):
@@ -365,10 +435,16 @@ def _slot_schema(
         prop = _python_type_to_schema(d.target_type)
 
     if d.marker is not None:
-        if getattr(d.marker, "description", None):
-            prop = {**prop, "description": d.marker.description}
-        if getattr(d.marker, "title", None):
-            prop = {**prop, "title": d.marker.title}
+        # The same keywords the OpenAPI lowering publishes, from the same
+        # function. Copying only `description` and `title` by hand left every
+        # validation bound out, so the tool schema advertised a wider contract
+        # than the server accepts and an agent was refused for a value the
+        # schema said was allowed. A model property is skipped: it is a `$ref`
+        # to a schema that already carries the model's own bounds, and the
+        # marker's belong to the group rather than to any one field.
+        if d.model is None:
+            prop = dict(prop)
+            _apply_marker_constraints(prop, d.marker)
         # Advertise the declared default so a schema-aware client can populate
         # the field itself instead of omitting it and relying on the server's
         # fallback. A `default_factory` builds a per-call value with no single
@@ -424,6 +500,7 @@ _JSON_TYPE_NAMES = {
 _SCALAR_TARGETS = frozenset({str, int, float, bool})
 
 
+# ── Argument coercion ─────────────────────────────────────
 def _json_type_name(value: Any) -> str:
     """Name `value`'s JSON type the way the client that sent it would."""
     return _JSON_TYPE_NAMES.get(type(value), "a value")
@@ -501,6 +578,27 @@ def _coerce_json_scalar(slot: _Slot, value: Any, target: Any) -> Any:
     return _coerce_value(value, target, slot.name, "body")
 
 
+def _coerce_list_item(slot: _Slot, value: Any, target: Any, nullable: bool) -> Any:
+    """Coerce one array element, whose nullability is the inner type's own.
+
+    `_coerce_json_scalar` reads `slot.is_optional`, which describes the whole
+    parameter: `list[str] | None` may be omitted, but its members are strings.
+    The `None` case is therefore settled here before delegating.
+    """
+    if value is None:
+        if nullable:
+            return None
+        raise _wrong_type(slot.name, _declared_type_name(target), None)
+    # A declared member type that is a model is validated onto it, the way a
+    # model-typed parameter is; `_coerce_json_scalar` only settles scalars and
+    # would hand the handler the raw mapping.
+    if is_pydantic_model(target):
+        return _validate_model(value, target)
+    if is_adaptable_model(target):
+        return _validate_adapted(value, target)
+    return _coerce_json_scalar(slot, value, target)
+
+
 def _declared_type_name(target: Any) -> str:
     """Name the JSON type a declared parameter type accepts."""
     if target is bool:
@@ -535,15 +633,54 @@ def _coerce_argument(slot: _Slot, value: Any) -> Any:
         return value
 
     if kind == K_QUERY_LIST:
-        inner = slot.list_inner
+        # The tool published an array, so a scalar is the model's mistake to
+        # correct exactly as a wrong scalar type is. Wrapping it handed the
+        # handler a one-element list nothing asked for: a search told to filter
+        # by `'["a","b"]'` - a shape models really do send - filtered by one
+        # nonsense tag and returned a plausible empty result with nothing in the
+        # trace to say why. Elements go through the same strict coercion as a
+        # bare parameter of the inner type, not the query-string one, which
+        # would read `42` as a `list[str]` member.
+        if value is None and slot.is_optional:
+            # The parameter itself is nullable, so the array is simply absent.
+            return None
         if not isinstance(value, list):
-            value = [value]
-        return [_coerce_value(v, inner, slot.name, "body") for v in value]
+            raise _wrong_type(slot.name, "an array", value)
+        item_nullable, item_type = _unwrap_optional(slot.list_inner)
+        return [_coerce_list_item(slot, item, item_type, item_nullable) for item in value]
 
     if kind == K_QUERY:
         return _coerce_json_scalar(slot, value, slot.target_type)
 
     return value
+
+
+# ── Model binding ─────────────────────────────────────────
+def _bind_model_group(slot: _Slot, arguments: dict[str, Any]) -> Any:
+    """Rebuild a grouped model from the flat arguments its fields were published as.
+
+    The field walk is `slot.group_fields`, precomputed at registration and shared
+    with the HTTP resolver, so both doors read the same keys and validate against
+    the same model - an agent and a browser get the same answer, including the
+    same constraint errors.
+    """
+    raw = {
+        validate_key: arguments[wire_key]
+        for validate_key, wire_key, _is_list in slot.group_fields
+        if wire_key in arguments
+    }
+    # A group slot is built from a marker (`Query(group=True)`), so it always
+    # has one; the fallback keeps the type checker honest rather than guarding.
+    marker = slot.marker
+    has_default = marker is not None and marker.has_default
+    if not raw and (slot.is_optional or has_default):
+        return marker.resolve_default() if marker is not None and has_default else None
+    model = slot.model
+    if is_pydantic_model(model):
+        return _validate_model(raw, model)
+    if slot.backend == ModelBackend.ADAPTED:
+        return _validate_adapted(raw, model)
+    return raw
 
 
 def _validate_adapted(value: Any, model: Any) -> Any:
@@ -586,6 +723,30 @@ def _scalar_str(value: Any) -> str | None:
     return None
 
 
+def _carrier_scope() -> dict[str, Any] | None:
+    """Build an ASGI-shaped scope carrying the peer, or `None` off-transport.
+
+    A replayed request has no socket of its own, so without this everything
+    keyed on caller identity - rate limiting above all - saw an unknown peer and
+    bucketed each call separately, silently failing open on the agent-facing
+    door while the same route stayed limited over HTTP.
+
+    The carrier's *resolved* `client_host` is what propagates, so a `ProxyFix`
+    correction already applied there carries over rather than being re-derived
+    from headers this request does not have. Only the peer crosses: copying
+    headers would let a credential presented to the transport be re-read by the
+    route's own `Security` scheme, which the empty header list exists to prevent.
+
+    A port of 0 stands in for the peer's real port, which is not identifying and
+    is not reachable from the carrier's public surface.
+    """
+    carrier = _current_request_var.get()
+    if carrier is None:
+        return None
+    host = carrier.client_host
+    return {"client": (host, 0)} if host else None
+
+
 def _build_request(
     tool_name: str,
     arguments: dict[str, Any] | None = None,
@@ -626,6 +787,7 @@ def _build_request(
         query_string="",
         headers=[],
         body=b"",
+        scope=_carrier_scope(),
     )
     if not arguments:
         return request
@@ -677,6 +839,7 @@ async def bind_arguments(
     route_dep_plans: list[Any] | None = None,
     request: Request | None = None,
     route_defaults: dict[str, Any] | None = None,
+    dependency_inputs: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], Request]:
     """Resolve handler kwargs for a tool call from the JSON `arguments`.
 
@@ -704,6 +867,15 @@ async def bind_arguments(
     no URL, so the defaults are overlaid *under* the explicit `arguments`
     (explicit argument > route default > Python default) and the merged mapping
     feeds both handler-kwarg binding and the DI graph, matching HTTP precedence.
+
+    `dependency_inputs` names the published inputs declared inside a `Depends`
+    sub-dependency. Those are seeded onto the synthetic request for the HTTP
+    resolver to read, and that resolver reads a query string - where `"1"` and
+    `"yes"` have to mean true, because a query string has nothing else to offer.
+    An agent sends typed JSON and the tool's own `inputSchema` advertises the
+    declared type, so they are coerced here by the same strict rule the
+    top-level slots use. Without it, moving a parameter behind a dependency
+    silently changed whether the same value was accepted.
     """
     resolver.reset()
 
@@ -717,6 +889,23 @@ async def bind_arguments(
         if merged:
             merged.update(arguments)
             arguments = merged
+
+    # Hold a sub-dependency's inputs to the type this tool published, before the
+    # seeding below hands them to a resolver that reads query-string rules. A
+    # fresh dict is built only when there is something to coerce, so a tool with
+    # no `Depends` inputs pays one truthiness test.
+    if dependency_inputs:
+        coerced: dict[str, Any] | None = None
+        for name, slot in dependency_inputs.items():
+            if name not in arguments:
+                continue
+            value = _coerce_argument(slot, arguments[name])
+            if value is not arguments[name]:
+                if coerced is None:
+                    coerced = dict(arguments)
+                coerced[name] = value
+        if coerced is not None:
+            arguments = coerced
 
     # Expose the MCPContext to the resolver so a sub-dependency that declares a
     # parameter typed `MCPContext` receives it. The top-level handler's context
@@ -789,7 +978,9 @@ async def bind_arguments(
             kwargs[name] = await resolver._exec_depends(slot, request, arguments)
             continue
 
-        if name in arguments:
+        if kind == K_MODEL_GROUP:
+            kwargs[name] = _bind_model_group(slot, arguments)
+        elif name in arguments:
             kwargs[name] = _coerce_argument(slot, arguments[name])
         elif (marker := slot.marker) is not None and marker.has_default:
             # A parameter marker owns its declared default (`Body(500)`), and the

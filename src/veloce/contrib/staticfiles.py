@@ -31,8 +31,6 @@ from veloce._constants import (
     HEADER_CONTENT_ENCODING,
     HEADER_CONTENT_RANGE,
     HEADER_ETAG,
-    HEADER_IF_MODIFIED_SINCE,
-    HEADER_IF_NONE_MATCH,
     HEADER_LAST_MODIFIED,
     HEADER_VALUE_BYTES,
     HEADER_VARY,
@@ -40,11 +38,11 @@ from veloce._constants import (
 )
 from veloce._internal import (
     _etag_matches_strong,
-    _etag_matches_weak,
     _file_etag,
+    _preconditions_say_unchanged,
     guess_content_type,
 )
-from veloce.http.dates import http_date, parse_date
+from veloce.http.dates import http_date
 from veloce.http.request import Request
 from veloce.http.response import RedirectResponse, Response, StreamingResponse
 from veloce.safe import safe_join
@@ -87,11 +85,39 @@ def _precondition_failed(
     return False
 
 
+async def _stat_path(loop: asyncio.AbstractEventLoop, path: str) -> os.stat_result | None:
+    """`os.stat(path)` off the event loop, or `None` when it does not exist.
+
+    Raises `PermissionError` when the filesystem refuses the probe, so a denial
+    reaches `handle`'s single `except` and becomes a `403` rather than bubbling
+    to a `500`. Returning it instead - as a `(stat_result, denied)` pair - meant
+    five call sites each unpacking a differently-named `denied` local, and one
+    (`_select_precompressed`) that could not use the shape at all and re-raised
+    `PermissionError` to get the denial back out.
+    """
+
+    def _probe() -> os.stat_result | None:
+        try:
+            return os.stat(path)
+        except (FileNotFoundError, NotADirectoryError):
+            return None
+
+    result: os.stat_result | None = await loop.run_in_executor(None, _probe)
+    return result
+
+
+async def _stat_regular(loop: asyncio.AbstractEventLoop, path: str) -> os.stat_result | None:
+    """As `_stat_path`, but `None` unless `path` is a regular file."""
+    result = await _stat_path(loop, path)
+    return result if result is not None and stat.S_ISREG(result.st_mode) else None
+
+
 def _forbidden() -> Response:
     """Build the canonical 403 served on traversal / symlink-escape / EACCES.
 
     Every static denial returns the same opaque body so the handler never
-    discloses whether a path exists, only that it may not be read."""
+    discloses whether a path exists, only that it may not be read.
+    """
     return Response(status_code=HTTP_403_FORBIDDEN, body=b"Forbidden")
 
 
@@ -99,12 +125,52 @@ def _not_modified(etag: str, last_modified: str) -> Response:
     """Build the 304 carrying the current validators (RFC 9110 Sec. 13.1.4).
 
     The empty-body 304 must still echo `ETag` and `Last-Modified` so the
-    client can refresh its cached validators on the revalidation hit."""
+    client can refresh its cached validators on the revalidation hit.
+    """
     return Response(
         status_code=HTTP_304_NOT_MODIFIED,
         body=b"",
         headers={HEADER_ETAG: etag, HEADER_LAST_MODIFIED: last_modified},
     )
+
+
+#: Sent when neither the handler nor the app configures a cache lifetime.
+_DEFAULT_CACHE_CONTROL = "public, max-age=3600"
+
+
+def _conditional_hit(request: Request, etag: str, mtime: float) -> bool:
+    """Whether the request's preconditions say the client's copy is current.
+
+    RFC 9110 Sec. 13.2 precedence: `If-None-Match` supersedes `If-Modified-Since`
+    when both are present. `*` matches whenever a representation exists, wherever
+    it appears in the list (RFC 9110 Sec. 13.1.2).
+
+    Reads the parsed property rather than re-splitting the raw header:
+    `_split_etag_list` does not break on a comma inside an opaque tag's quoted
+    string, which `split(",")` did - so `If-None-Match: "abc,def"` never matched
+    and the file was re-sent on every request. It is also cached per request,
+    where the raw split re-parsed.
+    """
+    return _preconditions_say_unchanged(
+        request.if_none_match, request.if_modified_since, etag, mtime
+    )
+
+
+def _resolve_range(first: tuple[int | None, int | None], size: int) -> tuple[int, int] | None:
+    """Turn one parsed `bytes=` range into absolute offsets, or `None` if unusable.
+
+    `None` covers both an open-open range and a suffix range of zero bytes; the
+    caller answers those with a 416, as it does an out-of-bounds result.
+    """
+    start, end = first
+    if start is None and end is None:
+        return None
+    if start is None:
+        # Suffix range: last `end` bytes. `bytes=-500` over a 200-byte file
+        # should return the whole file, per RFC 9110 Sec. 14.1.2.
+        suffix = min(end or 0, size)
+        return (size - suffix, size - 1) if suffix > 0 else None
+    return (start, end if end is not None and end < size else size - 1)
 
 
 class StaticFiles:
@@ -149,8 +215,21 @@ class StaticFiles:
         must_exist: bool = True,
         precompressed: bool = False,
         redirect_status: int = HTTP_307_TEMPORARY_REDIRECT,
+        max_age: int | None = None,
     ) -> None:
         self.directory = os.path.abspath(directory)
+        # How long a client may cache an asset. `send_file` already honours
+        # `SEND_FILE_MAX_AGE_DEFAULT`; this handler wrote `max-age=3600` as a
+        # literal in two places and took no argument, so the app-wide setting
+        # reached one way of serving a file and not the other. Resolved once
+        # here rather than per response: it cannot change for the life of the
+        # handler.
+        self.max_age = max_age
+        self._cache_control = f"public, max-age={max_age}" if max_age is not None else None
+        # Why the directory could not be served, or `None`. Always set, so the
+        # read in `handle()` is a plain attribute access rather than a
+        # `getattr` guard standing in for a branch that might not have run.
+        self._setup_problem: str | None = None
         # Validate the configured directory once at construction (a setup-time
         # context, not an async request path). A typo otherwise builds a
         # handler that silently 404s every asset, discoverable only by hitting
@@ -164,6 +243,7 @@ class StaticFiles:
             if must_exist:
                 raise ValueError(problem)
             warnings.warn(problem, stacklevel=2)
+            self._setup_problem = problem
         elif not os.access(self.directory, (os.R_OK | os.X_OK) if directory_index else os.X_OK):
             # Serving a known file needs SEARCH (X_OK) on the directory; a
             # directory listing additionally needs READ (R_OK). Require exactly
@@ -177,6 +257,7 @@ class StaticFiles:
             if must_exist:
                 raise ValueError(problem)
             warnings.warn(problem, stacklevel=2)
+            self._setup_problem = problem
         # The served root's real (symlink-resolved) path. Constant for the
         # life of the handler, so resolve it once here rather than calling
         # realpath on it per request in the containment check.
@@ -210,10 +291,12 @@ class StaticFiles:
         self._etag_cache: OrderedDict[str, tuple[str, float]] = OrderedDict()
 
     def _is_under_root(self, real_path: str) -> bool:
-        """True when `real_path` (already realpath-resolved) is inside the
-        served root. Uses `commonpath` so prefix-collisions (e.g.
-        `/srv/static_evil/...` against root `/srv/static`) are correctly
-        rejected. `ValueError` on Windows drive mismatches counts as out."""
+        """True when `real_path` (already realpath-resolved) is inside the root.
+
+        Uses `commonpath` so prefix-collisions (e.g. `/srv/static_evil/...`
+        against root `/srv/static`) are correctly rejected. `ValueError` on
+        Windows drive mismatches counts as out.
+        """
         try:
             return os.path.commonpath([real_path, self._real_root]) == self._real_root
         except ValueError:
@@ -238,7 +321,7 @@ class StaticFiles:
             target = f"{target}?{request.query_string}"
         return RedirectResponse(url=target, status_code=self.redirect_status)
 
-    async def _serve_404_html(self, loop: Any, try_stat: Any) -> Response | None:
+    async def _serve_404_html(self, loop: asyncio.AbstractEventLoop) -> Response | None:
         """Return a 404 response from the root `404.html`, or None if absent.
 
         The page is served with status 404 and `text/html`; it deliberately
@@ -250,10 +333,7 @@ class StaticFiles:
         page_path = safe_join(self.directory, "404.html")
         if page_path is None:
             return None
-        page_stat, denied = await loop.run_in_executor(None, try_stat, page_path)
-        if denied:
-            return _forbidden()
-        if page_stat is None or not stat.S_ISREG(page_stat.st_mode):
+        if await _stat_regular(loop, page_path) is None:
             return None
         real = await loop.run_in_executor(None, os.path.realpath, page_path)
         if not self._is_under_root(real):
@@ -274,8 +354,7 @@ class StaticFiles:
         self,
         request: Request,
         file_path: str,
-        loop: Any,
-        try_stat: Any,
+        loop: asyncio.AbstractEventLoop,
     ) -> tuple[str, str, os.stat_result] | None:
         """Pick a precompressed sibling for `file_path`, or None.
 
@@ -288,8 +367,8 @@ class StaticFiles:
         `app.css.gz` present serves gzip rather than the uncompressed asset.
         The q>0 gate is load-bearing: a missing `Accept-Encoding` header
         expresses no preference and must not falsely select a variant.
-        Permission errors on the sibling propagate as 403 (via the caller's
-        sentinel) to match the read policy on the original file.
+        Permission errors on the sibling propagate as 403, matching the read
+        policy on the original file.
         """
         if not self.precompressed:
             return None
@@ -314,339 +393,379 @@ class StaticFiles:
         scored.sort(reverse=True)
         for _q, _tie, enc in scored:
             variant_path = file_path + self.PRECOMPRESSED_VARIANTS[enc]
-            variant_stat, denied = await loop.run_in_executor(None, try_stat, variant_path)
-            if denied:
-                # Surface as 403 by returning the denial to the caller via a raise.
-                raise PermissionError(variant_path)
-            if variant_stat is not None and stat.S_ISREG(variant_stat.st_mode):
+            variant_stat = await _stat_regular(loop, variant_path)
+            if variant_stat is not None:
                 return (variant_path, enc, variant_stat)
         return None
 
+    def _cache_control_for(self, request: Request) -> str:
+        """Choose the `Cache-Control` to send, from the handler or the app default.
+
+        An explicit `max_age=` on the handler wins; otherwise
+        `SEND_FILE_MAX_AGE_DEFAULT` applies, which is what `send_file` already
+        honours - so one setting now governs both ways of serving a file. With
+        neither, the previous literal is the default.
+        """
+        if self._cache_control is not None:
+            return self._cache_control
+        app = getattr(request, "app", None)
+        config = getattr(app, "config", None) if app is not None else None
+        configured = config.get("SEND_FILE_MAX_AGE_DEFAULT") if config else None
+        if configured is None:
+            return _DEFAULT_CACHE_CONTROL
+        return f"public, max-age={configured}"
+
+    def audit(self, ctx: Any) -> Any:
+        """Report a served root the constructor could only warn about.
+
+        `must_exist=False` downgrades a missing or unreadable directory to a
+        `warnings.warn` at construction, which never reaches `veloce check` -
+        so an app whose asset root was a typo passed a clean audit and 404ed
+        every asset. Informational: the dev flow that creates the directory
+        after wiring the app is the reason the downgrade exists.
+        """
+        problem = self._setup_problem
+        if problem is None:
+            return ()
+        from veloce.audit import Finding
+
+        return (
+            Finding(
+                f"{problem}, so every asset under {self.prefix!r} will 404.",
+                severity="info",
+                fix="create the directory, or correct the path passed to StaticFiles",
+                id="static-directory-missing",
+            ),
+        )
+
     async def handle(self, request: Request) -> Response | None:
-        """Handle a static file request - file I/O offloaded to thread pool."""
-        path = request.path
-        if not path.startswith(self.prefix):
-            return None
+        """Serve one static file, from resolving the target to emitting the body.
 
-        relative = path[len(self.prefix) :].lstrip("/")
-        if not relative and self.html:
-            relative = "index.html"
+        Eight jobs in sequence, each marked with a rule below: resolve the
+        target traversal-safely, confirm symlink containment, negotiate a
+        precompressed sibling, compute or reuse the ETag, apply write-side
+        preconditions, answer a conditional GET, honour a Range, and emit.
 
-        # Security: traversal-safe via safe_join (rejects `..`, absolute
-        # components, and NUL bytes - returns None on any escape attempt).
-        # Pure string arithmetic; actual filesystem I/O is offloaded below.
-        file_path = safe_join(self.directory, relative)  # noqa: ASYNC240
-        if file_path is None:
-            return _forbidden()
+        Each step can answer the request outright, and every one after the first
+        reads what the ones before it settled - the resolved path, the stat, the
+        chosen variant, the ETag. That is why it reads as one sequence rather
+        than eight methods: the alternative threads six accumulating values
+        through eight signatures, on the path every static request takes.
 
-        loop = asyncio.get_running_loop()
-
-        # Single stat call replaces isfile + later stat. `stat` raises
-        # FileNotFoundError on a missing entry, and `S_ISREG`/`S_ISDIR`
-        # on the result tells us file-vs-dir without another syscall.
-        # `PermissionError` returns a tagged sentinel so we can surface
-        # 403 - matching the `safe_join` traversal guard above - rather
-        # than letting it bubble to a 500.
-        def _try_stat(p: str) -> tuple[os.stat_result | None, bool]:
-            """Return (stat_result, permission_denied)."""
-            try:
-                return (os.stat(p), False)
-            except (FileNotFoundError, NotADirectoryError):
-                return (None, False)
-            except PermissionError:
-                return (None, True)
-
-        stat_result, denied = await loop.run_in_executor(None, _try_stat, file_path)
-        if denied:
-            return _forbidden()
-        is_dir = stat_result is not None and stat.S_ISDIR(stat_result.st_mode)
-        is_file = stat_result is not None and stat.S_ISREG(stat_result.st_mode)
-
-        if not is_file:
-            # Try the .html-suffixed variant when `html=True` is set
-            # (handles `/about` -> `/about.html` mappings).
-            if self.html and not relative.endswith(".html"):
-                file_path_html = file_path + ".html"
-                stat_html, denied_html = await loop.run_in_executor(None, _try_stat, file_path_html)
-                if denied_html:
-                    return _forbidden()
-                if stat_html is not None and stat.S_ISREG(stat_html.st_mode):
-                    file_path = file_path_html
-                    stat_result = stat_html
-                    is_file = True
-            # HTML mode: a directory URL holding `index.html` serves that file,
-            # the standard static-site behavior. A slash-less URL (`/s/docs`)
-            # first redirects to the slash-terminated form (`/s/docs/`) so the
-            # browser resolves the page's relative links against the directory
-            # rather than its parent; the slash-terminated request then serves
-            # the index. This mirrors how a static server (nginx, Apache)
-            # treats a directory with an index document when index serving is on.
-            if not is_file and self.html and is_dir:
-                index_path = os.path.join(file_path, "index.html")
-                stat_index, denied_index = await loop.run_in_executor(None, _try_stat, index_path)
-                if denied_index:
-                    return _forbidden()
-                if stat_index is not None and stat.S_ISREG(stat_index.st_mode):
-                    if not request.path.endswith("/"):
-                        return self._redirect_to_slash(request)
-                    file_path = index_path
-                    stat_result = stat_index
-                    is_file = True
-            if not is_file and self.directory_index and is_dir:
-                # Symlink containment: same `commonpath` check as the file
-                # path below - single rule for "real path stays under the
-                # served root after symlink resolution" prevents a planted
-                # symlink in the index path from escaping.
-                real = await loop.run_in_executor(None, os.path.realpath, file_path)
-                if not self._is_under_root(real):
-                    return _forbidden()
-                return await self._render_directory_index(file_path, request.path, loop)
-            # HTML mode: serve a configurable `404.html` from the served root
-            # before giving up, matching the custom-not-found-page convention of
-            # static-site hosts. The page is symlink-contained in the helper, so
-            # a planted `404.html` link cannot read outside the served root.
-            if not is_file and self.html:
-                not_found = await self._serve_404_html(loop, _try_stat)
-                if not_found is not None:
-                    return not_found
-            if not is_file:
+        All filesystem work is offloaded to the thread pool.
+        """
+        # A probe the filesystem refuses is a 403, not a 500, and the rule is
+        # the same at every point this method probes - the file, the `.html`
+        # variant, a directory's index, the `404.html` page, and each
+        # precompressed sibling. Caught once here rather than tagged onto each
+        # probe's return value and unpacked five times.
+        try:
+            path = request.path
+            if not path.startswith(self.prefix):
                 return None
 
-        # Symlink safety: `safe_join` blocks `..` traversal but does not
-        # resolve symlinks. Dereference the real path and confirm it is
-        # still inside the served root - a symlink planted in the served
-        # directory must not expose files elsewhere on the filesystem.
-        real_path = await loop.run_in_executor(None, os.path.realpath, file_path)
-        if not self._is_under_root(real_path):
-            return _forbidden()
+            relative = path[len(self.prefix) :].lstrip("/")
+            if not relative and self.html:
+                relative = "index.html"
 
-        # Derive the media type from the ORIGINAL path before any
-        # precompressed swap, so `app.css.br` keeps `text/css` rather than
-        # mislabelling as `application/gzip`.
-        content_type = guess_content_type(file_path)
-
-        # Precompressed sibling serving (opt-in). On a hit, switch all
-        # downstream bookkeeping (ETag, 304/412, Range, body) to the
-        # compressed file so revalidation keys off the bytes actually sent.
-        content_encoding: str | None = None
-        try:
-            variant = await self._select_precompressed(request, file_path, loop, _try_stat)
-        except PermissionError:
-            return _forbidden()
-        if variant is not None:
-            variant_path, content_encoding, variant_stat = variant
-            # A planted `.br`/`.gz` symlink must not escape the served root.
-            variant_real = await loop.run_in_executor(None, os.path.realpath, variant_path)
-            if not self._is_under_root(variant_real):
+            # ── Resolve the target, traversal-safe ────────────────────
+            # Security: traversal-safe via safe_join (rejects `..`, absolute
+            # components, and NUL bytes - returns None on any escape attempt).
+            # Pure string arithmetic; actual filesystem I/O is offloaded below.
+            file_path = safe_join(self.directory, relative)  # noqa: ASYNC240
+            if file_path is None:
                 return _forbidden()
-            file_path = variant_path
-            stat_result = variant_stat
-        elif self.precompressed and not request.accept_encodings.accepts_identity():
-            # No acceptable compressed sibling was found, and the client
-            # explicitly rejected the identity (uncompressed) coding - e.g.
-            # `Accept-Encoding: identity;q=0, br;q=0, gzip;q=0`. RFC 9110
-            # Sec. 12.5.3: serving the raw asset here would return a coding the
-            # client said is not acceptable, so respond 406 instead. Only the
-            # precompressed path content-negotiates encoding, so this never
-            # affects a `precompressed=False` handler.
-            return Response(status_code=HTTP_406_NOT_ACCEPTABLE, body=b"Not Acceptable")
 
-        # stat_result was populated by the existence check above (the
-        # `not is_file` returns narrowed it); reuse it.
-        assert stat_result is not None
-        mtime = stat_result.st_mtime
-        size = stat_result.st_size
-        cache_key = file_path
+            loop = asyncio.get_running_loop()
 
-        if cache_key in self._etag_cache:
-            cached_etag, cached_mtime = self._etag_cache[cache_key]
-            if cached_mtime == mtime:
-                etag = cached_etag
+            # Single stat call replaces isfile + later stat. `stat` raises
+            # FileNotFoundError on a missing entry, and `S_ISREG`/`S_ISDIR`
+            # on the result tells us file-vs-dir without another syscall.
+            # `PermissionError` propagates to this method's single `except`,
+            # which answers 403 - matching the `safe_join` traversal guard
+            # above - rather than letting it bubble to a 500.
+            stat_result = await _stat_path(loop, file_path)
+            is_dir = stat_result is not None and stat.S_ISDIR(stat_result.st_mode)
+            is_file = stat_result is not None and stat.S_ISREG(stat_result.st_mode)
+
+            if not is_file:
+                # Try the .html-suffixed variant when `html=True` is set
+                # (handles `/about` -> `/about.html` mappings).
+                if self.html and not relative.endswith(".html"):
+                    file_path_html = file_path + ".html"
+                    stat_html = await _stat_regular(loop, file_path_html)
+                    if stat_html is not None:
+                        file_path = file_path_html
+                        stat_result = stat_html
+                        is_file = True
+                # HTML mode: a directory URL holding `index.html` serves that file,
+                # the standard static-site behavior. A slash-less URL (`/s/docs`)
+                # first redirects to the slash-terminated form (`/s/docs/`) so the
+                # browser resolves the page's relative links against the directory
+                # rather than its parent; the slash-terminated request then serves
+                # the index. This mirrors how a static server (nginx, Apache)
+                # treats a directory with an index document when index serving is on.
+                if not is_file and self.html and is_dir:
+                    index_path = os.path.join(file_path, "index.html")
+                    stat_index = await _stat_regular(loop, index_path)
+                    if stat_index is not None:
+                        if not request.path.endswith("/"):
+                            return self._redirect_to_slash(request)
+                        file_path = index_path
+                        stat_result = stat_index
+                        is_file = True
+                if not is_file and self.directory_index and is_dir:
+                    # Symlink containment: same `commonpath` check as the file
+                    # path below - single rule for "real path stays under the
+                    # served root after symlink resolution" prevents a planted
+                    # symlink in the index path from escaping.
+                    real = await loop.run_in_executor(None, os.path.realpath, file_path)
+                    if not self._is_under_root(real):
+                        return _forbidden()
+                    return await self._render_directory_index(file_path, request.path, loop)
+                # HTML mode: serve a configurable `404.html` from the served root
+                # before giving up, matching the custom-not-found-page convention of
+                # static-site hosts. The page is symlink-contained in the helper, so
+                # a planted `404.html` link cannot read outside the served root.
+                if not is_file and self.html:
+                    not_found = await self._serve_404_html(loop)
+                    if not_found is not None:
+                        return not_found
+                if not is_file:
+                    return None
+
+            # ── Symlink containment ───────────────────────────────────
+            # Symlink safety: `safe_join` blocks `..` traversal but does not
+            # resolve symlinks. Dereference the real path and confirm it is
+            # still inside the served root - a symlink planted in the served
+            # directory must not expose files elsewhere on the filesystem.
+            real_path = await loop.run_in_executor(None, os.path.realpath, file_path)
+            if not self._is_under_root(real_path):
+                return _forbidden()
+
+            # Derive the media type from the ORIGINAL path before any
+            # precompressed swap, so `app.css.br` keeps `text/css` rather than
+            # mislabelling as `application/gzip`.
+            content_type = guess_content_type(file_path)
+
+            # Precompressed sibling serving (opt-in). On a hit, switch all
+            # downstream bookkeeping (ETag, 304/412, Range, body) to the
+            # compressed file so revalidation keys off the bytes actually sent.
+            content_encoding: str | None = None
+            # ── Precompressed negotiation ─────────────────────────────
+            variant = await self._select_precompressed(request, file_path, loop)
+            if variant is not None:
+                variant_path, content_encoding, variant_stat = variant
+                # A planted `.br`/`.gz` symlink must not escape the served root.
+                variant_real = await loop.run_in_executor(None, os.path.realpath, variant_path)
+                if not self._is_under_root(variant_real):
+                    return _forbidden()
+                file_path = variant_path
+                stat_result = variant_stat
+            elif self.precompressed and not request.accept_encodings.accepts_identity():
+                # No acceptable compressed sibling was found, and the client
+                # explicitly rejected the identity (uncompressed) coding - e.g.
+                # `Accept-Encoding: identity;q=0, br;q=0, gzip;q=0`. RFC 9110
+                # Sec. 12.5.3: serving the raw asset here would return a coding the
+                # client said is not acceptable, so respond 406 instead. Only the
+                # precompressed path content-negotiates encoding, so this never
+                # affects a `precompressed=False` handler.
+                return Response(status_code=HTTP_406_NOT_ACCEPTABLE, body=b"Not Acceptable")
+
+            # stat_result was populated by the existence check above (the
+            # `not is_file` returns narrowed it); reuse it.
+            assert stat_result is not None
+            mtime = stat_result.st_mtime
+            size = stat_result.st_size
+            cache_key = file_path
+
+            # One lookup rather than a membership test plus a subscript, and the
+            # recompute stated once: a stale entry and a missing one are the same
+            # case. `.get` also treats a stale entry correctly without the outer
+            # branch having to know it exists.
+            cached = self._etag_cache.get(cache_key)
+            if cached is not None and cached[1] == mtime:
+                etag = cached[0]
                 # Record the hit as recent usage so the LRU keeps it.
                 self._etag_cache.move_to_end(cache_key)
             else:
                 etag = self._compute_etag(file_path, size, mtime)
                 self._remember_etag(cache_key, etag, mtime)
-        else:
-            etag = self._compute_etag(file_path, size, mtime)
-            self._remember_etag(cache_key, etag, mtime)
 
-        last_modified = http_date(mtime)
+            last_modified = http_date(mtime)
 
-        # Write-side preconditions first (RFC 9110 Sec. 13.2.2): If-Match,
-        # then If-Unmodified-Since, both ahead of the read-side 304 checks.
-        # Veloce emits weak file ETags, so a concrete If-Match always fails
-        # closed (only `*` succeeds); document this for static assets.
-        if _precondition_failed(request.if_match, request.if_unmodified_since, etag, mtime):
-            return Response(
-                status_code=HTTP_412_PRECONDITION_FAILED,
-                body=b"",
-                headers={HEADER_ETAG: etag, HEADER_LAST_MODIFIED: last_modified},
-            )
-
-        # Conditional GET. Per RFC 9110 Sec. 13.2 precedence: If-None-Match
-        # supersedes If-Modified-Since when both are present.
-        if_none_match = request.headers.get(HEADER_IF_NONE_MATCH, "")
-        if if_none_match:
-            if if_none_match.strip() == "*":
-                return _not_modified(etag, last_modified)
-            for token in if_none_match.split(","):
-                if _etag_matches_weak(etag, token):
-                    return _not_modified(etag, last_modified)
-        else:
-            ims_header = request.headers.get(HEADER_IF_MODIFIED_SINCE, "")
-            ims_dt = parse_date(ims_header)
-            ims_ts = ims_dt.timestamp() if ims_dt is not None else None
-            # Floor mtime to whole seconds because HTTP-dates have second
-            # resolution; otherwise `mtime=1.5` would always appear
-            # "newer" than `IMS=1`.
-            if ims_ts is not None and int(mtime) <= int(ims_ts):
-                return _not_modified(etag, last_modified)
-
-        # Range request - RFC 9110 Sec. 14.2. Single-range only; multi-range
-        # would require multipart/byteranges which we don't ship yet.
-        range_spec = request.range
-        # If-Range (RFC 9110 Sec. 13.1.5): honor the Range only when the
-        # client's validator still matches the current representation.
-        # Otherwise the resource changed since the client last saw it, and
-        # serving a 206 slice would splice bytes from a different version into
-        # a stale download - so fall through to a full 200 instead.
-        honor_range = True
-        if range_spec is not None:
-            if_etag, if_date = request.if_range
-            if if_etag:
-                # RFC 9110 Sec. 13.1.5 mandates the STRONG comparison function
-                # (Sec. 8.8.3.1) for an If-Range ETag: both tags must be strong
-                # (no `W/` prefix) and byte-identical. A weak validator only
-                # guarantees semantic equivalence, not the byte-for-byte identity
-                # a range resume needs. `_etag_matches_strong` is the comparison
-                # `_precondition_failed` already applies to `If-Match`, so one
-                # implementation answers both. The stock `_compute_etag` emits
-                # weak file ETags and so never resumes here - clients should use
-                # the Last-Modified date; a subclass emitting a strong tag makes
-                # this branch live.
-                honor_range = _etag_matches_strong(etag, if_etag)
-            elif if_date is not None:
-                # RFC 9110 Sec. 13.1.5 requires an EXACT date match here (unlike
-                # the "earlier than or equal" test used for If-Unmodified-Since).
-                # Compare at HTTP-date (whole-second) resolution.
-                honor_range = int(mtime) == int(if_date)
-        if (
-            honor_range
-            and range_spec is not None
-            and range_spec.unit == HEADER_VALUE_BYTES
-            and len(range_spec.ranges) == 1
-        ):
-            start, end = range_spec.ranges[0]
-            if start is None and end is None:
-                resolved = None
-            elif start is None:
-                # Suffix range: last `end` bytes. `bytes=-500` over a 200-byte
-                # file should return the whole file, per RFC 9110 Sec. 14.1.2.
-                suffix = min(end or 0, size)
-                resolved = (size - suffix, size - 1) if suffix > 0 else None
-            else:
-                resolved = (start, end if end is not None and end < size else size - 1)
-
-            if resolved is None or resolved[0] >= size or resolved[0] > resolved[1]:
+            # ── Write-side preconditions (RFC 9110 Sec. 13.2.2) ───────
+            # Write-side preconditions first (RFC 9110 Sec. 13.2.2): If-Match,
+            # then If-Unmodified-Since, both ahead of the read-side 304 checks.
+            # Veloce emits weak file ETags, so a concrete If-Match always fails
+            # closed (only `*` succeeds); document this for static assets.
+            if _precondition_failed(request.if_match, request.if_unmodified_since, etag, mtime):
                 return Response(
-                    status_code=HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE,
+                    status_code=HTTP_412_PRECONDITION_FAILED,
                     body=b"",
-                    headers={
-                        HEADER_CONTENT_RANGE: f"bytes */{size}",
-                        HEADER_ETAG: etag,
-                        HEADER_LAST_MODIFIED: last_modified,
-                        HEADER_ACCEPT_RANGES: HEADER_VALUE_BYTES,
-                    },
+                    headers={HEADER_ETAG: etag, HEADER_LAST_MODIFIED: last_modified},
                 )
 
-            r_start, r_end = resolved
-            length = r_end - r_start + 1
+            # ── Conditional GET (RFC 9110 Sec. 13.2) ──────────────────
+            if _conditional_hit(request, etag, mtime):
+                return _not_modified(etag, last_modified)
 
-            def _read_range() -> bytes:
-                with open(file_path, "rb") as f:
-                    f.seek(r_start)
-                    return f.read(length)
+            # ── Range (RFC 9110 Sec. 14.2) ────────────────────────────
+            # Range request - RFC 9110 Sec. 14.2. Single-range only; multi-range
+            # would require multipart/byteranges which we don't ship yet.
+            range_spec = request.range
+            # If-Range (RFC 9110 Sec. 13.1.5): honor the Range only when the
+            # client's validator still matches the current representation.
+            # Otherwise the resource changed since the client last saw it, and
+            # serving a 206 slice would splice bytes from a different version into
+            # a stale download - so fall through to a full 200 instead.
+            honor_range = True
+            if range_spec is not None:
+                if_etag, if_date = request.if_range
+                if if_etag:
+                    # RFC 9110 Sec. 13.1.5 mandates the STRONG comparison function
+                    # (Sec. 8.8.3.1) for an If-Range ETag: both tags must be strong
+                    # (no `W/` prefix) and byte-identical. A weak validator only
+                    # guarantees semantic equivalence, not the byte-for-byte identity
+                    # a range resume needs. `_etag_matches_strong` is the comparison
+                    # `_precondition_failed` already applies to `If-Match`, so one
+                    # implementation answers both. The stock `_compute_etag` emits
+                    # weak file ETags and so never resumes here - clients should use
+                    # the Last-Modified date; a subclass emitting a strong tag makes
+                    # this branch live.
+                    honor_range = _etag_matches_strong(etag, if_etag)
+                elif if_date is not None:
+                    # RFC 9110 Sec. 13.1.5 requires an EXACT date match here (unlike
+                    # the "earlier than or equal" test used for If-Unmodified-Since).
+                    # Compare at HTTP-date (whole-second) resolution.
+                    honor_range = int(mtime) == int(if_date)
+            if (
+                honor_range
+                and range_spec is not None
+                and range_spec.unit == HEADER_VALUE_BYTES
+                and len(range_spec.ranges) == 1
+            ):
+                resolved = _resolve_range(range_spec.ranges[0], size)
 
-            body = await loop.run_in_executor(None, _read_range)
-            range_headers = {
-                HEADER_CONTENT_RANGE: f"bytes {r_start}-{r_end}/{size}",
+                if resolved is None or resolved[0] >= size or resolved[0] > resolved[1]:
+                    return Response(
+                        status_code=HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE,
+                        body=b"",
+                        headers={
+                            HEADER_CONTENT_RANGE: f"bytes */{size}",
+                            HEADER_ETAG: etag,
+                            HEADER_LAST_MODIFIED: last_modified,
+                            HEADER_ACCEPT_RANGES: HEADER_VALUE_BYTES,
+                        },
+                    )
+
+                r_start, r_end = resolved
+                length = r_end - r_start + 1
+                range_headers = {
+                    HEADER_CONTENT_RANGE: f"bytes {r_start}-{r_end}/{size}",
+                    HEADER_ETAG: etag,
+                    HEADER_LAST_MODIFIED: last_modified,
+                    HEADER_ACCEPT_RANGES: HEADER_VALUE_BYTES,
+                    HEADER_CACHE_CONTROL: self._cache_control_for(request),
+                }
+                if content_encoding is not None:
+                    # The range is over the compressed bytes; advertise the
+                    # encoding so a shared cache never serves these bytes to a
+                    # client that did not ask for them.
+                    range_headers[HEADER_CONTENT_ENCODING] = content_encoding
+                if self.precompressed:
+                    # The asset is content-negotiated on Accept-Encoding, so even
+                    # the identity slice (client sent no / `q=0` Accept-Encoding)
+                    # must carry `Vary: Accept-Encoding` - otherwise a shared cache
+                    # may replay this uncompressed range to a compression-capable
+                    # client (RFC 9110 Sec. 12.5.5).
+                    range_headers[HEADER_VARY] = HEADER_ACCEPT_ENCODING
+                # The threshold applies to the resolved slice, not to whether a
+                # range was asked for. `Range: bytes=0-` is a well-formed range over
+                # the entire file, so buffering every range read a 500 MiB asset
+                # whole into memory on a request that cost the client nothing.
+                # A small slice of a huge file still buffers - a bounded slice is
+                # cheaper as one message than as chunked transfer.
+                if length >= self.STREAM_THRESHOLD:
+                    return StreamingResponse(
+                        content=self._iter_file(file_path, loop, r_start, length),
+                        status_code=HTTP_206_PARTIAL_CONTENT,
+                        content_type=content_type,
+                        headers=range_headers,
+                    )
+
+                def _read_range() -> bytes:
+                    with open(file_path, "rb") as f:
+                        f.seek(r_start)
+                        return f.read(length)
+
+                return Response(
+                    status_code=HTTP_206_PARTIAL_CONTENT,
+                    body=await loop.run_in_executor(None, _read_range),
+                    content_type=content_type,
+                    headers=range_headers,
+                )
+
+            common_headers = {
                 HEADER_ETAG: etag,
                 HEADER_LAST_MODIFIED: last_modified,
                 HEADER_ACCEPT_RANGES: HEADER_VALUE_BYTES,
-                HEADER_CACHE_CONTROL: "public, max-age=3600",
+                HEADER_CACHE_CONTROL: self._cache_control_for(request),
             }
             if content_encoding is not None:
-                # The range is over the compressed bytes; advertise the
-                # encoding so a shared cache never serves these bytes to a
-                # client that did not ask for them.
-                range_headers[HEADER_CONTENT_ENCODING] = content_encoding
+                common_headers[HEADER_CONTENT_ENCODING] = content_encoding
             if self.precompressed:
-                # The asset is content-negotiated on Accept-Encoding, so even
-                # the identity slice (client sent no / `q=0` Accept-Encoding)
-                # must carry `Vary: Accept-Encoding` - otherwise a shared cache
-                # may replay this uncompressed range to a compression-capable
-                # client (RFC 9110 Sec. 12.5.5).
-                range_headers[HEADER_VARY] = HEADER_ACCEPT_ENCODING
+                # `Vary: Accept-Encoding` on every response for a precompressed-
+                # enabled asset - including the identity body served when the
+                # client sent no acceptable encoding - so a shared cache keys this
+                # uncompressed representation separately from the br/gz variants
+                # and never replays it to a compression-capable client
+                # (RFC 9110 Sec. 12.5.5).
+                common_headers[HEADER_VARY] = HEADER_ACCEPT_ENCODING
+
+            # Files at or above `STREAM_THRESHOLD` use chunked streaming so
+            # the whole file never sits in memory at once - a single large
+            # download (or many concurrent ones) no longer balloons the
+            # worker's RSS by the file size. Smaller files stay buffered
+            # because (a) the response is one ASGI message instead of N,
+            # and (b) the per-chunk syscall overhead dominates at small
+            # sizes. Range responses always buffer their slice - a range is
+            # already bounded by the client.
+            if size >= self.STREAM_THRESHOLD:
+                # Don't emit `Content-Length` alongside chunked transfer -
+                # RFC 9112 Sec. 6.1 forbids carrying both, and a strict proxy
+                # may drop or 502 the response. Clients that need a
+                # progress hint can issue a HEAD or read `ETag`.
+                return StreamingResponse(
+                    content=self._iter_file(file_path, loop),
+                    status_code=HTTP_200_OK,
+                    content_type=content_type,
+                    headers=dict(common_headers),
+                )
+
+            def _read() -> bytes:
+                with open(file_path, "rb") as f:
+                    return f.read()
+
+            body = await loop.run_in_executor(None, _read)
+
             return Response(
-                status_code=HTTP_206_PARTIAL_CONTENT,
+                status_code=HTTP_200_OK,
                 body=body,
                 content_type=content_type,
-                headers=range_headers,
+                headers=common_headers,
             )
+        except PermissionError:
+            return _forbidden()
 
-        common_headers = {
-            HEADER_ETAG: etag,
-            HEADER_LAST_MODIFIED: last_modified,
-            HEADER_ACCEPT_RANGES: HEADER_VALUE_BYTES,
-            HEADER_CACHE_CONTROL: "public, max-age=3600",
-        }
-        if content_encoding is not None:
-            common_headers[HEADER_CONTENT_ENCODING] = content_encoding
-        if self.precompressed:
-            # `Vary: Accept-Encoding` on every response for a precompressed-
-            # enabled asset - including the identity body served when the
-            # client sent no acceptable encoding - so a shared cache keys this
-            # uncompressed representation separately from the br/gz variants
-            # and never replays it to a compression-capable client
-            # (RFC 9110 Sec. 12.5.5).
-            common_headers[HEADER_VARY] = HEADER_ACCEPT_ENCODING
-
-        # Files at or above `STREAM_THRESHOLD` use chunked streaming so
-        # the whole file never sits in memory at once - a single large
-        # download (or many concurrent ones) no longer balloons the
-        # worker's RSS by the file size. Smaller files stay buffered
-        # because (a) the response is one ASGI message instead of N,
-        # and (b) the per-chunk syscall overhead dominates at small
-        # sizes. Range responses always buffer their slice - a range is
-        # already bounded by the client.
-        if size >= self.STREAM_THRESHOLD:
-            # Don't emit `Content-Length` alongside chunked transfer -
-            # RFC 9112 Sec. 6.1 forbids carrying both, and a strict proxy
-            # may drop or 502 the response. Clients that need a
-            # progress hint can issue a HEAD or read `ETag`.
-            return StreamingResponse(
-                content=self._iter_file(file_path, loop),
-                status_code=HTTP_200_OK,
-                content_type=content_type,
-                headers=dict(common_headers),
-            )
-
-        def _read() -> bytes:
-            with open(file_path, "rb") as f:
-                return f.read()
-
-        body = await loop.run_in_executor(None, _read)
-
-        return Response(
-            status_code=HTTP_200_OK,
-            body=body,
-            content_type=content_type,
-            headers=common_headers,
-        )
-
-    async def _iter_file(self, path: str, loop: Any) -> AsyncIterator[bytes]:
+    async def _iter_file(
+        self, path: str, loop: asyncio.AbstractEventLoop, start: int = 0, length: int | None = None
+    ) -> AsyncIterator[bytes]:
         """Yield the file in `STREAM_CHUNK_SIZE`-byte chunks via the executor.
+
+        `start` and `length` bound the read to a byte range; the defaults cover
+        the whole file. One iterator for both so a range stream and a full
+        stream cannot drift in their descriptor or chunking handling.
 
         The file handle is opened on the executor (blocking syscall) and
         closed in a finally so a client disconnect mid-stream doesn't
@@ -658,24 +777,33 @@ class StaticFiles:
             return open(path, "rb")  # noqa: SIM115 - closed in finally
 
         chunk_size = self.STREAM_CHUNK_SIZE
+        remaining = length
         fh = await loop.run_in_executor(None, _open)
         try:
-            while True:
-                chunk = await loop.run_in_executor(None, fh.read, chunk_size)
+            if start:
+                await loop.run_in_executor(None, fh.seek, start)
+            while remaining is None or remaining > 0:
+                want = chunk_size if remaining is None else min(chunk_size, remaining)
+                chunk = await loop.run_in_executor(None, fh.read, want)
                 if not chunk:
                     break
+                if remaining is not None:
+                    remaining -= len(chunk)
                 yield chunk
         finally:
             await loop.run_in_executor(None, fh.close)
 
     def _compute_etag(self, path: str, size: int, mtime: float) -> str:
-        """Compute ETag - delegates to the shared `_file_etag` helper so the
-        StaticFiles handler and `FileResponse` validate against the same
-        `If-None-Match` value for the same file."""
+        """Compute the file's ETag through the shared `_file_etag` helper.
 
+        The `StaticFiles` handler and `FileResponse` validate against the same
+        `If-None-Match` value for the same file.
+        """
         return _file_etag(path, size, mtime)
 
-    async def _render_directory_index(self, dir_path: str, url_path: str, loop: Any) -> Response:
+    async def _render_directory_index(
+        self, dir_path: str, url_path: str, loop: asyncio.AbstractEventLoop
+    ) -> Response:
         """Render an HTML index of `dir_path`'s entries.
 
         Entries are HTML-escaped via `html.escape` so a filename

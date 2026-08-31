@@ -10,8 +10,10 @@ other rather than raising.
 
 from __future__ import annotations
 
+from tests.conftest import make_request
 from veloce import Veloce
 from veloce.http.request import Request
+from veloce.middleware.security import RateLimitMiddleware
 
 
 class _Transport:
@@ -25,12 +27,12 @@ class _Transport:
 
 
 def _request(*, transport=None, scope=None, headers=None) -> Request:
-    return Request(
-        "GET",
-        "/",
-        "",
-        headers or [],
-        b"",
+    return make_request(
+        method="GET",
+        path="/",
+        query_string="",
+        headers=headers or [],
+        body=b"",
         transport=transport,
         scope=scope,
     )
@@ -172,7 +174,6 @@ def test_the_forwarded_chain_appends_the_asgi_peer():
 def test_the_rate_limiter_buckets_an_asgi_caller_by_address():
     """The security consequence: without the scope peer the limiter fell back to
     a User-Agent hash, so varying one header defeated it entirely."""
-    from veloce.middleware.security import RateLimitMiddleware
 
     limiter = RateLimitMiddleware(max_requests=1, window_seconds=60)
     same_ip_a = _request(
@@ -193,7 +194,6 @@ def test_the_rate_limiter_buckets_an_asgi_caller_by_address():
 
 def test_the_limiter_still_partitions_callers_with_no_address():
     """No peer means no IP to key on; anonymous callers must not share a bucket."""
-    from veloce.middleware.security import RateLimitMiddleware
 
     limiter = RateLimitMiddleware(max_requests=1, window_seconds=60)
     one = _request(headers=[(b"user-agent", b"agent-a")])

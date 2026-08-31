@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from tests.conftest import make_request
 from veloce import (
     HTTPException,
     OAuth2AuthorizationCodeBearer,
@@ -12,10 +13,11 @@ from veloce import (
     Security,
     Veloce,
 )
+from veloce.contrib.openapi import get_openapi_schema
 
 
 def _req(headers: dict | None = None) -> Request:
-    return Request(method="GET", path="/x", query_string="", headers=headers or {}, body=b"")
+    return make_request(method="GET", path="/x", query_string="", headers=headers or {}, body=b"")
 
 
 # ── Authorization-Code bearer ────────────────────────────────────────
@@ -63,7 +65,6 @@ def test_openid_connect_auto_error_raises_401():
 # ── OpenAPI emission ─────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_auth_code_bearer_emits_openapi_security_scheme():
     app = Veloce(debug=True, openapi_url="/openapi.json")
     oauth2 = OAuth2AuthorizationCodeBearer(
@@ -77,8 +78,6 @@ async def test_auth_code_bearer_emits_openapi_security_scheme():
     async def get_items(token=Security(oauth2)):
         return []
 
-    from veloce.contrib.openapi import get_openapi_schema
-
     schema = get_openapi_schema(app)
     schemes = schema["components"]["securitySchemes"]
     assert "OAuth2AuthorizationCodeBearer" in schemes
@@ -91,7 +90,6 @@ async def test_auth_code_bearer_emits_openapi_security_scheme():
     assert flow["scopes"] == {"read:items": "Read items"}
 
 
-@pytest.mark.asyncio
 async def test_openid_connect_emits_openapi_security_scheme():
     app = Veloce(debug=True, openapi_url="/openapi.json")
     oidc = OpenIdConnect(openIdConnectUrl="https://ex.com/.well-known/openid-configuration")
@@ -99,8 +97,6 @@ async def test_openid_connect_emits_openapi_security_scheme():
     @app.get("/items")
     async def get_items(token=Security(oidc)):
         return []
-
-    from veloce.contrib.openapi import get_openapi_schema
 
     schema = get_openapi_schema(app)
     schemes = schema["components"]["securitySchemes"]

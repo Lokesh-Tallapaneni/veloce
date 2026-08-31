@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import contextlib
+import os
+import re
 import sys
 import textwrap
 
 import pytest
 
-from veloce import __version__
+from veloce import (
+    SecurityHeadersMiddleware,  # noqa: F401
+    __version__,
+)
 from veloce import cli as cli_module
 from veloce.cli import _apply_env_file, _load_app, build_parser, main
 
@@ -133,44 +139,34 @@ def test_load_app_missing_attribute_raises(tmp_path, monkeypatch):
         _load_app("dummy_cli_app:app")
 
 
-def test_load_app_returns_attribute(tmp_path, monkeypatch):
-    module_path = tmp_path / "cli_demo_app.py"
-    module_path.write_text(
-        textwrap.dedent(
-            """
-            from veloce import Veloce
-            app = Veloce(openapi_url=None)
-            """
-        )
+def test_load_app_returns_attribute(app_module):
+    reference = app_module(
+        """
+        from veloce import Veloce
+        app = Veloce(openapi_url=None)
+        """,
+        "cli_demo_app",
     )
-    monkeypatch.syspath_prepend(str(tmp_path))
-    # Module may already be cached from a prior test — drop it.
-    sys.modules.pop("cli_demo_app", None)
-    obj = _load_app("cli_demo_app:app")
-    assert obj.title == "Veloce"
+    assert _load_app(reference).title == "Veloce"
 
 
-def test_routes_command_prints_table(tmp_path, monkeypatch, capsys):
-    module_path = tmp_path / "cli_routes_app.py"
-    module_path.write_text(
-        textwrap.dedent(
-            """
-            from veloce import Veloce
-            app = Veloce(openapi_url=None)
+def test_routes_command_prints_table(app_module, capsys):
+    reference = app_module(
+        """
+        from veloce import Veloce
+        app = Veloce(openapi_url=None)
 
-            @app.get("/hello", name="hello")
-            async def hello():
-                return {}
+        @app.get("/hello", name="hello")
+        async def hello():
+            return {}
 
-            @app.post("/items/{id:int}", name="create_item")
-            async def create(id: int):
-                return {}
-            """
-        )
+        @app.post("/items/{id:int}", name="create_item")
+        async def create(id: int):
+            return {}
+        """,
+        "cli_routes_app",
     )
-    monkeypatch.syspath_prepend(str(tmp_path))
-    sys.modules.pop("cli_routes_app", None)
-    rc = main(["routes", "cli_routes_app:app"])
+    rc = main(["routes", reference])
     assert rc == 0
     out = capsys.readouterr().out
     assert "METHOD" in out and "PATH" in out and "NAME" in out
@@ -178,12 +174,11 @@ def test_routes_command_prints_table(tmp_path, monkeypatch, capsys):
     assert "POST" in out and "/items/{id}" in out and "create_item" in out
 
 
-def test_routes_command_no_routes(tmp_path, monkeypatch, capsys):
-    module_path = tmp_path / "cli_empty_app.py"
-    module_path.write_text("from veloce import Veloce\napp = Veloce(openapi_url=None)\n")
-    monkeypatch.syspath_prepend(str(tmp_path))
-    sys.modules.pop("cli_empty_app", None)
-    rc = main(["routes", "cli_empty_app:app"])
+def test_routes_command_no_routes(app_module, capsys):
+    reference = app_module(
+        "from veloce import Veloce\napp = Veloce(openapi_url=None)\n", "cli_empty_app"
+    )
+    rc = main(["routes", reference])
     assert rc == 0
     out = capsys.readouterr().out
     assert "No routes registered" in out
@@ -192,39 +187,35 @@ def test_routes_command_no_routes(tmp_path, monkeypatch, capsys):
 # ── S7: `veloce check` security audit command ─────────────────────────
 
 
-def test_check_command_reports_issues(tmp_path, monkeypatch, capsys):
-    module_path = tmp_path / "cli_check_bad.py"
-    module_path.write_text(
-        textwrap.dedent(
-            """
-            from veloce import Veloce
-            app = Veloce(debug=True, openapi_url=None)
-            """
-        )
+def test_check_command_reports_issues(app_module, capsys):
+    reference = app_module(
+        """
+        from veloce import Veloce
+        app = Veloce(debug=True, openapi_url=None)
+        """,
+        "cli_check_bad",
     )
-    monkeypatch.syspath_prepend(str(tmp_path))
-    sys.modules.pop("cli_check_bad", None)
-    rc = main(["check", "cli_check_bad:app"])
+    rc = main(["check", reference])
     assert rc == 1
     out = capsys.readouterr().out
-    assert "issue" in out.lower()
+    # Each line carries its severity, so a reader can tell what blocks a deploy.
+    assert "finding" in out.lower()
+    assert "[warning] DEBUG is enabled" in out
 
 
-def test_check_command_clean_app(tmp_path, monkeypatch, capsys):
-    module_path = tmp_path / "cli_check_good.py"
-    module_path.write_text(
-        textwrap.dedent(
-            """
-            from veloce import Veloce
-            app = Veloce(openapi_url=None)
-            app.config["SECRET_KEY"] = "a-real-secret"
-            app.use_secure_defaults()
-            """
-        )
+def test_check_command_clean_app(app_module, capsys):
+    reference = app_module(
+        """
+        from veloce import SecurityHeadersMiddleware, Veloce
+        app = Veloce(openapi_url=None)
+        app.config["SECRET_KEY"] = "a-real-secret"
+        app.add_middleware(SecurityHeadersMiddleware(
+            hsts_max_age=31536000, content_security_policy="default-src 'self'"
+        ))
+        """,
+        "cli_check_good",
     )
-    monkeypatch.syspath_prepend(str(tmp_path))
-    sys.modules.pop("cli_check_good", None)
-    rc = main(["check", "cli_check_good:app"])
+    rc = main(["check", reference])
     assert rc == 0
     out = capsys.readouterr().out
     assert "no issues" in out.lower()
@@ -244,6 +235,38 @@ def test_run_parser_has_env_file_flags():
     assert args.env_file is None
 
 
+@contextlib.contextmanager
+def _restored_environ(monkeypatch):
+    """Undo whatever `_apply_env_file` writes into the real `os.environ`.
+
+    `monkeypatch.delenv(key, raising=False)` on a key that is not there
+    registers nothing to undo, so a key the loader then *sets* survives the
+    test - and the next one reads an environment the suite arranged rather
+    than the one it meant to.
+
+    Written as a context manager rather than inline in the fixture so the
+    meta-test below can drive the restore and assert on it. A test the fixture
+    is still holding open cannot observe that fixture's teardown, which is why
+    the meta-test hand-rolled its own copy and proved nothing about the fixture.
+    """
+    before = dict(os.environ)
+    try:
+        yield
+    finally:
+        for key in set(os.environ) - set(before):
+            monkeypatch.delenv(key, raising=False)
+        os.environ.clear()
+        os.environ.update(before)
+
+
+@pytest.fixture
+def isolated_environ(monkeypatch):
+    """Restore `os.environ` after a test that lets `_apply_env_file` write it."""
+    with _restored_environ(monkeypatch):
+        yield
+
+
+@pytest.mark.usefixtures("isolated_environ")
 def test_env_file_populates_environ(tmp_path, monkeypatch):
     env = tmp_path / ".env"
     env.write_text("CLI_ENV_KEY=from_file\nexport CLI_ENV_OTHER='quoted value'\n")
@@ -254,12 +277,11 @@ def test_env_file_populates_environ(tmp_path, monkeypatch):
     args = parser.parse_args(["run", "demo:app", "--env-file", str(env)])
     _apply_env_file(args)
 
-    import os
-
     assert os.environ["CLI_ENV_KEY"] == "from_file"
     assert os.environ["CLI_ENV_OTHER"] == "quoted value"
 
 
+@pytest.mark.usefixtures("isolated_environ")
 def test_no_env_file_disables_loading(tmp_path, monkeypatch):
     env = tmp_path / ".env"
     env.write_text("CLI_ENV_DISABLED=should_not_load\n")
@@ -269,11 +291,10 @@ def test_no_env_file_disables_loading(tmp_path, monkeypatch):
     args = parser.parse_args(["run", "demo:app", "--env-file", str(env), "--no-env-file"])
     _apply_env_file(args)
 
-    import os
-
     assert "CLI_ENV_DISABLED" not in os.environ
 
 
+@pytest.mark.usefixtures("isolated_environ")
 def test_env_file_does_not_overwrite_existing_environ(tmp_path, monkeypatch):
     env = tmp_path / ".env"
     env.write_text("CLI_ENV_PRESET=from_file\n")
@@ -283,12 +304,11 @@ def test_env_file_does_not_overwrite_existing_environ(tmp_path, monkeypatch):
     args = parser.parse_args(["run", "demo:app", "--env-file", str(env)])
     _apply_env_file(args)
 
-    import os
-
     # Real environ wins — the file value is ignored.
     assert os.environ["CLI_ENV_PRESET"] == "already_set"
 
 
+@pytest.mark.usefixtures("isolated_environ")
 def test_explicit_missing_env_file_errors(tmp_path):
     missing = tmp_path / "nope.env"
     parser = build_parser()
@@ -297,6 +317,7 @@ def test_explicit_missing_env_file_errors(tmp_path):
         _apply_env_file(args)
 
 
+@pytest.mark.usefixtures("isolated_environ")
 def test_auto_discover_missing_default_is_silent(tmp_path, monkeypatch):
     # CWD with no .env — auto-discovery must not raise.
     monkeypatch.chdir(tmp_path)
@@ -305,6 +326,7 @@ def test_auto_discover_missing_default_is_silent(tmp_path, monkeypatch):
     _apply_env_file(args)  # no exception
 
 
+@pytest.mark.usefixtures("isolated_environ")
 def test_auto_discover_unreadable_default_errors(tmp_path, monkeypatch):
     # An auto-discovered `.env` that exists but cannot be read (here: a
     # directory in its place) is a real failure, not a silent skip — booting
@@ -745,6 +767,37 @@ def test_builtin_command_names_introspection():
 # -- new / generate scaffolding ------------------------------------
 
 
+def _argument_help(command: str, dest: str) -> str:
+    """The help text `build_parser` gives `command`'s `dest` argument."""
+    sub = build_parser()._subparsers._group_actions[0]  # type: ignore[union-attr]
+    for action in sub.choices[command]._actions:
+        if action.dest == dest:
+            return action.help or ""
+    raise AssertionError(f"{command!r} has no {dest!r} argument")
+
+
+def _names_advertised(help_text: str) -> set[str]:
+    """The names a `... : a, b, or c (default: a).` help string lists."""
+    listing = help_text.split(":", 1)[1].split("(", 1)[0]
+    return {part.strip() for part in re.split(r",|\bor\b|\.", listing) if part.strip()}
+
+
+def test_new_template_help_matches_the_template_registry():
+    # The `--template` help names the templates in prose while
+    # `PROJECT_TEMPLATES` is what `veloce new` actually accepts. Nothing else
+    # ties the two together, so a template added to (or dropped from) the
+    # registry would otherwise leave the CLI advertising a stale list.
+    from veloce._scaffold import PROJECT_TEMPLATE_NAMES
+
+    assert _names_advertised(_argument_help("new", "template")) == set(PROJECT_TEMPLATE_NAMES)
+
+
+def test_generate_kind_help_matches_the_generator_registry():
+    from veloce._scaffold import GENERATOR_KINDS
+
+    assert _names_advertised(_argument_help("generate", "kind")) == set(GENERATOR_KINDS)
+
+
 def test_new_minimal_creates_project(tmp_path):
     assert main(["new", "demo", "--template", "minimal", "--dir", str(tmp_path)]) == 0
     proj = tmp_path / "demo"
@@ -860,16 +913,6 @@ def test_generate_rejects_dir_under_a_file(tmp_path):
         main(["generate", "model", "thing", "--dir", str(afile / "subdir")])
 
 
-def test_cli_version_flag_prints_and_exits(capsys):
-    parser = build_parser()
-    with pytest.raises(SystemExit) as exc:
-        parser.parse_args(["--version"])
-    assert exc.value.code == 0
-    captured = capsys.readouterr()
-    output = (captured.out + captured.err).strip()
-    assert output == f"veloce {__version__}"
-
-
 def test_cli_version_short_flag(capsys):
     parser = build_parser()
     with pytest.raises(SystemExit) as exc:
@@ -922,6 +965,12 @@ def test_the_dotenv_file_reaches_the_imported_app(tmp_path, monkeypatch, capsys,
     monkeypatch.chdir(tmp_path)
     monkeypatch.syspath_prepend(str(tmp_path))
     monkeypatch.delenv("VELOCE_TEST_DEBUG", raising=False)
+    # Each parametrisation must import the app itself. Without this the first
+    # run leaves `envapp` in `sys.modules`, the second finds it cached and never
+    # re-imports - so `check`'s dotenv path went unexercised and the assertion
+    # inspected the module the `routes` run had created. Verified: the module
+    # was imported exactly once across both parametrisations.
+    monkeypatch.delitem(sys.modules, "envapp", raising=False)
 
     main([command, "envapp:app"])
     capsys.readouterr()
@@ -952,3 +1001,45 @@ def test_no_env_file_keeps_the_audit_off_the_dotenv(tmp_path, monkeypatch, capsy
     import envapp2
 
     assert envapp2.app.debug is False
+
+
+class TestTheEnvFileTestsDoNotLeak:
+    """`_apply_env_file` writes the real `os.environ`; the fixture undoes it.
+
+    `monkeypatch.delenv(key, raising=False)` on a key that is not there
+    registers nothing to undo. So the guard the tests appeared to have covered
+    only keys that already existed, and every key the loader *set* survived into
+    the rest of the session.
+    """
+
+    def test_a_key_the_loader_set_is_gone_afterwards(self, tmp_path, monkeypatch):
+        key = "CLI_LEAK_PROBE"
+        assert key not in os.environ
+
+        env = tmp_path / ".env"
+        env.write_text(f"{key}=leaked" + chr(10), encoding="utf-8")
+
+        # The fixture's own restore, driven directly. Hand-rolling a save and
+        # restore here proved the closure worked and said nothing about
+        # `isolated_environ`, which is what this class is named for.
+        with _restored_environ(monkeypatch):
+            args = build_parser().parse_args(["run", "demo:app", "--env-file", str(env)])
+            _apply_env_file(args)
+            assert os.environ[key] == "leaked"
+
+        assert key not in os.environ, "the loader's write outlived the restore"
+
+    @pytest.mark.usefixtures("isolated_environ")
+    def test_the_fixture_restores_a_key_it_overwrote(self, tmp_path):
+        key = "CLI_EXISTING_PROBE"
+        os.environ[key] = "original"
+        try:
+            env = tmp_path / ".env"
+            env.write_text(f"{key}=from_file\n", encoding="utf-8")
+            args = build_parser().parse_args(["run", "demo:app", "--env-file", str(env)])
+            _apply_env_file(args)
+            # The loader does not overwrite an existing key; the point here is
+            # that the fixture leaves the original value in place either way.
+            assert os.environ[key] == "original"
+        finally:
+            os.environ.pop(key, None)

@@ -9,21 +9,27 @@ taken where expected, rejected where not, and that both paths agree.
 
 from __future__ import annotations
 
-import pytest
-
-from veloce import BackgroundTasks, Depends, Query, Response, Security, Veloce
+from tests.conftest import make_request
+from veloce import BackgroundTasks, Body, Depends, Query, Response, Security, Veloce
 from veloce._constants import STATE_INJECTED_RESPONSE
 from veloce._handler_plan import build_plan
 from veloce._internal import offload
 from veloce._resolver_codegen import compile_graph_resolver
-from veloce.dependency import _NOT_COMPILABLE, DependencyResolver, _coerce_value
+from veloce.dependency import (
+    _NOT_COMPILABLE,
+    DependencyResolver,
+    SecurityScopes,
+    _coerce_value,
+)
 from veloce.exceptions import RequestValidationError
 from veloce.http.request import Request
 from veloce.security import APIKeyHeader
 
 
 def _req(query: str = "", headers: dict | None = None, path: str = "/x") -> Request:
-    return Request(method="GET", path=path, query_string=query, headers=headers or {}, body=b"")
+    return make_request(
+        method="GET", path=path, query_string=query, headers=headers or {}, body=b""
+    )
 
 
 def _compiles(handler) -> bool:
@@ -35,6 +41,7 @@ def _compiles(handler) -> bool:
             offload,
             BackgroundTasks,
             Response,
+            SecurityScopes,
         )
         is not None
     )
@@ -76,25 +83,54 @@ def test_parallel_wave_does_not_compile():
     assert not _compiles(handler)
 
 
-def test_yield_dependency_does_not_compile():
+def test_sync_yield_dependency_compiles():
+    # A yield dependency used to hand the whole graph to the interpreter for its
+    # teardown stack. The compiled body is given that stack, so the generator is
+    # started here and registered for `run_teardowns` to drain unchanged.
+    # Teardown ordering and exception delivery are compared against the
+    # interpreter in `test_yield_dependency_resolver_parity.py`.
     def ydep():
         yield 1
 
     async def handler(x=Depends(ydep)):
         return x
 
-    assert not _compiles(handler)
+    assert _compiles(handler)
 
 
-def test_scoped_security_dependency_does_not_compile():
-    # A Security() carrying scopes records them on the slot's list target_type;
-    # the compiler rejects it so the interpreter keeps the scope-stack semantics.
+def test_async_yield_dependency_compiles():
+    async def aydep():
+        yield 1
+
+    async def handler(x=Depends(aydep)):
+        return x
+
+    assert _compiles(handler)
+
+
+def test_scoped_security_dependency_compiles():
+    # A Security() carrying scopes records them on the slot's list target_type.
+    # The compiler used to reject that and hand the whole graph to the
+    # interpreter for its scope-stack semantics; the union is static in the
+    # graph, so it is resolved at compile time instead. Parity with the
+    # interpreter is asserted in `test_security_scope_resolver_parity.py`.
     scheme = APIKeyHeader(name="x-key")
 
     async def handler(key=Security(scheme, scopes=["read"])):
         return key
 
-    assert not _compiles(handler)
+    assert _compiles(handler)
+
+
+def test_a_security_scopes_parameter_compiles():
+    # The slot that reads the union is what made a graph scope-sensitive.
+    async def guard(security_scopes: SecurityScopes):
+        return list(security_scopes.scopes)
+
+    async def handler(who=Security(guard, scopes=["read"])):
+        return who
+
+    assert _compiles(handler)
 
 
 def test_scopeless_security_dependency_compiles():
@@ -111,7 +147,6 @@ def test_scopeless_security_dependency_compiles():
 def test_body_marker_dependency_does_not_compile():
     # A dep that reads the JSON body (await request.json()) cannot be reached
     # from the synchronous parameter emit, so the graph stays on the interpreter.
-    from veloce import Body
 
     def needs_body(v: int = Body()):
         return v
@@ -179,7 +214,6 @@ async def test_shared_dependency_resolved_once_and_identical():
 # ── End-to-end through the dispatcher ────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_compiled_chain_end_to_end():
     app = Veloce(debug=True, openapi_url=None)
 
@@ -200,13 +234,18 @@ async def test_compiled_chain_end_to_end():
     plan = build_plan(calc)
     assert (
         compile_graph_resolver(
-            plan, _coerce_value, RequestValidationError, offload, BackgroundTasks, Response
+            plan,
+            _coerce_value,
+            RequestValidationError,
+            offload,
+            BackgroundTasks,
+            Response,
+            SecurityScopes,
         )
         is not None
     )
 
 
-@pytest.mark.asyncio
 async def test_override_falls_back_and_applies():
     # With an active override the compiled body (which bakes in the original
     # callable) must not be used; the interpreter applies the override instead.
@@ -227,7 +266,6 @@ async def test_override_falls_back_and_applies():
     assert b'"v":"overridden"' in resp.body
 
 
-@pytest.mark.asyncio
 async def test_offload_dependency_through_compiled_path():
     # A sync dependency marked offload=True runs through the thread pool; the
     # compiled body emits `await offload(...)` for it, same result as inline.
@@ -245,7 +283,7 @@ async def test_offload_dependency_through_compiled_path():
     assert b'"v":42' in resp.body
 
 
-def test_compiled_resolver_cached_on_plan():
+async def test_compiled_resolver_cached_on_plan():
     def dep():
         return 1
 
@@ -255,9 +293,8 @@ def test_compiled_resolver_cached_on_plan():
     plan = build_plan(handler)
     assert plan.compiled_graph_resolver is None
     # Resolving once compiles and caches the resolver on the plan.
-    import asyncio
 
-    asyncio.new_event_loop().run_until_complete(DependencyResolver().resolve_plan(plan, _req(), {}))
+    await DependencyResolver().resolve_plan(plan, _req(), {})
     assert plan.compiled_graph_resolver is not None
     assert plan.compiled_graph_resolver is not _NOT_COMPILABLE
 
@@ -278,7 +315,6 @@ def test_response_slot_with_a_dependency_compiles():
     assert _compiles(handler) is True
 
 
-@pytest.mark.asyncio
 async def test_compiled_and_interpreted_paths_store_under_the_same_key():
     """Both bind the injected Response into `request._state` under
     `STATE_INJECTED_RESPONSE` - the constant `app/dispatch.py` reads."""
@@ -296,7 +332,7 @@ async def test_compiled_and_interpreted_paths_store_under_the_same_key():
     for handler in (compiled, interpreted):
         request = _req()
         kwargs = await resolver.resolve_plan(build_plan(handler), request, {})
-        assert request._state[STATE_INJECTED_RESPONSE] is kwargs["response"]
+        assert request.state[STATE_INJECTED_RESPONSE] is kwargs["response"]
         assert kwargs["response"].status_code == 0  # the "handler never set it" sentinel
 
     # ...and the compiled path really was the compiled path.
@@ -307,7 +343,6 @@ async def test_compiled_and_interpreted_paths_store_under_the_same_key():
     assert plan.compiled_graph_resolver is not _NOT_COMPILABLE
 
 
-@pytest.mark.asyncio
 async def test_compiled_path_hands_one_response_to_dependency_and_handler():
     """The emitted body reuses an existing entry rather than overwriting it, so
     a dependency that already injected `Response` shares the handler's object."""
@@ -327,7 +362,6 @@ async def test_compiled_path_hands_one_response_to_dependency_and_handler():
     assert kwargs["response"].headers["X-From-Dep"] == "yes"
 
 
-@pytest.mark.asyncio
 async def test_compiled_response_injection_merges_end_to_end():
     """Through the full dispatch: the status the handler set on the compiled
     path's injected Response reaches the wire."""
@@ -348,7 +382,6 @@ async def test_compiled_response_injection_merges_end_to_end():
     assert _compiles(teapot) is True
 
 
-@pytest.mark.asyncio
 async def test_compiled_path_untouched_response_leaves_the_sentinel_unmerged():
     """`status_code = 0` must never surface; the dispatcher treats it as
     "handler never set it"."""

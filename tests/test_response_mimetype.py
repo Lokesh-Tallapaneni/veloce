@@ -10,7 +10,7 @@ def test_mimetype_strips_parameters():
     assert resp.mimetype == "text/html"
 
 
-def test_mimetype_lowercased():
+def test_response_mimetype_is_lowercased():
     resp = Response(content_type="TEXT/HTML")
     assert resp.mimetype == "text/html"
 

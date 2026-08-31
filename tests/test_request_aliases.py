@@ -1,12 +1,17 @@
-"""Request.referrer / host / remote_addr / charset — request aliases."""
+"""Request.referrer / host / remote_addr / charset / user_agent / content_length.
+
+The header-derived aliases: each reads one request header and returns it in the
+shape the accessor promises.
+"""
 
 from __future__ import annotations
 
+from tests.conftest import make_request
 from veloce import Request
 
 
 def _req(headers: dict | None = None, state: dict | None = None) -> Request:
-    r = Request(
+    r = make_request(
         method="GET",
         path="/x",
         query_string="",
@@ -14,7 +19,7 @@ def _req(headers: dict | None = None, state: dict | None = None) -> Request:
         body=b"",
     )
     if state:
-        r._state.update(state)
+        r.state.update(state)
     return r
 
 
@@ -65,3 +70,14 @@ def test_charset_default_utf8():
 def test_charset_parsed_from_content_type():
     r = _req({"content-type": "text/html; charset=iso-8859-1"})
     assert r.charset == "iso-8859-1"
+
+
+# ── user_agent / content_length ──────────────────────────────────────
+
+
+def test_user_agent_returns_header_value():
+    assert _req({"user-agent": "Mozilla/5.0"}).user_agent == "Mozilla/5.0"
+
+
+def test_content_length_parses_the_header_as_an_int():
+    assert _req({"content-length": "42"}).content_length == 42

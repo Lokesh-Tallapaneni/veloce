@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from veloce import Request, Veloce, session
+from veloce.sessions import Session
 from veloce.testclient import TestClient
 
 
@@ -24,7 +25,7 @@ def test_session_proxy_resolves_during_dispatch():
     @app.get("/x")
     async def x(req: Request):
         # Seed a session dict on the request state directly.
-        req._state["session"] = {"user": "alice"}
+        req.state["session"] = {"user": "alice"}
         seen["user"] = session["user"]
         seen["has"] = "user" in session
         return {}
@@ -41,9 +42,9 @@ def test_session_proxy_setitem():
 
     @app.get("/x")
     async def x(req: Request):
-        req._state["session"] = {}
+        req.state["session"] = {}
         session["count"] = 7
-        captured["count"] = req._state["session"]["count"]
+        captured["count"] = req.state["session"]["count"]
         return {}
 
     with TestClient(app) as client:
@@ -75,17 +76,16 @@ def test_session_proxy_setattr_forwards_to_session():
     # `session.permanent = True` must forward through the proxy to the
     # underlying Session (whose `permanent` property is backed by `_permanent`),
     # rather than raising AttributeError on the slotted proxy.
-    from veloce.sessions import Session
 
     app = Veloce()
     captured: dict = {}
 
     @app.get("/x")
     async def x(req: Request):
-        req._state["session"] = Session()
+        req.state["session"] = Session()
         session.permanent = True
-        captured["permanent"] = req._state["session"].permanent
-        captured["raw"] = req._state["session"]["_permanent"]
+        captured["permanent"] = req.state["session"].permanent
+        captured["raw"] = req.state["session"]["_permanent"]
         return {}
 
     with TestClient(app) as client:

@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+import json
 import time
 
 import pytest
 
+from veloce import JWTError as TopJWTError
 from veloce import decode_jwt, encode_jwt
 from veloce._internal import _b64encode
 from veloce.security.jwt import (
@@ -158,9 +163,6 @@ def test_signature_verified_before_payload_decode():
     # Valid signature over a non-JSON payload -> InvalidTokenError.
     header_b64 = _b64encode(b'{"alg":"HS256","typ":"JWT"}')
     payload_b64 = _b64encode(b"notjson")
-    import hashlib
-    import hmac
-
     signing_input = f"{header_b64}.{payload_b64}".encode("ascii")
     sig = hmac.new(SECRET.encode(), signing_input, hashlib.sha256).digest()
     token = f"{header_b64}.{payload_b64}.{_b64encode(sig)}"
@@ -185,8 +187,28 @@ def test_decode_rejects_empty_secret():
 
 
 def test_import_surface():
-    from veloce import JWTError as TopJWTError
     from veloce import decode_jwt as _dj  # noqa: F401
     from veloce import encode_jwt as _ej  # noqa: F401
 
     assert issubclass(InvalidSignatureError, TopJWTError)
+
+
+#
+# Moved here from `test_unswept_scope_findings.py`, a module named for the audit
+# batch that produced it rather than for the source it covers.
+
+
+def test_alg_none_is_refused_even_when_allow_listed():
+    """The JWT module's strongest claim, pinned."""
+    # From the leaf, deliberately: module scope binds the same name through
+    # the `veloce` gateway, and this asserts the leaf itself refuses
+    # `alg=none` rather than relying on the re-export to do it.
+    from veloce.security.jwt import decode_jwt
+
+    def b64(data: dict) -> str:
+        return base64.urlsafe_b64encode(json.dumps(data).encode()).rstrip(b"=").decode()
+
+    token = f"{b64({'alg': 'none', 'typ': 'JWT'})}.{b64({'sub': 'attacker'})}."
+    with pytest.raises(UnsupportedAlgorithmError) as excinfo:
+        decode_jwt(token, "secret", algorithms=["none"])
+    assert "none" in str(excinfo.value)

@@ -21,7 +21,7 @@ def test_default_disposition_is_attachment(sample_file: str):
     assert resp.headers["Content-Disposition"] == 'attachment; filename="doc.txt"'
 
 
-def test_inline_disposition(sample_file: str):
+def test_inline_disposition_type_on_a_file_response(sample_file: str):
     resp = FileResponse(sample_file, filename="doc.txt", content_disposition_type="inline")
     assert resp.headers["Content-Disposition"] == 'inline; filename="doc.txt"'
 

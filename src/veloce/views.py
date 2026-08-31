@@ -35,8 +35,10 @@ from collections.abc import Callable
 from typing import Any, ClassVar
 
 from veloce._constants import HEADER_ALLOW
-from veloce._internal import _is_async_callable
+from veloce._internal import _is_async_callable, _require_methods
+from veloce._params import ParamBase
 from veloce._protocol_constants import HTTP_METHOD_GET
+from veloce.dependency import Depends
 from veloce.exceptions import MethodNotAllowed
 
 # Standard HTTP method names (RFC 9110 Sec. 9.3). Lower-cased because that's
@@ -45,7 +47,7 @@ _HTTP_METHODS = ("get", "post", "put", "patch", "delete", "head", "options")
 
 
 def _accepted_params(func: Callable) -> frozenset[str] | None:
-    """The keyword names `func` can accept, or None when it takes `**kwargs`.
+    """Return the keyword names `func` accepts, or None when it takes `**kwargs`.
 
     Computed once at class-definition time so dispatch never inspects a
     signature. A view may either declare its path parameters as arguments or
@@ -72,6 +74,35 @@ def _forward(params: dict[str, Any], accepted: frozenset[str] | None) -> dict[st
     return {name: value for name, value in params.items() if name in accepted}
 
 
+def _reject_unresolvable_defaults(cls: type, verb: str, method: Any) -> None:
+    """Refuse a verb method declaring a parameter marker or `Depends`.
+
+    A `MethodView` is one route serving several verbs, so there is one handler
+    plan for the route and none per verb - nothing resolves these. Left alone the
+    default object itself was passed, so `q: str = Query(default="")` handed the
+    method a `Query` instance and the view answered with its repr. Raised at
+    class-definition time, like the `async def` check above, so the mistake
+    surfaces on import rather than as a nonsense response.
+    """
+    try:
+        parameters = inspect.signature(method).parameters
+    except (TypeError, ValueError):  # pragma: no cover - builtins and C callables
+        return
+    offenders = [
+        param.name
+        for param in parameters.values()
+        if isinstance(param.default, (ParamBase, Depends))
+    ]
+    if not offenders:
+        return
+    raise TypeError(
+        f"{cls.__name__}.{verb} declares {', '.join(offenders)} with a parameter "
+        f"marker or Depends(), which a MethodView verb method cannot resolve: the "
+        f"route has one handler plan shared by every verb. Read the value from "
+        f"`request` inside the method, or use a function handler."
+    )
+
+
 class View:
     """Base class-based view - one `dispatch_request` per class.
 
@@ -91,6 +122,16 @@ class View:
     # this one in place, or every view class would share the same list.
     decorators: ClassVar[list[Callable]] = []
     init_every_request: ClassVar[bool] = True
+
+    #: The method a subclass must supply, checked at definition rather than left
+    #: to fail at call time - a view that never dispatches serves nothing, and
+    #: the failure would otherwise be a `NotImplementedError` on the first
+    #: request to the route it was registered for.
+    _required = ("dispatch_request",)
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        _require_methods(cls, View, View._required)
 
     @classmethod
     def as_view(cls, name: str, *class_args: Any, **class_kwargs: Any) -> Callable:
@@ -138,7 +179,7 @@ class View:
 
     @classmethod
     def _allowed_methods(cls) -> list[str]:
-        """The HTTP verbs this view advertises. Base `View` uses `methods`."""
+        """List the HTTP verbs this view advertises. Base `View` uses `methods`."""
         if cls.methods is not None:
             return [m.upper() for m in cls.methods]
         return [HTTP_METHOD_GET]
@@ -171,6 +212,7 @@ class MethodView(View):
                 raise TypeError(
                     f"{cls.__name__}.{name} must be async (Veloce handlers are `async def`-only)"
                 )
+            _reject_unresolvable_defaults(cls, name, attr)
 
     @classmethod
     def _allowed_methods(cls) -> list[str]:

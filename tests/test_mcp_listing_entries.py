@@ -58,10 +58,17 @@ async def test_a_listed_entry_equals_a_freshly_built_one():
     assert listed == fresh
 
 
-async def test_a_task_capable_tool_still_advertises_its_execution_block():
+async def test_a_task_capable_tool_advertises_execution_to_a_handshake_client():
+    """The handshake revisions define the field; the modern one removed it."""
+    server = MCPServer(_app(task_support=True))
+    entry = next(e for e in await _list(server, meta=None) if e["name"] == "plain")
+    assert entry["execution"] == {"taskSupport": "optional"}
+
+
+async def test_a_task_capable_tool_omits_execution_for_a_modern_client():
     server = MCPServer(_app(task_support=True))
     entry = next(e for e in await _list(server) if e["name"] == "plain")
-    assert entry["execution"] == {"taskSupport": "optional"}
+    assert "execution" not in entry
 
 
 async def test_a_route_backed_tool_still_carries_its_annotations():

@@ -6,13 +6,14 @@ import functools
 import keyword
 import logging
 import re
-from collections.abc import Callable, Coroutine, Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from typing import Annotated, Any
 from urllib.parse import urlencode
 
 from typing_extensions import Doc
 
 from veloce._constants import MSG_SUCCESSFUL_RESPONSE
+from veloce._handler_plan import K_REQUEST, build_plan, build_route_dep_plans
 from veloce._model_backend import resolve_response_contract
 from veloce._protocol_constants import (
     HTTP_METHOD_DELETE,
@@ -27,24 +28,33 @@ from veloce._protocol_constants import (
     ROUTE_METHOD_WEBSOCKET,
     URL_SCHEME_HTTP,
 )
+from veloce._ws_listener import build_listener_handler
+from veloce.exceptions import DuplicateRouteError
+from veloce.middleware.base import Middleware
+
+# Re-exported so `veloce.routing.router.X` keeps resolving for the names
+# that moved into the sibling modules below.
+from veloce.routing._node import RadixNode, _converter_sort_key
+from veloce.routing._regex import RegexRoute
 from veloce.routing.converters import (
-    FloatConverter,
-    IntConverter,
-    PathConverter,
+    Converter,
     StringConverter,
-    UUIDConverter,
-    _Converter,
     _is_parametrized_spec,
     _iter_placeholders,
     _looks_like_regex,
     build_route_regex,
-    extract_regex_converters,
     is_regex_path,
     parse_converter,
 )
+from veloce.routing.route_info import (
+    MCPRouteOptions as MCPRouteOptions,
+)
+from veloce.routing.route_info import (
+    RouteHandler,
+    RouteInfo,
+    RouteMatch,
+)
 from veloce.status import HTTP_200_OK
-
-RouteHandler = Callable[..., Coroutine[Any, Any, Any]]
 
 _logger = logging.getLogger(__name__)
 
@@ -62,6 +72,73 @@ _INFER_RESPONSE_MODEL: Any = object()
 # and replaces, `"override"` replaces silently.
 _DUPLICATE_POLICIES = frozenset({"error", "warn", "override"})
 
+# Parameter documentation `add_route` and `route` both publish. These reach a
+# user through IDE tooltips and the generated reference, so whichever entry
+# point their editor resolves decides what they read - and four of these had
+# already drifted, losing a caveat on one side only. Shared objects instead of
+# parallel copies, so a change reaches both signatures at once.
+_DOC_MCP_RESOURCE_URI = Doc(
+    "Resource URI for the route's MCP resource: a static URI, or a URI "
+    "template (`users://{user_id}`) binding its path parameters."
+)
+_DOC_MCP_RESOURCE_MIME_TYPE = Doc(
+    "Media type advertised for the route's MCP resource. Declared rather "
+    "than inferred, so the listing never disagrees with what a read returns."
+)
+_DOC_MCP_META = Doc(
+    "`_meta` published on this route's MCP tool or resource, for metadata "
+    "an extension defines rather than the protocol itself."
+)
+_DOC_MCP_TASK_SUPPORT = Doc(
+    "Allow this route's MCP tool to run as a background task "
+    "(task-augmented `tools/call`, polled via `tasks/get` / `tasks/result`)."
+)
+_DOC_RESPONSE_MODEL = Doc(
+    "Type used to filter and serialize the handler's return value and the OpenAPI "
+    "response schema. Defaults to the handler's return annotation when it names a "
+    "model; pass `None` to declare no response contract."
+)
+_DOC_STREAM = Doc(
+    "Opt into request-body streaming: the body is not buffered before the "
+    "handler, so the handler may consume `request.stream()` incrementally. "
+    "The synchronous body accessors are unavailable on a streaming route "
+    "until the body is drained."
+)
+_DOC_EXCLUDE_MIDDLEWARE = Doc(
+    "Middleware this route opts out of, as classes or as resolved names. A "
+    "class matches by type, so it covers subclasses and cannot be misspelled; "
+    "a string matches the middleware's resolved `name` exactly, which is how "
+    "two instances of one class are told apart."
+)
+
+
+def _split_exclusions(
+    entries: Sequence[str | type] | None,
+) -> tuple[frozenset[str], tuple[type, ...]] | None:
+    """Split `exclude_middleware` into its name set and its type tuple.
+
+    `None` when the route excludes nothing, which the dispatch path tests for
+    before doing any filtering. An entry that is neither a name nor a
+    `Middleware` subclass is a `TypeError` here rather than an exclusion that
+    silently matches nothing - which is the failure this shape exists to end.
+    """
+    if not entries:
+        return None
+    names: set[str] = set()
+    types: list[type] = []
+    for entry in entries:
+        if isinstance(entry, str):
+            names.add(entry)
+        elif isinstance(entry, type) and issubclass(entry, Middleware):
+            types.append(entry)
+        else:
+            raise TypeError(
+                "exclude_middleware entries must be a middleware class or a "
+                f"middleware name, got {entry!r}"
+            )
+    return frozenset(names), tuple(types)
+
+
 # Normalize an OpenAPI-style path to its parameter-name-agnostic shape:
 # `/items/{slug}` and `/items/{id}` both become `/items/{}`. Used to detect
 # when a tree route and a regex fallback route map to the same effective path.
@@ -78,17 +155,20 @@ def _cached_split_path(path: str) -> tuple[str, ...]:
     return tuple(s for s in path.split("/") if s)
 
 
-def _reverse_converters_for(template: str) -> dict[str, _Converter]:
+def _reverse_converters_for(template: str) -> dict[str, Converter]:
     """Map each typed placeholder in `template` to its converter for url_for.
 
     A bare `{name}` (no spec) and a raw-regex placeholder (`{id:[0-9]+}`) have
     no single coercing converter, so they are omitted - those params accept any
     stringifiable value during reverse. Built-in, custom, and `any(...)` specs
     map to the same converter the radix matcher applies, so url_for can reject a
-    value the matcher would never accept. `any(...)` is whitelisted explicitly
+    value the matcher would never accept. A bare or raw-regex placeholder is
+    therefore *not* validated - `url_for` guarantees resolvability only for the
+    placeholders this returns, which is why the omission is stated here rather
+    than promised away. `any(...)` is whitelisted explicitly
     because it carries parentheses that the bare-identifier test reads as regex.
     """
-    converters: dict[str, _Converter] = {}
+    converters: dict[str, Converter] = {}
     for ph in _iter_placeholders(template):
         spec = ph.spec
         if not spec:
@@ -128,363 +208,38 @@ def _check_duplicate_params(full_path: str) -> None:
         seen.add(ph.name)
 
 
-# Converter specificity - lower = more restrictive = tried first during
-# match. Ensures `/items/{id:int}` beats `/items/{slug:str}` regardless
-# of registration order. The sort runs once per `add_route` call (at app
-# startup), never on the per-request match path.
-_CONVERTER_PRIORITY: dict[type, int] = {
-    UUIDConverter: 0,
-    IntConverter: 1,
-    FloatConverter: 2,
-    StringConverter: 3,
-    PathConverter: 4,
-}
-
-
-def _converter_sort_key(node: RadixNode) -> int:
-    return _CONVERTER_PRIORITY.get(type(node.converter), 3)
-
-
 # ── Radix tree structures ──────────────────────────────────
-
-
-class RadixNode:
-    """A node in the radix tree."""
-
-    __slots__ = (
-        "segment",
-        "static_children",
-        "param_children",
-        "_param_index",
-        "wildcard_child",
-        "handlers",
-        "param_name",
-        "is_param",
-        "is_wildcard",
-        "trailing_slash",
-        "unslashed_variant",
-        "tolerant_slash",
-        "converter",
-    )
-
-    def __init__(self, segment: str = "") -> None:
-        self.segment = segment
-        # Static children are indexed by exact segment for O(1) match-time
-        # lookup. Param and wildcard children are few; they stay in their
-        # own small containers and are scanned only after a static miss.
-        self.static_children: dict[str, RadixNode] = {}
-        self.param_children: list[RadixNode] = []
-        # O(1) registration-time lookup keyed by (param_name, converter_type,
-        # constraint), where `constraint` is the parametrized spec text (e.g.
-        # `int(min=1)`) or None for an unparametrized converter. The ordered
-        # list above is still the source of truth at match time.
-        self._param_index: dict[tuple[str, type, str | None], RadixNode] = {}
-        self.wildcard_child: RadixNode | None = None
-        # Method name (uppercase) -> RouteInfo.
-        self.handlers: dict[str, RouteInfo] = {}
-        self.param_name: str | None = None
-        self.is_param = False
-        self.is_wildcard = False
-        self.trailing_slash = False
-        # `/foo` and `/foo/` collapse to the same node, so the two strictness
-        # flags are tracked independently: `trailing_slash` records that the
-        # slashed form was registered, `unslashed_variant` the unslashed form.
-        # When both are set the node serves both shapes and neither strictness
-        # gate fires - registering one form must not flip the other to a 404.
-        self.unslashed_variant = False
-        # When True, the slashed and unslashed forms both match without
-        # redirect - set by `strict_slashes=False` on `add_route`.
-        self.tolerant_slash = False
-        # Converter applied at match time. `None` for static and wildcard nodes;
-        # always set on param nodes (defaulting to StringConverter).
-        self.converter: _Converter | None = None
 
 
 # ── Route metadata ─────────────────────────────────────────
 
 
-class RouteInfo:
-    """Stored route metadata."""
-
-    __slots__ = (
-        "handler",
-        "param_names",
-        "dependencies",
-        "response_model",
-        "tags",
-        "summary",
-        "name",
-        "path_template",
-        "description",
-        "deprecated",
-        "response_description",
-        "status_code",
-        "response_class",
-        "response_model_include",
-        "response_model_exclude",
-        "response_model_exclude_unset",
-        "response_model_exclude_defaults",
-        "response_model_by_alias",
-        "response_model_exclude_none",
-        "include_in_schema",
-        "responses",
-        "operation_id",
-        "openapi_extra",
-        "defaults",
-        "callbacks",
-        "handler_plan",
-        "route_dep_plans",
-        "is_trivial_plan",
-        "is_request_only_plan",
-        "is_fast_eligible",
-        "subdomain",
-        "host",
-        "expose_as_mcp_tool",
-        "mcp_description",
-        "expose_as_mcp_resource",
-        "mcp_resource_uri",
-        "mcp_resource_mime_type",
-        "mcp_meta",
-        "mcp_resource_size",
-        "mcp_resource_annotations",
-        "mcp_scopes",
-        "mcp_icons",
-        "mcp_task_support",
-        "excluded_middleware",
-        "stream",
-        "_mw_chain_cache",
-    )
-
-    def __init__(
-        self,
-        handler: RouteHandler,
-        param_names: list[str],
-        dependencies: list | None = None,
-        response_model: Any = None,
-        tags: list[str] | None = None,
-        summary: str | None = None,
-        name: str | None = None,
-        path_template: str = "",
-        description: str | None = None,
-        deprecated: bool = False,
-        response_description: str = MSG_SUCCESSFUL_RESPONSE,
-        status_code: int = HTTP_200_OK,
-        response_class: Any = None,
-        response_model_include: set[str] | None = None,
-        response_model_exclude: set[str] | None = None,
-        response_model_exclude_unset: bool = False,
-        response_model_exclude_defaults: bool = False,
-        response_model_by_alias: bool = False,
-        response_model_exclude_none: bool = False,
-        include_in_schema: bool = True,
-        responses: dict[int, dict[str, Any]] | None = None,
-        operation_id: str | None = None,
-        openapi_extra: dict[str, Any] | None = None,
-        defaults: dict[str, Any] | None = None,
-        callbacks: dict[str, Any] | None = None,
-        subdomain: str | None = None,
-        host: str | None = None,
-        expose_as_mcp_tool: bool = False,
-        mcp_description: str | None = None,
-        expose_as_mcp_resource: bool = False,
-        mcp_resource_uri: str | None = None,
-        mcp_resource_mime_type: str | None = None,
-        mcp_meta: dict[str, Any] | None = None,
-        mcp_resource_size: int | None = None,
-        mcp_resource_annotations: dict[str, Any] | None = None,
-        mcp_scopes: Sequence[str] | None = None,
-        mcp_icons: Sequence[Any] | None = None,
-        mcp_task_support: bool = False,
-        excluded_middleware: frozenset[str] | None = None,
-    ) -> None:
-        self.handler = handler
-        self.param_names = param_names
-        self.dependencies = dependencies or []
-        self.response_model = response_model
-        self.tags = tags or []
-        self.summary = summary or ""
-        self.name = name or (handler.__name__ if handler is not None else "")
-        self.path_template = path_template
-        self.description = description or (handler.__doc__ or "")
-        self.deprecated = deprecated
-        self.response_description = response_description
-        self.status_code = status_code
-        self.response_class = response_class
-        self.response_model_include = (
-            set(response_model_include) if response_model_include else None
-        )
-        self.response_model_exclude = (
-            set(response_model_exclude) if response_model_exclude else None
-        )
-        self.response_model_exclude_unset = response_model_exclude_unset
-        self.response_model_exclude_defaults = response_model_exclude_defaults
-        self.response_model_by_alias = response_model_by_alias
-        self.response_model_exclude_none = response_model_exclude_none
-        self.include_in_schema = include_in_schema
-        self.responses = responses or {}
-        # Explicit OpenAPI `operationId` override; falls back to the route
-        # name during schema emission.
-        self.operation_id = operation_id
-        # `openapi_extra` - an arbitrary dict deep-merged into
-        # this route's OpenAPI operation object (lets users inject
-        # vendor extensions, custom requestBody examples, etc.).
-        self.openapi_extra = openapi_extra
-        # the routing-rule `defaults` - fixed values merged into
-        # `path_params` at dispatch (without overriding URL-matched
-        # params), so two rules can share one handler with one rule
-        # supplying a default for a segment the other carries in the URL.
-        self.defaults = defaults or {}
-        # OpenAPI `callbacks` - a dict of named Callback objects emitted
-        # verbatim into the operation's `callbacks` field (OpenAPI 3.1
-        # Sec. 4.8.8 - out-of-band requests the API issues back to a caller).
-        self.callbacks = callbacks
-        # Subdomain constraint - matched against the request's host at
-        # dispatch time. `None` means "any host"; `"*"` means "any
-        # subdomain of SERVER_NAME but not the apex".
-        self.subdomain = subdomain
-        # Host constraint - the full `Host` header must equal this value
-        # exactly (case-insensitive). `None` means "any host". Broader
-        # than `subdomain`, which only constrains the leftmost label.
-        # Normalised to lower case here so dispatch can compare without
-        # re-lowering on every request.
-        self.host = host.lower() if host is not None else None
-        # Pre-computed reflection plan - filled in by Router.add_route once
-        # this RouteInfo has been constructed. Tests that build RouteInfo
-        # directly will see `None` here and the resolver will fall back to
-        # the build-plan-on-demand path.
-        self.handler_plan: Any = None
-        self.route_dep_plans: list[Any] = []
-        # True when the handler takes no injected parameters and the route
-        # carries no dependencies - the dispatcher then skips the
-        # dependency resolver entirely (the "trivial-route" fast path).
-        # Set by `add_route` once the plans are built.
-        self.is_trivial_plan = False
-        self.is_request_only_plan = False
-        # True when this route can take the straight-line dispatch fast path:
-        # an async trivial/request-only plan with no response_model, custom
-        # response_class, non-default status, subdomain/host constraint,
-        # defaults, or middleware exclusion. Set by `_attach_plans`; left False
-        # for synthetic routes that bypass it.
-        self.is_fast_eligible = False
-        # Opt-in request-body streaming (ASGI path). When True, the dispatch
-        # layer does NOT eagerly buffer the body before the handler, so the
-        # handler can consume `request.stream()` incrementally; the synchronous
-        # body accessors (`.get_json()`/`.form`/`.data`) are unavailable on such
-        # a route until the body is drained. Set by `add_route`; default False
-        # preserves the buffer-before-handler behaviour every other route has.
-        self.stream = False
-        # MCP exposure (contrib.mcp). `expose_as_mcp_tool` opts this route
-        # into the MCP tool registry; `mcp_description` is the LLM-facing
-        # description (separate from the docstring), required by the MCP
-        # safety policy at registry-build time.
-        self.expose_as_mcp_tool = expose_as_mcp_tool
-        self.mcp_description = mcp_description
-        # MCP resource exposure (contrib.mcp). `expose_as_mcp_resource` opts a
-        # read-only (GET/HEAD) route into the MCP resource registry;
-        # `mcp_resource_uri` is its resource URI - a static URI for a route with
-        # no path parameters, or a URI template (e.g. `users://{user_id}`) whose
-        # variables bind the route's path parameters.
-        self.expose_as_mcp_resource = expose_as_mcp_resource
-        self.mcp_resource_uri = mcp_resource_uri
-        # Declared media type for the resource listing. Never inferred: the
-        # response class is chosen from the handler's actual return value, so a
-        # guess made from its annotation could disagree with what a read returns.
-        self.mcp_resource_mime_type = mcp_resource_mime_type
-        # Optional spec fields a primitive may publish about itself: `_meta` on
-        # any of them, plus a resource's declared size and annotations.
-        self.mcp_meta = mcp_meta
-        self.mcp_resource_size = mcp_resource_size
-        self.mcp_resource_annotations = mcp_resource_annotations
-        # MCP authorization scopes required to call this route as a tool / read it
-        # as a resource. `None` means no scope requirement; a non-empty set is
-        # enforced against the request principal's granted scopes.
-        self.mcp_scopes = frozenset(mcp_scopes) if mcp_scopes else None
-        # Optional MCP `Icon` objects a client may render next to the tool /
-        # resource this route is exposed as. `None` (the common case) carries no
-        # icons and emits no ``icons`` key. Stored as a tuple so the route
-        # metadata is immutable and the MCP registry reads it directly.
-        self.mcp_icons = tuple(mcp_icons) if mcp_icons else None
-        # Opt this route's MCP tool into task-augmented `tools/call` (contrib.mcp).
-        # `False` (the default) advertises `execution.taskSupport: "forbidden"`
-        # and rejects a task-augmented call; `True` lets a client run the call as
-        # a background task it polls via `tasks/get` / `tasks/result`. The handler
-        # invocation is unchanged - the task reuses the same dispatch path the
-        # synchronous call uses, so a route stays one handler behind both doors.
-        self.mcp_task_support = mcp_task_support
-        # Named middleware this route opts out of. `None` (the common case)
-        # means "run every registered middleware" - the dispatch hot path
-        # then iterates the app's middleware list directly with zero extra
-        # work. A non-`None` frozenset triggers the filtered-chain path,
-        # whose result is memoised in `_mw_chain_cache` keyed on the app's
-        # middleware-list version so the filter runs at most once per
-        # (route, middleware-set) generation, not per request.
-        self.excluded_middleware: frozenset[str] | None = excluded_middleware
-        self._mw_chain_cache: tuple[int, list[Any], list[Any]] | None = None
-
-
-class RouteMatch:
-    """Result of matching a path against the tree."""
-
-    __slots__ = ("route_info", "path_params")
-
-    def __init__(self, route_info: RouteInfo, path_params: dict[str, Any]) -> None:
-        self.route_info = route_info
-        self.path_params = path_params
-
-
 # ── Regex fallback routes ──────────────────────────────────
 
 
-def _openapi_path_from_template(template: str) -> str:
-    """Reduce a brace template to its OpenAPI path form (`{name}` per param).
-
-    Strips the `:converter` (or raw `:regex`) portion of every placeholder so
-    `/users/{id:[0-9]+}` becomes `/users/{id}`. Balance-aware so a spec with
-    its own braces (`{id:[0-9]{2}}`) reduces cleanly to `{id}`.
-    """
-    out: list[str] = []
-    pos = 0
-    for ph in _iter_placeholders(template):
-        out.append(template[pos : ph.start])
-        out.append("{" + ph.name + "}")
-        pos = ph.end
-    out.append(template[pos:])
-    return "".join(out)
-
-
-class RegexRoute:
-    """A route the radix tree cannot express, matched by a compiled regex.
-
-    Registered alongside the radix tree but consulted only on a tree miss
-    (and only when regex routes exist). The fast path never touches these.
-    """
-
-    __slots__ = ("pattern", "template", "param_names", "handlers", "converters", "tolerant_slash")
-
-    def __init__(self, template: str, pattern: re.Pattern[str], param_names: list[str]) -> None:
-        # The original brace template (`/users/{id:[0-9]+}`), kept for
-        # `url_for` reverse resolution and OpenAPI path emission.
-        self.template = template
-        self.pattern = pattern
-        self.param_names = param_names
-        # method -> RouteInfo, mirroring RadixNode.handlers so the regex
-        # path returns the same shape as the tree path.
-        self.handlers: dict[str, RouteInfo] = {}
-        # Built-in converter per placeholder name, so matched groups are
-        # coerced to the same Python types the radix tree produces
-        # (`{n:int}` -> int, not "3"). Bare and raw-regex groups are absent.
-        self.converters: dict[str, _Converter] = extract_regex_converters(template)
-        # Mirrors `RadixNode.tolerant_slash` - set by `strict_slashes=False`
-        # so a regex route accepts the missing/extra trailing slash too.
-        self.tolerant_slash = False
-
-    @property
-    def openapi_path(self) -> str:
-        """OpenAPI-style path string built from the template (`/users/{id}`)."""
-        return _openapi_path_from_template(self.template)
-
-
 # ── Router ─────────────────────────────────────────────────
+
+
+def _slash_mismatch(node: Any, request_has_slash: bool) -> bool:
+    """Whether trailing-slash strictness rules this node out for this request.
+
+    A route registered with a trailing slash matches only slashed requests, and
+    one registered without matches only unslashed ones. `tolerant_slash`
+    (per-route `strict_slashes=False`) skips the gate entirely, and a node that
+    had *both* forms registered serves both shapes so neither arm fires.
+
+    One predicate because two consumers must agree: `_match_tree` decides
+    whether a request routes, and `get_allowed_methods` decides what the `Allow`
+    header advertises. Written separately they can disagree, and then a 405
+    names a method that would not have matched, or omits one that would.
+    """
+    if node.tolerant_slash:
+        return False
+    if node.trailing_slash and not node.unslashed_variant and not request_has_slash:
+        return True
+    return bool(
+        node.unslashed_variant and not node.trailing_slash and request_has_slash and node.handlers
+    )
 
 
 class Router:
@@ -543,11 +298,14 @@ class Router:
                 f"on_duplicate must be one of {sorted(_DUPLICATE_POLICIES)}, got {on_duplicate!r}"
             )
         self.on_duplicate = on_duplicate
-        self.tags = tags or []
-        # a Response subclass used when a registered route
-        # doesn't pick its own `response_class=`. Routes still override
-        # per-call; this is just the fallback before the built-in default
-        # (`JSONResponse` for dict/list returns) kicks in.
+        # Copied, not aliased: `router.tags` is appended to as routes register,
+        # which would otherwise mutate the list the caller still holds.
+        self.tags = list(tags or [])
+        # The Response subclass used when a registered route does not pick
+        # its own `response_class=`. Routes still override per-call. Once set it is the class every return value goes to - a text
+        # class given a `dict` raises rather than falling back to JSON, since a
+        # route declaring HTML and returning a mapping has stated two things that
+        # cannot both hold. Unset, dict/list returns take `JSONResponse`.
         self.default_response_class = default_response_class
         # Router-level dependencies - applied to every route
         # registered on this router. Per-route `dependencies=` is
@@ -572,12 +330,12 @@ class Router:
         # value through the same converter the matcher applies, so a reversed URL
         # is guaranteed to resolve. A param with no typed converter (bare
         # `{name}` or a raw-regex segment) is omitted and skips validation.
-        self._reverse_converters: dict[str, dict[str, _Converter]] = {}
+        self._reverse_converters: dict[str, dict[str, Converter]] = {}
         # Regex fallback routes, in registration order. Empty for the common
         # case; `match()` guards on `if self._regex_routes:` so the radix
         # fast path pays nothing when no regex route is registered.
         self._regex_routes: list[RegexRoute] = []
-        # template -> RegexRoute, so a second method on the same regex path
+        # Template -> RegexRoute, so a second method on the same regex path
         # reuses one compiled pattern instead of appending a duplicate.
         self._regex_route_index: dict[str, RegexRoute] = {}
 
@@ -767,12 +525,6 @@ class Router:
                 incoming_name,
             )
             return
-        # Deferred import: veloce.exceptions pulls in the http response stack,
-        # which transitively imports exceptions again; importing it at module
-        # top would create a routing<->http import cycle. This path runs only
-        # on an actual collision, never on the registration hot path.
-        from veloce.exceptions import DuplicateRouteError
-
         raise DuplicateRouteError(path, method, existing_name, incoming_name)
 
     def _drop_replaced_route_name(
@@ -863,7 +615,7 @@ class Router:
         combined_deps = list(self.router_dependencies)
         if info.dependencies:
             combined_deps.extend(info.dependencies)
-        return RouteInfo(
+        merged = RouteInfo(
             handler=info.handler,
             param_names=param_names,
             dependencies=combined_deps if combined_deps else info.dependencies,
@@ -912,6 +664,12 @@ class Router:
             mcp_task_support=info.mcp_task_support,
             excluded_middleware=info.excluded_middleware,
         )
+        # `stream` is a slot assigned after construction rather than an
+        # `__init__` argument, so it has to be carried across explicitly; a
+        # field added that way is the kind this copy silently drops.
+        merged.stream = info.stream
+        merged.strict_slashes = info.strict_slashes
+        return merged
 
     def _commit_merged_method(
         self,
@@ -953,13 +711,8 @@ class Router:
         flags are recomputed here so all three registration paths stay
         byte-for-byte identical.
 
-        Deferred import: `_handler_plan` lives above `routing` in the
-        dependency direction, so importing it at module top would invert that
-        order. Consolidating the import here keeps it off the per-request path
-        (registration-time only) and in a single place.
+        Registration-time only; nothing here runs per request.
         """
-        from veloce._handler_plan import K_REQUEST, build_plan, build_route_dep_plans
-
         if reuse_handler_plan is not None:
             route_info.handler_plan = reuse_handler_plan
         else:
@@ -976,6 +729,8 @@ class Router:
         route_info.is_request_only_plan = (
             len(slots) == 1 and slots[0].kind == K_REQUEST and not has_deps
         )
+        if route_info.is_request_only_plan:
+            route_info.request_param_name = slots[0].name
         # Straight-line dispatch eligibility: an async handler with a trivial or
         # request-only plan and none of the per-route features the fast path
         # cannot honour. WebSocket routes never enter HTTP dispatch, so they are
@@ -1013,11 +768,7 @@ class Router:
         ] = None,
         response_model: Annotated[
             Any,
-            Doc(
-                "Type used to filter and serialize the handler's return value and the OpenAPI "
-                "response schema. Defaults to the handler's return annotation when it names a "
-                "model; pass `None` to declare no response contract."
-            ),
+            _DOC_RESPONSE_MODEL,
         ] = _INFER_RESPONSE_MODEL,
         tags: Annotated[
             list[str] | None,
@@ -1135,24 +886,15 @@ class Router:
         ] = False,
         mcp_resource_uri: Annotated[
             str | None,
-            Doc(
-                "Resource URI for the route's MCP resource: a static URI, or a URI "
-                "template (`users://{user_id}`) binding its path parameters."
-            ),
+            _DOC_MCP_RESOURCE_URI,
         ] = None,
         mcp_resource_mime_type: Annotated[
             str | None,
-            Doc(
-                "Media type advertised for the route's MCP resource. Declared rather "
-                "than inferred, so the listing never disagrees with what a read returns."
-            ),
+            _DOC_MCP_RESOURCE_MIME_TYPE,
         ] = None,
         mcp_meta: Annotated[
             dict[str, Any] | None,
-            Doc(
-                "`_meta` published on this route's MCP tool or resource, for metadata "
-                "an extension defines rather than the protocol itself."
-            ),
+            _DOC_MCP_META,
         ] = None,
         mcp_resource_size: Annotated[
             int | None,
@@ -1172,23 +914,15 @@ class Router:
         ] = None,
         mcp_task_support: Annotated[
             bool,
-            Doc(
-                "Allow this route's MCP tool to run as a background task "
-                "(task-augmented `tools/call`, polled via `tasks/get` / `tasks/result`)."
-            ),
+            _DOC_MCP_TASK_SUPPORT,
         ] = False,
         exclude_middleware: Annotated[
-            Sequence[str] | None,
-            Doc("Names of middleware this route opts out of."),
+            Sequence[str | type] | None,
+            _DOC_EXCLUDE_MIDDLEWARE,
         ] = None,
         stream: Annotated[
             bool,
-            Doc(
-                "Opt into request-body streaming: the body is not buffered before "
-                "the handler, so the handler may consume `request.stream()` "
-                "incrementally. The synchronous body accessors are unavailable on a "
-                "streaming route until the body is drained."
-            ),
+            _DOC_STREAM,
         ] = False,
     ) -> None:
         """Register a route in the radix tree.
@@ -1268,9 +1002,10 @@ class Router:
             mcp_scopes=mcp_scopes,
             mcp_icons=mcp_icons,
             mcp_task_support=mcp_task_support,
-            excluded_middleware=frozenset(exclude_middleware) if exclude_middleware else None,
+            excluded_middleware=_split_exclusions(exclude_middleware),
         )
         route_info.stream = stream
+        route_info.strict_slashes = strict_slashes
 
         # Pre-compute the handler resolution plan once, here at registration.
         # A WebSocket route's plan is built in websocket mode so the
@@ -1294,6 +1029,22 @@ class Router:
         # actually wins on the override/warn replace paths, and is never written
         # if the duplicate policy raised. Drop any stale reverse-converter cache
         # so a re-registered name re-derives from its new template.
+        # A name taken by a *different* path is a collision: the earlier route
+        # keeps serving but becomes unreachable by name, so `url_for` starts
+        # resolving to somewhere else and a template renders the wrong link.
+        # `on_duplicate` governs method+path and never saw this. Re-registering
+        # the *same* path is the override path, where the name legitimately
+        # moves with the route it names, so that stays silent.
+        previous = self._named_routes.get(route_name)
+        if previous is not None and previous[0] != full_path:
+            _logger.warning(
+                "Duplicate route name %r: %s now resolves to %s, and %s is no "
+                "longer reachable by name",
+                route_name,
+                route_name,
+                full_path,
+                previous[0],
+            )
         self._named_routes[route_name] = (full_path, param_names)
         self._reverse_converters.pop(route_name, None)
 
@@ -1369,8 +1120,8 @@ class Router:
                 # Nothing has been mutated yet, so a raise here leaves the router
                 # unchanged.
                 self._on_duplicate_route(full_path, mkey, existing, route_info)
-                # warn/override allowed the replace - remember the displaced
-                # route so pass 2 can drop its reverse entry after the check.
+                # `warn` and `override` allow the replace, so remember the
+                # displaced route: pass 2 drops its reverse entry after the check.
                 replaceable.append((mkey, existing))
         for mkey, existing in replaceable:
             # Drop the displaced route's reverse entry when it had a different
@@ -1523,16 +1274,8 @@ class Router:
         # `strict_slashes=False`) skips this gate. When both the slashed and
         # unslashed forms were registered, the node serves both shapes, so
         # neither gate fires.
-        if not result.tolerant_slash:
-            if result.trailing_slash and not result.unslashed_variant and not request_has_slash:
-                return None
-            if (
-                result.unslashed_variant
-                and not result.trailing_slash
-                and request_has_slash
-                and result.handlers
-            ):
-                return None
+        if _slash_mismatch(result, request_has_slash):
+            return None
 
         # Handlers are stored uppercase - RFC-conforming clients send the
         # method already uppercased, so try the raw form first and only
@@ -1558,7 +1301,7 @@ class Router:
     def _match_node(
         self,
         node: RadixNode,
-        segments: tuple[str, ...] | list[str],
+        segments: tuple[str, ...],
         idx: int,
         params: dict[str, Any],
     ) -> RadixNode | None:
@@ -1600,12 +1343,6 @@ class Router:
         single_param = len(param_children) == 1
         for child in param_children:
             converter = child.converter
-            if converter is None:
-                # add_route always populates this slot; a bare param child
-                # with no converter is a routing-tree corruption, not a
-                # client error. Loud failure beats a `'NoneType' is not
-                # callable` two frames deeper.
-                raise RuntimeError(f"radix-tree param child {child.param_name!r} has no converter")
             # Bind the param name once so the assignment branch and the gated
             # rollback below share a single attribute load.
             pname = child.param_name
@@ -1613,18 +1350,18 @@ class Router:
                 rest = "/".join(segments[idx:])
                 ok, coerced = converter.match(rest)
                 if ok and child.handlers:
-                    params[pname] = coerced  # type: ignore[index]
+                    params[pname] = coerced
                     return child
                 continue
             ok, coerced = converter.match(seg)
             if not ok:
                 continue
-            params[pname] = coerced  # type: ignore[index]
+            params[pname] = coerced
             result = self._match_node(child, segments, idx + 1, params)
             if result is not None:
                 return result
             if not single_param:
-                del params[pname]  # type: ignore[arg-type]
+                del params[pname]
 
         # Try wildcard (legacy `*` syntax - kept for back-compat).
         if node.wildcard_child is not None:
@@ -1647,23 +1384,10 @@ class Router:
         # Ordered set: tree methods first, then regex, deduped.
         methods: dict[str, None] = {}
         node = self._match_node(self._root, segments, 0, params)
-        if node is not None:
-            # Respect trailing slash matching (skipped when tolerant_slash is
-            # set, and when both slash forms were registered on this node).
-            slash_miss = (
-                not node.tolerant_slash
-                and node.trailing_slash
-                and not node.unslashed_variant
-                and not request_has_slash
-            ) or (
-                not node.tolerant_slash
-                and node.unslashed_variant
-                and not node.trailing_slash
-                and request_has_slash
-                and node.handlers
-            )
-            if not slash_miss and node.handlers:
-                methods.update(dict.fromkeys(node.handlers))
+        # Respect trailing-slash strictness through the same predicate the match
+        # path uses, so `Allow` cannot advertise a method that would not match.
+        if node is not None and node.handlers and not _slash_mismatch(node, request_has_slash):
+            methods.update(dict.fromkeys(node.handlers))
         if self._regex_routes:
             for route in self._regex_routes:
                 m = self._regex_route_match(route, path)
@@ -1694,11 +1418,7 @@ class Router:
         ] = None,
         response_model: Annotated[
             Any,
-            Doc(
-                "Type used to filter and serialize the handler's return value and the OpenAPI "
-                "response schema. Defaults to the handler's return annotation when it names a "
-                "model; pass `None` to declare no response contract."
-            ),
+            _DOC_RESPONSE_MODEL,
         ] = _INFER_RESPONSE_MODEL,
         tags: Annotated[
             list[str] | None,
@@ -1816,18 +1536,15 @@ class Router:
         ] = False,
         mcp_resource_uri: Annotated[
             str | None,
-            Doc(
-                "Resource URI for the route's MCP resource: a static URI, or a URI "
-                "template (`users://{user_id}`) binding its path parameters."
-            ),
+            _DOC_MCP_RESOURCE_URI,
         ] = None,
         mcp_resource_mime_type: Annotated[
             str | None,
-            Doc("Media type advertised for the route's MCP resource."),
+            _DOC_MCP_RESOURCE_MIME_TYPE,
         ] = None,
         mcp_meta: Annotated[
             dict[str, Any] | None,
-            Doc("`_meta` published on this route's MCP tool or resource."),
+            _DOC_MCP_META,
         ] = None,
         mcp_resource_size: Annotated[
             int | None,
@@ -1847,25 +1564,18 @@ class Router:
         ] = None,
         mcp_task_support: Annotated[
             bool,
-            Doc(
-                "Allow this route's MCP tool to run as a background task "
-                "(task-augmented `tools/call`, polled via `tasks/get` / `tasks/result`)."
-            ),
+            _DOC_MCP_TASK_SUPPORT,
         ] = False,
         exclude_middleware: Annotated[
-            Sequence[str] | None,
-            Doc("Names of middleware this route opts out of."),
+            Sequence[str | type] | None,
+            _DOC_EXCLUDE_MIDDLEWARE,
         ] = None,
         stream: Annotated[
             bool,
-            Doc(
-                "Opt into request-body streaming: the body is not buffered before "
-                "the handler, so the handler may consume `request.stream()` "
-                "incrementally."
-            ),
+            _DOC_STREAM,
         ] = False,
     ) -> Callable:
-        """Generic route decorator.
+        """Register a route for any set of HTTP methods.
 
         `exclude_middleware=["CSRFMiddleware"]` opts this route out of the
         named middleware (matched against each middleware's `name`), so a
@@ -1923,32 +1633,39 @@ class Router:
 
         return decorator
 
-    def get(self, path: str, **kwargs) -> Callable:
+    def get(self, path: str, **kwargs: Any) -> Callable:
+        """`GET` route decorator. Safe and idempotent - RFC 9110 Sec. 9.3.1."""
         return self.route(path, methods=[HTTP_METHOD_GET], **kwargs)
 
-    def post(self, path: str, **kwargs) -> Callable:
+    def post(self, path: str, **kwargs: Any) -> Callable:
+        """`POST` route decorator - RFC 9110 Sec. 9.3.3."""
         return self.route(path, methods=[HTTP_METHOD_POST], **kwargs)
 
-    def put(self, path: str, **kwargs) -> Callable:
+    def put(self, path: str, **kwargs: Any) -> Callable:
+        """`PUT` route decorator. Idempotent - RFC 9110 Sec. 9.3.4."""
         return self.route(path, methods=[HTTP_METHOD_PUT], **kwargs)
 
-    def patch(self, path: str, **kwargs) -> Callable:
+    def patch(self, path: str, **kwargs: Any) -> Callable:
+        """`PATCH` route decorator - RFC 5789."""
         return self.route(path, methods=[HTTP_METHOD_PATCH], **kwargs)
 
-    def delete(self, path: str, **kwargs) -> Callable:
+    def delete(self, path: str, **kwargs: Any) -> Callable:
+        """`DELETE` route decorator. Idempotent - RFC 9110 Sec. 9.3.5."""
         return self.route(path, methods=[HTTP_METHOD_DELETE], **kwargs)
 
-    def head(self, path: str, **kwargs) -> Callable:
+    def head(self, path: str, **kwargs: Any) -> Callable:
+        """`HEAD` route decorator. Like `GET` with no body - RFC 9110 Sec. 9.3.2."""
         return self.route(path, methods=[HTTP_METHOD_HEAD], **kwargs)
 
-    def options(self, path: str, **kwargs) -> Callable:
+    def options(self, path: str, **kwargs: Any) -> Callable:
+        """`OPTIONS` route decorator - RFC 9110 Sec. 9.3.7."""
         return self.route(path, methods=[HTTP_METHOD_OPTIONS], **kwargs)
 
-    def trace(self, path: str, **kwargs) -> Callable:
+    def trace(self, path: str, **kwargs: Any) -> Callable:
         """`TRACE` route decorator - RFC 9110 Sec. 9.3.8."""
         return self.route(path, methods=[HTTP_METHOD_TRACE], **kwargs)
 
-    def query(self, path: str, **kwargs) -> Callable:
+    def query(self, path: str, **kwargs: Any) -> Callable:
         """`QUERY` route decorator - RFC 10008.
 
         QUERY is safe and idempotent like GET but carries a request body like
@@ -1985,7 +1702,7 @@ class Router:
         on_connect: RouteHandler | Callable[..., Any] | None = None,
         on_disconnect: RouteHandler | Callable[..., Any] | None = None,
     ) -> Callable:
-        """Declarative WebSocket route - wrap a per-message callback.
+        """Register a WebSocket route wrapping a per-message callback.
 
         The decorated callback handles one message at a time; the framework
         owns the accept handshake, the receive loop, and the clean close on
@@ -2007,12 +1724,6 @@ class Router:
 
         For full control over the handshake and loop use `@app.websocket`.
         """
-
-        # Imported here, not at module top: `router` is imported during app
-        # bootstrap before `veloce.websocket`'s dependency chain is fully
-        # initialised, so a top-level import forms a cycle. This is a
-        # registration-time decorator call, not a per-request hot path.
-        from veloce.websocket import build_listener_handler
 
         def decorator(func: RouteHandler | Callable[..., Any]) -> RouteHandler | Callable[..., Any]:
             """Build the listener handler, register it, and return `func`."""
@@ -2107,7 +1818,6 @@ class Router:
         anchor = path_params.pop("_anchor", None)
 
         template, param_names = self._named_routes[name]
-        path = template
         consumed: set[str] = set()
         for pname in param_names:
             if pname not in path_params:
@@ -2124,7 +1834,19 @@ class Router:
             self._reverse_converters[name] = converters
         for pname, converter in converters.items():
             value = path_params[pname]
-            ok, _ = converter.match(str(value))
+            text = str(value)
+            # A segment-bounded converter never sees a `/` when matching - the
+            # path splitter has already cut on it - so its `match` has no reason
+            # to test for one, and `StringConverter` does not. Reversing did
+            # test with `match` alone, so `url_for(..., name="a/b")` returned
+            # `/b/a/b`, a URL this router cannot match. The slash test belongs
+            # here, on the reverse path, and not in `match`: adding it there
+            # would put a scan on every parameterised match to fix a URL-
+            # building bug. `greedy` is the existing flag for the one converter
+            # that legitimately crosses segments.
+            ok, _ = converter.match(text)
+            if ok and not converter.greedy and "/" in text:
+                ok = False
             if not ok:
                 raise ValueError(
                     f"Value {value!r} for path parameter {pname!r} is invalid for route {name!r}"
@@ -2159,16 +1881,27 @@ class Router:
             # SERVER_NAME is "host[:port]"; without it, default to
             # localhost - the absolute-URL request was made outside a request
             # context where we'd otherwise know the host.
-            cfg_host = None
-            cfg_scheme = URL_SCHEME_HTTP
-            if hasattr(self, "config"):
-                cfg_host = self.config.get("SERVER_NAME")
-                cfg_scheme = self.config.get("PREFERRED_URL_SCHEME", URL_SCHEME_HTTP)
+            cfg_host, cfg_scheme = self._absolute_url_defaults()
             netloc = host or cfg_host or "localhost"
             url_scheme = scheme or cfg_scheme
             return f"{url_scheme}://{netloc}{path}"
 
         return path
+
+    def _absolute_url_defaults(self) -> tuple[str | None, str]:
+        """Return `(host, scheme)` for an absolute URL built with no request.
+
+        A bare `Router` has no configuration, so it has no opinion: the caller's
+        explicit `host=` / `scheme=` win, and `url_for` falls back to
+        `localhost` over HTTP. `Veloce` overrides this to answer from
+        `SERVER_NAME` and `PREFERRED_URL_SCHEME`.
+
+        A hook rather than `hasattr(self, "config")`, which is what this was: a
+        base class testing for an attribute only its subclass defines, so the
+        dependency ran the wrong way and neither type checking nor a reader
+        could see the relationship.
+        """
+        return None, URL_SCHEME_HTTP
 
     # Veloce exposes this exact reverse-URL builder as `url_path_for`.
     # `url_for` is the canonical method; this is a thin
@@ -2176,6 +1909,27 @@ class Router:
     url_path_for = url_for
 
     # ── Introspection and merge ───────────────────────────
+
+    def iter_routes(self, *, include_hidden: bool = False) -> list[tuple[str, str, RouteInfo]]:
+        """Return every registered route as ``(method, path, info)``.
+
+        ``app.routes`` is a summary view: six fields of `RouteInfo`'s full
+        record, which is enough to render a route table and not enough for
+        anything that inspects a route. This returns the records themselves, so
+        response models, dependencies, security requirements and the rest are
+        reachable without touching private state.
+
+        Hidden routes - WebSocket routes and those registered
+        ``include_in_schema=False`` - are omitted unless ``include_hidden`` is
+        set; the default is the schema-visible set.
+
+        Usage::
+
+            for method, path, info in app.iter_routes():
+                if info.response_model is not None:
+                    print(method, path, info.response_model)
+        """
+        return self._collect_all_routes(include_hidden)
 
     def _collect_all_routes(self, include_hidden: bool = False) -> list[tuple[str, str, RouteInfo]]:
         """Collect routes as (method, path, info) tuples.
@@ -2234,7 +1988,7 @@ class Router:
         for child in node.static_children.values():
             self._walk_tree(child, path_parts + [child.segment], out, include_hidden)
         for child in node.param_children:
-            seg = "{" + (child.param_name or "") + "}"
+            seg = "{" + child.param_name + "}"
             self._walk_tree(child, path_parts + [seg], out, include_hidden)
         if node.wildcard_child is not None:
             self._walk_tree(node.wildcard_child, path_parts + ["{path}"], out, include_hidden)
@@ -2317,53 +2071,3 @@ class Router:
             self._merge_node(
                 node.wildcard_child, prefix, path_segments + [node.wildcard_child.segment]
             )
-
-
-def _readd_route(
-    target: Router, full_path: str, methods: list[str], info: RouteInfo, endpoint: str
-) -> None:
-    """Re-register `info` onto `target` under `full_path`/`endpoint`.
-
-    Single source of truth for the `RouteInfo`-to-`add_route` field mapping
-    shared by blueprint splicing (`Veloce.register_blueprint`) and nested
-    blueprint composition (`Blueprint.register_blueprint`). Keeping the kwarg
-    block here means a new `RouteInfo` field is forwarded on every
-    re-registration path, not silently dropped on one of them.
-    """
-    target.add_route(
-        path=full_path,
-        handler=info.handler,
-        methods=methods,
-        dependencies=info.dependencies,
-        response_model=info.response_model,
-        tags=info.tags,
-        summary=info.summary,
-        name=endpoint,
-        description=info.description,
-        deprecated=info.deprecated,
-        response_description=info.response_description,
-        status_code=info.status_code,
-        response_class=info.response_class,
-        response_model_include=info.response_model_include,
-        response_model_exclude=info.response_model_exclude,
-        response_model_exclude_unset=info.response_model_exclude_unset,
-        response_model_exclude_defaults=info.response_model_exclude_defaults,
-        response_model_by_alias=info.response_model_by_alias,
-        response_model_exclude_none=info.response_model_exclude_none,
-        include_in_schema=info.include_in_schema,
-        responses=info.responses,
-        operation_id=info.operation_id,
-        openapi_extra=info.openapi_extra,
-        defaults=info.defaults,
-        callbacks=info.callbacks,
-        subdomain=info.subdomain,
-        host=info.host,
-        expose_as_mcp_tool=info.expose_as_mcp_tool,
-        mcp_description=info.mcp_description,
-        expose_as_mcp_resource=info.expose_as_mcp_resource,
-        mcp_resource_uri=info.mcp_resource_uri,
-        mcp_scopes=list(info.mcp_scopes) if info.mcp_scopes else None,
-        mcp_icons=info.mcp_icons,
-        mcp_task_support=info.mcp_task_support,
-        exclude_middleware=(list(info.excluded_middleware) if info.excluded_middleware else None),
-    )

@@ -1,20 +1,30 @@
-"""url_value_preprocessor + url_defaults hook tests (R20+R21)."""
+"""App-level `url_value_preprocessor` and `url_defaults`.
+
+One of four modules over these hooks, each owning a slice:
+
+- this one, the app-level hooks and what they do to a request and to `url_for`;
+- `test_blueprint_url_processors.py`, the same hooks registered on a blueprint;
+- `test_blueprint_url_processor_buckets.py`, that a blueprint's processors cost
+  only the routes they apply to;
+- `test_url_processor_inspect.py`, the introspection views over both registries.
+
+The docstring said `(R20+R21)`, which named a tracker rather than the slice, so
+a reader adding a test had nothing to decide by.
+"""
 
 from __future__ import annotations
 
-import pytest
-
+from tests.conftest import make_request
 from veloce import Request, Veloce, g
 
 
 def _req(path: str) -> Request:
-    return Request(method="GET", path=path, query_string="", headers={}, body=b"")
+    return make_request(method="GET", path=path, query_string="", headers={}, body=b"")
 
 
 # ── url_value_preprocessor ────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_preprocessor_pops_path_param_into_g():
     app = Veloce(debug=True, openapi_url=None)
     captured: dict = {}
@@ -38,7 +48,6 @@ async def test_preprocessor_pops_path_param_into_g():
     assert captured["endpoint"] == "users_index"
 
 
-@pytest.mark.asyncio
 async def test_preprocessor_does_not_pop_means_handler_still_sees_value():
     """A preprocessor that only reads (no pop) leaves the value intact."""
     app = Veloce(debug=True, openapi_url=None)
@@ -58,7 +67,6 @@ async def test_preprocessor_does_not_pop_means_handler_still_sees_value():
     assert captured["tag"] == "red"
 
 
-@pytest.mark.asyncio
 async def test_multiple_preprocessors_run_in_registration_order():
     app = Veloce(debug=True, openapi_url=None)
     order: list[str] = []
@@ -161,7 +169,6 @@ def test_no_processors_registered_is_unchanged():
 # ── End-to-end interplay ─────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_preprocessor_and_defaults_combine_for_i18n_pattern():
     """Common pattern: strip `lang` segment in preprocessor, re-inject
     in url_defaults so links built inside the handler are scoped."""

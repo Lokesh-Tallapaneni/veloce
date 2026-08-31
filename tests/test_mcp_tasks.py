@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 
 import pytest
 
+from tests._mcp import INVALID_PARAMS, RESOURCE_NOT_FOUND, await_tasks, call, live_tasks
 from veloce import Veloce
 from veloce.contrib.mcp import MCPTask, TaskRegistry, TasksCapability
 from veloce.contrib.mcp.server import MCPServer, _notifier_var
@@ -28,14 +28,6 @@ async def _drive(server: MCPServer, message: dict) -> dict | None:
     return await server.handle_message(message)
 
 
-async def _await_tasks(server: MCPServer) -> None:
-    """Await every still-running task runner so the test sees the settled state."""
-    runners = [t.runner for t in server._tasks.tasks.values() if t.runner is not None]
-    for runner in runners:
-        with contextlib.suppress(asyncio.CancelledError):
-            await runner
-
-
 def _call(name: str, arguments: dict, *, task: bool = False) -> dict:
     params: dict = {"name": name, "arguments": arguments}
     if task:
@@ -46,7 +38,7 @@ def _call(name: str, arguments: dict, *, task: bool = False) -> dict:
 # -- Opt-in advertisement ----------------------------------------------
 
 
-def test_tasks_capability_silent_without_opt_in():
+async def test_tasks_capability_silent_without_opt_in():
     """A server whose tools do not opt in advertises no tasks capability."""
     app = Veloce(openapi_url=None)
 
@@ -56,11 +48,11 @@ def test_tasks_capability_silent_without_opt_in():
 
     server = _server(app)
     assert TasksCapability(server).advertise() is None
-    init = server._initialize({})
+    init = await call(server, "initialize", {})
     assert "tasks" not in init["capabilities"]
 
 
-def test_tasks_capability_advertised_when_a_tool_opts_in():
+async def test_tasks_capability_advertised_when_a_tool_opts_in():
     """One task-supporting tool turns the tasks capability on."""
     app = Veloce(openapi_url=None)
 
@@ -71,7 +63,7 @@ def test_tasks_capability_advertised_when_a_tool_opts_in():
     server = _server(app)
     advert = TasksCapability(server).advertise()
     assert advert == {"tasks": {"list": {}, "cancel": {}, "requests": {"tools/call": {}}}}
-    assert server._initialize({})["capabilities"]["tasks"] == advert["tasks"]
+    assert (await call(server, "initialize", {}))["capabilities"]["tasks"] == advert["tasks"]
 
 
 async def test_execution_task_support_on_tools_list():
@@ -87,7 +79,7 @@ async def test_execution_task_support_on_tools_list():
         return 2
 
     server = _server(app)
-    listed = await server._handle_tools_list({})
+    listed = await call(server, "tools/list")
     by_name = {t["name"]: t for t in listed["tools"]}
     assert by_name["slow"]["execution"] == {"taskSupport": "optional"}
     assert "execution" not in by_name["fast"]
@@ -108,13 +100,13 @@ def test_task_augmented_call_returns_create_task_result():
 
     async def run() -> dict:
         resp = await _drive(server, _call("slow_add", {"a": 2, "b": 3}, task=True))
-        await _await_tasks(server)
+        await await_tasks(server)
         return resp
 
     resp = asyncio.run(run())
     result = resp["result"]
     task = result["task"]
-    assert task["taskId"] in server._tasks.tasks
+    assert task["taskId"] in live_tasks(server)
     assert task["status"] == STATUS_WORKING
     assert result["_meta"]["io.modelcontextprotocol/model-immediate-response"] is True
 
@@ -131,7 +123,7 @@ def test_tasks_result_returns_the_completed_tool_result():
 
     async def run() -> tuple[dict, dict]:
         created = await _drive(server, _call("slow_add", {"a": 2, "b": 3}, task=True))
-        await _await_tasks(server)
+        await await_tasks(server)
         task_id = created["result"]["task"]["taskId"]
         got = await _drive(
             server,
@@ -169,11 +161,11 @@ def test_tasks_result_while_working_is_invalid_params():
             {"jsonrpc": "2.0", "id": 2, "method": "tasks/result", "params": {"taskId": task_id}},
         )
         gate.set()
-        await _await_tasks(server)
+        await await_tasks(server)
         return early
 
     early = asyncio.run(run())
-    assert early["error"]["code"] == -32602
+    assert early["error"]["code"] == INVALID_PARAMS
 
 
 # -- Failure + lifecycle -----------------------------------------------
@@ -191,7 +183,7 @@ def test_failing_handler_settles_task_failed():
 
     async def run() -> dict:
         created = await _drive(server, _call("boom", {}, task=True))
-        await _await_tasks(server)
+        await await_tasks(server)
         task_id = created["result"]["task"]["taskId"]
         return await _drive(
             server,
@@ -222,7 +214,7 @@ def test_tasks_cancel_moves_task_to_cancelled():
             server,
             {"jsonrpc": "2.0", "id": 2, "method": "tasks/cancel", "params": {"taskId": task_id}},
         )
-        await _await_tasks(server)
+        await await_tasks(server)
         return cancelled
 
     cancelled = asyncio.run(run())
@@ -254,7 +246,7 @@ def test_tasks_cancel_emits_a_status_notification():
             server,
             {"jsonrpc": "2.0", "id": 2, "method": "tasks/cancel", "params": {"taskId": task_id}},
         )
-        await _await_tasks(server)
+        await await_tasks(server)
 
     asyncio.run(run())
     status_msgs = [m for m in sent if m.get("method") == "notifications/tasks/status"]
@@ -273,7 +265,7 @@ def test_tasks_list_reports_known_tasks():
 
     async def run() -> dict:
         await _drive(server, _call("add", {"a": 1, "b": 1}, task=True))
-        await _await_tasks(server)
+        await await_tasks(server)
         return await _drive(
             server, {"jsonrpc": "2.0", "id": 9, "method": "tasks/list", "params": {}}
         )
@@ -290,7 +282,7 @@ def test_unknown_task_id_is_resource_not_found():
             server, {"jsonrpc": "2.0", "id": 1, "method": "tasks/get", "params": {"taskId": "x"}}
         )
     )
-    assert resp["error"]["code"] == -32002
+    assert resp["error"]["code"] == RESOURCE_NOT_FOUND
 
 
 # -- Opt-out rejection -------------------------------------------------
@@ -306,7 +298,7 @@ def test_task_call_on_non_opting_tool_is_rejected():
 
     server = _server(app)
     resp = asyncio.run(_drive(server, _call("add", {"a": 1, "b": 2}, task=True)))
-    assert resp["error"]["code"] == -32602
+    assert resp["error"]["code"] == INVALID_PARAMS
 
 
 # -- Dual door: a route runs the same handler synchronously and as a task ----
@@ -330,7 +322,7 @@ def test_route_runs_one_handler_through_both_doors():
     async def run() -> tuple[dict, dict]:
         sync = await _drive(server, _call("double", {"n": 5}))
         created = await _drive(server, _call("double", {"n": 5}, task=True))
-        await _await_tasks(server)
+        await await_tasks(server)
         task_id = created["result"]["task"]["taskId"]
         task_result = await _drive(
             server,
@@ -365,7 +357,7 @@ def test_status_notification_carries_related_task_meta():
     async def run() -> None:
         _notifier_var.set(sink)
         await _drive(server, _call("add", {"a": 1, "b": 2}, task=True))
-        await _await_tasks(server)
+        await await_tasks(server)
 
     asyncio.run(run())
     status_msgs = [m for m in sent if m.get("method") == "notifications/tasks/status"]

@@ -1,8 +1,12 @@
 """Tests for the radix tree router."""
 
+import logging
+
 import pytest
 
-from veloce.routing.router import Router
+from veloce import Blueprint, Veloce
+from veloce.routing.router import RadixNode, Router
+from veloce.testclient import TestClient
 
 
 @pytest.fixture
@@ -36,26 +40,31 @@ def router():
     return r
 
 
-class TestStaticRoutes:
-    def test_match_root(self, router):
-        match = router.match("GET", "/")
-        assert match is not None
+# ── Matching: static paths and method lookup ───────────────────────
 
-    def test_match_static_path(self, router):
-        match = router.match("GET", "/users")
-        assert match is not None
-        assert match.path_params == {}
 
-    def test_no_match(self, router):
-        match = router.match("GET", "/nonexistent")
-        assert match is None
+def test_match_root(router):
+    match = router.match("GET", "/")
+    assert match is not None
 
-    def test_method_not_allowed(self, router):
-        match = router.match("DELETE", "/users")
-        assert match is None
-        allowed = router.get_allowed_methods("/users")
-        assert "GET" in allowed
-        assert "POST" in allowed
+
+def test_match_static_path(router):
+    match = router.match("GET", "/users")
+    assert match is not None
+    assert match.path_params == {}
+
+
+def test_no_match(router):
+    match = router.match("GET", "/nonexistent")
+    assert match is None
+
+
+def test_method_not_allowed(router):
+    match = router.match("DELETE", "/users")
+    assert match is None
+    allowed = router.get_allowed_methods("/users")
+    assert "GET" in allowed
+    assert "POST" in allowed
 
 
 class TestStaticRouteFastMap:
@@ -102,125 +111,130 @@ class TestStaticRouteFastMap:
         assert r.match("GET", "/ts") is None
 
 
-class TestPathParams:
-    def test_single_param(self, router):
-        match = router.match("GET", "/users/42")
-        assert match is not None
-        assert match.path_params == {"user_id": "42"}
-
-    def test_multiple_params(self, router):
-        match = router.match("GET", "/users/1/posts/99")
-        assert match is not None
-        assert match.path_params == {"user_id": "1", "post_id": "99"}
+# ── Path parameters ────────────────────────────────────────────────
 
 
-class TestWildcard:
-    def test_wildcard_match(self, router):
-        match = router.match("GET", "/files/path/to/file.txt")
-        assert match is not None
-        assert match.path_params["_wildcard"] == "path/to/file.txt"
+def test_single_param(router):
+    match = router.match("GET", "/users/42")
+    assert match is not None
+    assert match.path_params == {"user_id": "42"}
 
 
-class TestRouterInclusion:
-    def test_include_router(self):
-        main = Router()
-        sub = Router(prefix="/api/v1")
+def test_multiple_params(router):
+    match = router.match("GET", "/users/1/posts/99")
+    assert match is not None
+    assert match.path_params == {"user_id": "1", "post_id": "99"}
 
-        @sub.get("/items")
-        async def items(request):
-            return "items"
 
+def test_wildcard_match(router):
+    match = router.match("GET", "/files/path/to/file.txt")
+    assert match is not None
+    assert match.path_params["_wildcard"] == "path/to/file.txt"
+
+
+# ── Composing routers ──────────────────────────────────────────────
+
+
+def test_include_router():
+    main = Router()
+    sub = Router(prefix="/api/v1")
+
+    @sub.get("/items")
+    async def items(request):
+        return "items"
+
+    main.include_router(sub)
+    match = main.match("GET", "/api/v1/items")
+    assert match is not None
+
+
+def test_include_with_extra_prefix():
+    main = Router()
+    sub = Router(prefix="/v1")
+
+    @sub.get("/data")
+    async def data(request):
+        return "data"
+
+    main.include_router(sub, prefix="/api")
+    match = main.match("GET", "/api/v1/data")
+    assert match is not None
+
+
+@pytest.mark.parametrize("method", ["GET", "POST", "PUT", "PATCH", "DELETE"])
+def test_each_method_shortcut_registers_a_matchable_route(method):
+    """Parametrized, not looped: a failure names the verb that stopped matching."""
+    r = Router()
+
+    @r.get("/test")
+    async def get_handler(request): ...
+
+    @r.post("/test")
+    async def post_handler(request): ...
+
+    @r.put("/test")
+    async def put_handler(request): ...
+
+    @r.patch("/test")
+    async def patch_handler(request): ...
+
+    @r.delete("/test")
+    async def delete_handler(request): ...
+
+    assert r.match(method, "/test") is not None
+
+
+# ── The regex fallback ─────────────────────────────────────────────
+
+
+def test_greedy_with_trailing_segment_uses_regex_fallback():
+    # A greedy `:path` converter followed by a static suffix is not
+    # tree-expressible, so it now routes through the regex fallback
+    # instead of raising at registration.
+    r = Router()
+
+    @r.get("/{files:path}/info")
+    async def handler(files):
+        return files
+
+    match = r.match("GET", "/a/b/c/info")
+    assert match is not None
+    assert match.path_params == {"files": "a/b/c"}
+
+
+def test_greedy_as_final_segment_allowed():
+    r = Router()
+
+    @r.get("/{files:path}")
+    async def serve(files: str):
+        return files
+
+    match = r.match("GET", "/a/b/c.txt")
+    assert match is not None
+
+
+def test_include_router_rejects_greedy_with_trailing_segments():
+    sub = Router()
+
+    # Smuggle the invalid shape past add_route by building it manually,
+    # then verify _merge_node refuses to copy it in.
+    async def handler(request): ...
+
+    sub.add_route("/{files:path}", handler, ["GET"])
+    # Tack on a static child after the greedy param to fabricate the
+    # invalid shape that _merge_node must reject when re-walking.
+    greedy_node = sub._root.param_children[0]
+    tail = RadixNode("info")
+    greedy_node.static_children["info"] = tail
+    tail.handlers = greedy_node.handlers
+    greedy_node.handlers = {}
+
+    main = Router()
+    with pytest.raises(ValueError, match="greedy converter"):
         main.include_router(sub)
-        match = main.match("GET", "/api/v1/items")
-        assert match is not None
-
-    def test_include_with_extra_prefix(self):
-        main = Router()
-        sub = Router(prefix="/v1")
-
-        @sub.get("/data")
-        async def data(request):
-            return "data"
-
-        main.include_router(sub, prefix="/api")
-        match = main.match("GET", "/api/v1/data")
-        assert match is not None
-
-
-class TestDecorators:
-    def test_all_methods(self):
-        r = Router()
-
-        @r.get("/test")
-        async def get_handler(request): ...
-
-        @r.post("/test")
-        async def post_handler(request): ...
-
-        @r.put("/test")
-        async def put_handler(request): ...
-
-        @r.patch("/test")
-        async def patch_handler(request): ...
-
-        @r.delete("/test")
-        async def delete_handler(request): ...
-
-        for method in ["GET", "POST", "PUT", "PATCH", "DELETE"]:
-            assert r.match(method, "/test") is not None
-
-
-class TestGreedyPathConverter:
-    def test_greedy_with_trailing_segment_uses_regex_fallback(self):
-        # A greedy `:path` converter followed by a static suffix is not
-        # tree-expressible, so it now routes through the regex fallback
-        # instead of raising at registration.
-        r = Router()
-
-        @r.get("/{files:path}/info")
-        async def handler(files):
-            return files
-
-        match = r.match("GET", "/a/b/c/info")
-        assert match is not None
-        assert match.path_params == {"files": "a/b/c"}
-
-    def test_greedy_as_final_segment_allowed(self):
-        r = Router()
-
-        @r.get("/{files:path}")
-        async def serve(files: str):
-            return files
-
-        match = r.match("GET", "/a/b/c.txt")
-        assert match is not None
-
-    def test_include_router_rejects_greedy_with_trailing_segments(self):
-        sub = Router()
-
-        # Smuggle the invalid shape past add_route by building it manually,
-        # then verify _merge_node refuses to copy it in.
-        async def handler(request): ...
-
-        sub.add_route("/{files:path}", handler, ["GET"])
-        # Tack on a static child after the greedy param to fabricate the
-        # invalid shape that _merge_node must reject when re-walking.
-        from veloce.routing.router import RadixNode
-
-        greedy_node = sub._root.param_children[0]
-        tail = RadixNode("info")
-        greedy_node.static_children["info"] = tail
-        tail.handlers = greedy_node.handlers
-        greedy_node.handlers = {}
-
-        main = Router()
-        with pytest.raises(ValueError, match="greedy converter"):
-            main.include_router(sub)
 
 
 # ── Duplicate path-parameter detection ───────────────────────────────
-
-
 def test_duplicate_param_on_tree_path_raises():
     r = Router()
 
@@ -254,3 +268,131 @@ def test_distinct_params_still_register():
     with pytest.raises(ValueError):
         r.add_route("/a/{k}/b/{k}", handler, ["GET"])
     r.add_route("/{only}", handler, ["GET"])
+
+
+# ── Duplicate route names warn ─────────────────────────────────────
+#
+# Moved here from `test_unswept_scope_findings.py`, a module named for the audit
+# batch that produced it rather than for the source it covers.
+
+
+def test_a_duplicate_name_on_a_different_path_warns(caplog):
+    """The defect: the reverse entry was replaced in silence."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/users", name="listing")
+    async def users() -> dict:
+        return {}
+
+    with caplog.at_level(logging.WARNING):
+
+        @app.get("/posts", name="listing")
+        async def posts() -> dict:
+            return {}
+
+    assert any("listing" in r.getMessage() for r in caplog.records)
+
+
+def test_the_warning_names_both_paths(caplog):
+    app = Veloce(openapi_url=None)
+
+    @app.get("/users", name="listing")
+    async def users() -> dict:
+        return {}
+
+    with caplog.at_level(logging.WARNING):
+
+        @app.get("/posts", name="listing")
+        async def posts() -> dict:
+            return {}
+
+    message = " ".join(r.getMessage() for r in caplog.records)
+    assert "/users" in message
+    assert "/posts" in message
+
+
+def test_replacing_a_route_at_the_same_path_stays_silent(caplog):
+    """The name legitimately moves with the route it names."""
+    app = Veloce(openapi_url=None, on_duplicate="override")
+
+    @app.get("/users", name="listing")
+    async def first() -> dict:
+        return {}
+
+    async def second() -> dict:
+        return {}
+
+    with caplog.at_level(logging.WARNING):
+        app.get("/users", name="listing")(second)
+
+    assert not [r for r in caplog.records if "name" in (r.getMessage()).lower()]
+    assert app.url_for("listing") == "/users"
+
+
+def test_two_distinct_names_are_silent(caplog):
+    app = Veloce(openapi_url=None)
+
+    with caplog.at_level(logging.WARNING):
+
+        @app.get("/users", name="users")
+        async def users() -> dict:
+            return {}
+
+        @app.get("/posts", name="posts")
+        async def posts() -> dict:
+            return {}
+
+    assert caplog.records == []
+
+
+def test_the_last_registration_still_wins():
+    """Reporting it must not change which route the name resolves to."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/users", name="listing")
+    async def users() -> dict:
+        return {}
+
+    @app.get("/posts", name="listing")
+    async def posts() -> dict:
+        return {}
+
+    assert app.url_for("listing") == "/posts"
+
+
+def test_both_routes_still_serve():
+    """A name collision is a naming problem, not a routing one."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/users", name="listing")
+    async def users() -> dict:
+        return {"which": "users"}
+
+    @app.get("/posts", name="listing")
+    async def posts() -> dict:
+        return {"which": "posts"}
+
+    client = TestClient(app)
+    assert client.get("/users").json() == {"which": "users"}
+    assert client.get("/posts").json() == {"which": "posts"}
+
+
+def test_a_blueprint_name_is_still_namespaced(caplog):
+    """The merge path was already protected and must stay silent."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/users", name="listing")
+    async def users() -> dict:
+        return {}
+
+    bp = Blueprint("shop", url_prefix="/shop")
+
+    @bp.get("/posts", name="listing")
+    async def posts() -> dict:
+        return {}
+
+    with caplog.at_level(logging.WARNING):
+        app.register_blueprint(bp)
+
+    assert app.url_for("listing") == "/users"
+    assert app.url_for("shop.listing") == "/shop/posts"

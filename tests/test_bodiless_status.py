@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import Response, Veloce
+from veloce import Request, Response, Veloce
 from veloce.status import status_permits_body
 from veloce.testclient import TestClient
 
@@ -119,7 +119,6 @@ def test_native_encode_304_advertises_representation_length():
 def test_make_conditional_304_advertises_the_representation_length():
     # The downgrade drops the body, so the length has to be recorded first -
     # otherwise the 304 advertises 0 for a representation that is 5 bytes.
-    from veloce import Request
 
     resp = Response(status_code=200, body=b"hello")
     resp.add_etag()

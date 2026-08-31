@@ -13,7 +13,22 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import Middleware, Request, TestClient, Veloce
+from veloce import Blueprint, JSONResponse, Middleware, Request, TestClient, Veloce
+from veloce.middleware.compression import GZipMiddleware
+from veloce.middleware.conditional import ConditionalGetMiddleware
+from veloce.middleware.cors import CORSMiddleware
+from veloce.middleware.csrf import CSRFMiddleware
+from veloce.middleware.logging import LoggingMiddleware, RequestIDMiddleware
+from veloce.middleware.proxy_fix import ProxyFix
+from veloce.middleware.security import (
+    CSPMiddleware,
+    HTTPSRedirectMiddleware,
+    RateLimitMiddleware,
+    SecurityHeadersMiddleware,
+    TrustedHostMiddleware,
+    WebSocketOriginMiddleware,
+)
+from veloce.middleware.sessions import ServerSessionMiddleware, SessionMiddleware
 
 
 class _Tagger(Middleware):
@@ -102,7 +117,6 @@ def test_excluded_middleware_cannot_short_circuit():
 
     class Blocker(Middleware):
         async def process_request(self, request: Request):
-            from veloce import JSONResponse
 
             return JSONResponse({"blocked": True}, status_code=403)
 
@@ -237,7 +251,6 @@ def test_proxyfix_accepts_name_and_is_targetable_by_exclusion():
     # `add_middleware(ProxyFix, name="edge")` must instantiate (the override
     # used to raise TypeError), and a route-level `exclude_middleware=["edge"]`
     # must be able to target that instance by its overridden name.
-    from veloce.middleware.proxy_fix import ProxyFix
 
     app = Veloce(openapi_url=None)
     app.add_middleware(ProxyFix, name="edge", x_for=1, x_proto=1)
@@ -254,7 +267,7 @@ def test_proxyfix_accepts_name_and_is_targetable_by_exclusion():
     with TestClient(app) as client:
         forwarded = {"X-Forwarded-Proto": "https"}
         # The middleware instance carries the overridden name.
-        assert app._middlewares[0].middleware_name == "edge"
+        assert app.middlewares[0].middleware_name == "edge"
         # On the unexcluded route ProxyFix rewrites the scheme to https.
         assert client.get("/with-proxyfix", headers=forwarded).json()["scheme"] == "https"
         # On the excluded route ProxyFix is skipped, so the scheme is untouched.
@@ -264,21 +277,6 @@ def test_proxyfix_accepts_name_and_is_targetable_by_exclusion():
 def _builtin_middleware_cases() -> list[tuple[type, dict]]:
     # Every built-in `Middleware` subclass with its own `__init__`, paired with
     # the minimal required args; `name=` is appended by the test below.
-    from veloce.middleware.compression import GZipMiddleware
-    from veloce.middleware.conditional import ConditionalGetMiddleware
-    from veloce.middleware.cors import CORSMiddleware
-    from veloce.middleware.csrf import CSRFMiddleware
-    from veloce.middleware.logging import LoggingMiddleware, RequestIDMiddleware
-    from veloce.middleware.proxy_fix import ProxyFix
-    from veloce.middleware.security import (
-        CSPMiddleware,
-        HTTPSRedirectMiddleware,
-        RateLimitMiddleware,
-        SecurityHeadersMiddleware,
-        TrustedHostMiddleware,
-        WebSocketOriginMiddleware,
-    )
-    from veloce.middleware.sessions import ServerSessionMiddleware, SessionMiddleware
 
     return [
         (CORSMiddleware, {}),
@@ -340,7 +338,7 @@ def test_user_middleware_without_name_kwarg_is_nameable_and_excludable():
 
     with TestClient(app) as client:
         # The post-construction override took effect.
-        assert app._middlewares[0].middleware_name == "usermw"
+        assert app.middlewares[0].middleware_name == "usermw"
         assert client.get("/runs").headers.get("X-User-X") == "1"
         # The route opts out by the overridden name.
         assert "X-User-X" not in client.get("/skips").headers
@@ -350,7 +348,6 @@ def test_blueprint_route_preserves_exclude_middleware():
     # Re-registering a blueprint route onto the app (`_readd_route`) must forward
     # `exclude_middleware`; otherwise a webhook route that opted out of a
     # middleware silently has it run again after `register_blueprint`.
-    from veloce import Blueprint
 
     bp = Blueprint("hooks")
 
@@ -381,7 +378,7 @@ def test_user_middleware_without_name_defaults_to_class_name():
         return {"ok": True}
 
     with TestClient(app) as client:
-        assert app._middlewares[0].middleware_name == "_UserMiddlewareNoName"
+        assert app.middlewares[0].middleware_name == "_UserMiddlewareNoName"
         assert "X-User-Y" not in client.get("/skips").headers
 
 
@@ -397,7 +394,7 @@ def test_an_already_built_instance_honours_the_name_override():
     """
     app = Veloce(openapi_url=None)
     app.add_middleware(_Tagger("A"), name="tagger")
-    assert app._middlewares[0].middleware_name == "tagger"
+    assert app.middlewares[0].middleware_name == "tagger"
 
 
 def test_an_instance_name_makes_the_route_exclusion_take_effect():
@@ -420,7 +417,7 @@ def test_an_instance_name_makes_the_route_exclusion_take_effect():
 def test_an_instance_without_a_name_still_uses_its_class_name():
     app = Veloce(openapi_url=None)
     app.add_middleware(_Tagger("A"))
-    assert app._middlewares[0].middleware_name == "_Tagger"
+    assert app.middlewares[0].middleware_name == "_Tagger"
 
 
 def test_a_constructor_argument_passed_with_an_instance_is_refused():
@@ -435,4 +432,4 @@ def test_priority_is_still_accepted_alongside_an_instance():
     app = Veloce(openapi_url=None)
     app.add_middleware(_Tagger("low"), name="low", priority=1)
     app.add_middleware(_Tagger("high"), name="high", priority=5)
-    assert [m.middleware_name for m in app._middlewares] == ["high", "low"]
+    assert [m.middleware_name for m in app.middlewares] == ["high", "low"]

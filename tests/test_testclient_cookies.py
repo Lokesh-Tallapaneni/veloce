@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from veloce import Request, Response, Veloce
+from veloce import JSONResponse, Request, Response, Veloce
+from veloce.testclient import TestClient
 
 
 def _make_app() -> Veloce:
@@ -76,6 +77,33 @@ def test_server_set_cookie_lands_in_jar():
     assert client.cookies["server_set"] == "value-from-server"
     # Next request includes it automatically.
     resp = client.get("/whoami")
-    # `server_set` doesn't affect /whoami's response, but the cookie
-    # made it into the jar (verified above) and would be sent.
+    # `server_set` doesn't affect /whoami's response, so this asserts only that
+    # the cookie reached the jar. That it is then *sent* is
+    # `test_a_server_set_cookie_is_returned_on_the_next_request` below.
     assert resp.status_code == 200
+
+
+# ── the round trip ───────────────────────────────────────────────────
+#
+# Moved here from `test_testclient_request.py`, which is about building a
+# request rather than about the cookie jar. It is the half
+# `test_server_set_cookie_lands_in_jar` above records that it does not check.
+
+
+def test_a_server_set_cookie_is_returned_on_the_next_request():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/set-cookie")
+    async def set_cookie(request: Request):
+        resp = JSONResponse({"ok": True})
+        resp.set_cookie("token", "abc123")
+        return resp
+
+    @app.get("/read-cookie")
+    async def read_cookie(request: Request):
+        return {"token": request.cookies.get("token", "")}
+
+    client = TestClient(app)
+    client.get("/set-cookie")
+    resp = client.get("/read-cookie")
+    assert resp.json()["token"] == "abc123"

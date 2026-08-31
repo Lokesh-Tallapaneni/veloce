@@ -1,13 +1,12 @@
-"""Jinja2Templates.render_async — async template rendering (TP9)."""
+"""Jinja2Templates.render_async — async template rendering."""
 
 from __future__ import annotations
 
-import pytest
-
+from veloce import HTMLResponse, Veloce
 from veloce.contrib.templating import Jinja2Templates
+from veloce.testclient import TestClient
 
 
-@pytest.mark.asyncio
 async def test_render_async_basic(tmp_path):
     (tmp_path / "hello.html").write_text("Hello {{ name }}!")
     tpl = Jinja2Templates(directory=str(tmp_path))
@@ -15,7 +14,6 @@ async def test_render_async_basic(tmp_path):
     assert out == "Hello async!"
 
 
-@pytest.mark.asyncio
 async def test_render_async_with_loop_construct(tmp_path):
     (tmp_path / "list.html").write_text("{% for n in nums %}{{ n }}{% endfor %}")
     tpl = Jinja2Templates(directory=str(tmp_path))
@@ -23,7 +21,6 @@ async def test_render_async_with_loop_construct(tmp_path):
     assert out == "123"
 
 
-@pytest.mark.asyncio
 async def test_render_async_empty_context(tmp_path):
     (tmp_path / "static.html").write_text("no vars here")
     tpl = Jinja2Templates(directory=str(tmp_path))
@@ -31,7 +28,6 @@ async def test_render_async_empty_context(tmp_path):
     assert out == "no vars here"
 
 
-@pytest.mark.asyncio
 async def test_render_async_autoescapes_html(tmp_path):
     (tmp_path / "esc.html").write_text("{{ value }}")
     tpl = Jinja2Templates(directory=str(tmp_path))
@@ -39,7 +35,6 @@ async def test_render_async_autoescapes_html(tmp_path):
     assert "&lt;script&gt;" in out
 
 
-@pytest.mark.asyncio
 async def test_render_async_reuses_async_env(tmp_path):
     (tmp_path / "x.html").write_text("x")
     tpl = Jinja2Templates(directory=str(tmp_path))
@@ -50,7 +45,6 @@ async def test_render_async_reuses_async_env(tmp_path):
     assert tpl._async_env is first_env
 
 
-@pytest.mark.asyncio
 async def test_render_async_matches_sync_render(tmp_path):
     (tmp_path / "t.html").write_text("{{ a }}-{{ b }}")
     tpl = Jinja2Templates(directory=str(tmp_path))
@@ -60,8 +54,6 @@ async def test_render_async_matches_sync_render(tmp_path):
 
 def test_async_context_processor_contributes_to_render_async(tmp_path):
     """An `async def` context processor must contribute values on the async render path."""
-    from veloce import HTMLResponse, Veloce
-    from veloce.testclient import TestClient
 
     (tmp_path / "hello.html").write_text("Hello, {{ name }} ({{ flavor }})!")
     app = Veloce(debug=True, openapi_url=None)

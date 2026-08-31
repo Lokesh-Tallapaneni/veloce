@@ -10,6 +10,12 @@ hook after it - reading the synthetic MCP request instead of the real one.
 
 from __future__ import annotations
 
+import asyncio
+import gc
+
+import orjson
+import pytest
+
 import veloce
 from veloce import MCPContext, Request, TestClient, Veloce, g
 from veloce._internal import _current_app_var, _current_request_var
@@ -64,8 +70,6 @@ async def test_a_failing_tool_call_still_unbinds():
 
 
 async def test_a_timed_out_call_still_unbinds():
-    import asyncio
-
     app = _app(MCP_CALL_TIMEOUT=0.01)
 
     @app.mcp_tool(description="Sleeps past the budget")
@@ -89,8 +93,6 @@ async def test_the_app_binding_is_released_too():
 
 async def test_a_bare_context_still_reports_no_state_after_a_call():
     """The guard on `MCPContext.state` must not be defeated by a stale binding."""
-    import pytest
-
     await _call(_app(), "tools/call", {"name": "noop", "arguments": {}})
     with pytest.raises(RuntimeError, match="request being handled"):
         MCPContext("bare").state
@@ -181,8 +183,6 @@ def test_the_tool_still_sees_its_own_binding_during_the_call():
 
     @app.get("/outer")
     async def outer() -> dict:
-        import orjson
-
         response = await MCPServer(app).handle_message(
             {
                 "jsonrpc": "2.0",
@@ -208,9 +208,6 @@ def test_a_call_abandoned_mid_flight_plants_no_binding_when_collected():
     no awaiter to hand a context back to, so the unbind must not fire and write
     the outer binding into a context that never made the call.
     """
-    import asyncio
-    import gc
-
     app = Veloce(title="Abandoned", openapi_url=None)
 
     @app.mcp_tool(description="Never settles")

@@ -6,6 +6,7 @@ import sys
 import textwrap
 
 from veloce import Veloce
+from veloce.cli import build_parser, main
 
 
 def test_default_context_has_app_and_g():
@@ -59,7 +60,6 @@ def test_processor_returning_none_or_empty_is_safe():
 
 
 def test_cli_shell_subcommand_registered():
-    from veloce.cli import build_parser
 
     parser = build_parser()
     args = parser.parse_args(["shell", "demo:app"])
@@ -92,8 +92,6 @@ def test_cli_shell_invokes_interact(tmp_path, monkeypatch):
         captured["local"] = local
 
     monkeypatch.setattr("code.interact", fake_interact)
-
-    from veloce.cli import main
 
     rc = main(["shell", "cli_shell_app:app"])
     assert rc == 0

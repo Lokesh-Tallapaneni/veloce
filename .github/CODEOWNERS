@@ -1,0 +1,17 @@
+# Review is requested automatically from the owners listed here when a pull
+# request touches a matching path. One maintainer today, so the catch-all is
+# the operative rule; the specific entries below exist so that ownership can be
+# split without first having to work out which paths matter.
+
+* @Lokesh-Tallapaneni
+
+# Security-relevant surfaces. Called out separately because a change here wants
+# a deliberate look even when the diff is small.
+/src/veloce/security/           @Lokesh-Tallapaneni
+/src/veloce/middleware/         @Lokesh-Tallapaneni
+/src/veloce/sessions.py         @Lokesh-Tallapaneni
+
+# Release and supply chain.
+/pyproject.toml                 @Lokesh-Tallapaneni
+/uv.lock                        @Lokesh-Tallapaneni
+/.github/workflows/             @Lokesh-Tallapaneni

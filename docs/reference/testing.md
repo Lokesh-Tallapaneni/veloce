@@ -8,3 +8,4 @@ The in-memory test clients.
 
 ::: veloce.TestClient
 ::: veloce.AsyncTestClient
+::: veloce.TestResponse

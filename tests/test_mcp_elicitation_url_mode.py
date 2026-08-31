@@ -34,10 +34,7 @@ def _context(capabilities: dict, sent: list) -> MCPContext:
         sent.append((method, params))
         return {"action": "accept"}
 
-    context = MCPContext("probe")
-    context._requester = requester
-    context._client_capabilities = capabilities
-    return context
+    return MCPContext("probe", requester=requester, client_capabilities=capabilities)
 
 
 # ── The required identifier ──────────────────────────────────────────
@@ -147,8 +144,7 @@ async def test_asking_for_both_modes_at_once_is_refused():
 
 async def test_elicit_still_reports_a_transport_that_cannot_carry_it():
     """The HTTP transport has no server-to-client request channel."""
-    context = MCPContext("probe")
-    context._client_capabilities = {"elicitation": {"url": {}}}
+    context = MCPContext("probe", client_capabilities={"elicitation": {"url": {}}})
     with pytest.raises(RuntimeError, match="bidirectional"):
         await context.elicit("Authorize", url=URL)
 

@@ -4,12 +4,22 @@ Provides a lightweight `Signal` class that exposes a
 `signal.connect(receiver)` / `signal.send(sender, **kwargs)` API, so
 signal-based application code stays small.
 
-Veloce ships four standard signals:
+Veloce ships eight standard signals. Four fire around a request:
 
 - `request_started(sender=app, request=...)`
 - `request_finished(sender=app, request=..., response=...)`
 - `request_tearing_down(sender=app, exc=...)`
 - `got_request_exception(sender=app, exception=...)`
+
+three around an application context:
+
+- `appcontext_pushed(sender=app)`
+- `appcontext_popped(sender=app)`
+- `appcontext_tearing_down(sender=app, exc=...)`
+
+and one for flashed messages:
+
+- `message_flashed(sender=app, message=..., category=...)`
 
 Receivers are stored as weakrefs by default so handlers don't pin
 their owners alive. Pass `weak=False` to keep a strong reference
@@ -55,7 +65,7 @@ SignalResult = list[tuple[Callable, Any]]
 
 
 def _matches(subscribed: Any, sent: Any) -> bool:
-    """A receiver subscribed for `subscribed` should fire on `sent`."""
+    """True when a receiver subscribed for `subscribed` should fire on `sent`."""
     if subscribed is ANY_SENDER:
         return True
     if subscribed is sent:
@@ -133,10 +143,13 @@ class Signal:
     (sync receivers still run inline in registration order first).
     """
 
-    __slots__ = ("name", "_subs")
+    __slots__ = ("name", "doc", "_subs")
 
-    def __init__(self, name: str = "") -> None:
+    def __init__(self, name: str = "", doc: str | None = None) -> None:
         self.name = name
+        #: What this signal is for, as given to `Namespace.signal(name, doc=...)`.
+        #: `None` when the signal was constructed directly without one.
+        self.doc = doc
         # Each subscription: (sender, ref_or_callable, is_weak, is_async).
         # `sender` is `ANY_SENDER` for unfiltered receivers, else the
         # sender itself (strong reference - typical senders are app
@@ -206,35 +219,6 @@ class Signal:
             except Exception:
                 continue
 
-    def _iter_live_pairs(self, sender: Any) -> Iterator[tuple[Callable, bool]]:
-        """Yield `(target, is_async)` for live matching receivers; prune dead refs.
-
-        Walks `self._subs` once, resolves weakrefs, drops dead entries,
-        and yields the resolved target plus its connect-time `is_async`
-        flag for each entry whose stored sender matches `sender` via
-        `_matches`. After iteration the subscription list contains no
-        dead refs.
-        """
-        live: list[tuple[Any, Any, bool, bool]] = []
-        for sub_sender, ref, is_weak, is_async in self._subs:
-            target = ref() if is_weak else ref
-            if target is None:  # dead weakref - drop on the next pass
-                continue
-            live.append((sub_sender, ref, is_weak, is_async))
-            if _matches(sub_sender, sender):
-                yield target, is_async
-        if len(live) != len(self._subs):
-            self._subs = live
-
-    def _iter_live_targets(self, sender: Any) -> Iterator[Callable]:
-        """Yield live receivers that match `sender`; prune dead weakrefs in place.
-
-        Thin wrapper over `_iter_live_pairs` that discards the `is_async`
-        flag, so the sync `send`/`send_robust` paths stay unchanged.
-        """
-        for target, _is_async in self._iter_live_pairs(sender):
-            yield target
-
     def send(self, sender: Any = None, **kwargs: Any) -> SignalResult:
         """Fire receivers subscribed for `sender` (and for ANY_SENDER).
 
@@ -268,13 +252,7 @@ class Signal:
             try:
                 value: Any = target(sender, **kwargs)
             except Exception as exc:
-                _logger.warning(
-                    MSG_RECEIVER_RAISED,
-                    getattr(target, "__qualname__", repr(target)),
-                    self.name,
-                    exc.__class__.__name__,
-                    exc_info=True,
-                )
+                self._log_receiver_raised(target, exc)
                 value = exc
             else:
                 if inspect.iscoroutine(value):
@@ -396,15 +374,16 @@ class Signal:
             targets[slot] = (target, result)
         return targets
 
-    def _log_receiver_raised(self, target: Callable, exc: BaseException) -> None:
-        """Log a receiver failure at WARNING with the traceback attached."""
-        _logger.warning(
-            MSG_RECEIVER_RAISED,
-            getattr(target, "__qualname__", repr(target)),
-            self.name,
-            exc.__class__.__name__,
-            exc_info=exc,
-        )
+    def receiver_count(self) -> int:
+        """How many receivers this signal holds, live or not yet pruned.
+
+        The counting counterpart to `has_receivers_for`, which answers the
+        *live* question and short-circuits. This counts what is stored, so a
+        weak reference whose target has been collected is still counted until
+        `send` prunes it - which is the distinction anyone debugging a leak, or
+        checking that pruning happened, actually needs.
+        """
+        return len(self._subs)
 
     def has_receivers_for(self, sender: Any = None) -> bool:
         """`True` if any connected receiver would fire for `sender`.
@@ -420,6 +399,45 @@ class Signal:
             if _matches(sub_sender, sender):
                 return True
         return False
+
+    def _iter_live_pairs(self, sender: Any) -> Iterator[tuple[Callable, bool]]:
+        """Yield `(target, is_async)` for live matching receivers; prune dead refs.
+
+        Walks `self._subs` once, resolves weakrefs, drops dead entries,
+        and yields the resolved target plus its connect-time `is_async`
+        flag for each entry whose stored sender matches `sender` via
+        `_matches`. After iteration the subscription list contains no
+        dead refs.
+        """
+        live: list[tuple[Any, Any, bool, bool]] = []
+        for sub_sender, ref, is_weak, is_async in self._subs:
+            target = ref() if is_weak else ref
+            if target is None:  # dead weakref - drop on the next pass
+                continue
+            live.append((sub_sender, ref, is_weak, is_async))
+            if _matches(sub_sender, sender):
+                yield target, is_async
+        if len(live) != len(self._subs):
+            self._subs = live
+
+    def _iter_live_targets(self, sender: Any) -> Iterator[Callable]:
+        """Yield live receivers that match `sender`; prune dead weakrefs in place.
+
+        Thin wrapper over `_iter_live_pairs` that discards the `is_async`
+        flag, so the sync `send`/`send_robust` paths stay unchanged.
+        """
+        for target, _is_async in self._iter_live_pairs(sender):
+            yield target
+
+    def _log_receiver_raised(self, target: Callable, exc: BaseException) -> None:
+        """Log a receiver failure at WARNING with the traceback attached."""
+        _logger.warning(
+            MSG_RECEIVER_RAISED,
+            getattr(target, "__qualname__", repr(target)),
+            self.name,
+            exc.__class__.__name__,
+            exc_info=exc,
+        )
 
     def __repr__(self) -> str:
         return f"<Signal name={self.name!r} receivers={len(self._subs)}>"
@@ -458,14 +476,18 @@ class Namespace:
     def signal(self, name: str, doc: str | None = None) -> Signal:
         """Return the `Signal` named `name`, creating it on first use.
 
-        Repeated calls with the same `name` return the identical
-        instance. `doc` is accepted for API familiarity; it is ignored
-        because `Signal` is slotted and carries no per-instance docstring.
+        Repeated calls with the same `name` return the identical instance, and
+        the first call's `doc` is the one kept - a later call naming a different
+        one does not rewrite a signal other code already holds.
+
+        `doc` is recorded on the signal as `Signal.doc`, not accepted and
+        discarded - which would make it a silent no-op for anyone porting code
+        that passes it.
         """
         existing = self._signals.get(name)
         if existing is not None:
             return existing
-        sig = Signal(name)
+        sig = Signal(name, doc)
         self._signals[name] = sig
         return sig
 

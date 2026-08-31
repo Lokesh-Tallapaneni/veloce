@@ -124,6 +124,33 @@ def hash_password(
     raise ValueError(f"unknown password hashing method: {method!r}")
 
 
+def _split_verifier(stored: str) -> tuple[str, str, str, str] | None:
+    """Split a stored verifier into its four fields, or `None` if malformed.
+
+    One reader for the `method$params$salt$hash` format, so `verify_password`
+    and `needs_rehash` cannot disagree about which strings are well-formed.
+    """
+    method, sep, rest = stored.partition("$")
+    if not sep:
+        return None
+    params, sep, rest = rest.partition("$")
+    if not sep:
+        return None
+    salt_b64, sep, hash_b64 = rest.partition("$")
+    if not sep:
+        return None
+    return method, params, salt_b64, hash_b64
+
+
+def _scrypt_params(params: str) -> tuple[int, int, int] | None:
+    """Parse an scrypt `n:r:p` params field, or `None` if malformed."""
+    try:
+        n_str, r_str, p_str = params.split(":")
+        return int(n_str), int(r_str), int(p_str)
+    except ValueError:
+        return None
+
+
 def verify_password(stored: str, candidate: str | bytes) -> bool:
     """Compare `candidate` against a `stored` verifier string.
 
@@ -134,10 +161,10 @@ def verify_password(stored: str, candidate: str | bytes) -> bool:
     candidate = _coerce_secret_bytes(candidate)
     if not stored or not candidate:
         return False
-    try:
-        method, params, salt_b64, hash_b64 = stored.split("$", 3)
-    except ValueError:
+    fields = _split_verifier(stored)
+    if fields is None:
         return False
+    method, params, salt_b64, hash_b64 = fields
 
     try:
         salt = _b64decode(salt_b64)
@@ -151,11 +178,10 @@ def verify_password(stored: str, candidate: str | bytes) -> bool:
         # match of a re-derive at that shorter length.
         if len(expected) != _SCRYPT_DKLEN:
             return False
-        try:
-            n_str, r_str, p_str = params.split(":")
-            n, r, p = int(n_str), int(r_str), int(p_str)
-        except ValueError:
+        cost = _scrypt_params(params)
+        if cost is None:
             return False
+        n, r, p = cost
         # Refuse to verify against attacker-controlled cost parameters
         # below the documented security floor. A tampered hash with
         # `N=2` would otherwise verify in microseconds, defeating
@@ -216,18 +242,17 @@ def needs_rehash(stored: str) -> bool:
     """
     if not stored:
         return False
-    try:
-        method, params, _salt_b64, _hash_b64 = stored.split("$", 3)
-    except ValueError:
+    fields = _split_verifier(stored)
+    if fields is None:
         return False
+    method, params = fields[0], fields[1]
 
     # Any method other than the current default is upgraded on next login.
     if method == "scrypt":
-        try:
-            n_str, r_str, p_str = params.split(":")
-            n, r, p = int(n_str), int(r_str), int(p_str)
-        except ValueError:
+        cost = _scrypt_params(params)
+        if cost is None:
             return False
+        n, r, p = cost
         return n < _SCRYPT_N or r < _SCRYPT_R or p < _SCRYPT_P
 
     if method == "pbkdf2:sha256":

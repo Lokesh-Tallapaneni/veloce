@@ -1,10 +1,9 @@
-"""R6 — router-level `responses=` merge into each route's OpenAPI."""
+"""router-level `responses=` merge into each route's OpenAPI."""
 
 from __future__ import annotations
 
-import pytest
-
 from veloce import Blueprint, Veloce
+from veloce.contrib.openapi import get_openapi_schema
 
 
 def test_router_responses_merged_into_route():
@@ -23,8 +22,6 @@ def test_router_responses_merged_into_route():
 
     app = Veloce(debug=True, openapi_url="/openapi.json")
     app.register_blueprint(bp)
-
-    from veloce.contrib.openapi import get_openapi_schema
 
     schema = get_openapi_schema(app)
     op = schema["paths"]["/api/x"]["get"]
@@ -46,8 +43,6 @@ def test_route_responses_override_router_level():
 
     app = Veloce(debug=True, openapi_url="/openapi.json")
     app.register_blueprint(bp)
-
-    from veloce.contrib.openapi import get_openapi_schema
 
     schema = get_openapi_schema(app)
     op = schema["paths"]["/api/x"]["get"]
@@ -72,8 +67,6 @@ def test_router_responses_apply_to_every_route():
     app = Veloce(debug=True, openapi_url="/openapi.json")
     app.register_blueprint(bp)
 
-    from veloce.contrib.openapi import get_openapi_schema
-
     schema = get_openapi_schema(app)
     assert "500" in schema["paths"]["/api/a"]["get"]["responses"]
     assert "500" in schema["paths"]["/api/b"]["get"]["responses"]
@@ -93,7 +86,6 @@ def test_no_router_responses_yields_empty_route_responses():
     assert match.route_info.responses == {}
 
 
-@pytest.mark.asyncio
 async def test_router_responses_inherited_via_nested_blueprint():
     parent = Blueprint("p", url_prefix="/p", responses={503: {"description": "Down"}})
     child = Blueprint("c", url_prefix="/c")
@@ -107,8 +99,6 @@ async def test_router_responses_inherited_via_nested_blueprint():
     # so the parent's router-level responses apply to it.
     app = Veloce(debug=True, openapi_url="/openapi.json")
     app.register_blueprint(parent)
-
-    from veloce.contrib.openapi import get_openapi_schema
 
     schema = get_openapi_schema(app)
     op = schema["paths"]["/p/c/x"]["get"]

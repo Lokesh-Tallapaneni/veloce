@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import orjson
 import pytest
 
+from tests.conftest import make_request
 from veloce import Request, Veloce
 
 
 def _req(path: str = "/x") -> Request:
-    return Request(method="GET", path=path, query_string="", headers={}, body=b"")
+    return make_request(method="GET", path=path, query_string="", headers={}, body=b"")
 
 
 def test_view_functions_lists_registered_handlers():
@@ -50,7 +52,6 @@ def test_view_functions_returns_snapshot():
     assert "bogus" not in app.view_functions
 
 
-@pytest.mark.asyncio
 async def test_endpoint_decorator_replaces_handler():
     """`@app.endpoint("name")` attaches a new handler to an existing route."""
     app = Veloce(debug=True, openapi_url=None)
@@ -60,13 +61,10 @@ async def test_endpoint_decorator_replaces_handler():
     async def new_handler():
         return {"v": "new"}
 
-    import orjson
-
     resp = await app.handle_request(_req())
     assert orjson.loads(resp.body) == {"v": "new"}
 
 
-@pytest.mark.asyncio
 async def test_endpoint_decorator_reclassifies_sync_handler():
     """Attaching a sync view to a stub route must reclassify the route -
     the stub is async (fast-path eligible on a bare app), the replacement is
@@ -81,13 +79,10 @@ async def test_endpoint_decorator_reclassifies_sync_handler():
     info = next(i for _m, _p, i in app._collect_all_routes() if i.name == "my_view")
     assert info.is_fast_eligible is False
 
-    import orjson
-
     resp = await app.handle_request(_req())
     assert orjson.loads(resp.body) == {"v": "sync"}
 
 
-@pytest.mark.asyncio
 async def test_endpoint_decorator_keeps_async_fast_path():
     """An async replacement stays fast-path eligible on a bare app."""
     app = Veloce(openapi_url=None)
@@ -99,8 +94,6 @@ async def test_endpoint_decorator_keeps_async_fast_path():
 
     info = next(i for _m, _p, i in app._collect_all_routes() if i.name == "my_view")
     assert info.is_fast_eligible is True
-
-    import orjson
 
     resp = await app.handle_request(_req())
     assert orjson.loads(resp.body) == {"v": "async"}
@@ -128,3 +121,25 @@ def test_endpoint_decorator_unknown_name_raises():
         @app.endpoint("does_not_exist")
         def fn():
             return {}
+
+
+# Moved here from `test_app_protocol_signals_e2e.py`, a module named for a fix
+# batch rather than a subject.
+
+
+def test_view_functions_returns_fresh_snapshot():
+    app = Veloce(openapi_url=None)
+
+    async def index(request):
+        return "hi"
+
+    app.add_url_rule("/", endpoint="index", view_func=index)
+
+    vf1 = app.view_functions
+    assert "index" in vf1
+    vf1["index"] = "poisoned"  # caller mutation
+    vf1["junk"] = lambda: None
+
+    vf2 = app.view_functions
+    assert vf2["index"] is index, "framework state must not be poisoned by caller mutation"
+    assert "junk" not in vf2

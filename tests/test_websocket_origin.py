@@ -11,25 +11,8 @@ missing `Origin` headers.
 
 from __future__ import annotations
 
+from tests._protocol import _FakeTransport
 from veloce.websocket import WebSocket
-
-
-class _FakeTransport:
-    """Minimal asyncio-transport stand-in for direct WebSocket tests."""
-
-    def __init__(self) -> None:
-        self.writes: list[bytes] = []
-        self.closed = False
-
-    def write(self, data: bytes) -> None:
-        self.writes.append(data)
-
-    def close(self) -> None:
-        self.closed = True
-
-    def get_extra_info(self, key: str) -> None:
-        return None
-
 
 # ── Origin accessor ─────────────────────────────────────────────────
 

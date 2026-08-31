@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import FilesKeyError, Request
+from tests.conftest import make_request
+from veloce import FilesKeyError, Request, Veloce
+from veloce.http.datastructures import FormData, UploadFile
+from veloce.testclient import TestClient
 
 
 class _AppStub:
@@ -22,7 +25,7 @@ def _req(
     app: object | None = None,
 ) -> Request:
     headers = {"content-type": content_type} if content_type else {}
-    return Request(
+    return make_request(
         method="GET",
         path="/",
         query_string=query,
@@ -59,14 +62,12 @@ def test_args_preserves_duplicate_keys():
 # ── Request.files ───────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_files_empty_for_non_multipart():
     req = _req()
     files = await req.files()
     assert len(files) == 0
 
 
-@pytest.mark.asyncio
 async def test_files_empty_for_urlencoded_form():
     req = _req(
         body=b"a=1&b=2",
@@ -77,7 +78,6 @@ async def test_files_empty_for_urlencoded_form():
     assert len(files) == 0
 
 
-@pytest.mark.asyncio
 async def test_files_extracts_uploads_from_multipart():
     boundary = "----testbound"
     body = (
@@ -100,7 +100,6 @@ async def test_files_extracts_uploads_from_multipart():
     assert "title" not in files
 
 
-@pytest.mark.asyncio
 async def test_files_handles_multiple_uploads_under_one_field_name():
     """Several files sharing one field name must yield exactly that many
     entries — not N×N duplicates from re-`getlist`-ing each repeated key."""
@@ -126,7 +125,6 @@ async def test_files_handles_multiple_uploads_under_one_field_name():
 # ── Request.files debug-mode missing-key diagnostics ────────────────
 
 
-@pytest.mark.asyncio
 async def test_files_missing_key_is_bare_keyerror_without_debug():
     req = _req(
         body=b"avatar=oops",
@@ -141,7 +139,6 @@ async def test_files_missing_key_is_bare_keyerror_without_debug():
     assert str(exc.value) == "'avatar'"
 
 
-@pytest.mark.asyncio
 async def test_files_missing_key_hints_enctype_for_plain_form_field():
     req = _req(
         body=b"avatar=oops",
@@ -158,7 +155,6 @@ async def test_files_missing_key_hints_enctype_for_plain_form_field():
     assert 'enctype="multipart/form-data"' in msg
 
 
-@pytest.mark.asyncio
 async def test_files_missing_key_hints_json_body():
     req = _req(
         body=b'{"avatar": "x"}',
@@ -171,7 +167,6 @@ async def test_files_missing_key_hints_json_body():
     assert "JSON request" in str(exc.value)
 
 
-@pytest.mark.asyncio
 async def test_files_missing_key_hints_no_multipart_body():
     req = _req(app=_AppStub(debug=True))
     files = await req.files()
@@ -180,7 +175,6 @@ async def test_files_missing_key_hints_no_multipart_body():
     assert "multipart/form-data" in str(exc.value)
 
 
-@pytest.mark.asyncio
 async def test_files_present_key_returns_upload_in_debug_mode():
     boundary = "----testbound"
     body = (
@@ -198,3 +192,61 @@ async def test_files_present_key_returns_upload_in_debug_mode():
     files = await req.files()
     # Success path is unchanged: a present key returns the upload, no error.
     assert files["doc"].filename == "a.txt"
+
+
+# ── FormData MultiDict construction ────────────────────────────
+#
+# Moved here from `test_formdata_multidict.py`, which covered three unrelated
+# subsystems behind opaque tracker tags.
+
+
+def test_formdata_repeated_keys_preserved():
+    fd = FormData([("tag", "a"), ("tag", "b"), ("tag", "c")])
+    assert fd["tag"] == "a"  # first value wins for single-value access
+    assert fd.getlist("tag") == ["a", "b", "c"]
+
+
+def test_formdata_getlist_missing_returns_empty():
+    fd = FormData([("a", "1")])
+    assert fd.getlist("missing") == []
+
+
+def test_formdata_get_upload_returns_first_uploadfile_only():
+    """`get_upload` should return None for non-file fields, and the first
+    UploadFile when multiple files share a key."""
+    file_a = UploadFile(filename="a.txt")
+    file_b = UploadFile(filename="b.txt")
+    fd = FormData([("text", "x"), ("file", file_a), ("file", file_b)])
+    assert fd.get_upload("text") is None
+    upload = fd.get_upload("file")
+    assert upload is file_a
+
+
+# ── Part names ───────────────────────────────────────────────────────
+#
+# Moved here from `test_openapi_through_the_client.py`, which is named and
+# documented for OpenAPI emission and which this test does not touch.
+
+
+def test_multipart_form_quoted_semicolon_in_part_name_end_to_end() -> None:
+    app = Veloce(openapi_url=None)
+    observed: dict = {}
+
+    @app.post("/parts")
+    async def parts(request: Request):
+        form = await request.form()
+        observed["value"] = form.get("x;y")
+        observed["keys"] = list(form.keys())
+        return {"ok": True}
+
+    body = b'--BOUND\r\nContent-Disposition: form-data; name="x;y"\r\n\r\nhello\r\n--BOUND--\r\n'
+    with TestClient(app) as client:
+        resp = client.post(
+            "/parts",
+            content=body,
+            headers={"Content-Type": "multipart/form-data; boundary=BOUND"},
+        )
+
+    assert resp.status_code == 200
+    assert "x;y" in observed["keys"]
+    assert observed["value"] == "hello"

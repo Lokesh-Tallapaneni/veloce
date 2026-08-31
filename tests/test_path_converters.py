@@ -1,23 +1,34 @@
-"""Path-converter tests (R12)."""
+"""Path-converter tests."""
 
 from __future__ import annotations
 
+import datetime as _dt
+import decimal as _dec
 import re
 import uuid
 
 import pytest
 
 from veloce import Request, Veloce
+from veloce import routing as _routing
+from veloce.routing import converters as _conv
 from veloce.routing.converters import (
     AnyConverter,
+    DateConverter,
+    DateTimeConverter,
+    DecimalConverter,
     FloatConverter,
     IntConverter,
     PathConverter,
     StringConverter,
+    TimeConverter,
+    TimeDeltaConverter,
     UUIDConverter,
+    extract_regex_converters,
     parse_converter,
 )
 from veloce.routing.router import Router
+from veloce.testclient import TestClient
 
 # ── parse_converter ────────────────────────────────────────────────────
 
@@ -228,7 +239,6 @@ def test_invalid_raw_regex_pattern_raises_at_registration():
 # ── End-to-end via Veloce app ──────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_app_int_path_param_typed():
     app = Veloce(debug=True, openapi_url=None)
 
@@ -243,7 +253,6 @@ async def test_app_int_path_param_typed():
     assert b'"type":"int"' in resp.body
 
 
-@pytest.mark.asyncio
 async def test_app_int_path_param_404_on_non_int():
     app = Veloce(debug=True, openapi_url=None)
 
@@ -256,7 +265,6 @@ async def test_app_int_path_param_404_on_non_int():
     assert resp.status_code == 404
 
 
-@pytest.mark.asyncio
 async def test_app_path_converter():
     app = Veloce(debug=True, openapi_url=None)
 
@@ -308,26 +316,9 @@ def test_float_converter_rejects_inf_and_nan():
 def test_module_int_digit_cap_not_in_public_surface():
     # The underscored cap must stay private — verify it's not re-exported
     # from the routing package gateway.
-    from veloce import routing as _routing
-    from veloce.routing import converters as _conv
 
     assert "_MAX_INT_DIGITS" not in dir(_routing)
     assert _conv._MAX_INT_DIGITS == 20
-
-
-# ── Temporal / decimal converters ───────────────────────────────────────
-
-import datetime as _dt  # noqa: E402
-import decimal as _dec  # noqa: E402
-
-from veloce.routing.converters import (  # noqa: E402
-    DateConverter,
-    DateTimeConverter,
-    DecimalConverter,
-    TimeConverter,
-    TimeDeltaConverter,
-    extract_regex_converters,
-)
 
 
 def test_date_converter():
@@ -449,3 +440,91 @@ def test_app_date_route_e2e():
     assert r.status_code == 200
     assert r.json()["when"] == "2024-01-15"
     assert client.get("/d/bad").status_code == 404
+
+
+# ── A fragment must be a superset of its converter ───────────────────
+#
+# The regex fallback's fragments exist to pre-filter a segment before the
+# converter re-validates it, and a comment beside them said they "stay
+# permissive" for exactly that reason. `float` was not: `-?\d+\.\d+` is stricter
+# than `FloatConverter.match`, so `+1.5`, `.5` and `5.` were rejected before the
+# converter was consulted. The same route matched on the radix tree and 404'd on
+# the regex fallback, so moving a route to a shape the tree cannot express -
+# any partial-segment placeholder - silently narrowed what it accepted.
+
+_FLOAT_SPELLINGS = ["1.5", "+1.5", "-1.5", ".5", "5."]
+
+
+def _both_paths_app():
+
+    app = Veloce(openapi_url=None)
+
+    @app.get("/t/{v:float}")
+    async def radix(v: float):
+        return {"v": v}
+
+    # A partial-segment placeholder forces the regex fallback.
+    @app.get("/r/pre{v:float}")
+    async def regex(v: float):
+        return {"v": v}
+
+    return app
+
+
+def _client():
+
+    return TestClient(_both_paths_app())
+
+
+@pytest.mark.parametrize("value", _FLOAT_SPELLINGS)
+def test_the_regex_fallback_accepts_every_float_the_tree_does(value):
+    """The defect: three legal spellings 404'd on the regex path alone."""
+    client = _client()
+    assert client.get(f"/t/{value}").status_code == 200, value
+    assert client.get(f"/r/pre{value}").status_code == 200, value
+
+
+@pytest.mark.parametrize("value", _FLOAT_SPELLINGS)
+def test_both_paths_coerce_to_the_same_value(value):
+    client = _client()
+    assert client.get(f"/t/{value}").json() == client.get(f"/r/pre{value}").json()
+
+
+@pytest.mark.parametrize("value", ["1.5e3", "abc", "nan", "inf"])
+def test_what_the_converter_rejects_is_rejected_on_both_paths(value):
+    """Widening the fragment must not accept what the converter refuses."""
+    client = _client()
+    assert client.get(f"/t/{value}").status_code == 404, value
+    assert client.get(f"/r/pre{value}").status_code == 404, value
+
+
+def test_a_float_placeholder_does_not_swallow_an_int_route():
+    """The dot stays required, so `123` is still an int and not a float."""
+
+    app = Veloce(openapi_url=None)
+
+    @app.get("/x/{v:float}")
+    async def as_float(v: float):
+        return {"kind": "float"}
+
+    @app.get("/y/{v:int}")
+    async def as_int(v: int):
+        return {"kind": "int"}
+
+    client = TestClient(app)
+    assert client.get("/y/123").json() == {"kind": "int"}
+    assert client.get("/x/123").status_code == 404
+
+
+def test_router_greedy_converter_with_trailing_uses_regex_fallback() -> None:
+    # `{p:path}` with a static suffix is no longer rejected at registration;
+    # it is handled by the hybrid router's regex fallback.
+    app = Veloce()
+
+    @app.get("/files/{p:path}/info/x")
+    async def serve(p: str) -> dict:
+        return {"p": p}
+
+    match = app.match("GET", "/files/a/b/info/x")
+    assert match is not None
+    assert match.path_params == {"p": "a/b"}

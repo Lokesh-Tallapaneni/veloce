@@ -7,6 +7,7 @@ import io
 import tempfile
 from pathlib import Path
 
+import orjson
 import pytest
 
 from tests.conftest import make_request
@@ -33,27 +34,17 @@ def test_save_writes_full_content_to_path(tmp_path: Path):
     assert target.read_bytes() == b"hello world"
 
 
-def test_save_to_path_creates_parent_only_if_user_did():
+def test_save_to_path_creates_parent_only_if_user_did(tmp_path):
     """`save` does not auto-create missing directories; the caller must."""
     upload = _upload(b"x")
-    import os
-    import tempfile
+    missing = tmp_path / "missing" / "x.bin"
 
-    tmpdir = tempfile.mkdtemp()
-    try:
-        missing = os.path.join(tmpdir, "missing", "x.bin")
-        try:
-            upload.save(missing)
-        except OSError:
-            pass  # expected
-        else:
-            raise AssertionError("expected OSError for missing parent")
-    finally:
-        # Clean up the outer tmpdir; the missing subdir was never created.
-        os.rmdir(tmpdir)
+    with pytest.raises(OSError):
+        upload.save(str(missing))
 
-
-# ── Save to a file-like ──────────────────────────────────────────────
+    missing.parent.mkdir()
+    upload.save(str(missing))
+    assert missing.read_bytes() == b"x"
 
 
 def test_save_to_open_file_handle():
@@ -129,72 +120,68 @@ def test_save_can_be_called_multiple_times():
     assert a.getvalue() == b.getvalue() == b"abc"
 
 
-class TestUploadFile:
-    @pytest.mark.asyncio
-    async def test_upload_file_read(self):
-        f = UploadFile(filename="test.txt", file=io.BytesIO(b"hello"))
-        data = await f.read()
-        assert data == b"hello"
-
-    @pytest.mark.asyncio
-    async def test_upload_file_content(self):
-        f = UploadFile(filename="test.txt", file=io.BytesIO(b"content"))
-        assert f.content == b"content"
-
-    def test_upload_file_repr(self):
-        f = UploadFile(filename="photo.jpg", content_type="image/jpeg", size=1024)
-        assert "photo.jpg" in repr(f)
-
-    @pytest.mark.asyncio
-    async def test_multipart_file_upload(self):
-        app = Veloce(openapi_url=None)
-
-        @app.post("/upload")
-        async def upload(request: Request):
-            form = await request.form()
-            file = form.get("file")
-            if isinstance(file, UploadFile):
-                content = await file.read()
-                return {"filename": file.filename, "size": len(content)}
-            return {"error": "no file"}
-
-        # Build multipart body
-        body = (
-            b"------TestBoundary\r\n"
-            b'Content-Disposition: form-data; name="file"; filename="test.txt"\r\n'
-            b"Content-Type: text/plain\r\n"
-            b"\r\n"
-            b"Hello World\r\n"
-            b"------TestBoundary--\r\n"
-        )
-
-        req = make_request(
-            method="POST",
-            path="/upload",
-            body=body,
-            headers={"content-type": "multipart/form-data; boundary=----TestBoundary"},
-        )
-        resp = await app.handle_request(req)
-        import orjson
-
-        data = orjson.loads(resp.body)
-        assert data["filename"] == "test.txt"
-        assert data["size"] == 11
+# ── The UploadFile object itself ─────────────────────────────────────
 
 
-class TestUploadFileContextManager:
-    """Test UploadFile async context manager."""
-
-    @pytest.mark.asyncio
-    async def test_async_with(self):
-        async with UploadFile(filename="test.txt", file=io.BytesIO(b"hello")) as f:
-            data = await f.read()
-            assert data == b"hello"
-        # File should be closed after exiting context
-        assert f.file.closed
+async def test_async_with_closes_the_file():
+    async with UploadFile(filename="test.txt", file=io.BytesIO(b"hello")) as f:
+        assert await f.read() == b"hello"
+    assert f.file.closed
 
 
-@pytest.mark.asyncio
+async def test_upload_file_read():
+    f = UploadFile(filename="test.txt", file=io.BytesIO(b"hello"))
+    data = await f.read()
+    assert data == b"hello"
+
+
+async def test_upload_file_content():
+    f = UploadFile(filename="test.txt", file=io.BytesIO(b"content"))
+    assert f.content == b"content"
+
+
+def test_upload_file_repr():
+    f = UploadFile(filename="photo.jpg", content_type="image/jpeg", size=1024)
+    assert "photo.jpg" in repr(f)
+
+
+async def test_multipart_file_upload():
+    app = Veloce(openapi_url=None)
+
+    @app.post("/upload")
+    async def upload(request: Request):
+        form = await request.form()
+        file = form.get("file")
+        if isinstance(file, UploadFile):
+            content = await file.read()
+            return {"filename": file.filename, "size": len(content)}
+        return {"error": "no file"}
+
+    # Build multipart body
+    body = (
+        b"------TestBoundary\r\n"
+        b'Content-Disposition: form-data; name="file"; filename="test.txt"\r\n'
+        b"Content-Type: text/plain\r\n"
+        b"\r\n"
+        b"Hello World\r\n"
+        b"------TestBoundary--\r\n"
+    )
+
+    req = make_request(
+        method="POST",
+        path="/upload",
+        body=body,
+        headers={"content-type": "multipart/form-data; boundary=----TestBoundary"},
+    )
+    resp = await app.handle_request(req)
+    data = orjson.loads(resp.body)
+    assert data["filename"] == "test.txt"
+    assert data["size"] == 11
+
+
+# ── Reads stay off the loop only when they must ────────────
+
+
 async def test_uploadfile_read_does_not_block_on_spilled_spool():
     """Once the spool spills to disk, reads must hop to a thread —
     not block the event loop. The smoke test: a background sentinel
@@ -228,7 +215,6 @@ async def test_uploadfile_read_does_not_block_on_spilled_spool():
     await upload.close()
 
 
-@pytest.mark.asyncio
 async def test_uploadfile_in_memory_read_stays_on_loop():
     """The cheap in-memory path must not pay an executor-hop tax —
     BytesIO reads stay on the loop."""
@@ -237,7 +223,6 @@ async def test_uploadfile_in_memory_read_stays_on_loop():
     await upload.close()
 
 
-@pytest.mark.asyncio
 async def test_uploadfile_unrolled_spool_stays_on_loop():
     """The production multipart-parser path hands `UploadFile` a
     `SpooledTemporaryFile`, not a `BytesIO`. A small upload that has

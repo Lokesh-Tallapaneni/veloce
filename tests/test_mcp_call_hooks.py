@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import pytest
 
+from tests._mcp import call_tool
 from veloce import Veloce
 from veloce.contrib.mcp.errors import AuthorizationError
 from veloce.contrib.mcp.server import MCPServer
@@ -46,19 +47,6 @@ def _app() -> Veloce:
     return app
 
 
-async def _call(app: Veloce, name: str, arguments: dict | None = None) -> dict:
-    response = await MCPServer(app).handle_message(
-        {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {"name": name, "arguments": arguments or {}},
-        },
-        MCPSession(),
-    )
-    return response["result"]
-
-
 # ── Both registration styles are covered ─────────────────────────────
 
 
@@ -76,7 +64,7 @@ async def test_a_hook_runs_around_either_kind_of_tool(tool: str):
         seen.append(("after", name))
         return result
 
-    await _call(app, tool)
+    await call_tool(app, tool)
     assert seen == [("before", tool), ("after", tool)]
 
 
@@ -88,11 +76,11 @@ async def test_the_hook_sees_the_arguments_the_call_carried():
     async def before(name, arguments):
         seen.append(dict(arguments))
 
-    await _call(app, "pure", {"a": 21})
+    await call_tool(app, "pure", {"a": 21})
     assert seen == [{"a": 21}]
 
 
-async def test_a_sync_hook_is_supported():
+async def test_a_sync_mcp_call_hook_is_supported():
     app = _app()
     seen: list = []
 
@@ -100,7 +88,7 @@ async def test_a_sync_hook_is_supported():
     def before(name, arguments):
         seen.append(name)
 
-    await _call(app, "pure")
+    await call_tool(app, "pure")
     assert seen == ["pure"]
 
 
@@ -152,7 +140,7 @@ async def test_returning_a_value_answers_without_calling_the_handler():
             return "from the hook"
         return None
 
-    assert (await _call(app, "records"))["content"][0]["text"] == "from the hook"
+    assert (await call_tool(app, "records"))["content"][0]["text"] == "from the hook"
     assert called == [], "the handler must not have run"
 
 
@@ -163,7 +151,7 @@ async def test_returning_none_lets_the_call_proceed():
     async def passive(name, arguments):
         return None
 
-    assert (await _call(app, "pure", {"a": 5}))["content"][0]["text"] == "10"
+    assert (await call_tool(app, "pure", {"a": 5}))["content"][0]["text"] == "10"
 
 
 async def test_a_hook_refuses_a_call_by_raising_an_authorization_error():
@@ -194,7 +182,7 @@ async def test_any_other_raising_hook_is_reported_like_a_failing_handler():
     async def broken(name, arguments):
         raise ValueError("hook bug")
 
-    result = await _call(app, "pure")
+    result = await call_tool(app, "pure")
     assert result["isError"] is True
 
 
@@ -208,7 +196,7 @@ async def test_an_after_hook_may_replace_the_result():
     async def redact(name, result):
         return "redacted"
 
-    assert (await _call(app, "pure"))["content"][0]["text"] == "redacted"
+    assert (await call_tool(app, "pure"))["content"][0]["text"] == "redacted"
 
 
 async def test_after_hooks_chain_in_registration_order():
@@ -222,7 +210,7 @@ async def test_after_hooks_chain_in_registration_order():
     async def second(name, result):
         return f"{result}-two"
 
-    assert (await _call(app, "pure", {"a": 1}))["content"][0]["text"] == "2-one-two"
+    assert (await call_tool(app, "pure", {"a": 1}))["content"][0]["text"] == "2-one-two"
 
 
 async def test_an_after_hook_does_not_run_when_the_call_raised():
@@ -238,7 +226,7 @@ async def test_an_after_hook_does_not_run_when_the_call_raised():
         seen.append(name)
         return result
 
-    assert (await _call(app, "boom"))["isError"] is True
+    assert (await call_tool(app, "boom"))["isError"] is True
     assert seen == []
 
 
@@ -249,7 +237,7 @@ async def test_an_app_with_no_hooks_behaves_exactly_as_before():
     app = _app()
     assert app._mcp_before_call == []
     assert app._mcp_after_call == []
-    assert (await _call(app, "pure", {"a": 4}))["content"][0]["text"] == "8"
+    assert (await call_tool(app, "pure", {"a": 4}))["content"][0]["text"] == "8"
 
 
 def test_the_decorators_return_the_function_unchanged():

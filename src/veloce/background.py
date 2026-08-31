@@ -16,7 +16,7 @@ class BackgroundTask:
 
     __slots__ = ("func", "args", "kwargs")
 
-    def __init__(self, func: Callable, *args: Any, **kwargs: Any) -> None:
+    def __init__(self, func: Callable[..., Any], *args: Any, **kwargs: Any) -> None:
         self.func = func
         self.args = args
         self.kwargs = kwargs
@@ -37,7 +37,7 @@ class BackgroundTasks:
     def __init__(self) -> None:
         self._tasks: list[BackgroundTask] = []
 
-    def add_task(self, func: Callable, *args: Any, **kwargs: Any) -> None:
+    def add_task(self, func: Callable[..., Any], *args: Any, **kwargs: Any) -> None:
         """Append a task to the queue."""
         self._tasks.append(BackgroundTask(func, *args, **kwargs))
 

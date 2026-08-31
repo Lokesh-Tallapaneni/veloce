@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from veloce import RedirectResponse, Request, Veloce, redirect
 
 
@@ -33,7 +31,6 @@ def test_body_is_empty():
     assert resp.body == b""
 
 
-@pytest.mark.asyncio
 async def test_returnable_from_handler():
     """Handlers can `return redirect(...)` and it round-trips correctly."""
     app = Veloce(debug=True, openapi_url=None)

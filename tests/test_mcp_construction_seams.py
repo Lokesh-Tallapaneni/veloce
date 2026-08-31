@@ -15,6 +15,8 @@ import inspect
 import pytest
 
 from veloce import Veloce
+from veloce.contrib.mcp import ArgTransform, context, derive_tool, toolsearch
+from veloce.contrib.mcp.registry import build_registry
 from veloce.contrib.mcp.server import MCPServer
 
 
@@ -35,20 +37,18 @@ def test_the_search_catalogue_sees_a_fully_constructed_server():
     """It holds the server and calls back into it, so it must get a finished one."""
     seen: dict[str, bool] = {}
     original = MCPServer._describe_tool
-
-    class Probe(MCPServer):
-        __slots__ = ()
-
     server = MCPServer(_app(), tool_search=True)
     for attribute in MCPServer.__slots__:
         seen[attribute] = hasattr(server, attribute)
     assert all(seen.values()), [name for name, ok in seen.items() if not ok]
+    # Construction must not rebind the method the catalogue calls back into -
+    # a `Probe` subclass used to be declared here and never used, which is what
+    # made this line look like it was checking nothing.
     assert original is MCPServer._describe_tool
 
 
 def test_every_slot_is_set_before_the_catalogue_is_built():
     captured: list[list[str]] = []
-    from veloce.contrib.mcp import toolsearch
 
     real_init = toolsearch.ToolSearch.__init__
 
@@ -72,17 +72,34 @@ def test_a_server_without_search_holds_none():
 
 
 def test_the_session_variable_is_not_typed_as_any():
-    """`Any` silently switched off checking on every reader of `session.hidden`."""
-    from veloce.contrib.mcp import context
+    """`Any` silently switched off checking on every reader of `session.hidden`.
 
-    source = inspect.getsource(context)
-    assert "_session_var: ContextVar[MCPSession | None]" in source
-    assert "_session_var: ContextVar[Any]" not in source
+    Read off the module's `__annotations__` rather than matched in its source
+    text. The previous form asserted the literal string
+    `"_session_var: ContextVar[MCPSession | None]"` appeared and
+    `"ContextVar[Any]"` did not, which pins the *spelling* - a reformat, a line
+    break or an equivalent alias would fail it while the type was still precise,
+    and `ContextVar["Any"]` would pass while it was not.
+    """
+
+    annotation = context.__annotations__.get("_session_var")
+    assert annotation is not None, "_session_var carries no annotation at all"
+    assert "Any" not in str(annotation), annotation
+    assert "MCPSession" in str(annotation), annotation
 
 
-def test_the_server_reads_the_session_without_a_cast():
-    source = inspect.getsource(MCPServer.current_session)
-    assert "cast(" not in source
+def test_the_server_returns_the_session_precisely_typed():
+    """What the absent `cast(` was really about.
+
+    The old test asserted `"cast(" not in inspect.getsource(...)`, which pins the
+    absence of a token: it would pass on a body that had been made *less* precise
+    some other way, and fail on a `cast` used for an unrelated reason. The
+    property is that the return type says exactly what comes back, which is what
+    makes a cast unnecessary in the first place.
+    """
+    annotation = inspect.signature(MCPServer.current_session).return_annotation
+    assert annotation is not inspect.Signature.empty
+    assert str(annotation) == "MCPSession | None"
 
 
 # ── A flag reads as a flag ───────────────────────────────────────────
@@ -103,7 +120,6 @@ def test_mounting_positionally_is_refused():
 def test_mounting_by_keyword_still_works():
     parent = Veloce(title="Parent", openapi_url=None)
     parent.mount("/child", _app(), expose_mcp=True)
-    from veloce.contrib.mcp.registry import build_registry
 
     assert "child_search" in build_registry(parent).tools
 
@@ -113,8 +129,6 @@ def test_mounting_by_keyword_still_works():
 
 def test_a_derived_tool_and_a_proxied_tool_share_one_list():
     """Both are handed over already built; the name now covers both."""
-    from veloce.contrib.mcp import ArgTransform, derive_tool
-    from veloce.contrib.mcp.registry import build_registry
 
     app = _app()
     app.add_mcp_tool(

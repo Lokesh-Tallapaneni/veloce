@@ -10,5 +10,7 @@ The route-group primitives a project is structured with.
 ::: veloce.APIRouter
 ::: veloce.Blueprint
 ::: veloce.URLRule
+
+::: veloce.URLMap
 ::: veloce.View
 ::: veloce.MethodView

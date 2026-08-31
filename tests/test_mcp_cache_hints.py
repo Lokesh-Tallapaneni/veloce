@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+from tests._mcp import initialize
 from veloce import Veloce
 from veloce.contrib.mcp.server import DEFAULT_CACHE_TTL_MS, MCPServer
 from veloce.contrib.mcp.session import MCPSession
@@ -189,16 +190,7 @@ async def test_a_handshake_era_client_sees_no_hints():
     """The handshake revisions have no such fields; they must not leak into them."""
     server = MCPServer(_app())
     await server.handle_message(
-        {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2025-11-25",
-                "capabilities": {},
-                "clientInfo": {"name": "c", "version": "1"},
-            },
-        }
+        initialize("2025-11-25", id=1, client_info={"name": "c", "version": "1"})
     )
     await server.handle_message({"jsonrpc": "2.0", "method": "notifications/initialized"})
     response = await server.handle_message({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
@@ -253,3 +245,61 @@ async def test_a_stateful_connection_is_private_even_before_anything_is_hidden()
     session = _stateful_session()
     assert not session.hidden
     assert await _list_scope(_app(), "tools/list", session) == "private"
+
+
+# ── `server/discover` is never publicly cacheable ────────────────────
+
+
+async def test_discover_is_private_on_a_stateless_connection():
+    """Its answer is built for the asking connection, so it must not be shared.
+
+    `public` invites a shared gateway to serve one caller's answer to another.
+    The capability block reflects what that connection can be told and which
+    protocol revision it stated, and the result carries `instructions` - server
+    prose a client feeds to its model.
+    """
+    server = MCPServer(_app())
+    result = (await _call(server, "server/discover"))["result"]
+    assert result["cacheScope"] == "private"
+
+
+async def test_discover_is_private_on_a_stateful_connection():
+    server = MCPServer(_app())
+    response = await server.handle_message(
+        {"jsonrpc": "2.0", "id": 1, "method": "server/discover", "params": {"_meta": MODERN}},
+        MCPSession(persistent=True),
+    )
+    assert response["result"]["cacheScope"] == "private"
+
+
+async def test_the_discover_answer_really_does_vary_by_revision():
+    """The reason it cannot be public, stated as a test rather than a comment."""
+    server = MCPServer(_app())
+    modern = await server.handle_message(
+        {"jsonrpc": "2.0", "id": 1, "method": "server/discover", "params": {"_meta": MODERN}},
+        MCPSession(),
+    )
+    handshake = await server.handle_message(
+        {"jsonrpc": "2.0", "id": 2, "method": "server/discover", "params": {}},
+        MCPSession(),
+    )
+    assert set(modern["result"]["capabilities"]) != set(handshake["result"]["capabilities"])
+
+
+async def test_a_stateless_tool_listing_is_still_publicly_cacheable():
+    """The rest of the classification is unchanged - this is one method, not a policy."""
+    server = MCPServer(_app())
+    response = await server.handle_message(
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {"_meta": MODERN}},
+        MCPSession(persistent=False),
+    )
+    assert response["result"]["cacheScope"] == "public"
+
+
+async def test_a_scoped_tool_listing_is_still_private():
+    server = MCPServer(_app(scoped_tool=True))
+    response = await server.handle_message(
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {"_meta": MODERN}},
+        MCPSession(persistent=False),
+    )
+    assert response["result"]["cacheScope"] == "private"

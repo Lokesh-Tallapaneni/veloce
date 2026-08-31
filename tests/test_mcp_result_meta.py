@@ -11,23 +11,11 @@ attaches can reach the next client's response.
 
 from __future__ import annotations
 
+from tests._mcp import call_tool
 from veloce import MCPContext, Veloce
+from veloce.contrib.mcp._helpers import _attach_result_meta
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.session import MCPSession
-
-
-async def _call(app: Veloce, name: str, arguments: dict | None = None) -> dict:
-    response = await MCPServer(app).handle_message(
-        {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {"name": name, "arguments": arguments or {}},
-        },
-        MCPSession(),
-    )
-    return response["result"]
-
 
 # ── A handler can attach it ──────────────────────────────────────────
 
@@ -40,7 +28,7 @@ async def test_a_handler_attaches_meta_to_its_result():
         ctx.result_meta["io.example/cost"] = 0.02
         return {"ok": True}
 
-    assert (await _call(app, "priced"))["_meta"] == {"io.example/cost": 0.02}
+    assert (await call_tool(app, "priced"))["_meta"] == {"io.example/cost": 0.02}
 
 
 async def test_several_keys_may_be_attached():
@@ -52,7 +40,7 @@ async def test_several_keys_may_be_attached():
         ctx.result_meta["trace"] = "abc123"
         return {"ok": True}
 
-    assert (await _call(app, "annotated"))["_meta"] == {"cost": 0.02, "trace": "abc123"}
+    assert (await call_tool(app, "annotated"))["_meta"] == {"cost": 0.02, "trace": "abc123"}
 
 
 async def test_a_handler_that_attaches_nothing_sends_no_meta():
@@ -62,7 +50,7 @@ async def test_a_handler_that_attaches_nothing_sends_no_meta():
     async def plain() -> int:
         return 1
 
-    assert "_meta" not in await _call(app, "plain")
+    assert "_meta" not in await call_tool(app, "plain")
 
 
 async def test_reading_the_slot_without_writing_sends_nothing():
@@ -74,7 +62,7 @@ async def test_reading_the_slot_without_writing_sends_nothing():
         assert ctx.result_meta == {}
         return {"ok": True}
 
-    assert "_meta" not in await _call(app, "looks")
+    assert "_meta" not in await call_tool(app, "looks")
 
 
 async def test_the_result_content_is_unaffected():
@@ -85,7 +73,7 @@ async def test_the_result_content_is_unaffected():
         ctx.result_meta["cost"] = 1
         return {"value": 42}
 
-    result = await _call(app, "answer")
+    result = await call_tool(app, "answer")
     assert result["content"][0]["text"] == '{"value":42}'
 
 
@@ -104,8 +92,8 @@ async def test_meta_does_not_leak_into_the_next_call():
     async def quiet() -> int:
         return 1
 
-    assert (await _call(app, "attaches"))["_meta"] == {"seen": True}
-    assert "_meta" not in await _call(app, "quiet")
+    assert (await call_tool(app, "attaches"))["_meta"] == {"seen": True}
+    assert "_meta" not in await call_tool(app, "quiet")
 
 
 async def test_each_call_starts_with_an_empty_slot():
@@ -116,8 +104,8 @@ async def test_each_call_starts_with_an_empty_slot():
         ctx.result_meta["calls"] = ctx.result_meta.get("calls", 0) + 1
         return {"ok": True}
 
-    assert (await _call(app, "counter"))["_meta"] == {"calls": 1}
-    assert (await _call(app, "counter"))["_meta"] == {"calls": 1}
+    assert (await call_tool(app, "counter"))["_meta"] == {"calls": 1}
+    assert (await call_tool(app, "counter"))["_meta"] == {"calls": 1}
 
 
 # ── Protocol machinery keeps precedence ──────────────────────────────
@@ -125,7 +113,6 @@ async def test_each_call_starts_with_an_empty_slot():
 
 async def test_a_handler_cannot_displace_the_protocol_own_meta():
     """A task marker or subscription id answers the client's request, not the tool's."""
-    from veloce.contrib.mcp._helpers import _attach_result_meta
 
     result = {"content": [], "_meta": {"protocol": "owns-this"}}
     attached = _attach_result_meta(result, {"protocol": "handler-tried", "mine": 1})

@@ -12,35 +12,15 @@ from __future__ import annotations
 import asyncio
 import signal
 
+from tests._dev_server import BindProbe, serve_until_bound
 from veloce import Veloce
-
-
-class _FakeServer:
-    """`loop.create_server` stand-in that records `close()`."""
-
-    def __init__(self) -> None:
-        self.closed = False
-
-    async def __aenter__(self) -> _FakeServer:
-        return self
-
-    async def __aexit__(self, *exc: object) -> bool:
-        return False
-
-    def close(self) -> None:
-        self.closed = True
 
 
 async def test_signal_fallback_when_add_signal_handler_unsupported(monkeypatch):
     app = Veloce(openapi_url=None)
     loop = asyncio.get_running_loop()
-
-    server = _FakeServer()
-
-    async def fake_create_server(*args: object, **kwargs: object) -> _FakeServer:
-        return server
-
-    monkeypatch.setattr(loop, "create_server", fake_create_server)
+    probe = BindProbe().install(monkeypatch, loop)
+    server = probe.server
 
     # Simulate Windows: the loop cannot install signal handlers.
     def _raise(*args: object, **kwargs: object) -> None:
@@ -57,12 +37,8 @@ async def test_signal_fallback_when_add_signal_handler_unsupported(monkeypatch):
 
     monkeypatch.setattr(signal, "signal", fake_signal)
 
-    task = asyncio.create_task(app._serve("127.0.0.1", 0, False, None))
+    task = await serve_until_bound(app, probe)
     try:
-        for _ in range(100):
-            await asyncio.sleep(0.01)
-            if signal.SIGINT in installed:
-                break
         # The Windows fallback wired a SIGINT handler via signal.signal.
         assert signal.SIGINT in installed
 
@@ -79,12 +55,7 @@ async def test_signal_fallback_when_add_signal_handler_unsupported(monkeypatch):
 async def test_signal_fallback_restores_previous_handler(monkeypatch):
     app = Veloce(openapi_url=None)
     loop = asyncio.get_running_loop()
-    server = _FakeServer()
-
-    async def fake_create_server(*args: object, **kwargs: object) -> _FakeServer:
-        return server
-
-    monkeypatch.setattr(loop, "create_server", fake_create_server)
+    probe = BindProbe().install(monkeypatch, loop)
 
     def _raise(*args: object, **kwargs: object) -> None:
         raise NotImplementedError
@@ -102,12 +73,8 @@ async def test_signal_fallback_restores_previous_handler(monkeypatch):
 
     monkeypatch.setattr(signal, "signal", fake_signal)
 
-    task = asyncio.create_task(app._serve("127.0.0.1", 0, False, None))
+    task = await serve_until_bound(app, probe)
     try:
-        for _ in range(100):
-            await asyncio.sleep(0.01)
-            if any(s == signal.SIGINT for s, _ in calls):
-                break
         handler = next(h for s, h in calls if s == signal.SIGINT)
         handler(signal.SIGINT, None)  # type: ignore[operator]
         await asyncio.wait_for(task, timeout=2.0)
