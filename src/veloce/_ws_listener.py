@@ -67,6 +67,42 @@ def _resolve_listener_callable(
     return _async_call, wants_socket
 
 
+def _hint_target(callback: Any) -> Any:
+    """Return the object whose annotations describe `callback`'s parameters.
+
+    `inspect.signature` reads a callable instance through its `__call__` and
+    drops the bound `self`, but `get_type_hints` on the instance answers about
+    the *class attributes* instead - so the parameter list and the annotations
+    would come from two different objects and a callable-object listener's
+    message type would silently never be read.
+    """
+    if inspect.isroutine(callback):
+        return callback
+    return type(callback).__call__ if callable(callback) else callback
+
+
+def _positional_params(callback: Any) -> list[inspect.Parameter]:
+    """Return the callback's positional parameters, empty when it has no signature.
+
+    Shared so the two readers cannot disagree about which parameters count:
+    `_message_annotation` takes `params[1]` exactly when `_callback_wants_socket`
+    saw two, so a filter that drifted between them would leave the listener
+    validating the wrong argument with nothing raising.
+    """
+    # `inspect.signature` already unwraps a callable instance's `__call__`
+    # and drops the bound `self`, so it works on plain functions, bound
+    # methods, and `__call__`-able objects alike.
+    try:
+        return [
+            p
+            for p in inspect.signature(callback).parameters.values()
+            if p.kind
+            in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        ]
+    except (TypeError, ValueError):
+        return []
+
+
 def _callback_wants_socket(callback: Any) -> bool:
     """Decide whether a listener callback expects the socket as its first arg.
 
@@ -75,18 +111,7 @@ def _callback_wants_socket(callback: Any) -> bool:
     is the second). A single-parameter `on_receive(data)` callback gets only
     the message.
     """
-    # `inspect.signature` already unwraps a callable instance's `__call__`
-    # and drops the bound `self`, so it works on plain functions, bound
-    # methods, and `__call__`-able objects alike.
-    try:
-        params = [
-            p
-            for p in inspect.signature(callback).parameters.values()
-            if p.kind
-            in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
-        ]
-    except (TypeError, ValueError):
-        return False
+    params = _positional_params(callback)
     if not params:
         return False
     if params[0].name in ("ws", "socket"):
@@ -123,20 +148,12 @@ def _message_annotation(callback: Any, wants_socket: bool) -> Any:
     so the discriminator would silently vanish on 3.10 and the union would be
     refused as ambiguous on the one interpreter where that is hardest to debug.
     """
-    try:
-        params = [
-            p
-            for p in inspect.signature(callback).parameters.values()
-            if p.kind
-            in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
-        ]
-    except (TypeError, ValueError):
-        return None
+    params = _positional_params(callback)
     if not params:
         return None
     target = params[1] if wants_socket and len(params) >= 2 else params[0]
     try:
-        hints = typing_extensions.get_type_hints(callback, include_extras=True)
+        hints = typing_extensions.get_type_hints(_hint_target(callback), include_extras=True)
     except Exception as exc:  # noqa: BLE001 - the name genuinely cannot be resolved
         # Never silent: an unresolved annotation means the frames the callback
         # was promised would be validated arrive raw instead, and a listener
@@ -236,7 +253,18 @@ def _msgspec_validator(inner: Any) -> Any:
 
 
 def _where(callback: Any) -> str:
-    return getattr(callback, "__name__", None) or "websocket listener"
+    """Name the callback the way `_handler_plan` names a handler.
+
+    `__qualname__` first, so a listener defined as a method or inside a factory
+    keeps its enclosing context - the sibling warning in `_handler_plan`
+    resolves it that way, and two different answers to "which callback is
+    this?" for the same class of failure is worse than either answer.
+    """
+    return (
+        getattr(callback, "__qualname__", None)
+        or getattr(callback, "__name__", None)
+        or repr(callback)
+    )
 
 
 def _undiscriminated(callback: Any, annotation: Any, detail: str) -> str:

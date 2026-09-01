@@ -307,3 +307,32 @@ def test_the_unresolved_annotation_warning_points_at_the_users_line():
     assert caught[0].filename == __file__, (
         f"warning blamed {caught[0].filename}, not the decorator's own module"
     )
+
+
+def test_a_nested_callback_is_named_with_its_enclosing_context():
+    """`_handler_plan` names a handler by `__qualname__`; this must agree."""
+    app = Veloce()
+
+    class Unresolvable(BaseModel):
+        x: int
+
+    with pytest.warns(UserWarning) as caught:
+
+        @app.websocket_listener("/local")
+        async def local(message: Unresolvable):
+            return None
+
+    message = str(caught[0].message)
+    assert "test_a_nested_callback_is_named_with_its_enclosing_context.<locals>.local" in message
+
+
+def test_both_signature_readers_agree_on_a_callable_object():
+    """One parameter filter, so `wants_socket` and the message pick cannot drift."""
+
+    class Consumer:
+        async def __call__(self, ws, message: Say):
+            return {"text": message.text}
+
+    _handler, contract = build_listener_handler(Consumer())
+    assert contract is not None
+    assert contract.message_type is Say
