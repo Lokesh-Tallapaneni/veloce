@@ -31,7 +31,6 @@ from veloce._model_backend import (
     adapter_for,
     backend_of,
     is_msgspec_struct,
-    is_pydantic_model,
     resolve_response_contract,
 )
 from veloce.exceptions import WebSocketDisconnect
@@ -194,7 +193,7 @@ def _message_union_members(inner: Any) -> tuple[Any, ...]:
     members = tuple(
         _unwrap_annotated(a) for a in typing_extensions.get_args(inner) if a is not type(None)
     )
-    if members and all(is_pydantic_model(m) or is_msgspec_struct(m) for m in members):
+    if members and all(backend_of(m) is not ModelBackend.NONE for m in members):
         return members
     return ()
 
@@ -216,12 +215,17 @@ def _message_validator(annotation: Any, inner: Any, members: tuple[Any, ...]) ->
     full annotation rather than through `inner`, so a `Model | None` frame of
     `null` stays legal: the author asked for that by writing the `| None`.
     """
-    single = members[0] if members else inner
-    if is_msgspec_struct(single):
+    # `backend_of` is the framework's answer to "is this a message, and whose?"
+    # - restating it here is how the two doors drifted: a dataclass is `ADAPTED`,
+    # which an inline `pydantic or msgspec` test misses, so the HTTP body
+    # validated and the websocket frame silently arrived as a raw mapping.
+    backend = backend_of(members[0] if members else inner)
+    if backend is ModelBackend.MSGSPEC:
         return _msgspec_validator(inner)
-    if is_pydantic_model(single):
-        return adapter_for(annotation).validate_python
-    return None
+    if backend is ModelBackend.NONE:
+        return None
+    # Pydantic validates its own models and adapts dataclasses / TypedDicts.
+    return adapter_for(annotation).validate_python
 
 
 def _reject_ambiguous_union(

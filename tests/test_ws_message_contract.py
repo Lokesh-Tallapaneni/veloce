@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+import dataclasses
+import sys
+from typing import Annotated, Literal, TypedDict
 
 import pytest
 from pydantic import BaseModel, Discriminator, Field, Tag
@@ -388,3 +390,72 @@ def test_a_callable_discriminator_is_accepted_and_names_no_field():
     # Discriminated, but there is no single field to publish as the tag name.
     assert contract.discriminator is None
     assert contract.members == (Join, Say)
+
+
+@dataclasses.dataclass
+class Move:
+    kind: Literal["move"]
+    x: int
+
+
+@dataclasses.dataclass
+class Stop:
+    kind: Literal["stop"]
+
+
+AdaptedUnion = Annotated[Move | Stop, Field(discriminator="kind")]
+
+
+class Point(TypedDict):
+    x: int
+    y: int
+
+
+def test_a_dataclass_message_is_validated_like_an_http_body():
+    """`backend_of` calls a dataclass ADAPTED; both doors must honour that."""
+    app = Veloce()
+
+    @app.websocket_listener("/move")
+    async def move(data: Move):
+        return {"type": type(data).__name__, "x": data.x}
+
+    contract = route_at(app, "/move", include_hidden=True).ws_messages
+    assert contract is not None, "a dataclass annotation left the listener unvalidated"
+    assert contract.backend is ModelBackend.ADAPTED
+
+    with TestClient(app) as client, client.websocket_connect("/move") as ws:
+        ws.send_json({"kind": "move", "x": 1})
+        assert ws.receive_json() == {"type": "Move", "x": 1}
+        ws.send_json({"kind": "move", "x": "not-an-int"})
+        with pytest.raises(RuntimeError, match="1007"):
+            ws.receive_json()
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="pydantic cannot adapt typing.TypedDict below 3.12"
+)
+def test_a_typeddict_message_is_validated():
+    async def probe(data: Point):
+        return None
+
+    _handler, contract = build_listener_handler(probe)
+    assert contract is not None
+    assert contract.backend is ModelBackend.ADAPTED
+
+
+def test_a_discriminated_dataclass_union_is_validated():
+    async def probe(message: AdaptedUnion):
+        return None
+
+    _handler, contract = build_listener_handler(probe)
+    assert contract is not None
+    assert contract.members == (Move, Stop)
+    assert contract.discriminator == "kind"
+
+
+def test_an_undiscriminated_dataclass_union_is_refused():
+    async def probe(message: Move | Point):
+        return None
+
+    with pytest.raises(TypeError, match="must be discriminated"):
+        build_listener_handler(probe)

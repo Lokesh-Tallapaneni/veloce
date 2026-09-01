@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A websocket frame that does not match the declared message type closes with `1007`. ([#295](https://github.com/Lokesh-Tallapaneni/veloce/pull/295))
 - An undiscriminated websocket message union is refused at registration. ([#295](https://github.com/Lokesh-Tallapaneni/veloce/pull/295))
 - A listener's return annotation documents what the channel sends. ([#295](https://github.com/Lokesh-Tallapaneni/veloce/pull/295))
+- A websocket listener validates a dataclass or `TypedDict` message, as the HTTP body path does. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
 
 ### Fixed
 
