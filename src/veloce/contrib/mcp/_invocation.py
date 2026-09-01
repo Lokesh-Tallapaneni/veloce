@@ -498,6 +498,14 @@ class InvocationMixin:
                 await background.run_all()
             elif hasattr(background, "run"):
                 await background.run()
+            else:
+                # Assigned after construction, so it never passed
+                # `coerce_background`. Dropping it silently is what made the
+                # same defect on the HTTP path invisible.
+                _logger.warning(
+                    "MCP response background %r has no run()/run_all() and was not run",
+                    type(background).__name__,
+                )
         except Exception:
             _logger.exception("MCP response background task failed")
 
