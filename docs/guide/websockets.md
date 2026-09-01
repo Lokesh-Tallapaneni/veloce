@@ -93,6 +93,69 @@ async def room(data):
 For full control over the handshake and loop, reach for the imperative
 `@app.websocket` decorator above.
 
+## Typing the messages
+
+Annotate the callback's message parameter and each frame is validated before
+your code runs:
+
+```python
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, Field
+
+from veloce import Veloce
+
+app = Veloce()
+
+
+class Join(BaseModel):
+    type: Literal["join"]
+    room: str
+
+
+class Say(BaseModel):
+    type: Literal["say"]
+    text: str
+
+
+Inbound = Annotated[Join | Say, Field(discriminator="type")]
+
+
+@app.websocket_listener("/chat")
+async def chat(message: Inbound) -> dict:
+    if isinstance(message, Join):
+        return {"joined": message.room}
+    return {"said": message.text}
+```
+
+A frame that does not match closes the connection with
+[`1007 Invalid Frame Payload Data`](https://www.rfc-editor.org/rfc/rfc6455#section-7.4.1),
+and your callback never sees it. `on_disconnect` still runs.
+
+!!! warning "A union of message types must be discriminated"
+
+    A frame arrives as bytes and has to become exactly one of the declared
+    types, so something must choose. An undiscriminated union - two message
+    types with the same shape and no tag - is refused when the route is
+    registered, rather than resolved by declaration order at runtime.
+
+`msgspec.Struct` messages work the same way, tagged with `tag=` / `tag_field=`
+instead of a `Literal` field. A union may not mix the two backends.
+
+The return annotation documents what the channel sends. Unlike the receive
+side it takes no discriminator and filters nothing: a union documents its
+alternatives, and which member a value should be re-shaped through is
+ambiguous. This matches how [`response_model`](openapi.md) unions already
+behave on HTTP routes.
+
+Typing is opt-in. A callback with no annotation receives the decoded payload
+exactly as before, and `receive="text"` / `receive="bytes"` listeners are
+unaffected.
+
+!!! note "Added in version 0.19.0"
+
+    Message annotations on `@app.websocket_listener` were previously ignored.
+
 ## Inbound validation and close codes
 
 Incoming text frames are validated as UTF-8 at the parser boundary (RFC 6455

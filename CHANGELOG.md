@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `@app.websocket_listener` validates each frame against the callback's message annotation. ([#295](https://github.com/Lokesh-Tallapaneni/veloce/pull/295))
+- A websocket frame that does not match the declared message type closes with `1007`. ([#295](https://github.com/Lokesh-Tallapaneni/veloce/pull/295))
+- An undiscriminated websocket message union is refused at registration. ([#295](https://github.com/Lokesh-Tallapaneni/veloce/pull/295))
+- A listener's return annotation documents what the channel sends. ([#295](https://github.com/Lokesh-Tallapaneni/veloce/pull/295))
+
 ### Fixed
 
 - A handler may return `(body, headers)` with any mapping; `Headers` is not a `dict`, so the framework's own header type was read as a status and answered `500`. ([#292](https://github.com/Lokesh-Tallapaneni/veloce/pull/292))
