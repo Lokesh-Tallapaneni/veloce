@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `Response(background=...)` accepts a bare callable and rejects an unsupported value. ([#297](https://github.com/Lokesh-Tallapaneni/veloce/pull/297))
+- The `fast` extra requires `msgspec>=0.16`; earlier versions lack `msgspec.convert`. ([#297](https://github.com/Lokesh-Tallapaneni/veloce/pull/297))
 
 ### Fixed
 
