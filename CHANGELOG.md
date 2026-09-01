@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A dataclass or `TypedDict` response model is documented with its own component schema. ([#297](https://github.com/Lokesh-Tallapaneni/veloce/pull/297))
 - A handler may return `(body, headers)` with any mapping; `Headers` is not a `dict`, so the framework's own header type was read as a status and answered `500`. ([#292](https://github.com/Lokesh-Tallapaneni/veloce/pull/292))
 
 ## [0.18.0] - 2026-08-31
