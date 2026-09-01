@@ -150,7 +150,7 @@ def _message_annotation(callback: Any, wants_socket: bool) -> Any:
 
 
 def _unwrap_annotated(annotation: Any) -> Any:
-    """The type inside `Annotated[...]`, or the annotation unchanged."""
+    """Return the type inside `Annotated[...]`, or the annotation unchanged."""
     return annotation.__origin__ if hasattr(annotation, "__metadata__") else annotation
 
 
