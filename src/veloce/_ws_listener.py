@@ -184,14 +184,31 @@ def _union_members(tp: Any) -> tuple[Any, ...]:
     return tuple(a for a in typing_extensions.get_args(tp) if a is not type(None))
 
 
-def _build_message_validator(annotation: Any, callback: Any) -> Any:
-    """Return a per-frame validator for `annotation`, or `None` when untyped.
+def _message_validator(annotation: Any, inner: Any, members: tuple[Any, ...]) -> Any:
+    """Return the callable that turns one decoded frame into a message.
+
+    Selection only - the rules live in `_reject_ambiguous_union`, and the
+    annotation is already resolved by the caller. A union validates through the
+    full annotation rather than through `inner`, so a `Model | None` frame of
+    `null` stays legal: the author asked for that by writing the `| None`.
+    """
+    single = members[0] if members else inner
+    if is_msgspec_struct(single):
+        return _msgspec_validator(inner)
+    if is_pydantic_model(single):
+        return adapter_for(annotation).validate_python
+    return None
+
+
+def _reject_ambiguous_union(
+    annotation: Any, members: tuple[Any, ...], discriminator: str | None, callback: Any
+) -> None:
+    """Refuse a union that cannot be resolved to one message type.
 
     A union of two or more message types must be discriminated: a frame has to
     become exactly one of them, and nothing else can make that choice. The tag
-    comes from the declaration - `Field(discriminator=...)` metadata, or the
-    struct's own tag field - which is the one place it is stated and the one
-    place both backends read it from.
+    is read from the declaration, which is the one place it is stated and the
+    one place both backends agree on.
 
     Deliberately not read off pydantic's compiled core schema. That reports
     `tagged-union` only for the simplest shape: a member referencing one
@@ -200,47 +217,28 @@ def _build_message_validator(annotation: Any, callback: Any) -> Any:
     discriminated union would be refused at registration, told to add the
     discriminator it already declared.
 
-    The refusal happens at registration rather than on the first ambiguous
-    frame, matching how the rest of the codebase treats an ambiguous
-    declaration.
+    Refused here rather than on the first ambiguous frame, matching how the
+    rest of the codebase treats an ambiguous declaration.
     """
-    inner = _unwrap_annotated(annotation)
-    if inner is None or inner is Any:
-        return None
-
-    members = _union_members(inner) if _is_model_union(inner) else ()
-    if len(members) > 1:
-        structs = sum(1 for m in members if is_msgspec_struct(m))
-        if structs and structs != len(members):
-            raise TypeError(
-                f"{_where(callback)}: a websocket message union must use one model "
-                f"backend, and {annotation!r} mixes msgspec structs with pydantic "
-                "models. Neither backend can validate the other's members."
+    if len(members) < 2:
+        return
+    structs = sum(1 for m in members if is_msgspec_struct(m))
+    if structs and structs != len(members):
+        raise TypeError(
+            f"{_where(callback)}: a websocket message union must use one model "
+            f"backend, and {annotation!r} mixes msgspec structs with pydantic "
+            "models. Neither backend can validate the other's members."
+        )
+    if discriminator is None:
+        raise TypeError(
+            _undiscriminated(
+                callback,
+                annotation,
+                "without a tag the frame is matched against the members in "
+                "declaration order, so two messages with the same shape "
+                "would be indistinguishable",
             )
-        if _discriminator_of(annotation, members) is None:
-            raise TypeError(
-                _undiscriminated(
-                    callback,
-                    annotation,
-                    "without a tag the frame is matched against the members in "
-                    "declaration order, so two messages with the same shape "
-                    "would be indistinguishable",
-                )
-            )
-        if structs:
-            return _msgspec_validator(inner)
-        return adapter_for(annotation).validate_python
-
-    # Not a multi-member union: a lone model, or `Model | None`, which names one
-    # message and so has nothing to discriminate. `Model | None` still validates
-    # through the full annotation - that is what keeps a `null` frame legal, and
-    # the author asked for it by writing the `| None`.
-    single = members[0] if members else inner
-    if is_msgspec_struct(single):
-        return _msgspec_validator(inner)
-    if is_pydantic_model(single):
-        return adapter_for(annotation).validate_python
-    return None
+        )
 
 
 def _msgspec_validator(inner: Any) -> Any:
@@ -303,20 +301,33 @@ class WSMessageContract:
 
 
 def _build_message_contract(callback: Any, wants_socket: bool) -> WSMessageContract | None:
-    """Resolve the callback's message annotation into a contract, or `None`."""
+    """Resolve the callback's message annotation into a contract, or `None`.
+
+    The annotation is resolved exactly once - unwrapped, its union members
+    listed, its discriminator read - and every consumer is handed that result.
+    Resolving a second time per consumer is how two copies drift: they are pure
+    functions of one annotation, so a repeat evaluation can only agree with the
+    first or be a bug in waiting.
+    """
     annotation = _message_annotation(callback, wants_socket)
     if annotation is None:
         return None
-    validate = _build_message_validator(annotation, callback)
+    inner = _unwrap_annotated(annotation)
+    if inner is None or inner is Any:
+        return None
+    members = _union_members(inner) if _is_model_union(inner) else ()
+    discriminator = _discriminator_of(annotation, members)
+    _reject_ambiguous_union(annotation, members, discriminator, callback)
+    validate = _message_validator(annotation, inner, members)
     if validate is None:
         return None
-    inner = _unwrap_annotated(annotation)
-    members = _union_members(inner) if _is_model_union(inner) else (inner,)
     return WSMessageContract(
         message_type=annotation,
-        members=members,
-        discriminator=_discriminator_of(annotation, members),
-        backend=backend_of(members[0]),
+        # A non-union names one message; report it the same way a one-member
+        # union does, so a consumer never special-cases the shape.
+        members=members or (inner,),
+        discriminator=discriminator,
+        backend=backend_of(members[0] if members else inner),
         validate=validate,
         send_type=resolve_response_contract(callback),
     )
