@@ -151,3 +151,48 @@ def test_the_route_contract_projects_none_for_an_http_route():
 
     info = route_at(app, "/items")
     assert RouteContract.from_route_info(info).ws_messages is None
+
+
+class Ack(BaseModel):
+    ok: bool
+
+
+class Broadcast(BaseModel):
+    text: str
+
+
+def test_the_return_annotation_supplies_the_send_contract():
+    async def chat(message: Inbound) -> Ack:
+        return Ack(ok=True)
+
+    _handler, contract = build_listener_handler(chat)
+    assert contract.send_type is Ack
+
+
+def test_a_send_union_is_recorded_whole_and_undiscriminated():
+    async def chat(message: Inbound) -> Ack | Broadcast | None:
+        return None
+
+    _handler, contract = build_listener_handler(chat)
+    assert contract.send_type == Ack | Broadcast | None
+
+
+def test_no_return_annotation_records_no_send_contract():
+    async def chat(message: Inbound):
+        return None
+
+    _handler, contract = build_listener_handler(chat)
+    assert contract.send_type is None
+
+
+def test_a_send_contract_does_not_filter_the_sent_value():
+    """Recording the type must not start shaping the frame."""
+    app = Veloce()
+
+    @app.websocket_listener("/chat")
+    async def chat(message: Inbound) -> Ack:
+        return {"ok": True, "extra": "kept"}
+
+    with TestClient(app) as client, client.websocket_connect("/chat") as ws:
+        ws.send_json({"type": "say", "text": "hi"})
+        assert ws.receive_json() == {"ok": True, "extra": "kept"}

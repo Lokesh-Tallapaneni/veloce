@@ -31,6 +31,7 @@ from veloce._model_backend import (
     backend_of,
     is_msgspec_struct,
     is_pydantic_model,
+    resolve_response_contract,
 )
 from veloce.exceptions import WebSocketDisconnect
 from veloce.status import WS_1007_INVALID_FRAME_PAYLOAD_DATA
@@ -253,6 +254,11 @@ class WSMessageContract:
 
     `members` is the union's members, or the single type in a one-tuple.
     `discriminator` is `None` when there is nothing to discriminate.
+
+    `send_type` documents what the callback returns and filters nothing - the
+    same rule response-model unions already follow, because which member a value
+    should be re-shaped through is ambiguous. The receive side must choose and
+    so demands a discriminator; the send side never chooses.
     """
 
     message_type: Any
@@ -260,6 +266,7 @@ class WSMessageContract:
     discriminator: str | None
     backend: ModelBackend
     validate: Callable[[Any], Any]
+    send_type: Any = None
 
 
 def _build_message_contract(callback: Any, wants_socket: bool) -> WSMessageContract | None:
@@ -278,6 +285,7 @@ def _build_message_contract(callback: Any, wants_socket: bool) -> WSMessageContr
         discriminator=_discriminator_of(annotation, members),
         backend=backend_of(members[0]),
         validate=validate,
+        send_type=resolve_response_contract(callback),
     )
 
 
