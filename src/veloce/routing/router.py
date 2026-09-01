@@ -721,7 +721,9 @@ class Router:
         # Derived from the handler, like the plan above: the listener wrapper
         # carries its message contract, so every registration path picks it up
         # here rather than each copy forwarding a field it could forget.
-        route_info.ws_messages = getattr(route_info.handler, "_ws_message_contract", None)
+        route_info.ws_messages = (
+            getattr(route_info.handler, "_ws_message_contract", None) if is_ws else None
+        )
         slots = route_info.handler_plan.slots
         has_deps = bool(route_info.route_dep_plans)
         # A handler with no parameter slots and no route-level dependencies
