@@ -32,8 +32,10 @@ from pydantic import BaseModel, create_model
 
 from veloce._internal import _SCALAR_JSON_SCHEMAS
 from veloce._model_backend import (
+    ModelBackend,
     _msgspec,
     adapter_for,
+    backend_of,
     is_adaptable_model,
     is_msgspec_struct,
     is_pydantic_model,
@@ -46,15 +48,19 @@ _logger = logging.getLogger(__name__)
 
 
 def _is_model_type(annotation: Any) -> bool:
-    """Return True for a Pydantic ``BaseModel`` or a ``msgspec.Struct`` annotation.
+    """Return True for an annotation that gets its own component schema.
 
     The single gate every request-body / response / list-item schema site uses,
-    so both backends register a component schema and resolve to a ``$ref`` the
+    so every backend registers a component schema and resolves to a ``$ref`` the
     same way.
+
+    Asked of `backend_of`, the framework's one answer to "is this a model, and
+    whose?", so this gate and the route contract's cannot disagree. Restating it
+    as a pydantic-or-msgspec test omitted `ADAPTED`, and a dataclass response
+    model was emitted with no content at all while the resolver validated and
+    returned it.
     """
-    if is_pydantic_model(annotation):
-        return True
-    return is_msgspec_struct(annotation)
+    return backend_of(annotation) is not ModelBackend.NONE
 
 
 def _literal_enum_schema(values: list[Any]) -> dict[str, Any]:

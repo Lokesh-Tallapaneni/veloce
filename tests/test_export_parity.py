@@ -74,6 +74,12 @@ UNEXPORTED: dict[str, str] = {
     # top-level namespace would read as the server (`Veloce.run`); the audit is
     # called as `veloce.audit.run(app)`, which says what it runs.
     "audit.run": "public as veloce.audit.run; a top-level `run` would collide with Veloce.run",
+    # `background.py` — the one rule `Response.__init__` applies to every
+    # `background=` value. Not underscore-prefixed because `http/response.py`
+    # imports it across a subpackage boundary, which guardrails L173 forbids for
+    # a private name; not exported because a user passes `background=` and never
+    # calls the coercion themselves.
+    "background.coerce_background": "shared by every response constructor; crosses a subpackage boundary",
     # `http/response.py` — one rule the three emit paths share (`Response.encode`
     # and both ASGI branches), which each used to recompute and disagree about for
     # a 304. Not underscore-prefixed because `app/asgi.py` imports it across a

@@ -14,9 +14,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A listener's return annotation documents what the channel sends. ([#295](https://github.com/Lokesh-Tallapaneni/veloce/pull/295))
 - A websocket listener validates a dataclass or `TypedDict` message, as the HTTP body path does. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
 
+### Changed
+
+- `Response(background=...)` accepts a bare callable and rejects an unsupported value. ([#297](https://github.com/Lokesh-Tallapaneni/veloce/pull/297))
+- The `fast` extra requires `msgspec>=0.16`; earlier versions lack `msgspec.convert`. ([#297](https://github.com/Lokesh-Tallapaneni/veloce/pull/297))
+
 ### Fixed
 
 - `MAX_CONCURRENT_CONNECTIONS = None` runs the built-in server without a cap, as documented; it raised `TypeError` and refused every connection. ([#294](https://github.com/Lokesh-Tallapaneni/veloce/pull/294))
+- A dataclass or `TypedDict` response model is documented with its own component schema. ([#297](https://github.com/Lokesh-Tallapaneni/veloce/pull/297))
 - A handler may return `(body, headers)` with any mapping; `Headers` is not a `dict`, so the framework's own header type was read as a status and answered `500`. ([#292](https://github.com/Lokesh-Tallapaneni/veloce/pull/292))
 
 ## [0.18.0] - 2026-08-31

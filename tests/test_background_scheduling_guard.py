@@ -209,26 +209,34 @@ async def test_both_sources_run_together():
     assert sorted(log) == ["attached", "injected"]
 
 
-# ── negative: an unusable attachment is ignored, not fatal ───────────
+# ── negative: unusable attachments - loud at construction, quiet at dispatch ──
 
 
-async def test_an_attachment_with_no_runnable_method_is_ignored():
-    """Anything without `run`/`run_all` contributes nothing and must not raise."""
+def test_an_unusable_attachment_is_refused_at_construction():
+    """An unrunnable attachment fails where it was written, not silently later.
+
+    It used to be accepted and then dropped by the dispatch cascade, so a
+    cleanup that never ran looked exactly like one that did. `TemplateResponse`
+    already raised on the same value, so the two doors disagreed about what
+    `background=` accepts.
+    """
 
     class NotATask:
         pass
 
-    app = Veloce(openapi_url=None)
-
-    @app.get("/x")
-    async def x():
-        return Response(body=b"ok", background=NotATask())
-
-    response = await app.handle_request(_req())
-    assert response.status_code == 200
+    with pytest.raises(TypeError, match="background must be"):
+        Response(body=b"ok", background=NotATask())
 
 
 async def test_an_unusable_attachment_reports_nothing_scheduled():
+    """Dispatch stays tolerant: assigned after construction, it never raises.
+
+    The coercion guards the constructor, so a value assigned straight onto the
+    slot bypasses it. Scheduling must still answer False rather than raise -
+    a bad attachment cannot be allowed to take down a response that already
+    succeeded.
+    """
+
     class NotATask:
         pass
 

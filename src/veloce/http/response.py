@@ -66,6 +66,7 @@ from veloce._internal import (
 )
 from veloce._protocol_constants import AUTH_SCHEME_BASIC, SET_COOKIE_JOINER
 from veloce._warnings import VeloceDeprecationWarning
+from veloce.background import coerce_background
 from veloce.http.cache_control import CacheControl
 from veloce.http.cookies import dump_cookie, iter_cookies
 from veloce.http.dates import http_date, parse_date
@@ -297,7 +298,10 @@ class Response:
         # Optional `BackgroundTask` or `BackgroundTasks` fired by the
         # dispatch layer after this response is built. None when no task
         # is attached. `Response(content=..., background=BackgroundTask(fn))`.
-        self.background = background
+        # Coerced here rather than stored raw: the dispatch cascade recognises
+        # only `run` / `run_all`, so an unsupported value used to be dropped
+        # with no error and the response served as if the task had run.
+        self.background = coerce_background(background)
         # `StreamingResponse` rewrites this with an async iterator; for a
         # base `Response` the slot stays `None` so `is_streamed` is a
         # direct attribute load (no `getattr` fallback to None).
