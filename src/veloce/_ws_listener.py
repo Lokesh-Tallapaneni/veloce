@@ -16,6 +16,8 @@ evaluates them against this module's globals.
 from __future__ import annotations
 
 import inspect
+import types
+import typing
 import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -25,7 +27,6 @@ import typing_extensions
 from veloce._internal import _is_async_callable, offload
 from veloce._model_backend import (
     ModelBackend,
-    _is_model_union,
     _msgspec,
     adapter_for,
     backend_of,
@@ -180,8 +181,31 @@ def _unwrap_annotated(annotation: Any) -> Any:
     return annotation.__origin__ if hasattr(annotation, "__metadata__") else annotation
 
 
-def _union_members(tp: Any) -> tuple[Any, ...]:
-    return tuple(a for a in typing_extensions.get_args(tp) if a is not type(None))
+def _message_union_members(inner: Any) -> tuple[Any, ...]:
+    """The model members of a message union, `Annotated` peeled, else empty.
+
+    Members are unwrapped because `Annotated[Join, Tag("join")]` is an alias,
+    not a class: left wrapped it satisfies neither backend's model predicate,
+    the union reads as "not a union of models", and the listener silently ends
+    up unvalidated - the one failure direction this module must not have.
+    """
+    if typing_extensions.get_origin(inner) not in (typing.Union, types.UnionType):
+        return ()
+    members = tuple(
+        _unwrap_annotated(a) for a in typing_extensions.get_args(inner) if a is not type(None)
+    )
+    if members and all(is_pydantic_model(m) or is_msgspec_struct(m) for m in members):
+        return members
+    return ()
+
+
+def _msgspec_tag_fields(members: tuple[Any, ...]) -> list[str | None]:
+    """Each msgspec member's declared tag field, `None` where it declares none."""
+    return [
+        getattr(getattr(m, "__struct_config__", None), "tag_field", None)
+        for m in members
+        if is_msgspec_struct(m)
+    ]
 
 
 def _message_validator(annotation: Any, inner: Any, members: tuple[Any, ...]) -> Any:
@@ -201,7 +225,7 @@ def _message_validator(annotation: Any, inner: Any, members: tuple[Any, ...]) ->
 
 
 def _reject_ambiguous_union(
-    annotation: Any, members: tuple[Any, ...], discriminator: str | None, callback: Any
+    annotation: Any, members: tuple[Any, ...], discriminator: Any, callback: Any
 ) -> None:
     """Refuse a union that cannot be resolved to one message type.
 
@@ -217,8 +241,9 @@ def _reject_ambiguous_union(
     discriminated union would be refused at registration, told to add the
     discriminator it already declared.
 
-    Refused here rather than on the first ambiguous frame, matching how the
-    rest of the codebase treats an ambiguous declaration.
+    Every refusal here is registration-time. A declaration that only fails on
+    the first frame would surface as a `1007` close, which tells the peer its
+    message was malformed when the fault is in the server's own types.
     """
     if len(members) < 2:
         return
@@ -228,6 +253,14 @@ def _reject_ambiguous_union(
             f"{_where(callback)}: a websocket message union must use one model "
             f"backend, and {annotation!r} mixes msgspec structs with pydantic "
             "models. Neither backend can validate the other's members."
+        )
+    tag_fields = _msgspec_tag_fields(members)
+    if len(set(tag_fields)) > 1:
+        named = ", ".join(repr(f) for f in dict.fromkeys(tag_fields))
+        raise TypeError(
+            f"{_where(callback)}: the members of {annotation!r} declare different "
+            f"tag fields ({named}), so no single field identifies the message. "
+            "Give every member the same `tag_field`."
         )
     if discriminator is None:
         raise TypeError(
@@ -315,9 +348,9 @@ def _build_message_contract(callback: Any, wants_socket: bool) -> WSMessageContr
     inner = _unwrap_annotated(annotation)
     if inner is None or inner is Any:
         return None
-    members = _union_members(inner) if _is_model_union(inner) else ()
-    discriminator = _discriminator_of(annotation, members)
-    _reject_ambiguous_union(annotation, members, discriminator, callback)
+    members = _message_union_members(inner)
+    declared = _declared_discriminator(annotation, members)
+    _reject_ambiguous_union(annotation, members, declared, callback)
     validate = _message_validator(annotation, inner, members)
     if validate is None:
         return None
@@ -326,21 +359,23 @@ def _build_message_contract(callback: Any, wants_socket: bool) -> WSMessageContr
         # A non-union names one message; report it the same way a one-member
         # union does, so a consumer never special-cases the shape.
         members=members or (inner,),
-        discriminator=discriminator,
+        # The record carries the tag *field name*; pydantic's callable
+        # `Discriminator` declares a discriminator with no field to name.
+        discriminator=declared if isinstance(declared, str) else None,
         backend=backend_of(members[0] if members else inner),
         validate=validate,
         send_type=resolve_response_contract(callback),
     )
 
 
-def _discriminator_of(annotation: Any, members: tuple[Any, ...]) -> str | None:
-    """Return the tag field a union is discriminated on, or `None`.
+def _declared_discriminator(annotation: Any, members: tuple[Any, ...]) -> Any:
+    """Return the discriminator a union declares, or `None` when it declares none.
 
-    Read from the declaration, which states it once: pydantic carries it in the
-    `Field(discriminator=...)` metadata on the `Annotated`, msgspec on the
-    struct's `__struct_config__.tag_field`. Both lookups are open by necessity -
-    the annotation may not be `Annotated`, and a member may be either backend's
-    model - so neither has an attribute to reach for directly.
+    A field name, or pydantic's callable `Discriminator`. Read from the
+    declaration, which states it once: pydantic carries it in the `Annotated`
+    metadata, msgspec on the struct's `__struct_config__.tag_field`. Both
+    lookups are open by necessity - the annotation may not be `Annotated`, and
+    a member may be either backend's model.
 
     One member is one message type, so there is nothing to choose between.
     """
@@ -348,10 +383,10 @@ def _discriminator_of(annotation: Any, members: tuple[Any, ...]) -> str | None:
         return None
     for meta in getattr(annotation, "__metadata__", ()):
         field = getattr(meta, "discriminator", None)
-        if isinstance(field, str) and field:
+        if field:
             return field
-    tag_field = getattr(getattr(members[0], "__struct_config__", None), "tag_field", None)
-    return tag_field if isinstance(tag_field, str) else None
+    tag_fields = _msgspec_tag_fields(members)
+    return tag_fields[0] if tag_fields and all(tag_fields) else None
 
 
 def build_listener_handler(

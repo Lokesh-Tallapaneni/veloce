@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Annotated, Literal
 
 import pytest
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Discriminator, Field, Tag
 
 from tests._routes import route_at
 from veloce import Veloce
@@ -26,6 +26,12 @@ if _msgspec is not None:
     class MSay(_msgspec.Struct, tag="say", tag_field="type"):
         text: str
 
+    class TypeTagged(_msgspec.Struct, tag="a", tag_field="type"):
+        x: int
+
+    class KindTagged(_msgspec.Struct, tag="b", tag_field="kind"):
+        y: int
+
 
 class Join(BaseModel):
     type: Literal["join"]
@@ -38,6 +44,18 @@ class Say(BaseModel):
 
 
 Inbound = Annotated[Join | Say, Field(discriminator="type")]
+
+# An `Annotated` member is an alias, not a class - the union reader must peel it.
+WrappedMembers = Annotated[Annotated[Join, Field()] | Say, Field(discriminator="type")]
+
+
+def _pick_tag(value):
+    return "join" if "room" in value else "say"
+
+
+CallableDiscriminated = Annotated[
+    Annotated[Join, Tag("join")] | Annotated[Say, Tag("say")], Discriminator(_pick_tag)
+]
 
 
 def test_a_union_listener_reports_its_members_and_discriminator():
@@ -336,3 +354,37 @@ def test_both_signature_readers_agree_on_a_callable_object():
     _handler, contract = build_listener_handler(Consumer())
     assert contract is not None
     assert contract.message_type is Say
+
+
+@requires_msgspec
+def test_members_declaring_different_tag_fields_are_refused_at_registration():
+    """No single field identifies the message, so it cannot fail on the frame."""
+
+    async def f(message: TypeTagged | KindTagged):
+        return None
+
+    with pytest.raises(TypeError, match="different tag fields"):
+        build_listener_handler(f)
+
+
+def test_a_union_of_annotated_members_is_still_validated():
+    """`Annotated[Model, ...]` is an alias, not a class; unwrap before testing."""
+
+    async def chat(message: WrappedMembers):
+        return None
+
+    _handler, contract = build_listener_handler(chat)
+    assert contract is not None, "an Annotated member left the listener unvalidated"
+    assert contract.members == (Join, Say)
+    assert contract.discriminator == "type"
+
+
+def test_a_callable_discriminator_is_accepted_and_names_no_field():
+    async def chat(message: CallableDiscriminated):
+        return None
+
+    _handler, contract = build_listener_handler(chat)
+    assert contract is not None
+    # Discriminated, but there is no single field to publish as the tag name.
+    assert contract.discriminator is None
+    assert contract.members == (Join, Say)
