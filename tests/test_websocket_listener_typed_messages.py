@@ -233,3 +233,33 @@ def test_unresolvable_annotation_warns_instead_of_silently_skipping():
     with TestClient(app) as client, client.websocket_connect("/local") as ws:
         ws.send_json({"x": 1})
         assert ws.receive_json() == {"kind": "dict"}
+
+
+def test_sync_callback_also_receives_the_validated_model():
+    app = Veloce()
+
+    @app.websocket_listener("/say")
+    def say(message: Say):
+        return {"text": message.text, "model": isinstance(message, Say)}
+
+    with TestClient(app) as client, client.websocket_connect("/say") as ws:
+        ws.send_json({"type": "say", "text": "hi"})
+        assert ws.receive_json() == {"text": "hi", "model": True}
+
+
+def test_on_disconnect_runs_after_a_rejected_frame_closes_the_socket():
+    app = Veloce()
+    torn_down: list[str] = []
+
+    async def bye(ws: WebSocket):
+        torn_down.append("bye")
+
+    @app.websocket_listener("/say", on_disconnect=bye)
+    async def say(message: Say):
+        return {"ok": True}
+
+    with TestClient(app) as client, client.websocket_connect("/say") as ws:
+        ws.send_json({"type": "say"})
+        with pytest.raises(RuntimeError, match="1007"):
+            ws.receive_json()
+    assert torn_down == ["bye"]
