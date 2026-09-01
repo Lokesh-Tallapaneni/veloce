@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-09-02
+
 ### Added
 
 - `@app.websocket_listener` validates each frame against the callback's message annotation. ([#299](https://github.com/Lokesh-Tallapaneni/veloce/pull/299))
