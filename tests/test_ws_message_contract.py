@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
+import pytest
 from pydantic import BaseModel, Field
 
 from tests._routes import route_at
@@ -12,6 +13,18 @@ from veloce._model_backend import ModelBackend
 from veloce._route_contract import RouteContract
 from veloce._ws_listener import WSMessageContract, build_listener_handler
 from veloce.testclient import TestClient
+
+try:
+    import msgspec as _msgspec
+except ImportError:  # pragma: no cover - exercised in the no-msgspec CI leg
+    _msgspec = None
+
+requires_msgspec = pytest.mark.skipif(_msgspec is None, reason="msgspec is not installed")
+
+if _msgspec is not None:
+
+    class MSay(_msgspec.Struct, tag="say", tag_field="type"):
+        text: str
 
 
 class Join(BaseModel):
@@ -193,3 +206,104 @@ def test_a_send_contract_does_not_filter_the_sent_value():
     with TestClient(app) as client, client.websocket_connect("/chat") as ws:
         ws.send_json({"type": "say", "text": "hi"})
         assert ws.receive_json() == {"ok": True, "extra": "kept"}
+
+
+class Shared(BaseModel):
+    a: int
+
+
+class UsesSharedTwice(BaseModel):
+    type: Literal["twice"]
+    first: Shared
+    second: Shared
+
+
+SharedUnion = Annotated[UsesSharedTwice | Say, Field(discriminator="type")]
+
+
+class Node(BaseModel):
+    type: Literal["node"]
+    child: Node | None = None
+
+
+class Leaf(BaseModel):
+    type: Literal["leaf"]
+    v: int
+
+
+RecursiveUnion = Annotated[Node | Leaf, Field(discriminator="type")]
+
+
+def test_a_union_whose_member_reuses_a_submodel_is_accepted():
+    """The discriminator comes from the declaration, not pydantic's schema shape."""
+
+    async def chat(message: SharedUnion):
+        return None
+
+    _handler, contract = build_listener_handler(chat)
+    assert contract.discriminator == "type"
+    assert contract.members == (UsesSharedTwice, Say)
+
+
+def test_a_union_with_a_self_referential_member_is_accepted():
+    async def tree(message: RecursiveUnion):
+        return None
+
+    _handler, contract = build_listener_handler(tree)
+    assert contract.discriminator == "type"
+
+
+def test_a_reused_submodel_union_still_validates_each_frame():
+    app = Veloce()
+
+    @app.websocket_listener("/chat")
+    async def chat(message: SharedUnion):
+        return {"kind": type(message).__name__}
+
+    with TestClient(app) as client, client.websocket_connect("/chat") as ws:
+        ws.send_json({"type": "twice", "first": {"a": 1}, "second": {"a": 2}})
+        assert ws.receive_json() == {"kind": "UsesSharedTwice"}
+        ws.send_json({"type": "say", "text": "hi"})
+        assert ws.receive_json() == {"kind": "Say"}
+        ws.send_json({"type": "twice", "first": {"a": 1}})
+        with pytest.raises(RuntimeError, match="1007"):
+            ws.receive_json()
+
+
+def test_an_optional_single_model_needs_no_discriminator_on_either_backend():
+    """`Model | None` has one member, so there is nothing to discriminate."""
+
+    async def pyd(message: Say | None):
+        return None
+
+    _handler, contract = build_listener_handler(pyd)
+    assert contract.members == (Say,)
+    assert contract.discriminator is None
+
+
+@requires_msgspec
+def test_an_optional_msgspec_struct_behaves_the_same_as_pydantic():
+    async def msg(message: MSay | None):
+        return None
+
+    _handler, contract = build_listener_handler(msg)
+    assert contract.members == (MSay,)
+    assert contract.discriminator is None
+
+
+def test_the_unresolved_annotation_warning_points_at_the_users_line():
+    """A warning attributed to Veloce's own router tells the author nothing."""
+    app = Veloce()
+
+    class LocalOnly(BaseModel):
+        x: int
+
+    with pytest.warns(UserWarning, match="could not resolve the annotation") as caught:
+
+        @app.websocket_listener("/local")
+        async def local(message: LocalOnly):
+            return None
+
+    assert caught[0].filename == __file__, (
+        f"warning blamed {caught[0].filename}, not the decorator's own module"
+    )

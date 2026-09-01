@@ -7,6 +7,7 @@ from typing import Annotated, Literal
 import pytest
 from pydantic import BaseModel, Field
 
+from tests._routes import route_at
 from veloce import Veloce, WebSocket
 from veloce.testclient import TestClient
 
@@ -204,6 +205,9 @@ def test_tagged_msgspec_union_dispatches():
         assert ws.receive_json() == {"joined": "lobby"}
         ws.send_json({"type": "say", "text": "hi"})
         assert ws.receive_json() == {"said": "hi"}
+
+    contract = route_at(app, "/chat", include_hidden=True).ws_messages
+    assert contract.discriminator == "type"
 
 
 @requires_msgspec

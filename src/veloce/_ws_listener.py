@@ -147,7 +147,12 @@ def _message_annotation(callback: Any, wants_socket: bool) -> Any:
             f"{target.name!r} ({type(exc).__name__}: {exc}); messages are passed "
             "through unvalidated - define the message type at module level, or "
             "import it at runtime rather than only under TYPE_CHECKING",
-            stacklevel=4,
+            # `_message_annotation` -> `_build_message_contract` ->
+            # `build_listener_handler` -> the router's decorator -> the user's
+            # `@app.websocket_listener` line, which is the only frame worth
+            # pointing at. Pinned by a test, because adding a helper in between
+            # silently moves it.
+            stacklevel=5,
         )
         return None
     return hints.get(target.name)
@@ -165,13 +170,18 @@ def _union_members(tp: Any) -> tuple[Any, ...]:
 def _build_message_validator(annotation: Any, callback: Any) -> Any:
     """Return a per-frame validator for `annotation`, or `None` when untyped.
 
-    A union of message types must be discriminated, and the framework does not
-    invent the discriminator - it asks the backend, which already has the rule.
-    msgspec refuses an untagged struct union itself, so building the converter
-    is the check. Pydantic does not refuse it: it resolves an untagged union by
-    first match, so two structurally identical messages would route by
-    declaration order. Its core schema names the kind it built, so the same rule
-    comes from there.
+    A union of two or more message types must be discriminated: a frame has to
+    become exactly one of them, and nothing else can make that choice. The tag
+    comes from the declaration - `Field(discriminator=...)` metadata, or the
+    struct's own tag field - which is the one place it is stated and the one
+    place both backends read it from.
+
+    Deliberately not read off pydantic's compiled core schema. That reports
+    `tagged-union` only for the simplest shape: a member referencing one
+    submodel twice, or referencing itself, makes pydantic wrap the schema in
+    `definitions` and the tag stops being visible there - so a correctly
+    discriminated union would be refused at registration, told to add the
+    discriminator it already declared.
 
     The refusal happens at registration rather than on the first ambiguous
     frame, matching how the rest of the codebase treats an ambiguous
@@ -181,8 +191,8 @@ def _build_message_validator(annotation: Any, callback: Any) -> Any:
     if inner is None or inner is Any:
         return None
 
-    if _is_model_union(inner):
-        members = _union_members(inner)
+    members = _union_members(inner) if _is_model_union(inner) else ()
+    if len(members) > 1:
         structs = sum(1 for m in members if is_msgspec_struct(m))
         if structs and structs != len(members):
             raise TypeError(
@@ -190,33 +200,28 @@ def _build_message_validator(annotation: Any, callback: Any) -> Any:
                 f"backend, and {annotation!r} mixes msgspec structs with pydantic "
                 "models. Neither backend can validate the other's members."
             )
-        if structs:
-            # msgspec's own rule - "all Struct types must be tagged" - so
-            # building the converter is the check.
-            try:
-                _msgspec.convert({}, inner)
-            except TypeError as exc:
-                raise TypeError(_undiscriminated(callback, annotation, str(exc))) from exc
-            except Exception:
-                # A validation failure on the empty probe means the union is
-                # well-formed, which is all this checks.
-                pass
-            return _msgspec_validator(inner)
-        adapter = adapter_for(annotation)
-        if adapter.core_schema.get("type") != "tagged-union":
+        if _discriminator_of(annotation, members) is None:
             raise TypeError(
                 _undiscriminated(
                     callback,
                     annotation,
-                    "pydantic resolves an untagged union by first match, so two "
-                    "messages with the same shape would route by declaration order",
+                    "without a tag the frame is matched against the members in "
+                    "declaration order, so two messages with the same shape "
+                    "would be indistinguishable",
                 )
             )
-        return adapter.validate_python
+        if structs:
+            return _msgspec_validator(inner)
+        return adapter_for(annotation).validate_python
 
-    if is_msgspec_struct(inner):
+    # Not a multi-member union: a lone model, or `Model | None`, which names one
+    # message and so has nothing to discriminate. `Model | None` still validates
+    # through the full annotation - that is what keeps a `null` frame legal, and
+    # the author asked for it by writing the `| None`.
+    single = members[0] if members else inner
+    if is_msgspec_struct(single):
         return _msgspec_validator(inner)
-    if is_pydantic_model(inner):
+    if is_pydantic_model(single):
         return adapter_for(annotation).validate_python
     return None
 
@@ -292,17 +297,22 @@ def _build_message_contract(callback: Any, wants_socket: bool) -> WSMessageContr
 def _discriminator_of(annotation: Any, members: tuple[Any, ...]) -> str | None:
     """Return the tag field a union is discriminated on, or `None`.
 
-    Asked of the backend that owns the members rather than re-derived: pydantic
-    records it in the `Field(discriminator=...)` metadata, msgspec on the struct
-    as `__struct_tag_field__`.
+    Read from the declaration, which states it once: pydantic carries it in the
+    `Field(discriminator=...)` metadata on the `Annotated`, msgspec on the
+    struct's `__struct_config__.tag_field`. Both lookups are open by necessity -
+    the annotation may not be `Annotated`, and a member may be either backend's
+    model - so neither has an attribute to reach for directly.
+
+    One member is one message type, so there is nothing to choose between.
     """
     if len(members) < 2:
         return None
     for meta in getattr(annotation, "__metadata__", ()):
         field = getattr(meta, "discriminator", None)
-        if field:
-            return str(field)
-    return getattr(members[0], "__struct_tag_field__", None)
+        if isinstance(field, str) and field:
+            return field
+    tag_field = getattr(getattr(members[0], "__struct_config__", None), "tag_field", None)
+    return tag_field if isinstance(tag_field, str) else None
 
 
 def build_listener_handler(
