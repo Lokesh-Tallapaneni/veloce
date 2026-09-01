@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import dataclasses
-import sys
-from typing import Annotated, Literal, TypedDict
+from typing import Annotated, Literal
 
 import pytest
+import typing_extensions
 from pydantic import BaseModel, Discriminator, Field, Tag
 
 from tests._routes import route_at
@@ -406,7 +406,14 @@ class Stop:
 AdaptedUnion = Annotated[Move | Stop, Field(discriminator="kind")]
 
 
-class Point(TypedDict):
+@dataclasses.dataclass
+class Undiscriminated:
+    x: int
+
+
+# `typing_extensions.TypedDict`, not `typing`'s: pydantic refuses the stdlib
+# spelling below 3.12, which `_typeddict_is_adaptable` documents.
+class Point(typing_extensions.TypedDict):
     x: int
     y: int
 
@@ -431,9 +438,6 @@ def test_a_dataclass_message_is_validated_like_an_http_body():
             ws.receive_json()
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 12), reason="pydantic cannot adapt typing.TypedDict below 3.12"
-)
 def test_a_typeddict_message_is_validated():
     async def probe(data: Point):
         return None
@@ -454,7 +458,14 @@ def test_a_discriminated_dataclass_union_is_validated():
 
 
 def test_an_undiscriminated_dataclass_union_is_refused():
-    async def probe(message: Move | Point):
+    """Two dataclasses, so the rule is tested on every supported version.
+
+    Pairing a dataclass with a `typing.TypedDict` made this pass only on 3.12+:
+    below that pydantic refuses the stdlib spelling, so the union was not
+    all-models and never reached the discriminator rule at all.
+    """
+
+    async def probe(message: Move | Undiscriminated):
         return None
 
     with pytest.raises(TypeError, match="must be discriminated"):
