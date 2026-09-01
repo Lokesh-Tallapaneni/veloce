@@ -77,6 +77,8 @@ from veloce.http.formparsers import (
 if TYPE_CHECKING:  # pragma: no cover
     from datetime import datetime
 
+    from veloce.sessions import Session
+
 _logger = logging.getLogger(__name__)
 
 # Sentinel for "this conditional-header property has not been read yet"
@@ -1220,7 +1222,7 @@ class Request:
         return self._state
 
     @property
-    def session(self) -> dict[str, Any]:
+    def session(self) -> Session:
         """Access to the session dict.
 
         `SessionMiddleware` writes the parsed session into `_state["session"]`

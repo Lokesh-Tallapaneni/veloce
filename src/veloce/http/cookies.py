@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterator
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Literal
 from urllib.parse import quote, unquote
 
@@ -82,7 +82,7 @@ def dump_cookie(
     value: str = "",
     *,
     max_age: int | timedelta | None = None,
-    expires: int | float | datetime | None = None,
+    expires: int | float | datetime | date | None = None,
     path: str | None = "/",
     domain: str | None = None,
     secure: bool = False,
