@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from tests._routes import route_at
 from veloce import Veloce
 from veloce._model_backend import ModelBackend
+from veloce._route_contract import RouteContract
 from veloce._ws_listener import WSMessageContract, build_listener_handler
 from veloce.testclient import TestClient
 
@@ -125,8 +126,6 @@ def test_the_typed_listener_still_serves_traffic():
 
 
 def test_the_route_contract_projects_the_message_contract():
-    from veloce._route_contract import RouteContract
-
     app = Veloce()
 
     @app.websocket_listener("/chat")
@@ -141,8 +140,6 @@ def test_the_route_contract_projects_the_message_contract():
 
 
 def test_the_route_contract_projects_none_for_an_http_route():
-    from veloce._route_contract import RouteContract
-
     app = Veloce()
 
     @app.get("/items")
