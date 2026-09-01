@@ -87,3 +87,93 @@ def test_disconnect_releases_slot_for_new_connection():
             proto_d.connection_lost(None)
         _reset_connection_counter()
         loop.close()
+
+
+# ── `None` means unlimited, which is what the documentation promises ──
+#
+# `docs/guide/configuration.md` says of `MAX_CONCURRENT_CONNECTIONS`: "Set
+# `None` for unlimited". It did not do that. The admission check compared
+# `_active_connections >= cap` with `cap` as `None`, which raises `TypeError` on
+# every connection - so the one documented way to lift the cap refused *every*
+# connection instead of admitting all of them, and did it silently: the client
+# saw a handshake timeout, not an error naming the cause. Measured against the
+# built-in server, `None` established 0 of 5000 connections.
+
+
+def test_a_none_cap_admits_past_the_default():
+    """The regression: `None` refused everything rather than nothing."""
+    _reset_connection_counter()
+    admitted: list[HttpProtocol] = []
+    loop = asyncio.new_event_loop()
+    try:
+        app = Veloce(openapi_url=None)
+        app.config["MAX_CONCURRENT_CONNECTIONS"] = None
+
+        for _ in range(5):
+            proto = HttpProtocol(app, loop)
+            transport = _FakeTransport()
+            proto.connection_made(transport)
+            assert transport.closed is False, "an uncapped server refused a connection"
+            assert b"503" not in b"".join(transport.writes)
+            admitted.append(proto)
+
+        assert HttpProtocol._active_connections == 5
+    finally:
+        for proto in admitted:
+            proto.connection_lost(None)
+        _reset_connection_counter()
+        loop.close()
+
+
+def test_a_none_cap_still_counts_what_is_open():
+    """Unlimited is not unmeasured - graceful shutdown reads the same counter."""
+    _reset_connection_counter()
+    loop = asyncio.new_event_loop()
+    try:
+        app = Veloce(openapi_url=None)
+        app.config["MAX_CONCURRENT_CONNECTIONS"] = None
+
+        proto = HttpProtocol(app, loop)
+        transport = _FakeTransport()
+        proto.connection_made(transport)
+
+        assert proto._counted is True
+        assert HttpProtocol._active_connections == 1
+
+        proto.connection_lost(None)
+        assert HttpProtocol._active_connections == 0
+    finally:
+        _reset_connection_counter()
+        loop.close()
+
+
+def test_a_cap_of_zero_still_refuses_everything():
+    """`0` is a number, not a synonym for "unlimited"; only `None` is that."""
+    _reset_connection_counter()
+    loop = asyncio.new_event_loop()
+    try:
+        app = Veloce(openapi_url=None)
+        app.config["MAX_CONCURRENT_CONNECTIONS"] = 0
+
+        proto = HttpProtocol(app, loop)
+        transport = _FakeTransport()
+        proto.connection_made(transport)
+
+        assert b"HTTP/1.1 503" in b"".join(transport.writes)
+        assert transport.closed is True
+    finally:
+        _reset_connection_counter()
+        loop.close()
+
+
+def test_the_default_cap_is_unchanged_by_all_this():
+    """The guard exists for a reason; lifting it must stay opt-in."""
+    _reset_connection_counter()
+    loop = asyncio.new_event_loop()
+    try:
+        app = Veloce(openapi_url=None)
+
+        assert app.config["MAX_CONCURRENT_CONNECTIONS"] == 1000
+    finally:
+        _reset_connection_counter()
+        loop.close()

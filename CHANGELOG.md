@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `MAX_CONCURRENT_CONNECTIONS = None` runs the built-in server without a cap, as documented; it raised `TypeError` and refused every connection. ([#294](https://github.com/Lokesh-Tallapaneni/veloce/pull/294))
 - A handler may return `(body, headers)` with any mapping; `Headers` is not a `dict`, so the framework's own header type was read as a status and answered `500`. ([#292](https://github.com/Lokesh-Tallapaneni/veloce/pull/292))
 
 ## [0.18.0] - 2026-08-31

@@ -731,9 +731,15 @@ class HttpProtocol(asyncio.Protocol):
         # Per-process connection cap (DDoS guard). Admit-or-reject decision
         # is taken under the lock so a burst of parallel connection_made
         # calls cannot all observe `count == cap - 1` and over-admit.
+        # `None` is the documented way to run without a cap, so it has to mean
+        # "admit" rather than reach the comparison: `int >= None` raises
+        # `TypeError`, which fires inside `connection_made` for *every*
+        # connection and refuses the lot - the exact opposite of unlimited, and
+        # silent to the client, which sees only a handshake that never
+        # completes. The count is still kept, because graceful shutdown reads it.
         cap = self.app.config.get("MAX_CONCURRENT_CONNECTIONS", DEFAULT_MAX_CONCURRENT_CONNECTIONS)
         with HttpProtocol._connections_lock:
-            if HttpProtocol._active_connections >= cap:
+            if cap is not None and HttpProtocol._active_connections >= cap:
                 admitted = False
             else:
                 HttpProtocol._active_connections += 1
