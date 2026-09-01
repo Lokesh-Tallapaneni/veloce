@@ -142,6 +142,35 @@ and your callback never sees it. `on_disconnect` still runs.
 `msgspec.Struct` messages work the same way, tagged with `tag=` / `tag_field=`
 instead of a `Literal` field. A union may not mix the two backends.
 
+Dataclasses and `TypedDict`s are validated too — the same types the HTTP body
+path accepts, through the same backend detection, so one annotation means the
+same thing on both doors:
+
+```python
+from dataclasses import dataclass
+
+from veloce import Veloce
+
+app = Veloce()
+
+
+@dataclass
+class Move:
+    x: int
+    y: int
+
+
+@app.websocket_listener("/move")
+async def move(data: Move) -> dict:
+    return {"x": data.x, "y": data.y}
+```
+
+!!! note "Use `typing_extensions.TypedDict` below Python 3.12"
+
+    Pydantic refuses the `typing` spelling before 3.12 because only the
+    backport records which keys are required. A `typing.TypedDict` message
+    declares no contract there and its frames arrive unvalidated.
+
 The return annotation documents what the channel sends. Unlike the receive
 side it takes no discriminator and filters nothing: a union documents its
 alternatives, and which member a value should be re-shaped through is
