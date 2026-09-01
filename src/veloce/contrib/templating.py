@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, Any
 from weakref import WeakKeyDictionary
 
 from veloce._internal import _current_app_var
-from veloce.background import coerce_background
 from veloce.helpers import current_app, g, get_flashed_messages, request
 from veloce.http.response import HTMLResponse, Response
 from veloce.middleware.security import csp_nonce
@@ -235,11 +234,6 @@ def _context_preserving_iter(iterator: Any) -> Any:
         yield chunk
 
 
-def _coerce_background(background: Any) -> Any:
-    """Normalize a `TemplateResponse(background=...)` value to a task."""
-    return coerce_background(background)
-
-
 class Jinja2Templates:
     """Jinja2 template engine integration.
 
@@ -389,7 +383,7 @@ class Jinja2Templates:
         html = template.render(merged)
         if media_type is None:
             response: Response = HTMLResponse(
-                content=html, status_code=status_code, headers=headers
+                content=html, status_code=status_code, headers=headers, background=background
             )
         else:
             response = Response(
@@ -397,8 +391,8 @@ class Jinja2Templates:
                 body=html.encode("utf-8"),
                 content_type=media_type,
                 headers=headers,
+                background=background,
             )
-        response.background = _coerce_background(background)
         return response
 
     def render(self, name: str | Sequence[str], context: dict[str, Any] | None = None) -> str:
