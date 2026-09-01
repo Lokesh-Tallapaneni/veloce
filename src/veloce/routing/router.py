@@ -1727,7 +1727,7 @@ class Router:
 
         def decorator(func: RouteHandler | Callable[..., Any]) -> RouteHandler | Callable[..., Any]:
             """Build the listener handler, register it, and return `func`."""
-            handler = build_listener_handler(
+            handler, _contract = build_listener_handler(
                 func,
                 receive=receive,
                 send=send,

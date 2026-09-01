@@ -17,15 +17,18 @@ from __future__ import annotations
 
 import inspect
 import warnings
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import typing_extensions
 
 from veloce._internal import _is_async_callable, offload
 from veloce._model_backend import (
+    ModelBackend,
     _is_model_union,
     _msgspec,
     adapter_for,
+    backend_of,
     is_msgspec_struct,
     is_pydantic_model,
 )
@@ -240,6 +243,60 @@ def _undiscriminated(callback: Any, annotation: Any, detail: str) -> str:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class WSMessageContract:
+    """What one websocket channel accepts, resolved once at registration.
+
+    The receive loop validates through this record and a lowering publishes from
+    it, so the documented contract and the executed contract are the same object
+    rather than two resolutions of one annotation.
+
+    `members` is the union's members, or the single type in a one-tuple.
+    `discriminator` is `None` when there is nothing to discriminate.
+    """
+
+    message_type: Any
+    members: tuple[Any, ...]
+    discriminator: str | None
+    backend: ModelBackend
+    validate: Callable[[Any], Any]
+
+
+def _build_message_contract(callback: Any, wants_socket: bool) -> WSMessageContract | None:
+    """Resolve the callback's message annotation into a contract, or `None`."""
+    annotation = _message_annotation(callback, wants_socket)
+    if annotation is None:
+        return None
+    validate = _build_message_validator(annotation, callback)
+    if validate is None:
+        return None
+    inner = _unwrap_annotated(annotation)
+    members = _union_members(inner) if _is_model_union(inner) else (inner,)
+    return WSMessageContract(
+        message_type=annotation,
+        members=members,
+        discriminator=_discriminator_of(annotation, members),
+        backend=backend_of(members[0]),
+        validate=validate,
+    )
+
+
+def _discriminator_of(annotation: Any, members: tuple[Any, ...]) -> str | None:
+    """Return the tag field a union is discriminated on, or `None`.
+
+    Asked of the backend that owns the members rather than re-derived: pydantic
+    records it in the `Field(discriminator=...)` metadata, msgspec on the struct
+    as `__struct_tag_field__`.
+    """
+    if len(members) < 2:
+        return None
+    for meta in getattr(annotation, "__metadata__", ()):
+        field = getattr(meta, "discriminator", None)
+        if field:
+            return str(field)
+    return getattr(members[0], "__struct_tag_field__", None)
+
+
 def build_listener_handler(
     callback: Any,
     *,
@@ -247,7 +304,7 @@ def build_listener_handler(
     send: str = "json",
     on_connect: Any = None,
     on_disconnect: Any = None,
-) -> Callable[[WebSocket], Coroutine[Any, Any, None]]:
+) -> tuple[Callable[[WebSocket], Coroutine[Any, Any, None]], WSMessageContract | None]:
     """Build a WebSocket handler that runs the canonical accept/receive/close loop.
 
     The returned handler accepts the connection, fires `on_connect`, then
@@ -268,8 +325,8 @@ def build_listener_handler(
     # that happens to be ambiguous.
     # Only the JSON codec produces the mapping a model validates from; a
     # `text`/`bytes` listener receives the frame as-is and declares no model.
-    annotation = _message_annotation(callback, wants_socket) if receive == "json" else None
-    validate = None if annotation is None else _build_message_validator(annotation, callback)
+    contract = _build_message_contract(callback, wants_socket) if receive == "json" else None
+    validate = None if contract is None else contract.validate
     connect_fn = _resolve_listener_callable(on_connect)[0] if on_connect is not None else None
     disconnect_fn = (
         _resolve_listener_callable(on_disconnect)[0] if on_disconnect is not None else None
@@ -320,4 +377,4 @@ def build_listener_handler(
     # Borrow the callback's name for routing/OpenAPI introspection without
     # importing its signature (see the no-`wraps` note above).
     listener.__name__ = getattr(callback, "__name__", "listener")
-    return listener
+    return listener, contract
