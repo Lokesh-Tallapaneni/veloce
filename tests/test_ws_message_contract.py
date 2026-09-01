@@ -122,3 +122,32 @@ def test_the_typed_listener_still_serves_traffic():
     with TestClient(app) as client, client.websocket_connect("/chat") as ws:
         ws.send_json({"type": "say", "text": "hi"})
         assert ws.receive_json() == {"kind": "Say"}
+
+
+def test_the_route_contract_projects_the_message_contract():
+    from veloce._route_contract import RouteContract
+
+    app = Veloce()
+
+    @app.websocket_listener("/chat")
+    async def chat(message: Inbound):
+        return None
+
+    info = route_at(app, "/chat", include_hidden=True)
+    projected = RouteContract.from_route_info(info)
+
+    assert projected.ws_messages is info.ws_messages
+    assert projected.ws_messages.message_type is Inbound
+
+
+def test_the_route_contract_projects_none_for_an_http_route():
+    from veloce._route_contract import RouteContract
+
+    app = Veloce()
+
+    @app.get("/items")
+    async def items():
+        return []
+
+    info = route_at(app, "/items")
+    assert RouteContract.from_route_info(info).ws_messages is None
