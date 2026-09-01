@@ -6,8 +6,11 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
+from tests._routes import route_at
+from veloce import Veloce
 from veloce._model_backend import ModelBackend
 from veloce._ws_listener import WSMessageContract, build_listener_handler
+from veloce.testclient import TestClient
 
 
 class Join(BaseModel):
@@ -65,3 +68,57 @@ def test_a_non_model_annotation_builds_no_contract():
     _handler, contract = build_listener_handler(echo)
 
     assert contract is None
+
+
+def test_the_route_holds_the_same_contract_the_loop_validates_through():
+    """Not a copy: a lowering reads the object the receive loop closed over."""
+    app = Veloce()
+
+    @app.websocket_listener("/chat")
+    async def chat(message: Inbound):
+        return None
+
+    info = route_at(app, "/chat", include_hidden=True)
+    contract = info.ws_messages
+
+    assert isinstance(contract, WSMessageContract)
+    closed_over = [cell.cell_contents for cell in info.handler.__closure__ or ()]
+    assert any(value is contract.validate for value in closed_over), (
+        "the loop validates through a different callable than the route publishes"
+    )
+
+
+def test_routes_without_a_typed_message_carry_none():
+    app = Veloce()
+
+    @app.websocket_listener("/echo")
+    async def echo(data):
+        return data
+
+    @app.websocket_listener("/text", receive="text", send="text")
+    async def text(data: str):
+        return data
+
+    @app.websocket("/raw")
+    async def raw(ws):
+        await ws.accept()
+
+    @app.get("/http")
+    async def http():
+        return {}
+
+    for path in ("/echo", "/text", "/raw"):
+        assert route_at(app, path, include_hidden=True).ws_messages is None
+    assert route_at(app, "/http").ws_messages is None
+
+
+def test_the_typed_listener_still_serves_traffic():
+    app = Veloce()
+
+    @app.websocket_listener("/chat")
+    async def chat(message: Inbound):
+        return {"kind": type(message).__name__}
+
+    with TestClient(app) as client, client.websocket_connect("/chat") as ws:
+        ws.send_json({"type": "say", "text": "hi"})
+        assert ws.receive_json() == {"kind": "Say"}

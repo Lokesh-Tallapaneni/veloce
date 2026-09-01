@@ -377,4 +377,10 @@ def build_listener_handler(
     # Borrow the callback's name for routing/OpenAPI introspection without
     # importing its signature (see the no-`wraps` note above).
     listener.__name__ = getattr(callback, "__name__", "listener")
+    # Carried on the handler rather than passed to `add_route`: every
+    # registration path - direct, blueprint splice, router merge - re-registers
+    # this same object, so the contract follows it without a forwarding line
+    # each copy could forget. `_finalize_plans` reads it off the handler the
+    # same way it builds the handler plan.
+    listener._ws_message_contract = contract  # type: ignore[attr-defined]
     return listener, contract

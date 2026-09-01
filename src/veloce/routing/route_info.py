@@ -117,6 +117,7 @@ class RouteInfo:
         "mcp",
         "excluded_middleware",
         "stream",
+        "ws_messages",
         "strict_slashes",
         "_mw_chain_cache",
     )
@@ -274,6 +275,13 @@ class RouteInfo:
         # a route until the body is drained. Set by `add_route`; default False
         # preserves the buffer-before-handler behaviour every other route has.
         self.stream = False
+        # What this channel's messages are, for a typed `websocket_listener`.
+        # `None` on every other route - raw websockets, untyped listeners,
+        # `text`/`bytes` listeners, and all HTTP routes - so a route that
+        # declares no message contract carries one `None` and nothing else.
+        # Set by `add_route`, read off the handler the listener wrapper built,
+        # so every re-registration path carries it without forwarding it.
+        self.ws_messages: Any = None
         # The slash-matching mode this route was declared with. It shapes the
         # radix node and the regex route rather than the request, so it lived
         # only on those - and `_readd_route`, which rebuilds a route from its
