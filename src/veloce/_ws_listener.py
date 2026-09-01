@@ -182,7 +182,7 @@ def _unwrap_annotated(annotation: Any) -> Any:
 
 
 def _message_union_members(inner: Any) -> tuple[Any, ...]:
-    """The model members of a message union, `Annotated` peeled, else empty.
+    """Return a message union's model members, `Annotated` peeled, else empty.
 
     Members are unwrapped because `Annotated[Join, Tag("join")]` is an alias,
     not a class: left wrapped it satisfies neither backend's model predicate,
