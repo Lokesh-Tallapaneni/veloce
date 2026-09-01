@@ -10,24 +10,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `@app.websocket_listener` validates each frame against the callback's message annotation. ([#299](https://github.com/Lokesh-Tallapaneni/veloce/pull/299))
-- A websocket frame that does not match the declared message type closes with `1007`. ([#299](https://github.com/Lokesh-Tallapaneni/veloce/pull/299))
-- An undiscriminated websocket message union is refused at registration. ([#299](https://github.com/Lokesh-Tallapaneni/veloce/pull/299))
-- A listener's return annotation documents what the channel sends. ([#299](https://github.com/Lokesh-Tallapaneni/veloce/pull/299))
-- A websocket listener validates a dataclass or `TypedDict` message, as the HTTP body path does. ([#299](https://github.com/Lokesh-Tallapaneni/veloce/pull/299))
+- `@app.websocket_listener` validates each frame against the callback's message annotation. ([#295](https://github.com/Lokesh-Tallapaneni/veloce/pull/295))
+- A websocket frame that does not match the declared message type closes with `1007`. ([#295](https://github.com/Lokesh-Tallapaneni/veloce/pull/295))
+- An undiscriminated websocket message union is refused at registration. ([#295](https://github.com/Lokesh-Tallapaneni/veloce/pull/295))
+- A listener's return annotation documents what the channel sends. ([#295](https://github.com/Lokesh-Tallapaneni/veloce/pull/295))
+- A websocket listener validates a dataclass or `TypedDict` message, as the HTTP body path does. ([#295](https://github.com/Lokesh-Tallapaneni/veloce/pull/295))
 
 ### Changed
 
-- `Response(background=...)` accepts a bare callable and rejects an unsupported value. ([#299](https://github.com/Lokesh-Tallapaneni/veloce/pull/299))
-- The `fast` extra requires `msgspec>=0.16`; earlier versions lack `msgspec.convert`. ([#299](https://github.com/Lokesh-Tallapaneni/veloce/pull/299))
+- `Response(background=...)` accepts a bare callable and rejects an unsupported value. ([#295](https://github.com/Lokesh-Tallapaneni/veloce/pull/295))
+- The `fast` extra requires `msgspec>=0.16`; earlier versions lack `msgspec.convert`. ([#295](https://github.com/Lokesh-Tallapaneni/veloce/pull/295))
 
 ### Fixed
 
 - `MAX_CONCURRENT_CONNECTIONS = None` runs the built-in server without a cap, as documented; it raised `TypeError` and refused every connection. ([#294](https://github.com/Lokesh-Tallapaneni/veloce/pull/294))
-- A dataclass or `TypedDict` response model is documented with its own component schema. ([#299](https://github.com/Lokesh-Tallapaneni/veloce/pull/299))
-- A streaming response from an async generator encodes `str` chunks, as the sync path already did. ([#299](https://github.com/Lokesh-Tallapaneni/veloce/pull/299))
-- `Request.session` is typed as `Session`, exposing `permanent` and `modified` to type checkers. ([#299](https://github.com/Lokesh-Tallapaneni/veloce/pull/299))
-- `set_cookie` and `dump_cookie` declare the `expires` types they already accept. ([#299](https://github.com/Lokesh-Tallapaneni/veloce/pull/299))
+- A dataclass or `TypedDict` response model is documented with its own component schema. ([#295](https://github.com/Lokesh-Tallapaneni/veloce/pull/295))
+- A streaming response from an async generator encodes `str` chunks, as the sync path already did. ([#295](https://github.com/Lokesh-Tallapaneni/veloce/pull/295))
+- `Request.session` is typed as `Session`, exposing `permanent` and `modified` to type checkers. ([#295](https://github.com/Lokesh-Tallapaneni/veloce/pull/295))
+- `set_cookie` and `dump_cookie` declare the `expires` types they already accept. ([#295](https://github.com/Lokesh-Tallapaneni/veloce/pull/295))
 - A handler may return `(body, headers)` with any mapping; `Headers` is not a `dict`, so the framework's own header type was read as a status and answered `500`. ([#292](https://github.com/Lokesh-Tallapaneni/veloce/pull/292))
 
 ## [0.18.0] - 2026-08-31
