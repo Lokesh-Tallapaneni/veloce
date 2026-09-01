@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A streaming response from an async generator encodes `str` chunks, as the sync path already did. ([#298](https://github.com/Lokesh-Tallapaneni/veloce/pull/298))
 - `Request.session` is typed as `Session`, exposing `permanent` and `modified` to type checkers. ([#298](https://github.com/Lokesh-Tallapaneni/veloce/pull/298))
+- `set_cookie` and `dump_cookie` declare the `expires` types they already accept. ([#298](https://github.com/Lokesh-Tallapaneni/veloce/pull/298))
 - A handler may return `(body, headers)` with any mapping; `Headers` is not a `dict`, so the framework's own header type was read as a status and answered `500`. ([#292](https://github.com/Lokesh-Tallapaneni/veloce/pull/292))
 
 ## [0.18.0] - 2026-08-31

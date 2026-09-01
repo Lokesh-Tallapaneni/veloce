@@ -498,8 +498,8 @@ class Response:
         self,
         key: str,
         value: str,
-        max_age: Any = None,
-        expires: Any = None,
+        max_age: int | timedelta | None = None,
+        expires: int | float | datetime | date | str | None = None,
         path: str = "/",
         domain: str | None = None,
         secure: bool = False,
@@ -545,10 +545,11 @@ class Response:
         # dump_cookie accepts datetime and numeric timestamps but not
         # pre-formatted strings. Handle the string case separately.
         expires_str: str | None = None
-        dump_expires = expires
+        dump_expires: int | float | datetime | date | None = None
         if isinstance(expires, str):
             expires_str = expires
-            dump_expires = None
+        else:
+            dump_expires = expires
 
         cookie = dump_cookie(
             key,
