@@ -18,7 +18,7 @@ performed at login is the session-fixation defence (OWASP Session Management).
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from typing import TYPE_CHECKING, Annotated, Any, cast
+from typing import TYPE_CHECKING, Annotated, Any
 
 from typing_extensions import Doc
 
@@ -29,7 +29,6 @@ from veloce.security.base import SecurityScheme
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.http.request import Request
-    from veloce.sessions import Session
 
 # Default session key holding the authenticated subject. It is the default on
 # both sides of the contract - `SessionAuth(subject_key=...)` reads it and
@@ -182,10 +181,7 @@ def login_session(
     that reads the session back. A scheme built with a non-default key reads a
     slot this helper never wrote, and every request resolves anonymous.
     """
-    # `Request.session` is annotated as a plain dict for the common accessor
-    # case; the object the middleware installs is a `Session`, which is what
-    # carries `regenerate_id`.
-    session = cast("Session", request.session)
+    session = request.session
     session.regenerate_id()
     session[subject_key] = subject
     scope_list = list(scopes)
@@ -205,7 +201,7 @@ def logout_session(request: Request) -> None:
     per-user state on a session that has changed hands is a data-leak shape,
     not a convenience.
     """
-    session = cast("Session", request.session)
+    session = request.session
     session.clear()
     session.regenerate_id()
     set_principal(None)

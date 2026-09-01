@@ -51,3 +51,22 @@ class BackgroundTasks:
                     "Background task %s raised an exception",
                     getattr(task.func, "__name__", repr(task.func)),
                 )
+
+
+def coerce_background(background: Any) -> Any:
+    """Normalize a `background=` value to something the dispatch cascade runs.
+
+    Accepts `None`, a `BackgroundTask` / `BackgroundTasks` (duck-typed on
+    `run` / `run_all` so a user's own task type works), or a bare callable,
+    which is wrapped. Anything else raises here rather than being dropped
+    later: the dispatch cascade recognises only the first two shapes, so an
+    unrecognised object was silently discarded and the response was served as
+    though the task had run.
+    """
+    if background is None:
+        return None
+    if hasattr(background, "run") or hasattr(background, "run_all"):
+        return background
+    if callable(background):
+        return BackgroundTask(background)
+    raise TypeError("background must be a callable, BackgroundTask, BackgroundTasks, or None")

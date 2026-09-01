@@ -79,6 +79,10 @@ _REWRITTEN = {
     "is_request_only_plan",
     "request_param_name",
     "is_fast_eligible",
+    # Derived from the handler in `_finalize_plans`, like `handler_plan`: the
+    # listener wrapper carries its own message contract, so every registration
+    # path reads it off the handler rather than forwarding it.
+    "ws_messages",
     # Derived in `__init__` from the six `response_model_*` flags, which are
     # themselves forwarded, so each copy rebuilds it rather than carrying one.
     # Backed by behaviour tests over both copy paths in

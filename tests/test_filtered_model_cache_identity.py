@@ -21,6 +21,7 @@ from __future__ import annotations
 import gc
 import weakref
 
+import pytest
 from pydantic import BaseModel, create_model
 
 from veloce.contrib._jsonschema import _FILTERED_MODELS, _filtered_response_model
@@ -100,7 +101,7 @@ def test_the_cache_releases_a_collected_models_entry():
 
 def test_a_struct_model_is_cached_the_same_way():
     """The msgspec half goes through the same cache."""
-    msgspec = __import__("msgspec")
+    msgspec = pytest.importorskip("msgspec")
 
     class S(msgspec.Struct):
         keep: str

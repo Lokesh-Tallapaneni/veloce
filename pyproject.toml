@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "veloceframework"
-version = "0.18.0"
+version = "0.19.0"
 description = "Ultra-fast async Python web framework — ASGI-native, batteries included"
 readme = "README.md"
 license = "MIT"
@@ -117,10 +117,11 @@ metrics = ["prometheus_client>=0.17"]
 # msgspec as an opt-in fast validation / serialization backend alongside
 # Pydantic: a handler may type a body param or response as a `msgspec.Struct`
 # and it decodes / encodes in C. Pydantic stays the default and is always
-# required; without this extra every msgspec code path is inert. The `>=0.13`
-# floor is set by `msgspec.to_builtins`. Install with
+# required; without this extra every msgspec code path is inert. The `>=0.16`
+# floor is set by `msgspec.convert`, which `dependency.py` uses to validate a
+# msgspec-typed body. Install with
 # `pip install veloceframework[fast]`.
-fast = ["msgspec>=0.13"]
+fast = ["msgspec>=0.16"]
 # Redis-backed session store, rate-limit backend, and cache for
 # `veloce.contrib.redis` (`RedisSessionStore`, `RedisRateLimitBackend`,
 # `RedisCache`) - shared state across workers. Kept optional so a single-process
@@ -155,7 +156,7 @@ all = [
     "gunicorn>=23.0.0; sys_platform != 'win32'",
     "opentelemetry-api>=1.20",
     "prometheus_client>=0.17",
-    "msgspec>=0.13",
+    "msgspec>=0.16",
     "redis>=4.2",
     "click>=8.1",
     "brotli>=1.0",
@@ -198,7 +199,7 @@ dev = [
     "click>=8.1",
     # The `fast` extra's backend, so the default test run exercises the msgspec
     # path; the no-msgspec CI leg installs without it and the guarded tests skip.
-    "msgspec>=0.13",
+    "msgspec>=0.16",
     # In-memory Redis fake so the contrib.redis store/limiter tests run without a
     # real Redis server.
     "fakeredis>=2.20",

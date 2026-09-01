@@ -718,6 +718,12 @@ class Router:
         else:
             route_info.handler_plan = build_plan(route_info.handler, websocket=is_ws)
         route_info.route_dep_plans = build_route_dep_plans(route_info.dependencies, websocket=is_ws)
+        # Derived from the handler, like the plan above: the listener wrapper
+        # carries its message contract, so every registration path picks it up
+        # here rather than each copy forwarding a field it could forget.
+        route_info.ws_messages = (
+            getattr(route_info.handler, "_ws_message_contract", None) if is_ws else None
+        )
         slots = route_info.handler_plan.slots
         has_deps = bool(route_info.route_dep_plans)
         # A handler with no parameter slots and no route-level dependencies
@@ -1727,7 +1733,7 @@ class Router:
 
         def decorator(func: RouteHandler | Callable[..., Any]) -> RouteHandler | Callable[..., Any]:
             """Build the listener handler, register it, and return `func`."""
-            handler = build_listener_handler(
+            handler, _contract = build_listener_handler(
                 func,
                 receive=receive,
                 send=send,

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import datetime as dt
+import inspect
 
+from veloce.http.cookies import dump_cookie
 from veloce.http.response import Response
 
 
@@ -109,3 +111,47 @@ def test_set_cookie_samesite_none_omits_attribute():
     resp = Response()
     resp.set_cookie("k", "v", samesite=None)
     assert "SameSite" not in _cookie(resp)
+
+
+# ── the declarations match what the code accepts ─────────────────────
+
+
+def test_expires_accepts_every_documented_form():
+    """POSITIVE: the docstring names datetime, timestamp, and IMF-fixdate str."""
+    for value in (
+        1893456000,
+        1893456000.0,
+        dt.datetime(2030, 1, 1),
+        dt.date(2030, 1, 1),
+        "Wed, 21 Oct 2015 07:28:00 GMT",
+    ):
+        resp = Response()
+        resp.set_cookie("k", "v", expires=value)
+        assert "Expires=" in _cookie(resp), value
+
+
+def _union_members(fn, parameter: str) -> set[str]:
+    """The declared union members of one parameter, as a set of bare names.
+
+    Compared as whole members rather than by substring: `"date" in "datetime"`
+    is True, which made the first version of the check below pass against the
+    very annotation it was written to reject.
+    """
+    annotation = str(inspect.signature(fn).parameters[parameter].annotation)
+    return {member.strip().rsplit(".", 1)[-1] for member in annotation.split("|")}
+
+
+def test_the_declared_expires_types_cover_every_accepted_form():
+    """NEGATIVE: an annotation narrower than the behaviour is what hid this.
+
+    `set_cookie` handles `str` itself and forwards the rest to `dump_cookie`,
+    which forwards to `http_date`. A declaration that omits one of those types
+    tells a type checker that working code is wrong.
+    """
+    declared = _union_members(Response.set_cookie, "expires")
+    assert {"int", "float", "datetime", "date", "str"} <= declared, declared
+
+
+def test_dump_cookie_declares_the_date_it_renders():
+    """NEGATIVE: the callee's own annotation was the narrower of the two."""
+    assert "date" in _union_members(dump_cookie, "expires")

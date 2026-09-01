@@ -66,6 +66,7 @@ from veloce._internal import (
 )
 from veloce._protocol_constants import AUTH_SCHEME_BASIC, SET_COOKIE_JOINER
 from veloce._warnings import VeloceDeprecationWarning
+from veloce.background import coerce_background
 from veloce.http.cache_control import CacheControl
 from veloce.http.cookies import dump_cookie, iter_cookies
 from veloce.http.dates import http_date, parse_date
@@ -297,7 +298,14 @@ class Response:
         # Optional `BackgroundTask` or `BackgroundTasks` fired by the
         # dispatch layer after this response is built. None when no task
         # is attached. `Response(content=..., background=BackgroundTask(fn))`.
-        self.background = background
+        # Coerced rather than stored raw: the dispatch cascade recognises only
+        # `run` / `run_all`, so an unsupported value used to be dropped with no
+        # error and the response served as if the task had run.
+        # `None` - every response that attaches no task, which is nearly all of
+        # them - is answered by the comparison rather than by a call: the call
+        # measured 72 ns against a 432 ns `Response()`, and this runs on every
+        # response the framework builds.
+        self.background = None if background is None else coerce_background(background)
         # `StreamingResponse` rewrites this with an async iterator; for a
         # base `Response` the slot stays `None` so `is_streamed` is a
         # direct attribute load (no `getattr` fallback to None).
@@ -498,8 +506,8 @@ class Response:
         self,
         key: str,
         value: str,
-        max_age: Any = None,
-        expires: Any = None,
+        max_age: int | timedelta | None = None,
+        expires: int | float | datetime | date | str | None = None,
         path: str = "/",
         domain: str | None = None,
         secure: bool = False,
@@ -545,10 +553,11 @@ class Response:
         # dump_cookie accepts datetime and numeric timestamps but not
         # pre-formatted strings. Handle the string case separately.
         expires_str: str | None = None
-        dump_expires = expires
+        dump_expires: int | float | datetime | date | None = None
         if isinstance(expires, str):
             expires_str = expires
-            dump_expires = None
+        else:
+            dump_expires = expires
 
         cookie = dump_cookie(
             key,
@@ -1762,10 +1771,16 @@ class StreamingResponse(Response):
             content_type=content_type,
             headers=headers,
         )
-        if hasattr(content, "__aiter__"):
-            self._stream: AsyncIterator[bytes] = content
-        else:
-            self._stream = self._aiter_sync(content)
+        # Both branches go through an adapter that encodes `str`. Assigning an
+        # async iterator straight to the slot declared it `AsyncIterator[bytes]`
+        # without anything checking, so an async generator yielding `str` reached
+        # `_write_chunked` and raised `TypeError: can't concat str to bytes` on
+        # the native transport - while the identical sync generator worked.
+        self._stream: AsyncIterator[bytes] = (
+            self._aiter_async(content)
+            if hasattr(content, "__aiter__")
+            else self._aiter_sync(content)
+        )
 
     @staticmethod
     async def _aiter_sync(iterable: Any) -> AsyncIterator[bytes]:
@@ -1775,6 +1790,12 @@ class StreamingResponse(Response):
         (chunked transfer encoding) work uniformly.
         """
         for chunk in iterable:
+            yield chunk.encode("utf-8") if isinstance(chunk, str) else chunk
+
+    @staticmethod
+    async def _aiter_async(iterable: Any) -> AsyncIterator[bytes]:
+        """Adapt an async iterable, encoding `str` chunks the way `_aiter_sync` does."""
+        async for chunk in iterable:
             yield chunk.encode("utf-8") if isinstance(chunk, str) else chunk
 
     def encode(self, keep_alive: bool = True) -> bytes:

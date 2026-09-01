@@ -38,6 +38,7 @@ from veloce._model_backend import ModelBackend, backend_of
 if TYPE_CHECKING:  # pragma: no cover
     from veloce._handler_plan import HandlerPlan, _Slot
     from veloce._params import ParamBase
+    from veloce._ws_listener import WSMessageContract
     from veloce.routing.router import RouteInfo
 
 
@@ -85,6 +86,8 @@ class RouteContract:
     """Read-only projection of a finalized route for non-runtime lowerings.
 
     Bundles the runtime IR (`plan`) with the route metadata a lowering reads.
+    `ws_messages` is the typed websocket channel's message contract, or `None`
+    for every route that declares no messages.
     Built lazily by a lowering via `from_route_info`; references the existing
     `HandlerPlan` and never copies it. Grows fields as further lowerings (the
     typed client) need them.
@@ -92,6 +95,7 @@ class RouteContract:
 
     plan: HandlerPlan
     param_names: tuple[str, ...]
+    ws_messages: WSMessageContract | None = None
 
     @classmethod
     def from_route_info(cls, info: RouteInfo) -> RouteContract:
@@ -103,7 +107,11 @@ class RouteContract:
             # uses, so the lowering still reads the IR rather than the signature.
 
             plan = build_plan(info.handler)
-        return cls(plan=plan, param_names=tuple(info.param_names))
+        return cls(
+            plan=plan,
+            param_names=tuple(info.param_names),
+            ws_messages=info.ws_messages,
+        )
 
 
 def _is_model(annotation: Any) -> bool:
