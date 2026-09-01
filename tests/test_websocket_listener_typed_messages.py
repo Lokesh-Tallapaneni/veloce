@@ -263,3 +263,19 @@ def test_on_disconnect_runs_after_a_rejected_frame_closes_the_socket():
         with pytest.raises(RuntimeError, match="1007"):
             ws.receive_json()
     assert torn_down == ["bye"]
+
+
+@requires_msgspec
+def test_single_msgspec_struct_is_validated():
+    app = Veloce()
+
+    @app.websocket_listener("/say")
+    async def say(message: MSay):
+        return {"text": message.text, "model": isinstance(message, MSay)}
+
+    with TestClient(app) as client, client.websocket_connect("/say") as ws:
+        ws.send_json({"type": "say", "text": "hi"})
+        assert ws.receive_json() == {"text": "hi", "model": True}
+        ws.send_json({"type": "say"})
+        with pytest.raises(RuntimeError, match="1007"):
+            ws.receive_json()

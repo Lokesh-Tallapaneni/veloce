@@ -177,63 +177,51 @@ def _build_message_validator(annotation: Any, callback: Any) -> Any:
     if inner is None or inner is Any:
         return None
 
-    members = _union_members(inner) if _is_model_union(inner) else None
-    is_union = members is not None
-    single_struct = is_msgspec_struct(inner)
-
-    if not is_union and not single_struct and not is_pydantic_model(inner):
-        return None
-
-    if is_union and members is not None:
-        struct_members = sum(1 for m in members if is_msgspec_struct(m))
-        if struct_members and struct_members != len(members):
+    if _is_model_union(inner):
+        members = _union_members(inner)
+        structs = sum(1 for m in members if is_msgspec_struct(m))
+        if structs and structs != len(members):
             raise TypeError(
                 f"{_where(callback)}: a websocket message union must use one model "
                 f"backend, and {annotation!r} mixes msgspec structs with pydantic "
                 "models. Neither backend can validate the other's members."
             )
-        if struct_members:
-            return _msgspec_validator(inner, annotation, callback)
-        return _pydantic_validator(inner, annotation, callback)
+        if structs:
+            # msgspec's own rule - "all Struct types must be tagged" - so
+            # building the converter is the check.
+            try:
+                _msgspec.convert({}, inner)
+            except TypeError as exc:
+                raise TypeError(_undiscriminated(callback, annotation, str(exc))) from exc
+            except Exception:
+                # A validation failure on the empty probe means the union is
+                # well-formed, which is all this checks.
+                pass
+            return _msgspec_validator(inner)
+        adapter = adapter_for(annotation)
+        if adapter.core_schema.get("type") != "tagged-union":
+            raise TypeError(
+                _undiscriminated(
+                    callback,
+                    annotation,
+                    "pydantic resolves an untagged union by first match, so two "
+                    "messages with the same shape would route by declaration order",
+                )
+            )
+        return adapter.validate_python
 
-    if single_struct:
-        return _msgspec_validator(inner, annotation, callback)
-    return _pydantic_validator(inner, annotation, callback)
+    if is_msgspec_struct(inner):
+        return _msgspec_validator(inner)
+    if is_pydantic_model(inner):
+        return adapter_for(annotation).validate_python
+    return None
 
 
-def _msgspec_validator(inner: Any, annotation: Any, callback: Any) -> Any:
+def _msgspec_validator(inner: Any) -> Any:
     convert = _msgspec.convert
-    try:
-        convert({}, inner)
-    except TypeError as exc:
-        # msgspec's own rule: "all Struct types must be tagged".
-        raise TypeError(_undiscriminated(callback, annotation, str(exc))) from exc
-    except Exception:
-        # A validation failure on the empty probe means the type itself is
-        # well-formed, which is all this checks.
-        pass
 
     def validate(payload: Any) -> Any:
         return convert(payload, inner)
-
-    return validate
-
-
-def _pydantic_validator(inner: Any, annotation: Any, callback: Any) -> Any:
-    adapter = adapter_for(annotation)
-    if _is_model_union(inner) and adapter.core_schema.get("type") != "tagged-union":
-        raise TypeError(
-            _undiscriminated(
-                callback,
-                annotation,
-                "pydantic resolves an untagged union by first match, so two "
-                "messages with the same shape would route by declaration order",
-            )
-        )
-    validate_python = adapter.validate_python
-
-    def validate(payload: Any) -> Any:
-        return validate_python(payload)
 
     return validate
 
