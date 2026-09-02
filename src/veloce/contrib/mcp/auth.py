@@ -20,6 +20,8 @@ from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from veloce._internal import _refuse_string_scopes
+
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.principal import Principal
 
@@ -61,8 +63,12 @@ class MCPAuth:
     scopes_supported: Iterable[str] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
+        if isinstance(self.required_scopes, (str, bytes)):
+            _refuse_string_scopes(self.required_scopes, "MCPAuth.required_scopes")
         self.required_scopes = frozenset(self.required_scopes)
         self.authorization_servers = tuple(self.authorization_servers)
+        if isinstance(self.scopes_supported, (str, bytes)):
+            _refuse_string_scopes(self.scopes_supported, "MCPAuth.scopes_supported")
         self.scopes_supported = tuple(self.scopes_supported)
         # The MCP authorization spec requires the protected-resource metadata to
         # carry the canonical resource URI (so a client can audience-bind its token

@@ -18,12 +18,12 @@ from __future__ import annotations
 import inspect
 import types
 import typing
-import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import typing_extensions
 
+from veloce._handler_plan import _AnnotationProbe, _callable_name
 from veloce._internal import _is_async_callable, offload
 from veloce._model_backend import (
     ModelBackend,
@@ -152,26 +152,35 @@ def _message_annotation(callback: Any, wants_socket: bool) -> Any:
     if not params:
         return None
     target = params[1] if wants_socket and len(params) >= 2 else params[0]
-    try:
-        hints = typing_extensions.get_type_hints(_hint_target(callback), include_extras=True)
-    except Exception as exc:  # noqa: BLE001 - the name genuinely cannot be resolved
-        # Never silent: an unresolved annotation means the frames the callback
-        # was promised would be validated arrive raw instead, and a listener
-        # written against a model would fail on attribute access rather than
-        # at the boundary. Same reason the handler plan warns.
-        warnings.warn(
-            f"{_where(callback)}: could not resolve the annotation on "
-            f"{target.name!r} ({type(exc).__name__}: {exc}); messages are passed "
-            "through unvalidated - define the message type at module level, or "
-            "import it at runtime rather than only under TYPE_CHECKING",
-            # `_message_annotation` -> `_build_message_contract` ->
-            # `build_listener_handler` -> the router's decorator -> the user's
-            # `@app.websocket_listener` line, which is the only frame worth
-            # pointing at. Pinned by a test, because adding a helper in between
-            # silently moves it.
-            stacklevel=5,
-        )
+    # Only this parameter's annotation is resolved, through the same
+    # one-annotation probe the handler plan uses. Resolving the whole signature
+    # refused a listener over an unrelated annotation - a return type that will
+    # not import made this raise and name the *message* parameter, which
+    # resolved perfectly - and `resolve_response_contract` is documented to
+    # tolerate exactly that return annotation and record no send contract.
+    hint_target = _hint_target(callback)
+    declared = (getattr(hint_target, "__annotations__", None) or {}).get(target.name)
+    if declared is None:
         return None
+    probe = _AnnotationProbe()
+    probe.__annotations__ = {target.name: declared}
+    try:
+        hints = typing_extensions.get_type_hints(
+            probe, getattr(hint_target, "__globals__", None), include_extras=True
+        )
+    except Exception as exc:  # noqa: BLE001 - the name genuinely cannot be resolved
+        # Refused, not warned: the frame is the only source of this value, so a
+        # dropped annotation means every message reaches the callback
+        # unvalidated - the contract the author declared silently stops being
+        # enforced. There is no "has a default" escape as there is on the HTTP
+        # side; an annotated message parameter is always load-bearing.
+        raise TypeError(
+            f"{_where(callback)}: could not resolve the annotation on "
+            f"{target.name!r} ({type(exc).__name__}: {exc}). The listener is "
+            "refused rather than registered unvalidated - define the message "
+            "type at module level, or import it at runtime rather than only "
+            "under TYPE_CHECKING."
+        ) from exc
     return hints.get(target.name)
 
 
@@ -290,16 +299,11 @@ def _msgspec_validator(inner: Any) -> Any:
 def _where(callback: Any) -> str:
     """Name the callback the way `_handler_plan` names a handler.
 
-    `__qualname__` first, so a listener defined as a method or inside a factory
-    keeps its enclosing context - the sibling warning in `_handler_plan`
-    resolves it that way, and two different answers to "which callback is
-    this?" for the same class of failure is worse than either answer.
+    Delegates rather than restating the rule: the two used to spell it
+    differently, so the same class of mistake was reported under two different
+    names depending on which door caught it.
     """
-    return (
-        getattr(callback, "__qualname__", None)
-        or getattr(callback, "__name__", None)
-        or repr(callback)
-    )
+    return _callable_name(callback)
 
 
 def _undiscriminated(callback: Any, annotation: Any, detail: str) -> str:

@@ -89,7 +89,7 @@ def test_plain_http_still_redirects():
 
 def test_a_trusted_forwarded_header_also_suppresses_the_redirect():
     """RFC 7239 spelling, trusted at the configured depth."""
-    with _client(proxy_fix=ProxyFix(x_proto=1)) as client:
+    with _client(proxy_fix=ProxyFix(x_proto=1, trust_forwarded=True)) as client:
         response = client.get(
             "/thing", headers={"forwarded": "proto=https"}, follow_redirects=False
         )

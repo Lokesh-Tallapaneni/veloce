@@ -1020,7 +1020,19 @@ class DispatchMixin(AppHost):
                 # redirect inside a mounted sub-app points at a path that does not
                 # exist on the parent. `root_path` is "" for a top-level app, so
                 # the unmounted case is unchanged.
-                response = RedirectResponse(request.root_path + alt, status_code=code)
+                target = request.root_path + alt
+                if target.startswith("//"):
+                    # A `Location` starting with `//` is protocol-relative: the
+                    # browser reads what follows as a host and leaves this
+                    # origin, so a reflected path became an open redirect from
+                    # the victim's own domain. The matcher refuses a path with
+                    # an empty segment, so `alt` cannot begin this way - this
+                    # keeps the response safe if a mount's `root_path` does.
+                    # A leading `/\` needs nothing here: `RedirectResponse`
+                    # percent-encodes the backslash, so it cannot be read as a
+                    # second slash.
+                    target = "/" + target.lstrip("/")
+                response = RedirectResponse(target, status_code=code)
                 response = await self._run_response_phase(cp.http_post, request, response, excluded)
                 return response
 

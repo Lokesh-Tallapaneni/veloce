@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from urllib.parse import urlencode, urlparse
 
-from veloce._internal import _b64encode
+from veloce._internal import _b64encode, _refuse_string_scopes
 from veloce._protocol_constants import HTTP_METHOD_GET, HTTP_METHOD_POST
 from veloce.http.response import JSONResponse, RedirectResponse, Response
 from veloce.principal import Principal
@@ -315,6 +315,8 @@ class MCPAuthorizationServer:
     allow_dynamic_registration: bool = True
 
     def __post_init__(self) -> None:
+        if isinstance(self.scopes_supported, (str, bytes)):
+            _refuse_string_scopes(self.scopes_supported, "MCPAuthorizationServer.scopes_supported")
         self.scopes_supported = tuple(self.scopes_supported)
         if not self.issuer:
             raise ValueError("MCPAuthorizationServer requires an issuer URL")

@@ -22,6 +22,8 @@ two trusted proxies in front you set `x_for=2`.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from veloce._constants import (
     HEADER_X_FORWARDED_FOR,
     HEADER_X_FORWARDED_HOST,
@@ -29,11 +31,40 @@ from veloce._constants import (
     HEADER_X_FORWARDED_PREFIX,
     HEADER_X_FORWARDED_PROTO,
 )
-from veloce._header_parsing import split_outside_quotes, unquote_value
+from veloce._header_parsing import (
+    split_outside_quotes,
+    split_outside_quotes_checked,
+    unquote_value,
+)
 from veloce._internal import _extract_host, _reject_header_crlf
 from veloce.http.request import Request
 from veloce.http.response import Response
 from veloce.middleware.base import Middleware
+
+if TYPE_CHECKING:  # pragma: no cover
+    from veloce.http.datastructures import Headers
+
+
+def _hop_header(headers: Headers, name: str) -> str | None:
+    """Return every occurrence of `name`, comma-joined in received order.
+
+    A proxy that appends its own line rather than rewriting the existing one
+    leaves two field lines, and single-value access returns the *first* - the
+    untrusted end of the chain. RFC 9110 Sec. 5.3 defines a repeatable field as
+    the comma-joined list in order, which is exactly what the right-to-left hop
+    math already expects.
+    """
+    # `getall` with a default, not `getlist`: the latter reaches its empty
+    # result by catching `KeyError`, and raising one per absent header on every
+    # request measured a third of this middleware's cost.
+    values = headers.getall(name, ())
+    if not values:
+        return None
+    if len(values) == 1:
+        # The overwhelmingly common shape: no join, no allocation.
+        first: str = values[0]
+        return first
+    return ", ".join(values)
 
 
 class ProxyFix(Middleware):
@@ -48,6 +79,14 @@ class ProxyFix(Middleware):
     carries none, so a proxy on a non-default port (e.g. 8443) is preserved.
     An explicit port in the Host / ``X-Forwarded-Host`` always wins.
 
+    ``trust_forwarded`` opts into RFC 7239 ``Forwarded``, which supersedes the
+    ``X-Forwarded-*`` set and is then the sole authority for every directive it
+    carries. Enable it only where every trusted proxy sets or sanitizes
+    ``Forwarded`` itself: nginx, ALB and most CDNs emit ``X-Forwarded-*`` and
+    leave ``Forwarded`` untouched, so a client-supplied header would otherwise
+    decide the client address, scheme and host - and silence the header the
+    proxy does control.
+
     Usage::
 
         # Behind two trusted proxies forwarding client IP and scheme.
@@ -61,7 +100,7 @@ class ProxyFix(Middleware):
         x_host: int = 0,
         x_port: int = 0,
         x_prefix: int = 0,
-        trust_forwarded: bool = True,
+        trust_forwarded: bool = False,
         name: str | None = None,
     ) -> None:
         # Forward the optional per-instance exclusion name to the base so
@@ -86,7 +125,7 @@ class ProxyFix(Middleware):
 
     async def process_request(self, request: Request) -> Response | None:
         """Rewrite request attributes from trusted proxy headers."""
-        forwarded = request.headers.get("forwarded") if self.trust_forwarded else None
+        forwarded = _hop_header(request.headers, "forwarded") if self.trust_forwarded else None
         fwd = (
             self._parse_forwarded(forwarded, self.x_for, self.x_proto, self.x_host, self.x_prefix)
             if forwarded
@@ -113,17 +152,17 @@ class ProxyFix(Middleware):
             # `x_prefix` are 0 by default, which is three lookups a stock
             # configuration cannot use.
             client = (
-                self._pick_hop(request.headers.get(HEADER_X_FORWARDED_FOR), self.x_for)
+                self._pick_hop(_hop_header(request.headers, HEADER_X_FORWARDED_FOR), self.x_for)
                 if self.x_for
                 else None
             )
             proto = (
-                self._pick_hop(request.headers.get(HEADER_X_FORWARDED_PROTO), self.x_proto)
+                self._pick_hop(_hop_header(request.headers, HEADER_X_FORWARDED_PROTO), self.x_proto)
                 if self.x_proto
                 else None
             )
             host = (
-                self._pick_hop(request.headers.get(HEADER_X_FORWARDED_HOST), self.x_host)
+                self._pick_hop(_hop_header(request.headers, HEADER_X_FORWARDED_HOST), self.x_host)
                 if self.x_host
                 else None
             )
@@ -137,12 +176,12 @@ class ProxyFix(Middleware):
         # `proto` and `host` above, where the RFC does define a directive and
         # the fallback let a refused hop through.
         port = (
-            self._pick_hop(request.headers.get(HEADER_X_FORWARDED_PORT), self.x_port)
+            self._pick_hop(_hop_header(request.headers, HEADER_X_FORWARDED_PORT), self.x_port)
             if self.x_port
             else None
         )
         prefix = fwd.get("prefix") or (
-            self._pick_hop(request.headers.get(HEADER_X_FORWARDED_PREFIX), self.x_prefix)
+            self._pick_hop(_hop_header(request.headers, HEADER_X_FORWARDED_PREFIX), self.x_prefix)
             if self.x_prefix
             else None
         )
@@ -232,7 +271,15 @@ class ProxyFix(Middleware):
         """
         # Split on commas OUTSIDE quoted strings so a quoted comma in a
         # directive value (e.g. `host="a,b"`) does not fake an extra hop.
-        elements = [e for e in split_outside_quotes(value, ",") if e.strip()]
+        raw, unterminated = split_outside_quotes_checked(value, ",")
+        if unterminated:
+            # A quoted comma is only legal inside a properly closed
+            # quoted-string (RFC 7239 Sec. 4, RFC 9110 Sec. 5.6.4). Honouring an
+            # unbalanced `"` would let the sender put every comma its trusted
+            # proxies later append inside one quoted region, collapsing the hop
+            # count to whatever element it chose. Trust nothing from it.
+            return {}
+        elements = [e for e in raw if e.strip()]
         parsed = [self._parse_forwarded_element(e) for e in elements]
 
         result: dict[str, str] = {}

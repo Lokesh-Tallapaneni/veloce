@@ -99,6 +99,13 @@ jobs:
   # CodSpeed macro runner would make the numbers gate-worthy again.
   walltime:
     name: Run benchmarks (wall time)
+    # Not on pull requests. The job is already non-gating, but CodSpeed's own
+    # check aggregates every instrument it received, so a hardware draw on this
+    # one turns the PR red and reports a "degradation" the deterministic
+    # instruments flatly contradict - which is what the paragraph above
+    # describes. Pushes still record the trend on the dashboard, where a step
+    # change is distinguishable from a draw by eye.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     continue-on-error: true

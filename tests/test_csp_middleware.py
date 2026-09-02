@@ -205,3 +205,78 @@ def test_public_import():
     assert veloce.csp_nonce is csp_nonce
     assert "CSPMiddleware" in veloce.__all__
     assert "csp_nonce" in veloce.__all__
+
+
+# ── a short-circuited request must still get a real nonce ────────────
+#
+# `process_response` interpolated `csp_nonce(request)` unconditionally. When an
+# earlier middleware answers from `process_request` - an unlisted Host, a rate
+# limit, an auth gate - CSP's own `process_request` never ran, no nonce was
+# armed, and the header shipped the fixed token `nonce-None`. A browser parses
+# that as a real nonce, so an injected `<script nonce="None">` executes while
+# the page's own inline script (carrying no nonce) is blocked: the policy is
+# inverted rather than merely weakened. The constructor already refuses a
+# policy that would render `nonce-None`; the response path did it anyway.
+
+
+def _nonce_middleware() -> CSPMiddleware:
+    return CSPMiddleware(policy={"default-src": "'self'", "script-src": "'nonce'"})
+
+
+def _bare_request():
+    return veloce.Request(
+        method="GET", path="/", query_string="", headers=[("host", "x")], body=b""
+    )
+
+
+async def test_a_short_circuited_response_never_ships_the_none_nonce():
+    """NEGATIVE: the fixed token must not reach the header."""
+    middleware = _nonce_middleware()
+    request = _bare_request()
+
+    response = await middleware.process_response(request, Response("gate"))
+
+    policy = response.headers["Content-Security-Policy"]
+    assert "nonce-None" not in policy
+    assert "'nonce-" in policy
+
+
+async def test_a_short_circuited_nonce_is_unguessable_and_per_response():
+    """NEGATIVE: minting one is only a fix if it differs every time."""
+    middleware = _nonce_middleware()
+
+    first = await middleware.process_response(_bare_request(), Response("gate"))
+    second = await middleware.process_response(_bare_request(), Response("gate"))
+
+    assert first.headers["Content-Security-Policy"] != second.headers["Content-Security-Policy"]
+
+
+async def test_a_minted_nonce_is_readable_through_csp_nonce():
+    """POSITIVE: the value in the header is the one the request carries.
+
+    Storing it back keeps `csp_nonce(request)` and the emitted policy in
+    agreement, so anything reading it later sees the nonce that was sent.
+    """
+    middleware = _nonce_middleware()
+    request = _bare_request()
+
+    response = await middleware.process_response(request, Response("gate"))
+
+    minted = csp_nonce(request)
+    # Not just "the header agrees with the state": pre-fix both were the string
+    # `None`, so agreement alone passes vacuously.
+    assert minted is not None
+    assert minted != "None"
+    assert f"'nonce-{minted}'" in response.headers["Content-Security-Policy"]
+
+
+async def test_the_ordinary_request_path_is_unchanged():
+    """POSITIVE: an armed nonce must still be the one emitted."""
+    middleware = _nonce_middleware()
+    request = _bare_request()
+
+    await middleware.process_request(request)
+    armed = csp_nonce(request)
+    response = await middleware.process_response(request, Response("ok"))
+
+    assert f"'nonce-{armed}'" in response.headers["Content-Security-Policy"]

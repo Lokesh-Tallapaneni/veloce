@@ -221,22 +221,23 @@ def test_untagged_msgspec_union_is_refused_at_registration():
             return None
 
 
-def test_unresolvable_annotation_warns_instead_of_silently_skipping():
-    """A model the annotation cannot name is reported, not quietly ignored."""
+def test_unresolvable_annotation_is_refused_instead_of_silently_skipping():
+    """A model the annotation cannot name is refused, not quietly ignored.
+
+    This asserted the warning until the fail-open shape was closed. Warning was
+    an improvement on silence, but not a control: the listener still went on to
+    accept every frame unvalidated.
+    """
     app = Veloce()
 
     class LocalOnly(BaseModel):
         x: int
 
-    with pytest.warns(UserWarning, match="could not resolve the annotation"):
+    with pytest.raises(TypeError, match="could not resolve the annotation"):
 
         @app.websocket_listener("/local")
         async def local(message: LocalOnly):
             return {"kind": type(message).__name__}
-
-    with TestClient(app) as client, client.websocket_connect("/local") as ws:
-        ws.send_json({"x": 1})
-        assert ws.receive_json() == {"kind": "dict"}
 
 
 def test_sync_callback_also_receives_the_validated_model():

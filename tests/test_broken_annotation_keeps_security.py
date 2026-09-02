@@ -22,7 +22,7 @@ from typing import Annotated
 
 import pytest
 
-from veloce import Depends, Veloce
+from veloce import Depends, Security, Veloce
 from veloce._handler_plan import K_QUERY, K_REQUEST, build_plan
 from veloce.security.http import HTTPBearer
 from veloce.testclient import TestClient
@@ -182,3 +182,191 @@ def test_a_sound_signature_warns_about_nothing():
         build_plan(handler)
 
     assert not [w for w in caught if "could not resolve" in str(w.message)]
+
+
+def _denies(request):
+    """A guard that refuses everything, so a bypass shows up as a 200."""
+    raise RuntimeError("this dependency must never run")
+
+
+def test_a_pep604_union_with_a_default_only_warns():
+    """POSITIVE: `Tag | None` must not be stricter than `Optional[Tag]`.
+
+    The placeholder defined no `__or__`, so evaluating the union raised and the
+    "cannot tell" branch refused - while the identical `Optional[Tag]` spelling
+    evaluated fine and only warned. The docs promise a parameter that has a
+    default still only warns.
+    """
+    app = Veloce()
+
+    with pytest.warns(UserWarning, match="could not resolve the annotation"):
+
+        @app.get("/pep604")
+        async def pep604(tag: Missing | None = None):  # noqa: F821
+            return {"tag": tag}
+
+    with TestClient(app) as client:
+        assert client.get("/pep604").json() == {"tag": None}
+
+
+def test_a_marker_on_the_left_of_a_union_is_still_refused():
+    """NEGATIVE: a union must not become a way to drop a `Security` marker."""
+    app = Veloce()
+
+    with pytest.raises(TypeError, match="user"):
+
+        @app.get("/unionmarker")
+        async def unionmarker(user: Ann[Missing, Security(_denies)] | None = None):  # noqa: F821
+            return {"user": user}
+
+
+def test_a_typing_extensions_doc_annotation_only_warns():
+    """POSITIVE: `Doc()` carries no behaviour, so its loss changes nothing.
+
+    The style guide mandates `Annotated[T, Doc(...)]` on public surfaces, and
+    ruff moves `from typing_extensions import Doc` under TYPE_CHECKING. `Doc`
+    then became a placeholder in a metadata slot, which the fail-closed rule
+    refused - a route with no vulnerability to close.
+    """
+    app = Veloce()
+
+    with pytest.warns(UserWarning, match="could not resolve the annotation"):
+
+        @app.get("/documented")
+        async def documented(q: Annotated[Missing, Doc("a query")] = "x"):  # noqa: F821
+            return {"q": q}
+
+    with TestClient(app) as client:
+        assert client.get("/documented").json() == {"q": "x"}
+
+
+def test_a_marker_beside_a_typing_name_is_still_refused():
+    """NEGATIVE: resolving `Doc` must not stop the scan finding `Security`."""
+    app = Veloce()
+
+    with pytest.raises(TypeError, match="user"):
+
+        @app.get("/docandguard")
+        async def docandguard(
+            user: Annotated[Missing, Doc("who"), Security(_denies)] = None,  # noqa: F821
+        ):
+            return {"user": user}
+
+
+def test_a_path_parameter_with_an_unresolvable_annotation_still_registers():
+    """POSITIVE: the value comes from the URL path, not the query string.
+
+    A dropped annotation leaves a `K_QUERY` slot, which the resolver satisfies
+    from `path_params` first - so the parameter is still read from the path
+    exactly as declared. Refusing it closed no bypass.
+    """
+    app = Veloce()
+
+    with pytest.warns(UserWarning, match="could not resolve the annotation"):
+
+        @app.get("/users/{uid}")
+        async def show(uid: Missing):  # noqa: F821
+            return {"uid": uid}
+
+    with TestClient(app) as client:
+        assert client.get("/users/42").json() == {"uid": "42"}
+
+
+def test_a_query_parameter_with_no_default_is_still_refused():
+    """NEGATIVE: the exemption must cover the path template and nothing else.
+
+    The same handler shape, with the parameter absent from the route template,
+    degrades into a *required query* parameter - the source really did change,
+    so it must still refuse.
+    """
+    app = Veloce()
+
+    with pytest.raises(TypeError, match="item"):
+
+        @app.get("/items")
+        async def listing(item: Missing):  # noqa: F821
+            return {"item": item}
+
+
+#: Records each call so the tests below can observe when the salvage path
+#: evaluates a metadata expression. Module scope because the handler's
+#: `__globals__` is what the annotation is evaluated against.
+_GUARD_CALLS: list[str] = []
+
+
+def _build_guard():
+    """A metadata expression with an observable side effect."""
+    _GUARD_CALLS.append("ran")
+    return lambda request: None
+
+
+def test_salvaging_an_annotation_evaluates_its_metadata_expressions():
+    """POSITIVE: the placeholder evaluation runs metadata the intact path skips.
+
+    Python evaluates subscript arguments left to right, so intact evaluation
+    raises on the unresolvable name before reaching the metadata element. The
+    placeholder makes that name succeed, so evaluation continues into the
+    metadata. Registration-time only, and the expression is the author's own -
+    but it is a real asymmetry, so it is documented rather than claimed away.
+    """
+    _GUARD_CALLS.clear()
+    app = Veloce()
+
+    with pytest.warns(UserWarning, match="could not resolve the annotation"):
+
+        @app.get("/evaluated")
+        async def evaluated(dep: Annotated[Missing, _build_guard()] = None):  # noqa: F821
+            return {}
+
+    assert _GUARD_CALLS == ["ran"]
+
+
+def test_a_healthy_annotation_does_not_reach_the_salvage_path():
+    """NEGATIVE: a resolvable annotation must not be evaluated a third time.
+
+    Under PEP 563 the annotation is a string, so its metadata expression runs
+    whenever something evaluates it. Registration already evaluates it twice,
+    from two independent call sites on the *success* path -
+    `resolve_response_contract` and `build_plan` - which is recorded separately
+    as its own finding.
+
+    What this test pins is the boundary: the salvage path adds no further
+    evaluation for a handler whose annotations all resolve, because it runs
+    only from the failure branch of `get_type_hints`. A third call here would
+    mean the placeholder evaluation had escaped onto the healthy path.
+    """
+    _GUARD_CALLS.clear()
+    app = Veloce()
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+
+        @app.get("/healthy")
+        async def healthy(dep: Annotated[str, _build_guard()] = "x"):
+            return {}
+
+    assert _GUARD_CALLS == ["ran", "ran"]
+
+
+# ── the refusal is not registration-only ─────────────────────────────
+
+
+def test_the_refusal_wording_holds_for_a_plan_built_mid_request():
+    """NEGATIVE: `dependency_overrides` targets are planned on first use.
+
+    `DependencyResolver.resolve` and the override sub-plan cache build plans
+    lazily, so a target carrying a load-bearing broken annotation raises
+    mid-request rather than at registration - verified to surface as a 500.
+    It fails closed, which is right, but the message must not tell the reader
+    the route was refused at registration when it was not.
+    """
+
+    def broken_override(conn: Missing):  # noqa: F821
+        return "override"
+
+    with pytest.raises(TypeError) as caught:
+        build_plan(broken_override)
+
+    message = str(caught.value)
+    assert "conn" in message
+    assert "rather than registered" not in message

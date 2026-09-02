@@ -194,3 +194,37 @@ def test_new_tokens_use_primary_secret_only():
     only_old = Signer(secret="old")
     with pytest.raises(BadSignature):
         only_old.loads(token)
+
+
+def test_an_empty_fallback_secret_is_refused():
+    """NEGATIVE: an empty verification key accepts anyone's forgery.
+
+    `Signer("real")` rejects `""` as a primary secret. As a fallback the same
+    value was accepted and derived a key from `b""`, which anyone can compute
+    from the published source.
+    """
+    signer = Signer("a-real-secret")
+    with pytest.raises(ValueError, match="fallback secret must be non-empty"):
+        signer.add_fallback_secret("")
+
+
+def test_an_empty_bytes_fallback_secret_is_refused():
+    """NEGATIVE: the bytes spelling reaches the same key derivation."""
+    signer = Signer("a-real-secret")
+    with pytest.raises(ValueError, match="fallback secret must be non-empty"):
+        signer.add_fallback_secret(b"")
+
+
+def test_a_real_fallback_secret_still_verifies_an_old_token():
+    """POSITIVE: rotation is the feature; it must keep working.
+
+    A token signed under the previous secret must still verify after the new
+    secret becomes primary.
+    """
+    old = Signer("previous-secret", salt="veloce.session")
+    token = old.dumps({"user_id": 7})
+
+    rotated = Signer("current-secret", salt="veloce.session")
+    rotated.add_fallback_secret("previous-secret", salt="veloce.session")
+
+    assert rotated.loads(token) == {"user_id": 7}

@@ -8,12 +8,17 @@ import logging
 import re
 from collections.abc import Callable, Iterator, Sequence
 from typing import Annotated, Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 from typing_extensions import Doc
 
 from veloce._constants import MSG_SUCCESSFUL_RESPONSE
-from veloce._handler_plan import K_REQUEST, build_plan, build_route_dep_plans
+from veloce._handler_plan import (
+    _NO_PATH_PARAMS,
+    K_REQUEST,
+    build_plan,
+    build_route_dep_plans,
+)
 from veloce._model_backend import resolve_response_contract
 from veloce._protocol_constants import (
     HTTP_METHOD_DELETE,
@@ -39,12 +44,11 @@ from veloce.routing._regex import RegexRoute
 from veloce.routing.converters import (
     Converter,
     StringConverter,
-    _is_parametrized_spec,
     _iter_placeholders,
-    _looks_like_regex,
     build_route_regex,
     is_regex_path,
     parse_converter,
+    path_param_converters,
 )
 from veloce.routing.route_info import (
     MCPRouteOptions as MCPRouteOptions,
@@ -144,6 +148,14 @@ def _split_exclusions(
 # when a tree route and a regex fallback route map to the same effective path.
 _PARAM_SHAPE_RE = re.compile(r"\{[^{}]*\}")
 
+#: Characters `quote(value, safe=":@")` would leave untouched - the unreserved
+#: set (RFC 3986 Sec. 2.3) plus the two `pchar` extras. A value made only of
+#: these is its own encoding, so `url_for` can skip the call entirely; that is
+#: the overwhelmingly common shape (an id, a slug, a username).
+_NEEDS_QUOTE_IN_SEGMENT = re.compile(r"[^A-Za-z0-9_.~:@-]")
+#: The same, plus `/` for a greedy `path` converter.
+_NEEDS_QUOTE_IN_PATH = re.compile(r"[^A-Za-z0-9_.~:@/-]")
+
 
 def _path_shape(path: str) -> str:
     """Return `path` with every `{param}` collapsed to `{}` for shape compare."""
@@ -152,7 +164,23 @@ def _path_shape(path: str) -> str:
 
 @functools.lru_cache(maxsize=512)
 def _cached_split_path(path: str) -> tuple[str, ...]:
-    return tuple(s for s in path.split("/") if s)
+    """Split `path` into segments, keeping any the path actually contains.
+
+    An absolute path always starts with an empty part, and a trailing slash
+    adds one; both are structural and dropped. Every *other* empty is a real
+    empty segment (`//admin/x`, `/a//b`) and is kept, so the radix walk looks
+    for a child named `""`, finds none, and the path simply does not match.
+
+    Dropping them instead made `//admin/x` produce the same segments as
+    `/admin/x` and match the same route, while `request.path` still read the
+    original - which is how a prefix check and the router came to disagree.
+    Keeping them makes the refusal structural: there is nothing to check on the
+    match path, because a path that cannot be walked cannot be matched.
+    """
+    parts = path.split("/")
+    end = len(parts) - 1 if len(parts) > 1 and parts[-1] == "" else len(parts)
+    start = 1 if parts and parts[0] == "" else 0
+    return tuple(parts[start:end])
 
 
 def _reverse_converters_for(template: str) -> dict[str, Converter]:
@@ -168,19 +196,7 @@ def _reverse_converters_for(template: str) -> dict[str, Converter]:
     than promised away. `any(...)` is whitelisted explicitly
     because it carries parentheses that the bare-identifier test reads as regex.
     """
-    converters: dict[str, Converter] = {}
-    for ph in _iter_placeholders(template):
-        spec = ph.spec
-        if not spec:
-            continue
-        is_any = spec.startswith("any(") and spec.endswith(")")
-        # A parametrized built-in (`int(min=1)`, `str(length=2)`) carries
-        # parens that read as regex, but it maps to a real coercing converter,
-        # so reverse it too and let url_for reject an out-of-bounds value.
-        if not is_any and not _is_parametrized_spec(spec) and _looks_like_regex(spec):
-            continue
-        converters[ph.name] = parse_converter(spec)
-    return converters
+    return path_param_converters(template)
 
 
 def _check_duplicate_params(full_path: str) -> None:
@@ -713,11 +729,20 @@ class Router:
 
         Registration-time only; nothing here runs per request.
         """
+        # Most routes declare no path parameter; reuse the shared empty set
+        # rather than allocating one per registration.
+        path_params = (
+            frozenset(route_info.param_names) if route_info.param_names else _NO_PATH_PARAMS
+        )
         if reuse_handler_plan is not None:
             route_info.handler_plan = reuse_handler_plan
         else:
-            route_info.handler_plan = build_plan(route_info.handler, websocket=is_ws)
-        route_info.route_dep_plans = build_route_dep_plans(route_info.dependencies, websocket=is_ws)
+            route_info.handler_plan = build_plan(
+                route_info.handler, websocket=is_ws, path_params=path_params
+            )
+        route_info.route_dep_plans = build_route_dep_plans(
+            route_info.dependencies, websocket=is_ws, path_params=path_params
+        )
         # Derived from the handler, like the plan above: the listener wrapper
         # carries its message contract, so every registration path picks it up
         # here rather than each copy forwarding a field it could forget.
@@ -1867,7 +1892,29 @@ class Router:
         for ph in _iter_placeholders(template):
             out.append(template[pos : ph.start])
             if ph.name in path_params:
-                out.append(str(path_params[ph.name]))
+                # Percent-encode the substituted value. Without this a value the
+                # application treats as opaque - a username, slug, filename -
+                # could emit `?`, `#` or (for a bare `{name}`) `/`, so
+                # `url_for('profile', username=...)` injected query parameters,
+                # truncated the URL at a fragment, or added path segments. Only
+                # a greedy `path` converter is allowed to emit `/`; every other
+                # placeholder is bounded by its segment.
+                # `:` and `@` are `pchar` (RFC 3986 Sec. 3.3) and need no
+                # encoding - keeping them literal leaves a `timedelta`'s
+                # `1:00:00` readable. Only a greedy `path` converter may also
+                # emit `/`.
+                placeholder_converter = converters.get(ph.name)
+                greedy = placeholder_converter is not None and placeholder_converter.greedy
+                text = str(path_params[ph.name])
+                # `isalnum()` first: every alphanumeric is unreserved, so the
+                # usual id / slug / username needs neither the pattern scan nor
+                # the encode. Measured 62 ns against 173 ns for the scan and
+                # 521 ns for `quote` itself.
+                if not text.isalnum():
+                    unsafe = _NEEDS_QUOTE_IN_PATH if greedy else _NEEDS_QUOTE_IN_SEGMENT
+                    if unsafe.search(text):
+                        text = quote(text, safe=":@/" if greedy else ":@")
+                out.append(text)
             else:
                 out.append(template[ph.start : ph.end])
             pos = ph.end

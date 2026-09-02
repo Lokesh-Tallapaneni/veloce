@@ -9,6 +9,7 @@ from veloce import Veloce
 from veloce.contrib.mcp import CompletionResult, CompletionsCapability
 from veloce.contrib.mcp.completion import _MAX_CONTEXT_ARGS
 from veloce.contrib.mcp.server import MCPServer
+from veloce.principal import Principal, set_principal
 
 
 def _server(app: Veloce) -> MCPServer:
@@ -314,3 +315,81 @@ def test_completions_capability_is_slotted():
     app = Veloce()
     cap = CompletionsCapability(_server(app))
     assert not hasattr(cap, "__dict__")
+
+
+# ── a completer is gated by the primitive that owns it ───────────────
+#
+# `completion/complete` invoked the completer for anyone. Every other
+# invocation path - `tools/call`, `resources/read`, `prompts/get` - calls
+# `_principal_lacks_scopes` first, and `docs/guide/mcp.md` states the rule for
+# all of them: "Anything a caller must be refused needs scopes=, which is
+# checked on every call." A completer's whole purpose is to enumerate the legal
+# values of an argument - customer ids, tenant names, file paths - so an
+# under-scoped caller could enumerate the key space of a primitive it may not
+# read, narrowing it by prefix through `argument.value`, and run the
+# application code behind it.
+
+
+def _scoped_prompt_server(scopes: list[str]) -> MCPServer:
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_prompt(name="vault", description="Open the vault.", scopes=scopes)
+    async def vault(request, account: str):
+        return f"opening {account}"
+
+    @app.mcp_completer(prompt="vault", argument="account")
+    async def complete_account(value: str, context: dict):
+        return CompletionResult(values=["acct-1001", "acct-1002"])
+
+    return MCPServer(app)
+
+
+async def test_an_under_scoped_caller_gets_no_completions(monkeypatch):
+    """NEGATIVE: the completer must not run for a principal lacking the scopes."""
+    set_principal(Principal(subject="attacker", scopes=frozenset({"nothing"})))
+    try:
+        server = _scoped_prompt_server(["prompts:use"])
+        result = await _complete(server, {"type": "ref/prompt", "name": "vault"}, "account", "acct")
+    finally:
+        set_principal(None)
+
+    assert result["completion"]["values"] == []
+
+
+async def test_an_under_scoped_caller_cannot_narrow_by_prefix():
+    """NEGATIVE: the refusal must not depend on the partial value.
+
+    Prefix narrowing is how a key space gets enumerated, so an empty prefix and
+    a specific one must both yield nothing.
+    """
+    set_principal(Principal(subject="attacker", scopes=frozenset()))
+    try:
+        server = _scoped_prompt_server(["prompts:use"])
+        for value in ("", "acct-10", "acct-1001"):
+            result = await _complete(
+                server, {"type": "ref/prompt", "name": "vault"}, "account", value
+            )
+            assert result["completion"]["values"] == [], value
+    finally:
+        set_principal(None)
+
+
+async def test_a_correctly_scoped_caller_still_gets_completions():
+    """POSITIVE: the gate must not break the feature for an allowed principal."""
+    set_principal(Principal(subject="ok", scopes=frozenset({"prompts:use"})))
+    try:
+        server = _scoped_prompt_server(["prompts:use"])
+        result = await _complete(server, {"type": "ref/prompt", "name": "vault"}, "account", "acct")
+    finally:
+        set_principal(None)
+
+    assert result["completion"]["values"] == ["acct-1001", "acct-1002"]
+
+
+async def test_an_unscoped_prompt_completes_without_a_principal():
+    """POSITIVE: a prompt declaring no scopes is open, as it always was."""
+    server = _scoped_prompt_server([])
+
+    result = await _complete(server, {"type": "ref/prompt", "name": "vault"}, "account", "acct")
+
+    assert result["completion"]["values"] == ["acct-1001", "acct-1002"]

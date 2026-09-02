@@ -6,6 +6,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-09-02
+
+### Security
+
+- A route whose unresolved annotation carries any parameter marker is refused, not served unguarded. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
+- A websocket listener whose message annotation cannot be resolved is refused, not left unvalidated. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
+- `@app.mcp_tool`, `@app.mcp_prompt`, `MCPAuth` and `MCPAuthorizationServer` reject a bare string scope. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
+- `Signer.add_fallback_secret` refuses an empty secret, which installed a publicly derivable verification key. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
+- `Forwarded` with an unbalanced quote is not trusted; it collapsed the hop count to the sender's choice. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
+- Repeated `Forwarded` / `X-Forwarded-*` lines are joined in received order; only the first was read. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
+- A request path with an empty segment no longer matches; `//admin/x` reached the handler for `/admin/x`. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
+- A CSRF cookie that fails verification is replaced on the refusal; it previously refused every write for good. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
+- An unterminated header line is refused once it crosses the header budget; it previously buffered without limit. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
+- The automatic WebSocket `PONG` respects write backpressure; a `PING` flood queued one reply per ping. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
+- `MAX_CONTENT_LENGTH` applies to the first ASGI body message; a chunked body escaped the cap. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
+- `Forwarded` is trusted only on request; a client-supplied header overrode the proxy's `X-Forwarded-*`. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
+- A slash redirect never emits a protocol-relative `Location`, which left the origin for an attacker's host. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
+- `url_for` percent-encodes path values; a `?`, `#` or `/` in one injected into the built URL. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
+- A short-circuited response gets a real CSP nonce; it shipped the fixed token `nonce-None`. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
+- `completion/complete` checks the owning prompt or resource's scopes before running its completer. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
+- A route-backed tool converts its typed path parameters; the MCP door copied the raw JSON value. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
+- A non-latin-1 header value encodes to one token; U+2028 folded it onto a second line. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
+
+### Changed
+
+- A route whose unresolved annotation carries a parameter marker now raises at registration; import the name at runtime. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
+- A websocket listener whose message annotation cannot be resolved now raises at registration; import the name at runtime. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
+- `Security(scopes=...)` rejects a bare string; pass `["scope"]` for a single scope. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
+- `//a/b` and `/a//b` now return `404`; send the canonical path. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
+- `ProxyFix(trust_forwarded=...)` defaults to `False`; pass `True` where every trusted proxy sets `Forwarded`. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
+- `url_for` output is percent-encoded; a value containing a space or `?` now appears escaped. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
+
+### Fixed
+
+- A parameter marker is found when the annotation's subscript base does not resolve. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
+- `X | None` carrying an unresolved name behaves as `Optional[X]` does. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
+- An annotation whose only unresolved name is a `typing` one no longer refuses to register. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
+- A path parameter with an unresolved annotation registers and reads from the path. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
+- A `functools.partial` handler's pre-bound parameter no longer refuses to register. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
+
 ## [0.19.0] - 2026-09-02
 
 ### Added

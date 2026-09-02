@@ -7,7 +7,7 @@ from urllib.parse import urlencode
 import orjson
 
 from tests.conftest import make_request
-from veloce import CSRFMiddleware, Request, Veloce
+from veloce import CSRFMiddleware, Request, Response, Veloce
 from veloce.testclient import TestClient
 
 
@@ -634,3 +634,82 @@ def test_csrf_matching_cookie_and_header_passes():
 
     assert resp.status_code == 200
     assert resp.json() == {"ok": True}
+
+
+# ── a cookie that fails verification must not lock the browser out ────
+
+
+def _csrf_post(cookie: str, header: str | None = None) -> Request:
+    headers = {"cookie": f"csrf_token={cookie}"}
+    if header is not None:
+        headers["x-csrf-token"] = header
+    return _req("POST", headers=headers)
+
+
+def _issued_value(set_cookie: str | None) -> str:
+    assert set_cookie is not None
+    return set_cookie.split("csrf_token=", 1)[1].split(";", 1)[0]
+
+
+async def _fresh_token(middleware: CSRFMiddleware) -> str:
+    """Drive a safe request through the middleware to mint a valid cookie."""
+    request = _req("GET")
+    await middleware.process_request(request)
+    response = await middleware.process_response(request, Response("ok"))
+    return _issued_value(response.headers.get("Set-Cookie"))
+
+
+async def test_a_rejected_csrf_cookie_is_replaced_on_the_refusal():
+    """NEGATIVE: a bad cookie must not lock the browser out permanently.
+
+    `process_response` mints a token only when the slot is empty, so a value
+    that failed verification stayed put and every subsequent write answered
+    403 with no `Set-Cookie` - no in-app recovery, cookies cleared by hand.
+    """
+    middleware = CSRFMiddleware(cookie_secure=False, secret="server-secret")
+    request = _csrf_post("planted-by-a-sibling-subdomain")
+
+    refusal = await middleware.process_request(request)
+    assert refusal.status_code == 403
+
+    response = await middleware.process_response(request, refusal)
+    assert response.headers.get("Set-Cookie") is not None
+    assert response.status_code == 403
+
+
+async def test_the_reissued_token_lets_the_next_request_succeed():
+    """POSITIVE: recovery must actually work, not merely look different."""
+    middleware = CSRFMiddleware(cookie_secure=False, secret="server-secret")
+    refused = _csrf_post("planted")
+    response = await middleware.process_response(refused, await middleware.process_request(refused))
+    issued = _issued_value(response.headers.get("Set-Cookie"))
+
+    retry = _csrf_post(issued, header=issued)
+    assert await middleware.process_request(retry) is None
+
+
+async def test_a_valid_cookie_is_not_rotated_by_a_double_submit_mismatch():
+    """NEGATIVE: a forgery attempt must not churn the victim's good token.
+
+    The cookie verified; only the submitted header disagreed. Rotating here
+    would discard a cookie that is not at fault and hand an attacker a way to
+    cycle it.
+    """
+    middleware = CSRFMiddleware(cookie_secure=False, secret="server-secret")
+    good = await _fresh_token(middleware)
+
+    request = _csrf_post(good, header="not-the-token")
+    refusal = await middleware.process_request(request)
+    assert refusal.status_code == 403
+
+    response = await middleware.process_response(request, refusal)
+    assert response.headers.get("Set-Cookie") is None
+
+
+async def test_a_verifying_request_is_untouched():
+    """POSITIVE: the success path must behave exactly as before."""
+    middleware = CSRFMiddleware(cookie_secure=False, secret="server-secret")
+    good = await _fresh_token(middleware)
+
+    request = _csrf_post(good, header=good)
+    assert await middleware.process_request(request) is None

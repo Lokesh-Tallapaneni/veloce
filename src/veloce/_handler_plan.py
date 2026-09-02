@@ -13,13 +13,17 @@ Reflection happens at registration time only, never on the hot path.
 
 from __future__ import annotations
 
+import builtins
 import copy
 import functools
 import inspect
 import types
+import typing
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any, Union, get_args, get_origin, get_type_hints
+
+import typing_extensions
 
 from veloce._internal import _is_async_callable
 from veloce._model_backend import ModelBackend, _msgspec, backend_of
@@ -211,16 +215,9 @@ def _raise_kwarg_ambiguity(
     # Only surface the chain for a nested dependency (more than just the
     # handler itself); a top-level handler already names itself below.
     if seen and len(seen) > 1:
-        names = [
-            getattr(c, "__qualname__", None) or getattr(c, "__name__", None) or repr(c)
-            for c in seen
-        ]
+        names = [_callable_name(c) for c in seen]
         chain = f" (in dependency chain {' -> '.join(names)})"
-    where = (
-        getattr(handler, "__qualname__", None)
-        or getattr(handler, "__name__", None)
-        or repr(handler)
-    )
+    where = _callable_name(handler)
     raise ConfigurationError(
         f"parameter {param_name!r} on {where}{chain} is reserved for the injected "
         f"{param_name!r} object but also declares a {marker_name}() marker; the marker "
@@ -535,12 +532,18 @@ class HandlerPlan:
 
 
 # ── Plan builders ─────────────────────────────────────────
+#: Shared empty set so the common call allocates nothing and no mutable default
+#: is introduced.
+_NO_PATH_PARAMS: frozenset[str] = frozenset()
+
+
 def _build_depends_slot(
     name: str,
     dep: Any,
     inferred: Any = None,
     *,
     websocket: bool = False,
+    path_params: frozenset[str] = _NO_PATH_PARAMS,
     _seen: list | None = None,
 ) -> _Slot:
     """Build a K_DEPENDS slot, recursively planning the sub-callable.
@@ -564,7 +567,7 @@ def _build_depends_slot(
     slot.dep_offload = bool(getattr(dep, "offload", False)) and not (
         slot.dep_is_coro or slot.dep_is_gen or slot.dep_is_async_gen
     )
-    slot.sub_plan = build_plan(callable_, websocket=websocket, _seen=_seen)
+    slot.sub_plan = build_plan(callable_, websocket=websocket, path_params=path_params, _seen=_seen)
     # Security() scopes flow down the chain so a `SecurityScopes`
     # parameter anywhere below sees the union. Plain `Depends` has no
     # scopes attribute; we read defensively.
@@ -606,6 +609,7 @@ def _subgraph_reads_scopes(plan: HandlerPlan | None, seen_plans: set[int]) -> bo
 
 def _inspect_handler(
     handler: Callable[..., Any],
+    path_params: frozenset[str] = _NO_PATH_PARAMS,
 ) -> tuple[inspect.Signature, dict[str, Any]] | None:
     """Return `handler`'s signature and resolved type hints, or `None`.
 
@@ -651,7 +655,22 @@ def _inspect_handler(
         # parameter did not resolve stopped authenticating and answered 200.
         # Resolve what can be resolved instead, so a broken annotation costs
         # only its own parameter, and say so rather than degrading in silence.
-        return sig, _salvage_hints(hint_target, exc)
+        return sig, _salvage_hints(hint_target, exc, path_params, sig.parameters)
+
+
+def _callable_name(obj: Any) -> str:
+    """Name `obj` for an error or warning the user has to act on.
+
+    `__qualname__` first, so a handler defined as a method or inside a factory
+    keeps its enclosing context; `__name__` next, which a `functools.partial`'s
+    wrapped function and some builtins carry without a qualname; `repr` last.
+
+    One definition because the answer must not depend on which door failed: the
+    websocket listener names its callback through this too, and two different
+    answers to "which callable is this?" for the same class of mistake is worse
+    than either answer.
+    """
+    return getattr(obj, "__qualname__", None) or getattr(obj, "__name__", None) or repr(obj)
 
 
 #: Parameters the plan binds from the name alone (see `build_plan`), plus the
@@ -659,7 +678,12 @@ def _inspect_handler(
 _BOUND_BY_NAME = frozenset({"request", "ws", "websocket", "return"})
 
 
-def _salvage_hints(hint_target: Any, exc: Exception) -> dict[str, Any]:
+def _salvage_hints(
+    hint_target: Any,
+    exc: Exception,
+    path_params: frozenset[str],
+    parameters: Mapping[str, inspect.Parameter],
+) -> dict[str, Any]:
     """Resolve each annotation on its own, keeping the ones that succeed.
 
     Each is resolved through the same `get_type_hints` the whole-signature call
@@ -684,8 +708,206 @@ def _salvage_hints(hint_target: Any, exc: Exception) -> dict[str, Any]:
     # genuinely depended on the annotation are worth reporting.
     consequential = [name for name in unresolved if name not in _BOUND_BY_NAME]
     if consequential:
+        # `parameters` is the signature `build_plan` iterates, not the unwrapped
+        # function's: a `functools.partial`'s pre-bound parameter receives no
+        # slot, so dropping its annotation cannot move where a value comes from.
+        fatal = [
+            name
+            for name in consequential
+            if _declaration_is_load_bearing(
+                hint_target, annotations.get(name), name, parameters, path_params
+            )
+        ]
+        if fatal:
+            raise _unresolved_declaration_error(hint_target, fatal, exc)
         _warn_unresolved_annotations(hint_target, consequential, exc)
     return resolved
+
+
+class _UnresolvedName:
+    """Stands in for a name an annotation refers to that does not exist.
+
+    Subscriptable and callable so the rest of the annotation still evaluates
+    around it - `Annotated[Missing, Security(f)]`, `Missing[int]`, `Missing()`.
+    The marker sitting beside the unresolvable name is what matters here, not
+    the name itself.
+    """
+
+    __slots__ = ("name", "__metadata__")
+
+    def __init__(self, name: str, metadata: tuple[Any, ...] = ()) -> None:
+        self.name = name
+        # Mirrors `Annotated`'s own attribute so the metadata scan reads one
+        # shape whether or not the subscript base resolved.
+        self.__metadata__ = metadata
+
+    def __getitem__(self, item: Any) -> _UnresolvedName:
+        # Returning `self` discarded whatever sat inside the subscript, so
+        # `Annotated[T, Security(dep)]` lost its marker whenever `Annotated`
+        # was itself the name that did not resolve - the shape ruff's TC003
+        # produces by moving the import under TYPE_CHECKING.
+        tail = item[1:] if isinstance(item, tuple) else ()
+        return _UnresolvedName(self.name, tail)
+
+    def __call__(self, *args: Any, **kwargs: Any) -> _UnresolvedName:
+        return self
+
+    def __or__(self, other: Any) -> _UnresolvedName:
+        # `X | None` must reach the same verdict as `Optional[X]`; without this
+        # the union raises and "cannot evaluate" refuses a parameter a default
+        # makes harmless. Returning self carries any recovered metadata through
+        # the union rather than dropping it.
+        return self
+
+    __ror__ = __or__
+
+    def __repr__(self) -> str:
+        return f"<unresolved {self.name}>"
+
+
+# Built once: a name an author moved under TYPE_CHECKING is most often a typing
+# one, and resolving it to the real object lets the metadata scan judge it
+# instead of refusing because it could not be identified.
+_TYPING_NAMES: dict[str, Any] = {**vars(typing), **vars(typing_extensions)}
+
+
+class _PlaceholderNamespace(dict):
+    """A name mapping that yields a placeholder rather than raising `NameError`."""
+
+    def __missing__(self, key: str) -> _UnresolvedName:
+        return _UnresolvedName(key)
+
+
+def _annotation_markers(hint_target: Any, annotation: Any) -> tuple[Any, tuple[Any, ...], bool]:
+    """Return `(marker, metadata, known)` for an annotation that would not resolve.
+
+    A live `Annotated[...]` already carries its markers. A string - which is
+    what `from __future__ import annotations` leaves behind, and the shape the
+    marker object was never built for - is evaluated against the target's own
+    globals with unresolvable names standing in as placeholders, so the marker
+    beside the broken name is recovered as the object it actually is.
+
+    Reading the marker by identity rather than by the text the author typed is
+    what makes the rule closed. A scan for `"Security("` matches only that
+    spelling: `from veloce import Security as Guard` evaded it, and with a
+    default to sidestep the no-default rule the guard never ran and the caller
+    supplied the value.
+
+    `marker` comes from `extract_annotated_marker`, the module's one resolver,
+    so `Optional[Annotated[T, marker]]` is peeled here as it is everywhere else
+    - Python 3.10 produces that shape for any parameter defaulting to `None`,
+    and a raw `__metadata__` read sees straight past it.
+
+    `known` is False when the annotation could not be evaluated at all, and the
+    caller refuses on that - not knowing is not a reason to admit. A name the
+    namespace could not supply comes back as `_UnresolvedName`; the caller
+    refuses when one occupies a metadata slot, for the same reason.
+
+    The evaluation is the one `get_type_hints` performs on the success path,
+    against the same globals - but it is not equivalent. Subscript arguments
+    evaluate left to right, so intact evaluation raises on the unresolvable
+    name before reaching the metadata; the placeholder lets it continue, and a
+    metadata expression to the right of that name runs where it previously did
+    not. Registration-time only, on a handler that is already broken, and the
+    expression is the author's own.
+    """
+    live = annotation
+    if isinstance(annotation, str):
+        namespace = _PlaceholderNamespace(vars(builtins))
+        namespace.update(_TYPING_NAMES)
+        # The target's own globals are applied last so they always win.
+        namespace.update(getattr(hint_target, "__globals__", None) or {})
+        try:
+            live = eval(annotation, {}, namespace)  # noqa: S307 - the target's own annotation
+        except Exception:  # noqa: BLE001 - an annotation that will not evaluate tells us nothing
+            return None, (), False
+
+    marker, _base = extract_annotated_marker(live)
+    carrier = live
+    if carrier is not None and not hasattr(carrier, "__metadata__"):
+        was_optional, inner = _unwrap_optional(carrier)
+        if was_optional:
+            carrier = inner
+    return marker, tuple(getattr(carrier, "__metadata__", ())), True
+
+
+def _declaration_is_load_bearing(
+    hint_target: Any,
+    annotation: Any,
+    name: str,
+    parameters: Any,
+    path_params: frozenset[str] = _NO_PATH_PARAMS,
+) -> bool:
+    """Whether dropping this unresolved annotation would change what runs.
+
+    Two properties fail closed, and both are instances of one rule: the
+    declaration decides where the value comes from, or what executes, so
+    discarding it hands that decision to the caller.
+
+    A `Depends` / `Security` marker is a control - dropped, the route answers
+    without ever running the dependency. Any other `ParamBase` marker
+    (`Header`, `Cookie`, `Query`, `Body`, `Form`, `File`) names the source the
+    value is read from - dropped, a credential declared header- or cookie-borne
+    becomes readable from the query string, where the caller supplies it and
+    the access log records it. A parameter with no default degrades into a
+    *required* query parameter, which is the same bypass from the other side.
+
+    The marker comes from `extract_annotated_marker`, which matches on the
+    marker classes rather than an allowlist of names - so a marker added later
+    is covered without anyone remembering to list it, and the `Optional[...]`
+    wrapper Python 3.10 adds is peeled the same way it is everywhere else.
+    """
+    from veloce.dependency import Depends  # local import breaks the import cycle
+
+    marker, metadata, known = _annotation_markers(hint_target, annotation)
+    if not known:
+        return True
+    if marker is not None:
+        return True
+    # A placeholder standing where a marker would sit means the marker's own
+    # name did not resolve either - `Annotated[X, Guard(dep)]` with `Guard`
+    # imported inside an enclosing function, which `__globals__` cannot see.
+    # What it was cannot be recovered, so it is refused: not knowing whether a
+    # control was declared is not a reason to serve the route without one.
+    if any(isinstance(item, (Depends, ParamBase)) for item in metadata):
+        return True
+    if any(isinstance(item, _UnresolvedName) for item in metadata):
+        return True
+    if name in path_params:
+        # The name is in the route template, so the resolver reads it from
+        # `path_params` before the query string - the source the declaration
+        # named is the source it still has.
+        return False
+    parameter = parameters.get(name)
+    return parameter is not None and parameter.default is inspect.Parameter.empty
+
+
+def _unresolved_declaration_error(hint_target: Any, fatal: list[str], exc: Exception) -> TypeError:
+    """Build the error for an unresolved load-bearing annotation.
+
+    Usually raised while a route is being registered, but not only then:
+    `DependencyResolver.resolve` and the `dependency_overrides` sub-plan cache
+    build plans on first use, so an override whose target carries a broken
+    annotation raises here mid-request and surfaces as a 500. The wording stays
+    neutral about which, rather than telling the reader the route was refused at
+    registration when it was not.
+
+    `TypeError` deliberately: `_ws_listener`'s adjacent refusals raise it and
+    shipped that way, so a different type here would leave the two doors
+    disagreeing about the same class of mistake.
+    """
+    where = _callable_name(hint_target)
+    named = ", ".join(repr(n) for n in fatal)
+    return TypeError(
+        f"{where}: could not resolve the annotation on {named} "
+        f"({type(exc).__name__}: {exc}). It is refused rather than dropped: "
+        "a dropped `Depends()` / `Security()` marker "
+        "answers the request without running the dependency, a dropped "
+        "`Header()` / `Cookie()` marker moves the value to the query string "
+        "where the caller supplies it, and a parameter with no default becomes "
+        "a required query parameter. Import the name at runtime rather than "
+        "only under TYPE_CHECKING."
+    )
 
 
 class _AnnotationProbe:
@@ -700,18 +922,21 @@ class _AnnotationProbe:
 
 
 def _warn_unresolved_annotations(hint_target: Any, unresolved: list[str], exc: Exception) -> None:
-    """Warn (once at registration) that some annotations could not be resolved.
+    """Warn that some annotations could not be resolved, and nothing was lost.
 
-    Silence here is what made the defect dangerous: the route simply stopped
-    enforcing its security dependency and answered normally.
+    Only an annotation whose loss changes nothing reaches here: a load-bearing
+    one raises in `_salvage_hints` instead. So this must not repeat the
+    raise's warning about dropped `Depends()` / `Security()` metadata - it
+    described a case that can no longer arrive here, and naming a marker the
+    parameter does not carry sends the reader looking for one.
     """
-    where = getattr(hint_target, "__qualname__", None) or repr(hint_target)
+    where = _callable_name(hint_target)
     warnings.warn(
         f"{where}: could not resolve the annotation on "
         f"{', '.join(repr(n) for n in unresolved)} ({type(exc).__name__}: {exc}); "
-        "those parameters are treated as unannotated. Any `Depends()` / "
-        "`Security()` metadata on them is not applied - import the name at "
-        "runtime rather than only under TYPE_CHECKING",
+        "those parameters are treated as unannotated. Nothing about where their "
+        "values come from changes - import the name at runtime rather than only "
+        "under TYPE_CHECKING to keep the annotation",
         stacklevel=3,
     )
 
@@ -730,10 +955,7 @@ def _extend_plan_chain(handler: Callable[..., Any], seen: list[Any] | None) -> l
             # Prefer __qualname__ so lambdas and nested/method deps carry
             # scope context (e.g. `test_x.<locals>.<lambda>`) instead of
             # collapsing to bare `<lambda>` everywhere.
-            chain = [
-                getattr(c, "__qualname__", None) or getattr(c, "__name__", None) or repr(c)
-                for c in [*seen, handler]
-            ]
+            chain = [_callable_name(c) for c in [*seen, handler]]
             raise ValueError(f"Circular dependency detected: {' -> '.join(chain)}")
     return [*seen, handler]
 
@@ -889,7 +1111,11 @@ def _build_annotated_slot(
 
 
 def build_plan(
-    handler: Callable[..., Any], *, websocket: bool = False, _seen: list[Any] | None = None
+    handler: Callable[..., Any],
+    *,
+    websocket: bool = False,
+    path_params: frozenset[str] = _NO_PATH_PARAMS,
+    _seen: list[Any] | None = None,
 ) -> HandlerPlan:
     """Inspect `handler` and freeze a resolution plan.
 
@@ -915,7 +1141,7 @@ def build_plan(
     if websocket:
         ws_type = WebSocket
 
-    inspected = _inspect_handler(handler)
+    inspected = _inspect_handler(handler, path_params)
     if inspected is None:
         return HandlerPlan(handler, [], [])
     sig, hints = inspected
@@ -1007,6 +1233,7 @@ def build_plan(
                     default,
                     inferred=annotation,
                     websocket=websocket,
+                    path_params=path_params,
                     _seen=_seen,
                 )
             )
@@ -1031,7 +1258,12 @@ def build_plan(
     return HandlerPlan(handler, slots, [])
 
 
-def build_route_dep_plans(route_dependencies: list[Any], *, websocket: bool = False) -> list[_Slot]:
+def build_route_dep_plans(
+    route_dependencies: list[Any],
+    *,
+    websocket: bool = False,
+    path_params: frozenset[str] = _NO_PATH_PARAMS,
+) -> list[_Slot]:
     """Pre-plan a route's `dependencies=[Depends(...), ...]` list.
 
     An entry that is not a `Depends` (or a `Security`, which subclasses it) is
@@ -1046,7 +1278,7 @@ def build_route_dep_plans(route_dependencies: list[Any], *, websocket: bool = Fa
     for dep in route_dependencies:
         if not isinstance(dep, Depends):
             raise TypeError(_dependency_entry_error(dep))
-        out.append(_build_depends_slot("", dep, websocket=websocket))
+        out.append(_build_depends_slot("", dep, websocket=websocket, path_params=path_params))
     return out
 
 

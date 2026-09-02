@@ -9,6 +9,7 @@ that into ``BuildError`` (its existing reverse-failure contract).
 from __future__ import annotations
 
 import uuid
+from urllib.parse import unquote
 
 import pytest
 
@@ -72,8 +73,10 @@ def test_path_converter_accepts_slashes():
 
 def test_bare_param_skips_validation():
     router = _router()
-    # No converter on `{slug}`; any stringifiable value is accepted.
-    assert router.url_for("user", slug="a b") == "/u/a b"
+    # No converter on `{slug}`; any stringifiable value is accepted. It is
+    # still percent-encoded on the way out - skipping *validation* is not
+    # licence to emit a space, a `?` or a `/` into the path.
+    assert router.url_for("user", slug="a b") == "/u/a%20b"
 
 
 def test_validation_does_not_break_query_extras():
@@ -206,3 +209,90 @@ def test_every_built_url_resolves():
     client = TestClient(app)
     for name, params in (("typed", {"name": "a-b"}), ("greedy", {"rest": "a/b/c"})):
         assert client.get(app.url_for(name, **params)).status_code == 200, name
+
+
+# ── a substituted value cannot escape its path segment ───────────────
+#
+# The converter check exists so a reversed URL is "guaranteed to resolve", but
+# the value was interpolated raw. A username, slug or filename the application
+# treats as opaque could therefore emit `?`, `#` or `/` and inject a query
+# parameter, truncate the URL at a fragment, or add path segments -
+# `url_for('typed', name='bob?impersonate=root')` built
+# `/s/bob?impersonate=root`, which the app's own handler then read as a query
+# flag.
+
+
+def _encoding_router() -> Veloce:
+    app = Veloce(openapi_url=None)
+
+    @app.get("/s/{name:str}")
+    async def typed(request, name: str):
+        return {}
+
+    @app.get("/u/{username}")
+    async def bare(request, username: str):
+        return {}
+
+    @app.get("/f/{rest:path}")
+    async def greedy(request, rest: str):
+        return {}
+
+    return app
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("bob?impersonate=root", "/s/bob%3Fimpersonate%3Droot"),
+        ("bob#frag", "/s/bob%23frag"),
+        ("bob smith", "/s/bob%20smith"),
+    ],
+)
+def test_a_validated_value_cannot_inject_query_or_fragment(value: str, expected: str):
+    """NEGATIVE: passing the converter is not licence to leave the segment."""
+    assert _encoding_router().url_for("typed", name=value) == expected
+
+
+def test_a_bare_placeholder_value_cannot_add_path_segments():
+    """NEGATIVE: `{name}` has no converter, so nothing else stops a `/`."""
+    built = _encoding_router().url_for("bare", username="../../admin")
+
+    assert built == "/u/..%2F..%2Fadmin"
+    assert "/../" not in built
+
+
+def test_a_greedy_path_value_may_span_segments_but_not_inject():
+    """POSITIVE + NEGATIVE: a `path` converter keeps `/` and loses `?`."""
+    assert _encoding_router().url_for("greedy", rest="a/b?x=1") == "/f/a/b%3Fx%3D1"
+
+
+def test_an_encoded_url_resolves_back_to_the_value_it_was_built_from():
+    """POSITIVE: the invariant the converter check exists to provide.
+
+    A server hands the app a percent-decoded path, so a built URL must match
+    its own route and yield the original value - including a value that itself
+    contains a percent sign.
+    """
+    app = _encoding_router()
+
+    for endpoint, key, value in [
+        ("typed", "name", "bob smith"),
+        ("typed", "name", "bob?impersonate=root"),
+        ("bare", "username", "a%20b"),
+        ("greedy", "rest", "a/b?x=1"),
+    ]:
+        built = app.url_for(endpoint, **{key: value})
+        match = app.match("GET", unquote(built))
+        assert match is not None, built
+        assert match.path_params[key] == value
+
+
+def test_a_colon_is_left_readable_in_a_path_segment():
+    """POSITIVE: `:` is `pchar`, so a `timedelta` URL stays legible."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/wait/{d:timedelta}")
+    async def wait(request, d):
+        return {}
+
+    assert app.url_for("wait", d="1:00:00") == "/wait/1:00:00"

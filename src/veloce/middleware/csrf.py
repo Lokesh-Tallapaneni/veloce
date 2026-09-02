@@ -218,6 +218,14 @@ class CSRFMiddleware(Middleware):
             try:
                 self._signer.loads(cookie_val, max_age=self._max_age)
             except BadSignature:
+                # Leave the slot needing a token. `process_response` skips a
+                # cookie that is merely present, so a value that failed
+                # verification would otherwise stay and refuse every write from
+                # this browser for good - there is no in-app recovery, the user
+                # has to clear cookies by hand. The refusal still stands; the
+                # client gets a usable token to retry with, and a planted value
+                # is evicted instead of sticking.
+                request._state["_csrf_rotate"] = True
                 return self._forbidden("CSRF cookie signature invalid or expired")
         # Case-insensitive header lookup (Headers is CIMultiDict).
         header_val = request.headers.get(self.header_name)

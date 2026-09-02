@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from veloce._internal import _is_async_callable, offload
+from veloce.contrib.mcp._helpers import _principal_lacks_scopes
 from veloce.contrib.mcp.capabilities.base import _ServerCapability
 from veloce.contrib.mcp.errors import InvalidParamsError
 
@@ -203,8 +204,19 @@ class CompletionsCapability(_ServerCapability):
         optional ``context.arguments`` supplies the sibling values already resolved.
         An argument with no registered completer answers with an empty completion.
         """
-        completer, value, context = self._resolve(params)
+        completer, required_scopes, value, context = self._resolve(params)
         if completer is None:
+            return _empty_completion()
+        if _principal_lacks_scopes(required_scopes):
+            # Every other invocation path gates on the owning primitive's
+            # scopes; this one ran the completer for anyone. A completer exists
+            # to enumerate the legal values of an argument - customer ids,
+            # tenant names, file paths - so an under-scoped caller could
+            # enumerate the key space of a primitive it may not touch, and
+            # narrow it by prefix. Answered as an empty completion rather than
+            # an error, matching this module's "a client may always probe"
+            # contract: it neither confirms the primitive exists nor names the
+            # scopes required.
             return _empty_completion()
         if _is_async_callable(completer):
             result = await completer(value, context)
@@ -212,8 +224,10 @@ class CompletionsCapability(_ServerCapability):
             result = await offload(completer, value, context)
         return _shape_completion(result)
 
-    def _resolve(self, params: dict[str, Any]) -> tuple[_Completer | None, str, dict[str, str]]:
-        """Resolve a request into its completer, partial value, and sibling context.
+    def _resolve(
+        self, params: dict[str, Any]
+    ) -> tuple[_Completer | None, frozenset[str], str, dict[str, str]]:
+        """Resolve a request into its completer, scopes, partial value, and context.
 
         The completer is `None` when the named argument carries none (the empty
         completion case); a malformed reference or argument is an invalid-params
@@ -233,11 +247,13 @@ class CompletionsCapability(_ServerCapability):
             raise InvalidParamsError("completion/complete 'argument.value' must be a string")
         context = self._context_arguments(params)
 
-        completers = self._completers_for_ref(ref)
-        return completers.get(name), value, context
+        completers, required_scopes = self._completers_for_ref(ref)
+        return completers.get(name), required_scopes, value, context
 
-    def _completers_for_ref(self, ref: dict[str, Any]) -> dict[str, _Completer]:
-        """Return the completer mapping for a ``ref/prompt`` / ``ref/resource``.
+    def _completers_for_ref(
+        self, ref: dict[str, Any]
+    ) -> tuple[dict[str, _Completer], frozenset[str]]:
+        """Return the completers and required scopes for a ``ref/prompt`` / ``ref/resource``.
 
         An unknown primitive yields an empty mapping, so the request answers with
         an empty completion rather than an error - the client may always probe.
@@ -248,7 +264,9 @@ class CompletionsCapability(_ServerCapability):
             if not isinstance(prompt_name, str):
                 raise InvalidParamsError("ref/prompt requires a string 'name'")
             prompt = self._server.prompts.get(prompt_name)
-            return prompt.completers if prompt is not None else {}
+            if prompt is None:
+                return {}, frozenset()
+            return prompt.completers, prompt.tool.required_scopes
         if ref_type == "ref/resource":
             uri = ref.get("uri")
             if not isinstance(uri, str):
@@ -259,9 +277,11 @@ class CompletionsCapability(_ServerCapability):
             resources = self._server.resources
             resource = resources.get(uri)
             if resource is not None:
-                return resource.completers
+                return resource.completers, resource.tool.required_scopes
             matched = resources.match(uri)
-            return matched[0].completers if matched is not None else {}
+            if matched is None:
+                return {}, frozenset()
+            return matched[0].completers, matched[0].tool.required_scopes
         raise InvalidParamsError(
             "completion/complete 'ref.type' must be ref/prompt or ref/resource"
         )

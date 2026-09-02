@@ -116,6 +116,12 @@ class Signer:
         """
         secret = _coerce_secret_bytes(secret)
         salt = _coerce_secret_bytes(salt)
+        if not secret:
+            # A fallback is a *verification* key, so an empty one does not
+            # merely sign weakly - it accepts anything MACed with the key
+            # derived from `b""`, which is computable from published source.
+            # `__init__` refuses the same value; this path must too.
+            raise ValueError("fallback secret must be non-empty")
         self._secret_keys.append(_derive_key(secret, salt))
 
     # ── dumps / loads ─────────────────────────────────────

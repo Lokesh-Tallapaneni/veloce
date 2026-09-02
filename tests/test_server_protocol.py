@@ -1653,3 +1653,90 @@ def test_timeout_defaults_unchanged():
     defaults = Config.default_config()
     assert defaults["KEEP_ALIVE_TIMEOUT"] == 75
     assert defaults["REQUEST_TIMEOUT"] == 30
+
+
+# ── the header budget must bound an in-progress line ─────────────────
+
+
+def test_an_unterminated_header_line_is_refused_before_it_completes():
+    """NEGATIVE: `on_header` fires only when a line terminates.
+
+    The caps were therefore checked after llhttp had already materialised the
+    whole line in C: 16 MB went into one header with the transport still open,
+    `_oversized` still False and `_header_bytes_total` still 5. The 431 landed
+    only when the client chose to send the terminating CRLF.
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        proto = HttpProtocol(Veloce(openapi_url=None), loop)
+        transport = _FakeTransport()
+        proto.connection_made(transport)
+
+        proto.data_received(b"GET / HTTP/1.1\r\nHost: x\r\nX-Big: ")
+        for _ in range(4):
+            if transport.closed:
+                break
+            proto.data_received(b"A" * MAX_TOTAL_HEADERS_SIZE)
+
+        emitted = b"".join(transport.writes)
+        assert transport.closed is True
+        assert emitted.startswith(b"HTTP/1.1 431 "), emitted[:64]
+    finally:
+        close_drained(loop)
+
+
+def test_a_large_body_is_not_mistaken_for_a_header():
+    """POSITIVE: the budget is a header budget; bodies are bounded elsewhere."""
+    loop = asyncio.new_event_loop()
+    try:
+        proto = HttpProtocol(Veloce(openapi_url=None), loop)
+        transport = _FakeTransport()
+        proto.connection_made(transport)
+
+        body = b"x" * (MAX_TOTAL_HEADERS_SIZE * 4)
+        proto.data_received(
+            b"POST /p HTTP/1.1\r\nHost: x\r\nContent-Length: "
+            + str(len(body)).encode()
+            + b"\r\n\r\n"
+            + body
+        )
+
+        assert b"431" not in b"".join(transport.writes)
+    finally:
+        close_drained(loop)
+
+
+def test_a_pipelined_burst_is_not_mistaken_for_a_header():
+    """POSITIVE: many complete requests in one read must not spend the budget.
+
+    Each `on_message_complete` resets the counter, so only a trailing partial
+    request's bytes remain counted. Without that reset a legitimate pipelined
+    burst larger than the header budget would be refused.
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        proto = HttpProtocol(Veloce(openapi_url=None), loop)
+        transport = _FakeTransport()
+        proto.connection_made(transport)
+
+        one = b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"
+        proto.data_received(one * ((MAX_TOTAL_HEADERS_SIZE // len(one)) + 200))
+
+        assert b"431" not in b"".join(transport.writes)
+    finally:
+        close_drained(loop)
+
+
+def test_an_ordinary_request_is_unaffected_by_the_header_budget():
+    """POSITIVE: the common case must not trip anything."""
+    loop = asyncio.new_event_loop()
+    try:
+        proto = HttpProtocol(Veloce(openapi_url=None), loop)
+        transport = _FakeTransport()
+        proto.connection_made(transport)
+
+        proto.data_received(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+
+        assert b"431" not in b"".join(transport.writes)
+    finally:
+        close_drained(loop)
