@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - A route whose `Security()` / `Depends()` annotation cannot be resolved is refused, not served unguarded. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
+- `Security(scopes=...)` rejects a bare string, which silently became one scope per character. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
 
 ## [0.19.0] - 2026-09-02
 

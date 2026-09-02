@@ -377,6 +377,16 @@ class Security(Depends):
             ),
         ] = False,
     ) -> None:
+        # A `str` is iterable, so `scopes="read"` silently became
+        # `['r','e','a','d']` when the plan did `list(scopes)`. A dependency
+        # testing `"read" in scopes` then fails closed, but one that treats any
+        # scope as a grant - or renders `WWW-Authenticate` from the list - does
+        # not. Rejected here so the mistake surfaces on the line that made it.
+        if isinstance(scopes, (str, bytes)):
+            raise TypeError(
+                f"Security(scopes=...) takes a sequence of scopes, not "
+                f"{type(scopes).__name__}; pass [{scopes!r}] for a single scope."
+            )
         super().__init__(dependency=dependency, use_cache=use_cache, offload=offload)
         self.scopes = scopes or []
 
