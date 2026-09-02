@@ -684,8 +684,66 @@ def _salvage_hints(hint_target: Any, exc: Exception) -> dict[str, Any]:
     # genuinely depended on the annotation are worth reporting.
     consequential = [name for name in unresolved if name not in _BOUND_BY_NAME]
     if consequential:
+        fatal = [
+            name
+            for name in consequential
+            if _declaration_is_load_bearing(hint_target, annotations.get(name), name)
+        ]
+        if fatal:
+            raise _unresolved_declaration_error(hint_target, fatal, exc)
         _warn_unresolved_annotations(hint_target, consequential, exc)
     return resolved
+
+
+#: Markers whose whole purpose is to run something. Losing one to an
+#: unresolved annotation is not a degraded type - it is a dropped control.
+_LOAD_BEARING_MARKERS = ("Security(", "Depends(")
+
+
+def _declaration_is_load_bearing(hint_target: Any, annotation: Any, name: str) -> bool:
+    """Whether dropping this unresolved annotation would change what runs.
+
+    Two cases fail closed. A `Security()` / `Depends()` marker is a control, and
+    an unresolved annotation discards it: the route then answers without ever
+    calling the dependency, with the parameter read from the query string. A
+    parameter with no default degrades into a *required* query parameter, which
+    is the same bypass reached from the other side - the caller supplies the
+    value the guard was supposed to.
+
+    The marker is looked for in both shapes an unresolved annotation takes. A
+    live `Annotated[...]` carries it as an instance, which reprs as
+    `<veloce.dependency.Security object at 0x...>` and so is invisible to a
+    textual scan; under `from __future__ import annotations` the whole
+    annotation is a string and the `Annotated` object was never built, leaving
+    the text as the only evidence. Checking one shape alone leaves the other
+    failing open.
+    """
+    # Deferred: breaks the dependency.py <-> _handler_plan.py cycle, as the
+    # other builders in this module do. Registration-time only.
+    from veloce.dependency import Depends
+
+    if any(isinstance(meta, Depends) for meta in getattr(annotation, "__metadata__", ())):
+        return True
+    if any(marker in str(annotation) for marker in _LOAD_BEARING_MARKERS):
+        return True
+    parameters = inspect.signature(hint_target).parameters
+    parameter = parameters.get(name)
+    return parameter is not None and parameter.default is inspect.Parameter.empty
+
+
+def _unresolved_declaration_error(hint_target: Any, fatal: list[str], exc: Exception) -> TypeError:
+    """Build the registration error for an unresolved load-bearing annotation."""
+    where = getattr(hint_target, "__qualname__", None) or repr(hint_target)
+    named = ", ".join(repr(n) for n in fatal)
+    return TypeError(
+        f"{where}: could not resolve the annotation on {named} "
+        f"({type(exc).__name__}: {exc}). The route is refused rather than "
+        "registered without it: a dropped `Security()` / `Depends()` marker "
+        "answers the request without running the dependency, and a parameter "
+        "with no default becomes a required query parameter the caller "
+        "supplies. Import the name at runtime rather than only under "
+        "TYPE_CHECKING."
+    )
 
 
 class _AnnotationProbe:

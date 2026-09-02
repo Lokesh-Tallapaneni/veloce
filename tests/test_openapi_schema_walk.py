@@ -174,18 +174,25 @@ def test_the_walk_itself_does_not_recurse():
 # ── the generated document is unchanged ──────────────────────────────
 
 
+class _Inner(BaseModel):
+    value: int
+
+
+class _Outer(BaseModel):
+    inner: _Inner
+
+
 def test_a_document_with_nested_models_still_resolves_its_refs():
-
-    class Inner(BaseModel):
-        value: int
-
-    class Outer(BaseModel):
-        inner: Inner
-
+    # The models are module-level because `get_type_hints` resolves a body
+    # annotation against the handler's globals. Declared inside the test they
+    # did not resolve, and the body parameter silently became a *query*
+    # parameter - `POST /o {"value": 7}` answered
+    # `422 loc: ["query", "payload"]`. The document still looked right because
+    # it is built from the return annotation, so nothing here caught it.
     app = Veloce(title="T", version="1")
 
     @app.post("/o")
-    async def route(payload: Outer) -> Outer:
+    async def route(payload: _Outer) -> _Outer:
         return payload
 
     schema = app.openapi()

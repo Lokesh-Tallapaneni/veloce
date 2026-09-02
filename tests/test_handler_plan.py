@@ -177,16 +177,30 @@ def test_plan_skips_self_parameter():
 
 
 def test_plan_tolerant_to_broken_annotations():
-    # Forward-ref to a name that won't resolve at get_type_hints time. The
-    # plan must still build (treating the annotation as absent), not raise.
+    # Forward-ref to a name that won't resolve at get_type_hints time. With a
+    # default the parameter loses nothing by being treated as unannotated, so
+    # the plan still builds rather than raising.
+    def h(x: "DoesNotExistAnywhere" = "fallback") -> None:  # type: ignore[name-defined]  # noqa: F821, UP037
+        return None
+
+    with pytest.warns(UserWarning, match="could not resolve the annotation"):
+        plan = build_plan(h)
+    assert len(plan.slots) == 1
+    # Without a resolved annotation, falls through to K_QUERY with str default.
+    assert plan.slots[0].kind == K_QUERY
+    assert plan.slots[0].target_type is str
+
+
+def test_a_broken_annotation_with_no_default_is_refused():
+    # The same forward ref without a default used to fall through to K_QUERY
+    # too - which turned the parameter into a *required* query parameter the
+    # caller supplies. That is the shape the auth bypass was reached through,
+    # so it is refused at registration instead.
     def h(x: "DoesNotExistAnywhere") -> None:  # type: ignore[name-defined]  # noqa: F821, UP037
         return None
 
-    plan = build_plan(h)
-    assert len(plan.slots) == 1
-    # Without resolved annotation, falls through to K_QUERY with str default.
-    assert plan.slots[0].kind == K_QUERY
-    assert plan.slots[0].target_type is str
+    with pytest.raises(TypeError, match="could not resolve the annotation"):
+        build_plan(h)
 
 
 # ── Integration: app.handle_request uses the plan ─────────────────────
