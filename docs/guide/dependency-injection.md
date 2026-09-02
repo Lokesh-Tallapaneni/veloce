@@ -435,6 +435,54 @@ resolves independently (the per-request dependency cache keys those entries
 by their active scopes). Plain `Depends`, and any `Security` dependency
 that does not read its scopes, still resolve once per request.
 
+`scopes=` takes a sequence. A bare string is rejected, because iterating it
+would have produced one scope per character.
+
+!!! warning "An unresolvable annotation on a guarded parameter is refused"
+
+    A `Security()` or `Depends()` marker lives in the annotation's metadata, so
+    if the annotation cannot be resolved the marker goes with it. Rather than
+    register a route that no longer runs its dependency, Veloce refuses it:
+
+    ```python
+    from __future__ import annotations
+
+    from typing import TYPE_CHECKING, Annotated
+
+    from veloce import Security, Veloce
+
+    if TYPE_CHECKING:
+        from myapp.models import User      # not importable at runtime
+
+    app = Veloce()
+
+
+    @app.get("/me")
+    async def me(request, user: Annotated[User, Security(current_user)]):
+        return {"you_are": user}
+    ```
+
+    ```
+    TypeError: me: could not resolve the annotation on 'user' (NameError: ...).
+    The route is refused rather than registered without it ...
+    ```
+
+    Import the name at runtime instead:
+
+    ```python
+    from myapp.models import User          # outside `if TYPE_CHECKING:`
+    ```
+
+    The same applies to a parameter with **no default**, which would otherwise
+    become a required query parameter supplied by the caller — the shape an
+    unauthenticated request used to reach. A parameter that has a default, or
+    that binds by name (`request`, `ws`), still only warns.
+
+!!! note "Changed in version 0.19.1"
+
+    Such a route previously registered with a warning and served requests
+    without running the dependency.
+
 ## Overriding dependencies in tests
 
 [`app.dependency_overrides`](../reference/application.md#veloce.Veloce.dependency_overrides)

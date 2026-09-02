@@ -181,6 +181,14 @@ Typing is opt-in. A callback with no annotation receives the decoded payload
 exactly as before, and `receive="text"` / `receive="bytes"` listeners are
 unaffected.
 
+!!! warning "An unresolvable message annotation is refused"
+
+    A message type imported only under `TYPE_CHECKING`, or defined inside a
+    function, cannot be resolved at registration — and a listener registered
+    without it would accept every frame unvalidated. Veloce refuses the
+    listener instead. Define the message type at module level, or import it at
+    runtime.
+
 !!! note "Added in version 0.19.0"
 
     Message annotations on `@app.websocket_listener` were previously ignored.
