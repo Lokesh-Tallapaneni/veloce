@@ -50,6 +50,7 @@ from veloce._handler_plan import (
 from veloce._internal import (
     _BaseExceptionGroup,
     _is_async_callable,
+    _refuse_string_scopes,
     json_body_refused,
     offload,
 )
@@ -383,10 +384,7 @@ class Security(Depends):
         # scope as a grant - or renders `WWW-Authenticate` from the list - does
         # not. Rejected here so the mistake surfaces on the line that made it.
         if isinstance(scopes, (str, bytes)):
-            raise TypeError(
-                f"Security(scopes=...) takes a sequence of scopes, not "
-                f"{type(scopes).__name__}; pass [{scopes!r}] for a single scope."
-            )
+            _refuse_string_scopes(scopes, "Security(scopes=...)")
         super().__init__(dependency=dependency, use_cache=use_cache, offload=offload)
         self.scopes = scopes or []
 

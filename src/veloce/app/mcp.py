@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Annotated, Any
 
 from typing_extensions import Doc
 
+from veloce._internal import _refuse_string_scopes
 from veloce.app._host import AppHost
 from veloce.principal import set_principal
 
@@ -141,6 +142,8 @@ class MCPMixin(AppHost):
         # Deferred: `contrib/` is optional.
         from veloce.contrib.mcp.safety import require_mcp_description, validate_tool_annotations
 
+        if isinstance(scopes, (str, bytes)):
+            _refuse_string_scopes(scopes, "@app.mcp_tool(scopes=...)")
         scope_set = frozenset(scopes) if scopes else None
 
         def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
@@ -196,6 +199,8 @@ class MCPMixin(AppHost):
         # Deferred: `contrib/` is optional.
         from veloce.contrib.mcp.safety import require_mcp_description
 
+        if isinstance(scopes, (str, bytes)):
+            _refuse_string_scopes(scopes, "@app.mcp_prompt(scopes=...)")
         scope_set = frozenset(scopes) if scopes else None
 
         def decorator(func: Callable[..., Any]) -> Callable[..., Any]:

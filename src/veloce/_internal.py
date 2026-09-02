@@ -213,6 +213,19 @@ def _coerce_secret_bytes(value: str | bytes | Secret) -> bytes:
     return value
 
 
+def _refuse_string_scopes(scopes: Any, where: str) -> None:
+    """Raise for a bare string where a sequence of scopes is meant.
+
+    Iterating a string yields characters, so `scopes="admin"` silently becomes
+    five one-character scopes. Refused on the line that made the mistake rather
+    than normalised, which would hide the typo.
+    """
+    raise TypeError(
+        f"{where} takes a sequence of scopes, not {type(scopes).__name__}; "
+        f"pass [{scopes!r}] for a single scope."
+    )
+
+
 def _coerce_bool(value: Any) -> bool:
     """Interpret a config flag as a bool, including dotenv-style strings.
 

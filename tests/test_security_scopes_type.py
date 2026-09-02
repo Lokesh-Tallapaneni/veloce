@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import Security
+from veloce import Security, Veloce
 from veloce._handler_plan import build_plan
 
 
@@ -56,3 +56,96 @@ def test_no_scopes_is_still_valid():
     `__init__` normalises a missing value to `[]`, so that is what is asserted.
     """
     assert Security(_authz).scopes == []
+
+
+# ── the same split exists on every other scope entry point ──
+
+
+@pytest.mark.parametrize("bad", ["admin", b"admin"])
+def test_mcp_tool_refuses_a_bare_string_scope(bad):
+    """NEGATIVE: `scopes="admin"` used to become a five-character frozenset."""
+    app = Veloce()
+    with pytest.raises(TypeError, match="sequence of scopes"):
+
+        @app.mcp_tool(name="t", description="a tool", scopes=bad)
+        async def t(request):
+            return {}
+
+
+@pytest.mark.parametrize("bad", ["admin", b"admin"])
+def test_mcp_prompt_refuses_a_bare_string_scope(bad):
+    """NEGATIVE: the prompt decorator splits identically."""
+    app = Veloce()
+    with pytest.raises(TypeError, match="sequence of scopes"):
+
+        @app.mcp_prompt(name="p", description="a prompt", scopes=bad)
+        async def p(request):
+            return {}
+
+
+def test_mcp_auth_refuses_a_bare_string_required_scope():
+    """NEGATIVE: every request would be checked against character scopes."""
+    from veloce.contrib.mcp.auth import MCPAuth
+
+    with pytest.raises(TypeError, match="sequence of scopes"):
+        MCPAuth(
+            verify=lambda token: None,
+            required_scopes="admin",
+            resource_server_url="https://api.example.com/mcp",
+            authorization_servers=["https://auth.example.com"],
+        )
+
+
+def test_mcp_auth_refuses_a_bare_string_supported_scope():
+    """NEGATIVE: this one does not fail closed - it publishes the nonsense.
+
+    `scopes_supported` is advertised in the protected-resource metadata, so a
+    bare string is served to every client that reads it.
+    """
+    from veloce.contrib.mcp.auth import MCPAuth
+
+    with pytest.raises(TypeError, match="sequence of scopes"):
+        MCPAuth(
+            verify=lambda token: None,
+            scopes_supported="read",
+            resource_server_url="https://api.example.com/mcp",
+            authorization_servers=["https://auth.example.com"],
+        )
+
+
+def test_authorization_server_refuses_a_bare_string_supported_scope():
+    """NEGATIVE: the same advertised-metadata split on the server class."""
+    from veloce.contrib.mcp.authorization import MCPAuthorizationServer
+
+    with pytest.raises(TypeError, match="sequence of scopes"):
+        MCPAuthorizationServer(
+            issuer="https://issuer.example",
+            authenticate=lambda *args: None,
+            scopes_supported="admin",
+        )
+
+
+def test_mcp_tool_accepts_a_list_of_scopes():
+    """POSITIVE: the guard must not refuse the correct spelling."""
+    app = Veloce()
+
+    @app.mcp_tool(name="t", description="a tool", scopes=["read", "write"])
+    async def t(request):
+        return {}
+
+    assert app._mcp_tools[-1].scopes == frozenset({"read", "write"})
+
+
+def test_mcp_auth_accepts_sequences():
+    """POSITIVE: tuples and lists pass through unchanged."""
+    from veloce.contrib.mcp.auth import MCPAuth
+
+    auth = MCPAuth(
+        verify=lambda token: None,
+        required_scopes=["mcp:tools"],
+        scopes_supported=("read",),
+        resource_server_url="https://api.example.com/mcp",
+        authorization_servers=["https://auth.example.com"],
+    )
+    assert auth.required_scopes == frozenset({"mcp:tools"})
+    assert auth.scopes_supported == ("read",)
