@@ -18,9 +18,12 @@ import copy
 import functools
 import inspect
 import types
+import typing
 import warnings
 from collections.abc import Callable
 from typing import Any, Union, get_args, get_origin, get_type_hints
+
+import typing_extensions
 
 from veloce._internal import _is_async_callable
 from veloce._model_backend import ModelBackend, _msgspec, backend_of
@@ -739,6 +742,12 @@ class _UnresolvedName:
         return f"<unresolved {self.name}>"
 
 
+# Built once: a name an author moved under TYPE_CHECKING is most often a typing
+# one, and resolving it to the real object lets the metadata scan judge it
+# instead of refusing because it could not be identified.
+_TYPING_NAMES: dict[str, Any] = {**vars(typing), **vars(typing_extensions)}
+
+
 class _PlaceholderNamespace(dict):
     """A name mapping that yields a placeholder rather than raising `NameError`."""
 
@@ -778,6 +787,8 @@ def _annotation_markers(hint_target: Any, annotation: Any) -> tuple[Any, tuple[A
     live = annotation
     if isinstance(annotation, str):
         namespace = _PlaceholderNamespace(vars(builtins))
+        namespace.update(_TYPING_NAMES)
+        # The target's own globals are applied last so they always win.
         namespace.update(getattr(hint_target, "__globals__", None) or {})
         try:
             live = eval(annotation, {}, namespace)  # noqa: S307 - the target's own annotation

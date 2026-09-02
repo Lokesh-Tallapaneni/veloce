@@ -218,3 +218,36 @@ def test_a_marker_on_the_left_of_a_union_is_still_refused():
         @app.get("/unionmarker")
         async def unionmarker(user: Ann[Missing, Security(_denies)] | None = None):  # noqa: F821
             return {"user": user}
+
+
+def test_a_typing_extensions_doc_annotation_only_warns():
+    """POSITIVE: `Doc()` carries no behaviour, so its loss changes nothing.
+
+    The style guide mandates `Annotated[T, Doc(...)]` on public surfaces, and
+    ruff moves `from typing_extensions import Doc` under TYPE_CHECKING. `Doc`
+    then became a placeholder in a metadata slot, which the fail-closed rule
+    refused - a route with no vulnerability to close.
+    """
+    app = Veloce()
+
+    with pytest.warns(UserWarning, match="could not resolve the annotation"):
+
+        @app.get("/documented")
+        async def documented(q: Annotated[Missing, Doc("a query")] = "x"):  # noqa: F821
+            return {"q": q}
+
+    with TestClient(app) as client:
+        assert client.get("/documented").json() == {"q": "x"}
+
+
+def test_a_marker_beside_a_typing_name_is_still_refused():
+    """NEGATIVE: resolving `Doc` must not stop the scan finding `Security`."""
+    app = Veloce()
+
+    with pytest.raises(TypeError, match="user"):
+
+        @app.get("/docandguard")
+        async def docandguard(
+            user: Annotated[Missing, Doc("who"), Security(_denies)] = None,  # noqa: F821
+        ):
+            return {"user": user}
