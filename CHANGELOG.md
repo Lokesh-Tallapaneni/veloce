@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `MAX_CONTENT_LENGTH` applies to the first ASGI body message; a chunked body escaped the cap. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
 - `Forwarded` is trusted only on request; a client-supplied header overrode the proxy's `X-Forwarded-*`. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
 - A slash redirect never emits a protocol-relative `Location`, which left the origin for an attacker's host. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
+- `url_for` percent-encodes path values; a `?`, `#` or `/` in one injected into the built URL. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
 
 ### Changed
 
@@ -31,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Security(scopes=...)` rejects a bare string; pass `["scope"]` for a single scope. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
 - `//a/b` and `/a//b` now return `404`; send the canonical path. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
 - `ProxyFix(trust_forwarded=...)` defaults to `False`; pass `True` where every trusted proxy sets `Forwarded`. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
+- `url_for` output is percent-encoded; a value containing a space or `?` now appears escaped. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
 
 ### Fixed
 
