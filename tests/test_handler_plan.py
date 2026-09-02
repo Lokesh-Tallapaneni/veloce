@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import functools
 import inspect as _inspect
+from typing import Annotated
 
 import pytest
 from pydantic import BaseModel
 
 import veloce.dependency as dep
-from veloce import Depends, Header, Query, Request, Veloce
+from veloce import Depends, Header, Query, Request, Security, Veloce
 from veloce._handler_plan import (
     K_BG_TASKS,
     K_BODY_MODEL,
@@ -323,3 +324,42 @@ def test_response_import_is_module_level_in_dependency():
 
     assert hasattr(dep, "Response")
     assert dep.Response is Response
+
+
+def test_a_partial_bound_parameter_with_a_broken_annotation_only_warns():
+    """POSITIVE: a pre-bound parameter receives no slot, so nothing is lost.
+
+    `_salvage_hints` re-derived `signature(hint_target)` - the unwrapped
+    function, which still lists the bound parameter - while `build_plan` builds
+    slots from `signature(handler)`, the partial. The rule therefore refused a
+    parameter the plan never binds.
+    """
+
+    async def handler(cfg: Missing, request):  # noqa: F821
+        return {"cfg": cfg}
+
+    bound = functools.partial(handler, "already-supplied")
+
+    with pytest.warns(UserWarning, match="could not resolve the annotation"):
+        plan = build_plan(bound)
+
+    assert [slot.name for slot in plan.slots] == ["request"]
+
+
+def test_a_marker_on_a_partial_bound_parameter_is_still_refused():
+    """NEGATIVE: the marker check must not depend on the parameter lookup.
+
+    Judging the no-default rule against the partial's signature is only safe
+    because `extract_annotated_marker` runs first and does not consult
+    `parameters`. If this ever registers, that premise has broken and the
+    partial path is serving a declared guard that never runs.
+    """
+
+    def _denies(request):
+        raise RuntimeError("this dependency must never run")
+
+    async def handler(secret: Annotated[Missing, Security(_denies)], request):  # noqa: F821
+        return {"secret": secret}
+
+    with pytest.raises(TypeError, match="secret"):
+        build_plan(functools.partial(handler, "bound"))

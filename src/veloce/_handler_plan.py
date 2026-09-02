@@ -20,7 +20,7 @@ import inspect
 import types
 import typing
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any, Union, get_args, get_origin, get_type_hints
 
 import typing_extensions
@@ -662,7 +662,7 @@ def _inspect_handler(
         # parameter did not resolve stopped authenticating and answered 200.
         # Resolve what can be resolved instead, so a broken annotation costs
         # only its own parameter, and say so rather than degrading in silence.
-        return sig, _salvage_hints(hint_target, exc, path_params)
+        return sig, _salvage_hints(hint_target, exc, path_params, sig.parameters)
 
 
 #: Parameters the plan binds from the name alone (see `build_plan`), plus the
@@ -671,7 +671,10 @@ _BOUND_BY_NAME = frozenset({"request", "ws", "websocket", "return"})
 
 
 def _salvage_hints(
-    hint_target: Any, exc: Exception, path_params: frozenset[str] = _NO_PATH_PARAMS
+    hint_target: Any,
+    exc: Exception,
+    path_params: frozenset[str],
+    parameters: Mapping[str, inspect.Parameter],
 ) -> dict[str, Any]:
     """Resolve each annotation on its own, keeping the ones that succeed.
 
@@ -697,8 +700,9 @@ def _salvage_hints(
     # genuinely depended on the annotation are worth reporting.
     consequential = [name for name in unresolved if name not in _BOUND_BY_NAME]
     if consequential:
-        # One `Signature` for the whole list rather than one per parameter.
-        parameters = inspect.signature(hint_target).parameters
+        # `parameters` is the signature `build_plan` iterates, not the unwrapped
+        # function's: a `functools.partial`'s pre-bound parameter receives no
+        # slot, so dropping its annotation cannot move where a value comes from.
         fatal = [
             name
             for name in consequential
