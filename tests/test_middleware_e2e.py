@@ -77,7 +77,7 @@ def _cors_app(**kwargs) -> Veloce:
 
 def test_proxyfix_forwarded_prefix_sets_script_root():
     """`Forwarded: prefix=/api` with no XFP -> request.script_root == '/api'."""
-    app = _proxy_app(x_prefix=1)
+    app = _proxy_app(x_prefix=1, trust_forwarded=True)
     client = TestClient(app)
     resp = client.get("/info", headers={"Forwarded": "for=192.0.2.1; prefix=/api"})
     assert resp.status_code == 200
@@ -95,7 +95,7 @@ def test_proxyfix_x_forwarded_prefix_only_sets_script_root():
 
 def test_proxyfix_forwarded_wins_over_x_forwarded_prefix():
     """RFC 7239 `Forwarded` takes precedence over the legacy header."""
-    app = _proxy_app(x_prefix=1)
+    app = _proxy_app(x_prefix=1, trust_forwarded=True)
     client = TestClient(app)
     resp = client.get(
         "/info",

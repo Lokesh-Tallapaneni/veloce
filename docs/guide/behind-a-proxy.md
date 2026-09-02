@@ -61,11 +61,18 @@ Each field independently selects the Nth value from the right of its header. `0`
 
 ### The standard Forwarded header
 
-[`ProxyFix`](../reference/middleware.md#veloce.ProxyFix) also reads the RFC 7239 `Forwarded` header. When both forms are present, `Forwarded` wins. Set `trust_forwarded=False` to ignore it and use only the `X-Forwarded-*` headers.
+[`ProxyFix`](../reference/middleware.md#veloce.ProxyFix) can also read the RFC 7239 `Forwarded` header, which supersedes the `X-Forwarded-*` set: when it is trusted, it is the sole authority for `for`, `proto` and `host`. That is off by default, because nginx, ALB and most CDNs emit `X-Forwarded-*` and leave `Forwarded` untouched — so a client could send one and decide its own address, scheme and host, silencing the headers your proxy does control.
+
+Enable it only where every trusted proxy sets or sanitizes `Forwarded` itself:
 
 ```python
-app.add_middleware(ProxyFix(x_for=2, x_proto=1, trust_forwarded=False))
+app.add_middleware(ProxyFix(x_for=2, x_proto=1, trust_forwarded=True))
 ```
+
+!!! note "Changed in version 0.20.0"
+
+    `trust_forwarded` defaults to `False`. A deployment behind a proxy that
+    emits only `Forwarded` must now opt in.
 
 !!! note "ProxyFix selects by trust depth, it does not authenticate"
     The middleware picks the value your trusted hop wrote; it does not verify the upstream chain cryptographically. Restrict who can reach the app directly (firewall, private network) so the only source of these headers is a proxy you operate. See [RFC 7239](https://www.rfc-editor.org/rfc/rfc7239) for the `Forwarded` grammar.

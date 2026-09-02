@@ -79,6 +79,14 @@ class ProxyFix(Middleware):
     carries none, so a proxy on a non-default port (e.g. 8443) is preserved.
     An explicit port in the Host / ``X-Forwarded-Host`` always wins.
 
+    ``trust_forwarded`` opts into RFC 7239 ``Forwarded``, which supersedes the
+    ``X-Forwarded-*`` set and is then the sole authority for every directive it
+    carries. Enable it only where every trusted proxy sets or sanitizes
+    ``Forwarded`` itself: nginx, ALB and most CDNs emit ``X-Forwarded-*`` and
+    leave ``Forwarded`` untouched, so a client-supplied header would otherwise
+    decide the client address, scheme and host - and silence the header the
+    proxy does control.
+
     Usage::
 
         # Behind two trusted proxies forwarding client IP and scheme.
@@ -92,7 +100,7 @@ class ProxyFix(Middleware):
         x_host: int = 0,
         x_port: int = 0,
         x_prefix: int = 0,
-        trust_forwarded: bool = True,
+        trust_forwarded: bool = False,
         name: str | None = None,
     ) -> None:
         # Forward the optional per-instance exclusion name to the base so

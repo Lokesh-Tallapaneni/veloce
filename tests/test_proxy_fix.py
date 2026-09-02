@@ -259,7 +259,7 @@ def _make_app_capturing_prefix(**kwargs) -> Veloce:
 
 def test_proxy_fix_honors_forwarded_prefix_extension():
     """`Forwarded: prefix=/api` (no X-Forwarded-Prefix) rewrites script_root."""
-    app = _make_app_capturing_prefix(x_prefix=1)
+    app = _make_app_capturing_prefix(x_prefix=1, trust_forwarded=True)
     client = TestClient(app)
     resp = client.get("/info", headers={"Forwarded": "for=192.0.2.1; prefix=/api"})
     assert resp.json()["script_root"] == "/api"
@@ -267,7 +267,7 @@ def test_proxy_fix_honors_forwarded_prefix_extension():
 
 def test_proxy_fix_forwarded_prefix_wins_over_x_forwarded_prefix():
     """When both headers are present, `Forwarded` wins -- matching host/proto/for."""
-    app = _make_app_capturing_prefix(x_prefix=1)
+    app = _make_app_capturing_prefix(x_prefix=1, trust_forwarded=True)
     client = TestClient(app)
     resp = client.get(
         "/info",
@@ -281,7 +281,7 @@ def test_proxy_fix_forwarded_prefix_wins_over_x_forwarded_prefix():
 
 def test_proxy_fix_falls_back_to_x_forwarded_prefix_when_forwarded_lacks_prefix():
     """If `Forwarded` has no `prefix=`, the X-Forwarded-Prefix header still wins."""
-    app = _make_app_capturing_prefix(x_prefix=1)
+    app = _make_app_capturing_prefix(x_prefix=1, trust_forwarded=True)
     client = TestClient(app)
     resp = client.get(
         "/info",
@@ -315,6 +315,7 @@ async def test_proxy_fix_rejects_crlf_in_forwarded_prefix():
         await _run_proxy_fix(
             {"Forwarded": 'for=192.0.2.1; prefix="/api\r\nInjected: 1"'},
             x_prefix=1,
+            trust_forwarded=True,
         )
 
 
@@ -392,7 +393,7 @@ def test_parse_forwarded_quoted_comma_multi_hop():
 
 def test_forwarded_quoted_comma_integration():
     app = Veloce(openapi_url=None)
-    app.add_middleware(ProxyFix(x_for=1, x_host=1))
+    app.add_middleware(ProxyFix(x_for=1, x_host=1, trust_forwarded=True))
 
     @app.get("/info")
     async def info(request):
@@ -470,7 +471,7 @@ def test_explicit_host_port_wins_over_x_forwarded_port():
 
 def test_x_forwarded_port_disabled_by_default():
     """Without x_port the header is ignored - no port leaks into the URL."""
-    app = _make_app_capturing_url(x_host=1)
+    app = _make_app_capturing_url(x_host=1, trust_forwarded=True)
     client = TestClient(app)
     resp = client.get(
         "/info",
@@ -524,7 +525,7 @@ async def test_proxy_fix_rejects_crlf_in_x_forwarded_port():
 
 def test_forwarded_host_with_port_survives():
     """RFC 7239 carries the port inside `host=...:port`; it reaches the URL."""
-    app = _make_app_capturing_url(x_host=1)
+    app = _make_app_capturing_url(x_host=1, trust_forwarded=True)
     client = TestClient(app)
     resp = client.get(
         "/info",
@@ -535,7 +536,7 @@ def test_forwarded_host_with_port_survives():
 
 def test_forwarded_ipv6_host_with_port_survives():
     """A bracketed IPv6 `host=` authority reaches the URL with brackets+port."""
-    app = _make_app_capturing_url(x_host=1)
+    app = _make_app_capturing_url(x_host=1, trust_forwarded=True)
     client = TestClient(app)
     resp = client.get(
         "/info",
@@ -630,7 +631,7 @@ async def test_a_second_forwarded_line_is_not_discarded():
         body=b"",
     )
 
-    await ProxyFix(x_for=1, x_proto=1, x_host=1).process_request(request)
+    await ProxyFix(x_for=1, x_proto=1, x_host=1, trust_forwarded=True).process_request(request)
 
     assert request.remote_addr == "203.0.113.9"
     assert request.scheme != "https"
@@ -666,3 +667,72 @@ def test_an_absent_hop_header_is_still_none():
     from veloce.middleware.proxy_fix import _hop_header
 
     assert _hop_header(Headers([]), "x-forwarded-for") is None
+
+
+# ── `Forwarded` is an opt-in, not a default ──────────────────────────
+
+
+def _proxy_request(pairs: list[tuple[str, str]]) -> Request:
+    return Request(
+        method="GET",
+        path="/",
+        query_string="",
+        headers=[("host", "app.example.com"), *pairs],
+        body=b"",
+    )
+
+
+async def test_a_client_forwarded_header_does_not_override_the_proxy_headers():
+    """NEGATIVE: the majority topology must not hand the client the chain.
+
+    nginx / ALB / most CDNs emit `X-Forwarded-*` and leave `Forwarded`
+    untouched, so a client that sends one owned `remote_addr`, `scheme` and
+    `host` outright - trust depth is satisfied by its single element, and the
+    sole-authority rule then silences the header the proxy does control.
+    """
+    request = _proxy_request(
+        [
+            ("x-forwarded-for", "203.0.113.9"),
+            ("forwarded", "for=1.2.3.4;proto=https;host=evil.example.net"),
+        ]
+    )
+
+    await ProxyFix(x_for=1, x_proto=1, x_host=1).process_request(request)
+
+    assert request.remote_addr == "203.0.113.9"
+    assert request.scheme != "https"
+    assert request.host != "evil.example.net"
+
+
+async def test_forwarded_is_still_honoured_when_the_operator_opts_in():
+    """POSITIVE: opting in must behave exactly as the default used to."""
+    request = _proxy_request([("forwarded", "for=203.0.113.9;proto=https")])
+
+    await ProxyFix(x_for=1, x_proto=1, trust_forwarded=True).process_request(request)
+
+    assert request.remote_addr == "203.0.113.9"
+    assert request.scheme == "https"
+
+
+async def test_x_forwarded_headers_still_work_by_default():
+    """POSITIVE: the common topology must be unaffected."""
+    request = _proxy_request([("x-forwarded-for", "203.0.113.9")])
+
+    await ProxyFix(x_for=1).process_request(request)
+
+    assert request.remote_addr == "203.0.113.9"
+
+
+async def test_opting_in_still_lets_forwarded_supersede_x_forwarded():
+    """POSITIVE: the RFC 7239 sole-authority rule survives for the opt-in.
+
+    This is what the default used to give everyone; the operator who asks for
+    it must still get it.
+    """
+    request = _proxy_request(
+        [("x-forwarded-for", "203.0.113.9"), ("forwarded", "for=198.51.100.7")]
+    )
+
+    await ProxyFix(x_for=1, trust_forwarded=True).process_request(request)
+
+    assert request.remote_addr == "198.51.100.7"

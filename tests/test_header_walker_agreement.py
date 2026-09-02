@@ -89,7 +89,8 @@ def test_remote_addr_is_not_attacker_controlled_through_a_backslash() -> None:
     """End to end: the value a handler reads, through the real middleware."""
 
     app = Veloce(openapi_url=None)
-    app.add_middleware(ProxyFix(x_for=1, x_proto=0, x_host=0, x_prefix=0))
+    # A *trusted* `Forwarded` is opt-in; this test is about what one does.
+    app.add_middleware(ProxyFix(x_for=1, x_proto=0, x_host=0, x_prefix=0, trust_forwarded=True))
 
     @app.get("/who")
     async def who(request):

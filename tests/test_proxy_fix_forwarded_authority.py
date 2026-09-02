@@ -24,6 +24,9 @@ from veloce.testclient import TestClient
 
 def _client(**kwargs) -> TestClient:
     app = Veloce(openapi_url=None)
+    # This module is about a *trusted* `Forwarded`, which is opt-in: the default
+    # is `False` because nginx / ALB / most CDNs leave the header to the client.
+    kwargs.setdefault("trust_forwarded", True)
     app.add_middleware(ProxyFix(**kwargs))
 
     @app.get("/who")
