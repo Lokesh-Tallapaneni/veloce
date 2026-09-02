@@ -724,3 +724,96 @@ def test_instrumentation_records_real_status_for_short_circuit_and_error():
     assert 401 in seen
     assert 500 in seen
     assert 200 not in seen
+
+
+# ── a typed path placeholder is converted on this door too ───────────
+#
+# `_route_path_params` copied each JSON argument verbatim, so a route declaring
+# `{user_id:int}` could receive a string, a dict, a bool or a list through the
+# tool door - values the HTTP door never dispatches, because the converter
+# refuses the segment outright. Its own contract says a reader of
+# `request.path_params` "sees the same mapping it would on the HTTP path", and
+# the tool's `inputSchema` advertises `{"type": "integer"}`, so nothing
+# downstream has reason to re-check. The sharp case is a `before_request` hook
+# or route dependency: it runs on the raw value even for a handler whose own
+# binding would later reject the call.
+
+
+def _typed_path_app() -> tuple[Veloce, list]:
+    app = Veloce(openapi_url=None)
+    seen: list = []
+
+    @app.before_request
+    async def audit(request):
+        if "user_id" in request.path_params:
+            seen.append(request.path_params["user_id"])
+
+    # The handler deliberately does not declare `user_id`, so no parameter
+    # binding stands between the door and `request.path_params`.
+    @app.get("/users/{user_id:int}", expose_as_mcp_tool=True, mcp_description="Get a user")
+    async def get_user(request):
+        value = request.path_params["user_id"]
+        return {"echo": value, "type": type(value).__name__}
+
+    return app, seen
+
+
+def test_a_typed_path_parameter_is_converted_on_the_tool_door():
+    """POSITIVE: a valid value arrives typed, as it does over HTTP."""
+    app, seen = _typed_path_app()
+
+    result = _call(app, "get_user", {"user_id": 7})
+
+    assert orjson.loads(result["result"]["content"][0]["text"]) == {"echo": 7, "type": "int"}
+    assert seen == [7]
+
+
+def test_a_string_where_an_int_is_declared_is_refused():
+    """NEGATIVE: the HTTP door would not dispatch this at all."""
+    app, seen = _typed_path_app()
+
+    result = _call(app, "get_user", {"user_id": "abc"})
+
+    assert "user_id" in result["result"]["content"][0]["text"]
+    assert seen == []
+
+
+def test_a_json_object_where_an_int_is_declared_is_refused():
+    """NEGATIVE: a `dict` reaching a parameter the schema calls an integer.
+
+    This is the shape no HTTP request can produce, so nothing downstream is
+    written to survive it.
+    """
+    app, seen = _typed_path_app()
+
+    for bad in ({"a": 1}, ["x"], True):
+        result = _call(app, "get_user", {"user_id": bad})
+        assert "user_id" in result["result"]["content"][0]["text"], bad
+    assert seen == []
+
+
+def test_a_numeric_string_converts_exactly_as_a_url_segment_would():
+    """POSITIVE: `"7"` is what a URL carries, and it must still convert.
+
+    The converter takes the string form on the HTTP path, so refusing it here
+    would make the two doors disagree in the other direction.
+    """
+    app, seen = _typed_path_app()
+
+    result = _call(app, "get_user", {"user_id": "7"})
+
+    assert orjson.loads(result["result"]["content"][0]["text"]) == {"echo": 7, "type": "int"}
+    assert seen == [7]
+
+
+def test_an_untyped_path_placeholder_is_left_alone():
+    """POSITIVE: a bare `{name}` has no coercing converter, so nothing changes."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/things/{slug}", expose_as_mcp_tool=True, mcp_description="Get a thing")
+    async def get_thing(request):
+        return {"slug": request.path_params["slug"]}
+
+    result = _call(app, "get_thing", {"slug": "abc"})
+
+    assert orjson.loads(result["result"]["content"][0]["text"]) == {"slug": "abc"}

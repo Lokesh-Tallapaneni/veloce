@@ -44,11 +44,12 @@ from veloce.contrib.mcp.content import (
     ResourceLink,
     TextContent,
 )
-from veloce.contrib.mcp.errors import _InBandError
+from veloce.contrib.mcp.errors import _InBandError, _InvalidArgumentsError
 from veloce.contrib.mcp.icons import render_icons
 from veloce.encoders import orjson_default
 from veloce.http.response import Response
 from veloce.principal import current_principal
+from veloce.routing.converters import path_param_converters
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.context import MCPContext
@@ -550,6 +551,22 @@ def _route_path_params(route_info: Any, arguments: dict[str, Any]) -> dict[str, 
     mapping it would on the HTTP path.
     """
     params = {name: arguments[name] for name in route_info.param_names if name in arguments}
+    # Run each value through the converter the router would have applied. The
+    # HTTP door guarantees a converter-validated, converter-typed value - a
+    # segment the converter refuses never dispatches at all - while this door
+    # copied the JSON argument verbatim, so a `{user_id:int}` route could
+    # receive a string, a dict, a bool or a list here. Anything reading
+    # `request.path_params` (a `before_request` hook, a route dependency, a
+    # handler that does not declare the parameter) then saw a type the tool's
+    # own `inputSchema` said was an integer. Refused in band, which is the same
+    # answer the HTTP door expresses as a non-match.
+    for name, converter in path_param_converters(route_info.path_template).items():
+        if name not in params:
+            continue
+        ok, converted = converter.match(str(params[name]))
+        if not ok:
+            raise _InvalidArgumentsError(f"{name}: invalid value for path parameter {name!r}")
+        params[name] = converted
     for key, value in route_info.defaults.items():
         params.setdefault(key, value)
     return params

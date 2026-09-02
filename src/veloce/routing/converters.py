@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import datetime
 import decimal
+import functools
 import math
 import re
 import uuid
@@ -630,6 +631,8 @@ def register_converter(name: str, converter_cls: type[Converter]) -> None:
     if not (isinstance(converter_cls, type) and issubclass(converter_cls, Converter)):
         raise TypeError("converter_cls must be a subclass of Converter")
     _CUSTOM[name] = converter_cls
+    # A template parsed before this name existed resolved its spec differently.
+    _cached_path_param_converters.cache_clear()
 
 
 def unregister_converter(name: str) -> None:
@@ -647,6 +650,7 @@ def unregister_converter(name: str) -> None:
     if name in _BUILTIN:
         raise ValueError(f"cannot unregister built-in converter {name!r}")
     _CUSTOM.pop(name, None)
+    _cached_path_param_converters.cache_clear()
 
 
 def parse_converter(spec: str | None) -> Converter:
@@ -940,6 +944,45 @@ _CONVERTER_JSON_TYPES: dict[str, dict[str, Any]] = {
     "time": _SCALAR_JSON_SCHEMAS["time"],
     "path": _SCALAR_JSON_SCHEMAS["path"],
 }
+
+
+@functools.lru_cache(maxsize=512)
+def _cached_path_param_converters(template: str) -> dict[str, Converter]:
+    """The uncached walk behind `path_param_converters`.
+
+    The mapping is shared, not copied: both callers only read it. A caller that
+    needs to mutate must copy first.
+    """
+    converters: dict[str, Converter] = {}
+    for placeholder in _iter_placeholders(template):
+        spec = placeholder.spec
+        if not spec:
+            continue
+        is_any = spec.startswith("any(") and spec.endswith(")")
+        if not is_any and not _is_parametrized_spec(spec) and _looks_like_regex(spec):
+            continue
+        converters[placeholder.name] = parse_converter(spec)
+    return converters
+
+
+def path_param_converters(template: str) -> dict[str, Converter]:
+    """Map each *typed* placeholder in `template` to the converter it applies.
+
+    A bare `{name}` and a raw-regex placeholder (`{id:[0-9]+}`) have no single
+    coercing converter and are omitted, so a caller learns which placeholders it
+    can validate rather than being promised coverage that does not exist. A
+    parametrized built-in (`int(min=1)`) carries parens that read as regex but
+    maps to a real converter, and `any(...)` is whitelisted for the same reason.
+
+    Shared by `url_for`'s reverse check and the MCP tool door, so a value a URL
+    could never carry is refused identically wherever it arrives.
+
+    Cached on the template: `parse_converter` builds a converter object per
+    placeholder, which measured 12.5 us for a single `{id:int}` and is paid per
+    tool call. `register_converter` / `unregister_converter` clear the cache, so
+    a template parsed before a custom converter existed is not served stale.
+    """
+    return _cached_path_param_converters(template)
 
 
 def path_param_schemas(template: str) -> dict[str, dict[str, Any]]:

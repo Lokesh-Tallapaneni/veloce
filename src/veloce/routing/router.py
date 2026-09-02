@@ -44,12 +44,11 @@ from veloce.routing._regex import RegexRoute
 from veloce.routing.converters import (
     Converter,
     StringConverter,
-    _is_parametrized_spec,
     _iter_placeholders,
-    _looks_like_regex,
     build_route_regex,
     is_regex_path,
     parse_converter,
+    path_param_converters,
 )
 from veloce.routing.route_info import (
     MCPRouteOptions as MCPRouteOptions,
@@ -181,19 +180,7 @@ def _reverse_converters_for(template: str) -> dict[str, Converter]:
     than promised away. `any(...)` is whitelisted explicitly
     because it carries parentheses that the bare-identifier test reads as regex.
     """
-    converters: dict[str, Converter] = {}
-    for ph in _iter_placeholders(template):
-        spec = ph.spec
-        if not spec:
-            continue
-        is_any = spec.startswith("any(") and spec.endswith(")")
-        # A parametrized built-in (`int(min=1)`, `str(length=2)`) carries
-        # parens that read as regex, but it maps to a real coercing converter,
-        # so reverse it too and let url_for reject an out-of-bounds value.
-        if not is_any and not _is_parametrized_spec(spec) and _looks_like_regex(spec):
-            continue
-        converters[ph.name] = parse_converter(spec)
-    return converters
+    return path_param_converters(template)
 
 
 def _check_duplicate_params(full_path: str) -> None:
