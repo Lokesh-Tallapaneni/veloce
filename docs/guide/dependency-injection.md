@@ -478,7 +478,7 @@ would have produced one scope per character.
     unauthenticated request used to reach. A parameter that has a default, or
     that binds by name (`request`, `ws`), still only warns.
 
-!!! note "Changed in version 0.19.1"
+!!! note "Changed in version 0.20.0"
 
     Such a route previously registered with a warning and served requests
     without running the dependency.

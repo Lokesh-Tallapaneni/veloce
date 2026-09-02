@@ -189,6 +189,11 @@ unaffected.
     listener instead. Define the message type at module level, or import it at
     runtime.
 
+!!! note "Changed in version 0.20.0"
+
+    Such a listener previously registered and accepted every frame without
+    validating it.
+
 !!! note "Added in version 0.19.0"
 
     Message annotations on `@app.websocket_listener` were previously ignored.
