@@ -163,8 +163,23 @@ def _path_shape(path: str) -> str:
 
 
 @functools.lru_cache(maxsize=512)
-def _cached_split_path(path: str) -> tuple[str, ...]:
-    return tuple(s for s in path.split("/") if s)
+def _cached_split_path(path: str) -> tuple[tuple[str, ...], bool]:
+    """Split `path` into segments, and report whether it was canonical.
+
+    An empty interior or leading segment (`//admin/x`, `/a//b`) is dropped by
+    the split, so such a path produced the same segments as its canonical form
+    and matched the same route - while `request.path` still read the original,
+    which is how a prefix check and the router came to disagree.
+
+    The verdict is computed here, inside the cache, so the match path spends a
+    tuple unpack rather than a second scan of the path on every request.
+    """
+    parts = path.split("/")
+    segments = tuple(s for s in parts if s)
+    # `parts[0]` is always empty for an absolute path, and a trailing slash adds
+    # one more. Any empty beyond those two is a segment the split swallowed.
+    allowed_empty = 1 + (1 if len(parts) > 1 and parts[-1] == "" else 0)
+    return segments, len(parts) - len(segments) <= allowed_empty
 
 
 def _reverse_converters_for(template: str) -> dict[str, Converter]:
@@ -342,7 +357,11 @@ class Router:
     # ── Route registration ────────────────────────────────
 
     def _split_path(self, path: str) -> tuple[str, ...]:
-        """Split path into segments (cached)."""
+        """Split path into segments (cached), discarding the canonical verdict."""
+        return _cached_split_path(path)[0]
+
+    def _split_path_checked(self, path: str) -> tuple[tuple[str, ...], bool]:
+        """Split path into segments and report whether the path was canonical."""
         return _cached_split_path(path)
 
     def _insert_path_into_tree(
@@ -1268,14 +1287,7 @@ class Router:
             return RouteMatch(route_info=info, path_params={})
         match = self._match_tree(method, path)
         if match is not None:
-            # The tree drops empty segments, so `//admin/users` reached the
-            # handler for `/admin/users` while `request.path` still read
-            # `//admin/users` - a prefix check written against the path saw a
-            # different string than the router matched. Only a tree hit can
-            # disagree this way (the static map is keyed by the exact path and
-            # regex routes match the raw one), so only a tree hit is checked
-            # and a miss pays nothing.
-            return None if "//" in path else match
+            return match
         # Zero cost when no regex route is registered: the guard short-circuits
         # before touching the (empty) list.
         if self._regex_routes:
@@ -1284,7 +1296,15 @@ class Router:
 
     def _match_tree(self, method: str, path: str) -> RouteMatch | None:
         """Match against the radix tree alone. O(k) where k = path depth."""
-        segments = self._split_path(path)
+        segments, canonical = self._split_path_checked(path)
+        if not canonical:
+            # The split drops empty segments, so `//admin/users` would walk to
+            # the handler for `/admin/users` while `request.path` still read
+            # `//admin/users` - a prefix check written against the path saw a
+            # different string than the router matched. Refused before the walk,
+            # and the verdict rides on the split's own cache, so a canonical
+            # path pays an unpack rather than a second scan of the path.
+            return None
         request_has_slash = path.endswith("/") and path != "/"
         params: dict[str, str] = {}
         result = self._match_node(self._root, segments, 0, params)
@@ -1400,13 +1420,12 @@ class Router:
         one method and a regex handler on another reports both for 405/OPTIONS.
         Tree methods are listed first (dispatch precedence); duplicates removed.
         """
-        # Same rule as `match`: an empty segment is not a path segment. Without
-        # this the two disagree - `match` refuses `/a//b` while `Allow` reports
-        # the methods of `/a/b`, turning a 404 into a 405 that confirms the
-        # route exists.
-        if "//" in path:
+        # Same rule as `match`, through the same verdict: without it the two
+        # disagree - `match` refuses `/a//b` while `Allow` reports the methods
+        # of `/a/b`, turning a 404 into a 405 that confirms the route exists.
+        segments, canonical = self._split_path_checked(path)
+        if not canonical:
             return []
-        segments = self._split_path(path)
         request_has_slash = path.endswith("/") and path != "/"
         params: dict[str, str] = {}
         # Ordered set: tree methods first, then regex, deduped.
