@@ -184,6 +184,35 @@ The constraints are enforced whether the route resolves on the radix fast path
 or the regex fallback, and `url_for` rejects a value the converter would never
 match. A converter with no arguments behaves exactly as before.
 
+### Empty path segments
+
+A request path is matched as written. An empty segment - a leading or interior
+`//` - is not collapsed, so it does not reach the route its canonical form
+would:
+
+```python
+@app.get("/admin/users")
+async def admin_users(request):
+    ...
+
+# GET /admin/users   -> 200
+# GET //admin/users  -> 404
+# GET /admin//users  -> 404
+```
+
+This matters when authorization is decided by path prefix. A
+`before_request` hook testing `request.path.startswith("/admin")` reads the
+path the client sent; if the router had collapsed the empty segment, the two
+would disagree about the same request and the gate would be stepped around.
+Send the canonical path.
+
+A single trailing slash is unaffected and still follows `redirect_slashes`.
+
+!!! note "Changed in version 0.20.0"
+
+    A path with an empty segment previously matched the route its canonical
+    form would.
+
 ## Query parameters
 
 A handler parameter that is not a path parameter — and is not the
@@ -403,6 +432,23 @@ app.url_for("item", id="abc")   # raises - "abc" is not a valid int segment
 
 Parameters without a typed converter (a bare `{name}` or a raw-regex segment
 like `{id:[0-9]+}`) accept any stringifiable value.
+
+Substituted values are percent-encoded, so a value the application treats as
+opaque - a username, a slug, a filename - cannot escape its path segment:
+
+```python
+app.url_for("user-detail", user_id="bob smith")   # "/users/bob%20smith"
+app.url_for("user-detail", user_id="a/b")         # "/users/a%2Fb"
+```
+
+A `:path` converter is the exception, since crossing segments is what it is
+for: it may emit `/`, but still not `?` or `#`. `:` and `@` are left readable,
+being legal in a path segment (RFC 3986 Sec. 3.3).
+
+!!! note "Changed in version 0.20.0"
+
+    Values were previously interpolated verbatim, so a `?` or `#` in one could
+    add a query string or a fragment to the URL being built.
 
 Inside a request, the module-level `url_for` builds the same URL without a
 reference to the app, and templates receive it automatically:

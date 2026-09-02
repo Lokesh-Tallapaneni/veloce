@@ -171,6 +171,22 @@ The fallback secret is accepted for verification only — it is never used
 to sign new tokens. Remove the fallback once the rotation window has
 passed and old tokens have expired.
 
+An empty fallback is refused, the same way an empty primary secret is. A
+fallback is a *verification* key, so an empty one does not merely sign weakly:
+it accepts anything signed with the key derived from `b""`, which anyone can
+compute. Watch for the shape a rotation list grows from an environment:
+
+```python
+# Raises: the second entry installs a key anyone can derive.
+SessionMiddleware(secret_key=[os.environ["SECRET_KEY"],
+                              os.environ.get("OLD_SECRET_KEY", "")])
+```
+
+!!! note "Changed in version 0.20.0"
+
+    An empty fallback secret was previously accepted, and every token signed
+    with the key derived from it verified.
+
 ## Next steps
 
 - [Security schemes](security-schemes.md) — extract Bearer tokens and API
