@@ -605,6 +605,7 @@ class HttpProtocol(asyncio.Protocol):
         # the producing handler instead of growing the transport write buffer
         # without bound. Mirrors the read-side `source.set_flow_control` wiring.
         ws.set_send_drain(self.drain)
+        ws.set_send_gate(self._can_write.is_set)
 
         # Divert: all subsequent socket bytes go to the frame parser. Stand down
         # the HTTP timers and clear the consumed request buffers - no HTTP
@@ -947,6 +948,10 @@ class HttpProtocol(asyncio.Protocol):
     def resume_writing(self) -> None:
         """Asyncio callback: the write buffer drained below the low mark."""
         self._can_write.set()
+        # A PONG deferred while the buffer was over its high-water mark is sent
+        # now, so the peer still gets its heartbeat answered.
+        if self._websocket is not None:
+            self._websocket.flush_pending_pong()
 
     async def drain(self) -> None:
         """Block while the transport write buffer is over the high mark.

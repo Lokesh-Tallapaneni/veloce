@@ -296,3 +296,107 @@ def test_websocket_queue_full_closes_connection_with_1009():
         assert struct.unpack("!H", written[-1][2:4])[0] == 1009
 
     asyncio.run(go())
+
+
+# ── the automatic PONG is the one send that cannot await the drain ────
+#
+# `_send_frame` for a PONG runs inside the *synchronous* frame parser, so it
+# never reached the gate the tests above exercise. A peer that stopped reading
+# while flooding PINGs grew the transport's write buffer by one PONG per PING,
+# with no cap: 6.55 MB of PINGs queued 6.35 MB of PONGs, `pause_writing` fired
+# once and writes simply continued. These drive `WebSocket` directly - no event
+# loop needed, because the path under test is synchronous.
+
+
+class _CountingTransport:
+    """Records writes; never applies backpressure of its own."""
+
+    def __init__(self) -> None:
+        self.buf = bytearray()
+        self.closed = False
+
+    def write(self, data: bytes) -> None:
+        self.buf += data
+
+    def writelines(self, parts) -> None:
+        for part in parts:
+            self.buf += part
+
+    def close(self) -> None:
+        self.closed = True
+
+    def is_closing(self) -> bool:
+        return self.closed
+
+    def get_extra_info(self, name: str, default=None):
+        return default
+
+
+def _ping_socket(gate=None) -> tuple[WebSocket, _CountingTransport]:
+    transport = _CountingTransport()
+    ws = WebSocket(transport, headers={})
+    ws._accepted = True
+    if gate is not None:
+        ws.set_send_gate(gate)
+    return ws, transport
+
+
+def test_a_ping_flood_does_not_queue_a_pong_per_ping_while_writing_is_paused():
+    """NEGATIVE: the PONG reply must respect write backpressure.
+
+    RFC 6455 Sec. 5.5.3 lets an endpoint with PONGs outstanding reply to only
+    the most recently processed PING, which bounds the reply at one frame.
+    """
+    ws, transport = _ping_socket(gate=lambda: False)
+
+    for _ in range(100):
+        ws.feed_data(_client_frame(0x9, b"hello"))
+
+    assert transport.buf == b""
+    assert ws._pending_pong == b"hello"
+
+
+def test_the_deferred_pong_is_sent_once_writing_resumes():
+    """POSITIVE: deferring must not mean dropping - the peer still gets a reply."""
+    ws, transport = _ping_socket(gate=lambda: False)
+    for _ in range(100):
+        ws.feed_data(_client_frame(0x9, b"hello"))
+
+    ws.flush_pending_pong()
+
+    assert transport.buf.startswith(b"\x8a")
+    assert ws._pending_pong is None
+    # One reply for the whole burst, not one per ping.
+    assert transport.buf.count(b"\x8a") == 1
+
+
+def test_a_pong_is_sent_immediately_when_writing_is_possible():
+    """POSITIVE: the ordinary case must be unchanged."""
+    ws, transport = _ping_socket(gate=lambda: True)
+
+    ws.feed_data(_client_frame(0x9, b"hello"))
+
+    assert transport.buf.startswith(b"\x8a")
+
+
+def test_asgi_mode_installs_no_gate_and_replies_as_before():
+    """POSITIVE: only the native transport installs the gate.
+
+    Under ASGI the server owns its own backpressure, so the reply must go out
+    exactly as it always did.
+    """
+    ws, transport = _ping_socket()
+
+    ws.feed_data(_client_frame(0x9, b"hello"))
+
+    assert ws._send_gate is None
+    assert transport.buf.startswith(b"\x8a")
+
+
+def test_flushing_with_nothing_deferred_writes_nothing():
+    """POSITIVE: `resume_writing` fires often; an idle flush must be free."""
+    ws, transport = _ping_socket(gate=lambda: True)
+
+    ws.flush_pending_pong()
+
+    assert transport.buf == b""

@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A request path with an empty segment no longer matches; `//admin/x` reached the handler for `/admin/x`. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
 - A CSRF cookie that fails verification is replaced on the refusal; it previously refused every write for good. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
 - An unterminated header line is refused once it crosses the header budget; it previously buffered without limit. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
+- The automatic WebSocket `PONG` respects write backpressure; a `PING` flood queued one reply per ping. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
 
 ### Changed
 

@@ -367,6 +367,8 @@ class WebSocket:
         "_receive_queue",
         "_recv_buffer",
         "_send_drain",
+        "_send_gate",
+        "_pending_pong",
         "_state",
         "accepted_subprotocol",
         "app",
@@ -538,6 +540,13 @@ class WebSocket:
         # ASGI server owns flow control) and on direct construction, so the
         # send path pays a single `is not None` check.
         self._send_drain: Any = None
+        # Sync companion to `_send_drain`: True while the transport will accept
+        # a write. The automatic PONG reply is emitted from the *sync* frame
+        # parser, so it cannot await the drain - it consults this instead.
+        self._send_gate: Any = None
+        # The most recent PING whose PONG was deferred because writing was
+        # paused (RFC 6455 Sec. 5.5.3). At most one is ever held.
+        self._pending_pong: bytes | None = None
 
     # ── Construction: one object, two transports ──────────────
 
@@ -1116,6 +1125,23 @@ class WebSocket:
             # `_raw_recv` disconnect path.
             raise WebSocketDisconnect(self.close_code or WS_1000_NORMAL_CLOSURE)
 
+    def set_send_gate(self, ready: Any) -> None:
+        """Install the sync write-readiness predicate (raw transport only).
+
+        The automatic PONG reply runs inside the frame parser, which is
+        synchronous and cannot await `set_send_drain`'s hook. `ready()` reports
+        whether the transport will accept a write now; when it will not, the
+        PONG is deferred rather than queued. ASGI mode leaves this unset, so
+        the reply is sent as before and the server's own backpressure applies.
+        """
+        self._send_gate = ready
+
+    def flush_pending_pong(self) -> None:
+        """Send the deferred PONG, if any, once writing is possible again."""
+        payload, self._pending_pong = self._pending_pong, None
+        if payload is not None:
+            self._send_frame(payload, opcode=0xA)
+
     def set_send_drain(self, drain: Any) -> None:
         """Install the native write-side backpressure hook (raw transport only).
 
@@ -1516,7 +1542,18 @@ class WebSocket:
             self._handle_close_frame(payload)
             raise WebSocketDisconnect(self.close_code or WS_1000_NORMAL_CLOSURE)
         if opcode == 0x9:  # _OP_PING
-            self._send_frame(payload, opcode=0xA)  # _OP_PONG
+            gate = self._send_gate
+            if gate is None or gate():
+                self._send_frame(payload, opcode=0xA)  # _OP_PONG
+            else:
+                # RFC 6455 Sec. 5.5.3: with PONGs outstanding an endpoint MAY
+                # reply to only the most recently processed PING. This reply is
+                # emitted from the sync parser, so it cannot await the drain the
+                # async senders use - without a bound, a peer that stops reading
+                # while flooding PINGs grows the transport's write buffer by one
+                # PONG per PING, indefinitely. Holding only the latest bounds it
+                # at a single frame.
+                self._pending_pong = payload
             return frame_len
         if opcode == 0xA:  # _OP_PONG
             # A PONG echoing the outstanding heartbeat token confirms the
