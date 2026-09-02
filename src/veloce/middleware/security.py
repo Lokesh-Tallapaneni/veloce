@@ -195,7 +195,18 @@ class CSPMiddleware(Middleware):
             if template is None or header_present(response.headers, header):
                 continue
             if "{nonce}" in template:
-                value = template.replace("{nonce}", f"'nonce-{csp_nonce(request)}'")
+                nonce = csp_nonce(request)
+                if nonce is None:
+                    # `process_request` never ran - an earlier middleware
+                    # answered - so no nonce was armed. Interpolating the
+                    # missing value emitted the fixed token `nonce-None`, which
+                    # a browser parses as a real nonce: an injected
+                    # `<script nonce="None">` would run while the page's own
+                    # script was blocked, inverting the policy. Mint one here so
+                    # the header always names an unguessable per-response value.
+                    nonce = secrets.token_urlsafe(16)
+                    request._state[_CSP_NONCE_STATE_KEY] = nonce
+                value = template.replace("{nonce}", f"'nonce-{nonce}'")
             else:
                 value = template
             response.headers[header] = value
