@@ -346,3 +346,27 @@ def test_a_healthy_annotation_does_not_reach_the_salvage_path():
             return {}
 
     assert _GUARD_CALLS == ["ran", "ran"]
+
+
+# ── the refusal is not registration-only ─────────────────────────────
+
+
+def test_the_refusal_wording_holds_for_a_plan_built_mid_request():
+    """NEGATIVE: `dependency_overrides` targets are planned on first use.
+
+    `DependencyResolver.resolve` and the override sub-plan cache build plans
+    lazily, so a target carrying a load-bearing broken annotation raises
+    mid-request rather than at registration - verified to surface as a 500.
+    It fails closed, which is right, but the message must not tell the reader
+    the route was refused at registration when it was not.
+    """
+
+    def broken_override(conn: Missing):  # noqa: F821
+        return "override"
+
+    with pytest.raises(TypeError) as caught:
+        build_plan(broken_override)
+
+    message = str(caught.value)
+    assert "conn" in message
+    assert "rather than registered" not in message

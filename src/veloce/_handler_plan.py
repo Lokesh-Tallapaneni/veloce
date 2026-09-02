@@ -875,13 +875,25 @@ def _declaration_is_load_bearing(
 
 
 def _unresolved_declaration_error(hint_target: Any, fatal: list[str], exc: Exception) -> TypeError:
-    """Build the registration error for an unresolved load-bearing annotation."""
+    """Build the error for an unresolved load-bearing annotation.
+
+    Usually raised while a route is being registered, but not only then:
+    `DependencyResolver.resolve` and the `dependency_overrides` sub-plan cache
+    build plans on first use, so an override whose target carries a broken
+    annotation raises here mid-request and surfaces as a 500. The wording stays
+    neutral about which, rather than telling the reader the route was refused at
+    registration when it was not.
+
+    `TypeError` deliberately: `_ws_listener`'s adjacent refusals raise it and
+    shipped that way, so a different type here would leave the two doors
+    disagreeing about the same class of mistake.
+    """
     where = getattr(hint_target, "__qualname__", None) or repr(hint_target)
     named = ", ".join(repr(n) for n in fatal)
     return TypeError(
         f"{where}: could not resolve the annotation on {named} "
-        f"({type(exc).__name__}: {exc}). The route is refused rather than "
-        "registered without it: a dropped `Depends()` / `Security()` marker "
+        f"({type(exc).__name__}: {exc}). It is refused rather than dropped: "
+        "a dropped `Depends()` / `Security()` marker "
         "answers the request without running the dependency, a dropped "
         "`Header()` / `Cookie()` marker moves the value to the query string "
         "where the caller supplies it, and a parameter with no default becomes "
@@ -902,18 +914,21 @@ class _AnnotationProbe:
 
 
 def _warn_unresolved_annotations(hint_target: Any, unresolved: list[str], exc: Exception) -> None:
-    """Warn (once at registration) that some annotations could not be resolved.
+    """Warn that some annotations could not be resolved, and nothing was lost.
 
-    Silence here is what made the defect dangerous: the route simply stopped
-    enforcing its security dependency and answered normally.
+    Only an annotation whose loss changes nothing reaches here: a load-bearing
+    one raises in `_salvage_hints` instead. So this must not repeat the
+    raise's warning about dropped `Depends()` / `Security()` metadata - it
+    described a case that can no longer arrive here, and naming a marker the
+    parameter does not carry sends the reader looking for one.
     """
     where = getattr(hint_target, "__qualname__", None) or repr(hint_target)
     warnings.warn(
         f"{where}: could not resolve the annotation on "
         f"{', '.join(repr(n) for n in unresolved)} ({type(exc).__name__}: {exc}); "
-        "those parameters are treated as unannotated. Any `Depends()` / "
-        "`Security()` metadata on them is not applied - import the name at "
-        "runtime rather than only under TYPE_CHECKING",
+        "those parameters are treated as unannotated. Nothing about where their "
+        "values come from changes - import the name at runtime rather than only "
+        "under TYPE_CHECKING to keep the annotation",
         stacklevel=3,
     )
 
