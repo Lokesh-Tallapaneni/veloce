@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `@app.mcp_tool`, `@app.mcp_prompt`, `MCPAuth` and `MCPAuthorizationServer` reject a bare string scope. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
 - `Signer.add_fallback_secret` refuses an empty secret, which installed a publicly derivable verification key. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
 - `Forwarded` with an unbalanced quote is not trusted; it collapsed the hop count to the sender's choice. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
+- Repeated `Forwarded` / `X-Forwarded-*` lines are joined in received order; only the first was read. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
 
 ### Changed
 

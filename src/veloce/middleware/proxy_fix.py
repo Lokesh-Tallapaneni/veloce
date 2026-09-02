@@ -22,6 +22,8 @@ two trusted proxies in front you set `x_for=2`.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from veloce._constants import (
     HEADER_X_FORWARDED_FOR,
     HEADER_X_FORWARDED_HOST,
@@ -38,6 +40,31 @@ from veloce._internal import _extract_host, _reject_header_crlf
 from veloce.http.request import Request
 from veloce.http.response import Response
 from veloce.middleware.base import Middleware
+
+if TYPE_CHECKING:  # pragma: no cover
+    from veloce.http.datastructures import Headers
+
+
+def _hop_header(headers: Headers, name: str) -> str | None:
+    """Return every occurrence of `name`, comma-joined in received order.
+
+    A proxy that appends its own line rather than rewriting the existing one
+    leaves two field lines, and single-value access returns the *first* - the
+    untrusted end of the chain. RFC 9110 Sec. 5.3 defines a repeatable field as
+    the comma-joined list in order, which is exactly what the right-to-left hop
+    math already expects.
+    """
+    # `getall` with a default, not `getlist`: the latter reaches its empty
+    # result by catching `KeyError`, and raising one per absent header on every
+    # request measured a third of this middleware's cost.
+    values = headers.getall(name, ())
+    if not values:
+        return None
+    if len(values) == 1:
+        # The overwhelmingly common shape: no join, no allocation.
+        first: str = values[0]
+        return first
+    return ", ".join(values)
 
 
 class ProxyFix(Middleware):
@@ -90,7 +117,7 @@ class ProxyFix(Middleware):
 
     async def process_request(self, request: Request) -> Response | None:
         """Rewrite request attributes from trusted proxy headers."""
-        forwarded = request.headers.get("forwarded") if self.trust_forwarded else None
+        forwarded = _hop_header(request.headers, "forwarded") if self.trust_forwarded else None
         fwd = (
             self._parse_forwarded(forwarded, self.x_for, self.x_proto, self.x_host, self.x_prefix)
             if forwarded
@@ -117,17 +144,17 @@ class ProxyFix(Middleware):
             # `x_prefix` are 0 by default, which is three lookups a stock
             # configuration cannot use.
             client = (
-                self._pick_hop(request.headers.get(HEADER_X_FORWARDED_FOR), self.x_for)
+                self._pick_hop(_hop_header(request.headers, HEADER_X_FORWARDED_FOR), self.x_for)
                 if self.x_for
                 else None
             )
             proto = (
-                self._pick_hop(request.headers.get(HEADER_X_FORWARDED_PROTO), self.x_proto)
+                self._pick_hop(_hop_header(request.headers, HEADER_X_FORWARDED_PROTO), self.x_proto)
                 if self.x_proto
                 else None
             )
             host = (
-                self._pick_hop(request.headers.get(HEADER_X_FORWARDED_HOST), self.x_host)
+                self._pick_hop(_hop_header(request.headers, HEADER_X_FORWARDED_HOST), self.x_host)
                 if self.x_host
                 else None
             )
@@ -141,12 +168,12 @@ class ProxyFix(Middleware):
         # `proto` and `host` above, where the RFC does define a directive and
         # the fallback let a refused hop through.
         port = (
-            self._pick_hop(request.headers.get(HEADER_X_FORWARDED_PORT), self.x_port)
+            self._pick_hop(_hop_header(request.headers, HEADER_X_FORWARDED_PORT), self.x_port)
             if self.x_port
             else None
         )
         prefix = fwd.get("prefix") or (
-            self._pick_hop(request.headers.get(HEADER_X_FORWARDED_PREFIX), self.x_prefix)
+            self._pick_hop(_hop_header(request.headers, HEADER_X_FORWARDED_PREFIX), self.x_prefix)
             if self.x_prefix
             else None
         )

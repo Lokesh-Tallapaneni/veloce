@@ -581,3 +581,88 @@ def test_a_properly_quoted_comma_still_does_not_fake_a_hop():
     header = 'host="a,b";for=198.51.100.7'
 
     assert proxy_fix._parse_forwarded(header, 1, 1, 1, 0)["for"] == "198.51.100.7"
+
+
+# ── a repeated hop header must be read whole, in received order ──────
+
+
+async def test_a_second_x_forwarded_for_line_is_not_discarded():
+    """NEGATIVE: the proxy appends a line; reading only the first trusts the client.
+
+    `Headers.get` returns the first occurrence, so the attacker's line won and
+    the real peer never appeared in the chain at all. A proxy that appends
+    rather than rewrites (HAProxy `option forwardfor` without `if-none`)
+    produces exactly this shape.
+
+    Built as a `Request` rather than driven through `TestClient`: the client
+    collapses repeated header pairs into one line, so a test written that way
+    passes whether or not the fix is present.
+    """
+    request = Request(
+        method="GET",
+        path="/",
+        query_string="",
+        headers=[
+            ("host", "app.example.com"),
+            ("x-forwarded-for", "9.9.9.9"),
+            ("x-forwarded-for", "203.0.113.9"),
+        ],
+        body=b"",
+    )
+    assert request.headers.getlist("x-forwarded-for") == ["9.9.9.9", "203.0.113.9"]
+
+    await ProxyFix(x_for=1).process_request(request)
+
+    assert request.remote_addr == "203.0.113.9"
+
+
+async def test_a_second_forwarded_line_is_not_discarded():
+    """NEGATIVE: the same shape on the RFC 7239 header."""
+    request = Request(
+        method="GET",
+        path="/",
+        query_string="",
+        headers=[
+            ("host", "app.example.com"),
+            ("forwarded", "for=1.2.3.4;proto=https;host=evil.example.net"),
+            ("forwarded", "for=203.0.113.9"),
+        ],
+        body=b"",
+    )
+
+    await ProxyFix(x_for=1, x_proto=1, x_host=1).process_request(request)
+
+    assert request.remote_addr == "203.0.113.9"
+    assert request.scheme != "https"
+
+
+async def test_a_single_line_chain_is_unchanged():
+    """POSITIVE: the ordinary single-header case must behave exactly as before."""
+    request = Request(
+        method="GET",
+        path="/",
+        query_string="",
+        headers=[("host", "app.example.com"), ("x-forwarded-for", "9.9.9.9, 203.0.113.9")],
+        body=b"",
+    )
+
+    await ProxyFix(x_for=1).process_request(request)
+
+    assert request.remote_addr == "203.0.113.9"
+
+
+def test_joining_preserves_received_order():
+    """POSITIVE: the trusted end is the right end, so order must not move."""
+    from veloce.http.datastructures import Headers
+    from veloce.middleware.proxy_fix import _hop_header
+
+    headers = Headers([("x-forwarded-for", "a"), ("x-forwarded-for", "b")])
+    assert _hop_header(headers, "x-forwarded-for") == "a, b"
+
+
+def test_an_absent_hop_header_is_still_none():
+    """POSITIVE: absence must stay distinguishable from an empty value."""
+    from veloce.http.datastructures import Headers
+    from veloce.middleware.proxy_fix import _hop_header
+
+    assert _hop_header(Headers([]), "x-forwarded-for") is None
