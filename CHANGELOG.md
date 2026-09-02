@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The automatic WebSocket `PONG` respects write backpressure; a `PING` flood queued one reply per ping. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
 - `MAX_CONTENT_LENGTH` applies to the first ASGI body message; a chunked body escaped the cap. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
 - `Forwarded` is trusted only on request; a client-supplied header overrode the proxy's `X-Forwarded-*`. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
+- A slash redirect never emits a protocol-relative `Location`, which left the origin for an attacker's host. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
 
 ### Changed
 
