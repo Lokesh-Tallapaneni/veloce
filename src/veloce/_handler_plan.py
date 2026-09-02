@@ -707,13 +707,21 @@ class _UnresolvedName:
     the name itself.
     """
 
-    __slots__ = ("name",)
+    __slots__ = ("name", "__metadata__")
 
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, metadata: tuple[Any, ...] = ()) -> None:
         self.name = name
+        # Mirrors `Annotated`'s own attribute so the metadata scan reads one
+        # shape whether or not the subscript base resolved.
+        self.__metadata__ = metadata
 
     def __getitem__(self, item: Any) -> _UnresolvedName:
-        return self
+        # Returning `self` discarded whatever sat inside the subscript, so
+        # `Annotated[T, Security(dep)]` lost its marker whenever `Annotated`
+        # was itself the name that did not resolve - the shape ruff's TC003
+        # produces by moving the import under TYPE_CHECKING.
+        tail = item[1:] if isinstance(item, tuple) else ()
+        return _UnresolvedName(self.name, tail)
 
     def __call__(self, *args: Any, **kwargs: Any) -> _UnresolvedName:
         return self
@@ -798,6 +806,8 @@ def _declaration_is_load_bearing(
     is covered without anyone remembering to list it, and the `Optional[...]`
     wrapper Python 3.10 adds is peeled the same way it is everywhere else.
     """
+    from veloce.dependency import Depends  # local import breaks the import cycle
+
     marker, metadata, known = _annotation_markers(hint_target, annotation)
     if not known:
         return True
@@ -808,6 +818,8 @@ def _declaration_is_load_bearing(
     # imported inside an enclosing function, which `__globals__` cannot see.
     # What it was cannot be recovered, so it is refused: not knowing whether a
     # control was declared is not a reason to serve the route without one.
+    if any(isinstance(item, (Depends, ParamBase)) for item in metadata):
+        return True
     if any(isinstance(item, _UnresolvedName) for item in metadata):
         return True
     parameter = parameters.get(name)

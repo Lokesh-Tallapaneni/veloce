@@ -254,3 +254,55 @@ def test_an_optional_wrapped_security_marker_is_refused():
         @app.get("/opt")
         async def opt(user: Optional[Annotated[Missing, Security(_denies)]] = None):  # noqa: F821, UP045
             return {"user": user}
+
+
+# ── the subscript base itself may be the name that does not resolve ──
+
+
+def test_an_unresolvable_annotated_base_still_refuses():
+    """NEGATIVE: `Annotated` itself under TYPE_CHECKING must not hide the marker.
+
+    ruff's flake8-type-checking (TC003) moves `from typing import Annotated`
+    into the `TYPE_CHECKING` block, so the *subscript base* becomes the
+    unresolvable name. The placeholder swallowed the whole expression and the
+    `Security()` inside it was never seen: the route registered and
+    `GET /me?user=attacker` returned `200 {"user": "attacker"}`.
+
+    The parameter has a default, so only marker detection can refuse it.
+    """
+    app = Veloce()
+
+    with pytest.raises(TypeError, match="user"):
+
+        @app.get("/me")
+        async def me(user: Ann[Missing, Security(_denies)] = None):  # noqa: F821
+            return {"user": user}
+
+
+def test_an_unresolvable_base_with_a_header_marker_refuses():
+    """NEGATIVE: the same collapse, with a non-`Depends` marker."""
+    app = Veloce()
+
+    with pytest.raises(TypeError, match="key"):
+
+        @app.get("/secret")
+        async def secret(key: Ann[Missing, Header(alias="X-Api-Key")] = None):  # noqa: F821
+            return {"key": key}
+
+
+def test_an_unresolvable_base_carrying_no_marker_still_only_warns():
+    """POSITIVE: recovering the metadata must not start refusing safe routes.
+
+    A collapsed subscript with nothing load-bearing inside it loses nothing,
+    so it stays a warning exactly as an unmarked optional parameter does.
+    """
+    app = Veloce()
+
+    with pytest.warns(UserWarning, match="could not resolve the annotation"):
+
+        @app.get("/plainsub")
+        async def plainsub(note: Ann[Missing, int] = "default"):  # noqa: F821
+            return {"note": note}
+
+    with TestClient(app) as client:
+        assert client.get("/plainsub").json() == {"note": "default"}
