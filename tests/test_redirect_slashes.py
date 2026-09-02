@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextvars
+
 from tests.conftest import make_request
 from veloce import Request, Veloce
 
@@ -64,12 +66,22 @@ def _asgi_redirect(app: Veloce, path: str, root_path: str = "") -> tuple[int | N
         "asgi": {"version": "3.0"},
         "root_path": root_path,
     }
-    coro = app(scope, receive, send)
-    try:
-        while True:
-            coro.send(None)
-    except StopIteration:
-        pass
+
+    # Driven inside a *copied* context. A bare `coro.send(None)` runs the app in
+    # this frame's context, so every contextvar it binds - `current_app`,
+    # `request`, the session - leaks into the test process and outlives the
+    # call. A real Task copies the context; driving by hand does not, and the
+    # leak surfaced as unrelated "outside a request" tests failing later in the
+    # same run.
+    def _drive() -> None:
+        coro = app(scope, receive, send)
+        try:
+            while True:
+                coro.send(None)
+        except StopIteration:
+            pass
+
+    contextvars.copy_context().run(_drive)
     start = next((m for m in sent if m["type"] == "http.response.start"), None)
     if start is None:
         return None, None
