@@ -1882,6 +1882,15 @@ async def delete_user(id: int): ...
 async def stats(): ...
 ```
 
+Both take a sequence. A bare string is rejected, because iterating it would
+have produced one scope per character - `scopes="admin"` would have required
+`a`, `d`, `m`, `i`, `n`, which no principal holds and which no principal could
+ever be granted.
+
+!!! note "Changed in version 0.20.0"
+
+    A bare string was previously accepted and iterated character by character.
+
 ### The unified principal
 
 ```python
