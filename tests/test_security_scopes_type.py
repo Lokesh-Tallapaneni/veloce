@@ -40,16 +40,15 @@ def test_a_tuple_of_scopes_is_accepted():
     assert ["read"] in _scope_lists(handler)
 
 
-def test_a_bare_string_scope_is_refused():
-    """NEGATIVE: `scopes="read"` used to become ['r','e','a','d']."""
-    with pytest.raises(TypeError, match="sequence of scopes"):
-        Security(_authz, scopes="read")
+@pytest.mark.parametrize("bad", ["read", b"read"])
+def test_a_bare_string_or_bytes_scope_is_refused(bad):
+    """NEGATIVE: `scopes="read"` became ['r','e','a','d']; bytes iterate to ints.
 
-
-def test_bytes_scopes_are_refused():
-    """NEGATIVE: bytes iterate to ints, which is worse than the string case."""
+    One branch, so one test: both spellings reach the same
+    `isinstance(scopes, (str, bytes))` guard.
+    """
     with pytest.raises(TypeError, match="sequence of scopes"):
-        Security(_authz, scopes=b"read")
+        Security(_authz, scopes=bad)
 
 
 def test_no_scopes_is_still_valid():

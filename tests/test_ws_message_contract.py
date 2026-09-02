@@ -316,8 +316,9 @@ def test_an_unresolvable_message_annotation_names_the_parameter():
 
     This replaced a test that pinned the *warning*'s `filename`. A warning is
     not a control: the listener it warned about went on to accept every frame
-    unvalidated, so the warning became a `TypeError` and this pins the message
-    the author now sees instead.
+    unvalidated - a listener written against a model received raw dicts and
+    failed on attribute access - so the warning became a `TypeError` and this
+    pins the message the author now sees instead.
     """
     app = Veloce()
 
@@ -470,21 +471,6 @@ def test_an_undiscriminated_dataclass_union_is_refused():
 
     with pytest.raises(TypeError, match="must be discriminated"):
         build_listener_handler(probe)
-
-
-def test_an_unresolvable_message_annotation_refuses_to_register():
-    """NEGATIVE: a declared contract that cannot be resolved is not silently dropped.
-
-    It used to warn and then accept every frame unvalidated, so a listener
-    written against a model received raw dicts and failed on attribute access.
-    """
-    app = Veloce()
-
-    with pytest.raises(TypeError, match="message"):
-
-        @app.websocket_listener("/chat")
-        async def chat(message: MissingModel):  # noqa: F821
-            return None
 
 
 def test_an_untyped_listener_still_registers():
