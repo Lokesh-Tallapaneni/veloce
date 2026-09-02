@@ -6,6 +6,8 @@ import pytest
 
 from veloce import Security, Veloce
 from veloce._handler_plan import build_plan
+from veloce.contrib.mcp.auth import MCPAuth
+from veloce.contrib.mcp.authorization import MCPAuthorizationServer
 
 
 def _authz(request):
@@ -85,8 +87,6 @@ def test_mcp_prompt_refuses_a_bare_string_scope(bad):
 
 def test_mcp_auth_refuses_a_bare_string_required_scope():
     """NEGATIVE: every request would be checked against character scopes."""
-    from veloce.contrib.mcp.auth import MCPAuth
-
     with pytest.raises(TypeError, match="sequence of scopes"):
         MCPAuth(
             verify=lambda token: None,
@@ -102,8 +102,6 @@ def test_mcp_auth_refuses_a_bare_string_supported_scope():
     `scopes_supported` is advertised in the protected-resource metadata, so a
     bare string is served to every client that reads it.
     """
-    from veloce.contrib.mcp.auth import MCPAuth
-
     with pytest.raises(TypeError, match="sequence of scopes"):
         MCPAuth(
             verify=lambda token: None,
@@ -115,8 +113,6 @@ def test_mcp_auth_refuses_a_bare_string_supported_scope():
 
 def test_authorization_server_refuses_a_bare_string_supported_scope():
     """NEGATIVE: the same advertised-metadata split on the server class."""
-    from veloce.contrib.mcp.authorization import MCPAuthorizationServer
-
     with pytest.raises(TypeError, match="sequence of scopes"):
         MCPAuthorizationServer(
             issuer="https://issuer.example",
@@ -138,8 +134,6 @@ def test_mcp_tool_accepts_a_list_of_scopes():
 
 def test_mcp_auth_accepts_sequences():
     """POSITIVE: tuples and lists pass through unchanged."""
-    from veloce.contrib.mcp.auth import MCPAuth
-
     auth = MCPAuth(
         verify=lambda token: None,
         required_scopes=["mcp:tools"],

@@ -8,8 +8,10 @@ on the ASGI path. Both now MIME-encode to an ASCII `=?utf-8?b?...?=` token via
 
 from __future__ import annotations
 
+import base64
+
 from veloce import Response, Veloce
-from veloce._internal import _encode_header_value
+from veloce._internal import _encode_header_value, _encode_response_head
 
 # ── helper unit ──────────────────────────────────────────────────────
 
@@ -128,8 +130,6 @@ def test_no_line_break_character_can_fold_the_encoded_value():
 
 def test_the_encoded_token_still_decodes_to_the_original_value():
     """POSITIVE: refusing to fold is worthless if the value is lost."""
-    import base64
-
     original = "a\u2028b\U0001f600"
     encoded = _encode_header_value(original)
 
@@ -150,8 +150,6 @@ def test_a_latin_1_value_is_still_returned_verbatim():
 
 def test_a_response_with_a_folding_value_emits_one_header_line():
     """NEGATIVE: end to end - the emitted head must carry no stray newline."""
-    from veloce._internal import _encode_response_head
-
     lines = _encode_response_head(200, {}, {"X-Echo": "a\u2028b"}, keep_alive=True)
 
     # Each element is one line ending in CRLF; a fold would put a newline

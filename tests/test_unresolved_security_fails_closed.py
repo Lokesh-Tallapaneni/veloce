@@ -14,6 +14,7 @@ from typing import Annotated, Optional
 import pytest
 
 from veloce import Cookie, Depends, Header, Security, Veloce
+from veloce import Security as Guard
 from veloce.exceptions import HTTPException
 from veloce.testclient import TestClient
 
@@ -167,8 +168,6 @@ def test_an_aliased_security_import_is_still_refused():
     no-default rule - the guard never ran and the caller supplied the value:
     `GET /aliased?user=attacker` returned `200 {"user": "attacker"}`.
     """
-    from veloce import Security as Guard
-
     app = Veloce()
 
     with pytest.raises(TypeError, match="user"):

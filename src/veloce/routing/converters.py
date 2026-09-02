@@ -948,7 +948,7 @@ _CONVERTER_JSON_TYPES: dict[str, dict[str, Any]] = {
 
 @functools.lru_cache(maxsize=512)
 def _cached_path_param_converters(template: str) -> dict[str, Converter]:
-    """The uncached walk behind `path_param_converters`.
+    """Walk `template`, mapping each typed placeholder to its converter.
 
     The mapping is shared, not copied: both callers only read it. A caller that
     needs to mutate must copy first.

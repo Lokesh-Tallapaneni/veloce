@@ -6,6 +6,8 @@ import pytest
 
 from tests.conftest import make_request
 from veloce import ProxyFix, Request, Veloce
+from veloce.http.datastructures import Headers
+from veloce.middleware.proxy_fix import _hop_header
 from veloce.testclient import TestClient
 
 
@@ -654,18 +656,12 @@ async def test_a_single_line_chain_is_unchanged():
 
 def test_joining_preserves_received_order():
     """POSITIVE: the trusted end is the right end, so order must not move."""
-    from veloce.http.datastructures import Headers
-    from veloce.middleware.proxy_fix import _hop_header
-
     headers = Headers([("x-forwarded-for", "a"), ("x-forwarded-for", "b")])
     assert _hop_header(headers, "x-forwarded-for") == "a, b"
 
 
 def test_an_absent_hop_header_is_still_none():
     """POSITIVE: absence must stay distinguishable from an empty value."""
-    from veloce.http.datastructures import Headers
-    from veloce.middleware.proxy_fix import _hop_header
-
     assert _hop_header(Headers([]), "x-forwarded-for") is None
 
 

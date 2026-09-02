@@ -245,6 +245,7 @@ UNEXPORTED: dict[str, str] = {
     "routing.converters.extract_regex_converters": "implementation behind the Converter base / register_converter seam",
     "routing.converters.build_route_regex": "implementation behind the Converter base / register_converter seam",
     "routing.converters.path_param_schemas": "implementation behind the Converter base / register_converter seam",
+    "routing.converters.path_param_converters": "the same seam as path_param_schemas; shared by url_for's reverse check and the MCP tool door",
     # ── remaining leaf internals ─────────────────────────────────
     "app.mcp.MCPToolRegistration": "one @app.mcp_tool registration, read at mount time",
     "app.mcp.MCPPromptRegistration": "one @app.mcp_prompt registration, read at mount time",
