@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A short-circuited response gets a real CSP nonce; it shipped the fixed token `nonce-None`. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
 - `completion/complete` checks the owning prompt or resource's scopes before running its completer. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
 - A route-backed tool converts its typed path parameters; the MCP door copied the raw JSON value. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
+- A non-latin-1 header value encodes to one token; U+2028 folded it onto a second line. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
 
 ### Changed
 

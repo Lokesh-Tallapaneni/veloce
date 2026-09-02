@@ -39,10 +39,8 @@ import hashlib
 import inspect
 import mimetypes
 import os
-import sys
 import weakref
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
-from email.header import Header
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
 
@@ -326,17 +324,21 @@ def _encode_header_value(value: str) -> str:
     outside latin-1 is RFC 2047 MIME-encoded to an ASCII `=?utf-8?b?...?=`
     token rather than raising (HTTP/1.1) or emitting raw UTF-8 (ASGI).
 
-    The caller must have already cleared `_reject_header_crlf`. `maxlinelen`
-    is `sys.maxsize` so `Header.encode()` never folds a long value onto
-    multiple CRLF-separated lines - which would re-introduce newlines into
-    the header bytes.
+    The caller must have already cleared `_reject_header_crlf`. The token is
+    built here rather than through `email.header.Header`: `maxlinelen` only
+    suppresses *length*-based folding, and `Header.encode()` also folds on any
+    character Python counts as a line break, so a value carrying U+2028 or
+    U+2029 came back as two Q-encoded words joined by a bare LF - re-introducing
+    into the header bytes exactly the newline this function exists to keep out.
+    One base64 encoded-word has nowhere to fold.
     """
     if value.isascii():
         return value
     try:
         value.encode("latin-1")
     except UnicodeEncodeError:
-        return Header(value, "utf-8", maxlinelen=sys.maxsize).encode()
+        token = base64.b64encode(value.encode("utf-8")).decode("ascii")
+        return f"=?utf-8?b?{token}?="
     return value
 
 
