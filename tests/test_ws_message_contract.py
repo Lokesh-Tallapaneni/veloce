@@ -511,3 +511,34 @@ def test_a_resolvable_message_annotation_still_validates():
     with TestClient(app) as client, client.websocket_connect("/say") as ws:
         ws.send_json({"type": "say", "text": "hi"})
         assert ws.receive_json() == {"text": "hi"}
+
+
+def test_an_unresolvable_return_annotation_does_not_refuse_the_listener():
+    """The refusal is about the message type, not every annotation in the signature.
+
+    `_message_annotation` resolved the whole signature, so a return annotation
+    that would not resolve refused the listener and blamed the message
+    parameter - which resolved perfectly. `resolve_response_contract` is
+    documented to tolerate an unresolvable return annotation and record no send
+    contract, so the two resolvers disagreed about the same annotation.
+    """
+    app = Veloce()
+
+    @app.websocket_listener("/chat")
+    async def chat(ws, message: Say) -> NeverImportable:  # noqa: F821
+        return None
+
+    contract = route_at(app, "/chat", include_hidden=True).ws_messages
+    assert contract.message_type is Say
+    assert contract.send_type is None
+
+
+def test_an_unresolvable_message_annotation_is_still_refused_alongside_a_bad_return():
+    """NEGATIVE: narrowing to one parameter must not stop refusing the real case."""
+    app = Veloce()
+
+    with pytest.raises(TypeError, match="message"):
+
+        @app.websocket_listener("/both")
+        async def both(ws, message: AlsoMissing) -> NeverImportable:  # noqa: F821
+            return None

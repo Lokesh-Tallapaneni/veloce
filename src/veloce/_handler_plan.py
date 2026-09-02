@@ -13,6 +13,7 @@ Reflection happens at registration time only, never on the hot path.
 
 from __future__ import annotations
 
+import builtins
 import copy
 import functools
 import inspect
@@ -684,10 +685,12 @@ def _salvage_hints(hint_target: Any, exc: Exception) -> dict[str, Any]:
     # genuinely depended on the annotation are worth reporting.
     consequential = [name for name in unresolved if name not in _BOUND_BY_NAME]
     if consequential:
+        # One `Signature` for the whole list rather than one per parameter.
+        parameters = inspect.signature(hint_target).parameters
         fatal = [
             name
             for name in consequential
-            if _declaration_is_load_bearing(hint_target, annotations.get(name), name)
+            if _declaration_is_load_bearing(hint_target, annotations.get(name), name, parameters)
         ]
         if fatal:
             raise _unresolved_declaration_error(hint_target, fatal, exc)
@@ -695,38 +698,118 @@ def _salvage_hints(hint_target: Any, exc: Exception) -> dict[str, Any]:
     return resolved
 
 
-#: Markers whose whole purpose is to run something. Losing one to an
-#: unresolved annotation is not a degraded type - it is a dropped control.
-_LOAD_BEARING_MARKERS = ("Security(", "Depends(")
+class _UnresolvedName:
+    """Stands in for a name an annotation refers to that does not exist.
+
+    Subscriptable and callable so the rest of the annotation still evaluates
+    around it - `Annotated[Missing, Security(f)]`, `Missing[int]`, `Missing()`.
+    The marker sitting beside the unresolvable name is what matters here, not
+    the name itself.
+    """
+
+    __slots__ = ("name",)
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def __getitem__(self, item: Any) -> _UnresolvedName:
+        return self
+
+    def __call__(self, *args: Any, **kwargs: Any) -> _UnresolvedName:
+        return self
+
+    def __repr__(self) -> str:
+        return f"<unresolved {self.name}>"
 
 
-def _declaration_is_load_bearing(hint_target: Any, annotation: Any, name: str) -> bool:
+class _PlaceholderNamespace(dict):
+    """A name mapping that yields a placeholder rather than raising `NameError`."""
+
+    def __missing__(self, key: str) -> _UnresolvedName:
+        return _UnresolvedName(key)
+
+
+def _annotation_markers(hint_target: Any, annotation: Any) -> tuple[Any, tuple[Any, ...], bool]:
+    """Return `(marker, metadata, known)` for an annotation that would not resolve.
+
+    A live `Annotated[...]` already carries its markers. A string - which is
+    what `from __future__ import annotations` leaves behind, and the shape the
+    marker object was never built for - is evaluated against the target's own
+    globals with unresolvable names standing in as placeholders, so the marker
+    beside the broken name is recovered as the object it actually is.
+
+    Reading the marker by identity rather than by the text the author typed is
+    what makes the rule closed. A scan for `"Security("` matches only that
+    spelling: `from veloce import Security as Guard` evaded it, and with a
+    default to sidestep the no-default rule the guard never ran and the caller
+    supplied the value.
+
+    `marker` comes from `extract_annotated_marker`, the module's one resolver,
+    so `Optional[Annotated[T, marker]]` is peeled here as it is everywhere else
+    - Python 3.10 produces that shape for any parameter defaulting to `None`,
+    and a raw `__metadata__` read sees straight past it.
+
+    `known` is False when the annotation could not be evaluated at all, and the
+    caller refuses on that - not knowing is not a reason to admit. A name the
+    namespace could not supply comes back as `_UnresolvedName`; the caller
+    refuses when one occupies a metadata slot, for the same reason.
+
+    The evaluation is the same one `get_type_hints` performs on the success
+    path, against the same globals, so it introduces no execution the intact
+    path would not already have done.
+    """
+    live = annotation
+    if isinstance(annotation, str):
+        namespace = _PlaceholderNamespace(vars(builtins))
+        namespace.update(getattr(hint_target, "__globals__", None) or {})
+        try:
+            live = eval(annotation, {}, namespace)  # noqa: S307 - the target's own annotation
+        except Exception:  # noqa: BLE001 - an annotation that will not evaluate tells us nothing
+            return None, (), False
+
+    marker, _base = extract_annotated_marker(live)
+    carrier = live
+    if carrier is not None and not hasattr(carrier, "__metadata__"):
+        was_optional, inner = _unwrap_optional(carrier)
+        if was_optional:
+            carrier = inner
+    return marker, tuple(getattr(carrier, "__metadata__", ())), True
+
+
+def _declaration_is_load_bearing(
+    hint_target: Any, annotation: Any, name: str, parameters: Any
+) -> bool:
     """Whether dropping this unresolved annotation would change what runs.
 
-    Two cases fail closed. A `Security()` / `Depends()` marker is a control, and
-    an unresolved annotation discards it: the route then answers without ever
-    calling the dependency, with the parameter read from the query string. A
-    parameter with no default degrades into a *required* query parameter, which
-    is the same bypass reached from the other side - the caller supplies the
-    value the guard was supposed to.
+    Two properties fail closed, and both are instances of one rule: the
+    declaration decides where the value comes from, or what executes, so
+    discarding it hands that decision to the caller.
 
-    The marker is looked for in both shapes an unresolved annotation takes. A
-    live `Annotated[...]` carries it as an instance, which reprs as
-    `<veloce.dependency.Security object at 0x...>` and so is invisible to a
-    textual scan; under `from __future__ import annotations` the whole
-    annotation is a string and the `Annotated` object was never built, leaving
-    the text as the only evidence. Checking one shape alone leaves the other
-    failing open.
+    A `Depends` / `Security` marker is a control - dropped, the route answers
+    without ever running the dependency. Any other `ParamBase` marker
+    (`Header`, `Cookie`, `Query`, `Body`, `Form`, `File`) names the source the
+    value is read from - dropped, a credential declared header- or cookie-borne
+    becomes readable from the query string, where the caller supplies it and
+    the access log records it. A parameter with no default degrades into a
+    *required* query parameter, which is the same bypass from the other side.
+
+    The marker comes from `extract_annotated_marker`, which matches on the
+    marker classes rather than an allowlist of names - so a marker added later
+    is covered without anyone remembering to list it, and the `Optional[...]`
+    wrapper Python 3.10 adds is peeled the same way it is everywhere else.
     """
-    # Deferred: breaks the dependency.py <-> _handler_plan.py cycle, as the
-    # other builders in this module do. Registration-time only.
-    from veloce.dependency import Depends
-
-    if any(isinstance(meta, Depends) for meta in getattr(annotation, "__metadata__", ())):
+    marker, metadata, known = _annotation_markers(hint_target, annotation)
+    if not known:
         return True
-    if any(marker in str(annotation) for marker in _LOAD_BEARING_MARKERS):
+    if marker is not None:
         return True
-    parameters = inspect.signature(hint_target).parameters
+    # A placeholder standing where a marker would sit means the marker's own
+    # name did not resolve either - `Annotated[X, Guard(dep)]` with `Guard`
+    # imported inside an enclosing function, which `__globals__` cannot see.
+    # What it was cannot be recovered, so it is refused: not knowing whether a
+    # control was declared is not a reason to serve the route without one.
+    if any(isinstance(item, _UnresolvedName) for item in metadata):
+        return True
     parameter = parameters.get(name)
     return parameter is not None and parameter.default is inspect.Parameter.empty
 
@@ -738,11 +821,12 @@ def _unresolved_declaration_error(hint_target: Any, fatal: list[str], exc: Excep
     return TypeError(
         f"{where}: could not resolve the annotation on {named} "
         f"({type(exc).__name__}: {exc}). The route is refused rather than "
-        "registered without it: a dropped `Security()` / `Depends()` marker "
-        "answers the request without running the dependency, and a parameter "
-        "with no default becomes a required query parameter the caller "
-        "supplies. Import the name at runtime rather than only under "
-        "TYPE_CHECKING."
+        "registered without it: a dropped `Depends()` / `Security()` marker "
+        "answers the request without running the dependency, a dropped "
+        "`Header()` / `Cookie()` marker moves the value to the query string "
+        "where the caller supplies it, and a parameter with no default becomes "
+        "a required query parameter. Import the name at runtime rather than "
+        "only under TYPE_CHECKING."
     )
 
 

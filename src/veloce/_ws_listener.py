@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 
 import typing_extensions
 
+from veloce._handler_plan import _AnnotationProbe
 from veloce._internal import _is_async_callable, offload
 from veloce._model_backend import (
     ModelBackend,
@@ -151,8 +152,22 @@ def _message_annotation(callback: Any, wants_socket: bool) -> Any:
     if not params:
         return None
     target = params[1] if wants_socket and len(params) >= 2 else params[0]
+    # Only this parameter's annotation is resolved, through the same
+    # one-annotation probe the handler plan uses. Resolving the whole signature
+    # refused a listener over an unrelated annotation - a return type that will
+    # not import made this raise and name the *message* parameter, which
+    # resolved perfectly - and `resolve_response_contract` is documented to
+    # tolerate exactly that return annotation and record no send contract.
+    hint_target = _hint_target(callback)
+    declared = (getattr(hint_target, "__annotations__", None) or {}).get(target.name)
+    if declared is None:
+        return None
+    probe = _AnnotationProbe()
+    probe.__annotations__ = {target.name: declared}
     try:
-        hints = typing_extensions.get_type_hints(_hint_target(callback), include_extras=True)
+        hints = typing_extensions.get_type_hints(
+            probe, getattr(hint_target, "__globals__", None), include_extras=True
+        )
     except Exception as exc:  # noqa: BLE001 - the name genuinely cannot be resolved
         # Refused, not warned: the frame is the only source of this value, so a
         # dropped annotation means every message reaches the callback

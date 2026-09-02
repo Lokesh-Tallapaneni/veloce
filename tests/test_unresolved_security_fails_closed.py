@@ -9,11 +9,11 @@ unconditionally, was never called.
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Optional
 
 import pytest
 
-from veloce import Depends, Security, Veloce
+from veloce import Cookie, Depends, Header, Security, Veloce
 from veloce.exceptions import HTTPException
 from veloce.testclient import TestClient
 
@@ -154,3 +154,103 @@ def test_a_security_marker_with_a_default_is_still_refused():
         @app.get("/defaulted")
         async def defaulted(request, user: Annotated[Missing, Security(_denies)] = None):  # noqa: F821
             return {"you_are": user}
+
+
+# ── the marker must be found by identity, not by the text the author typed ──
+
+
+def test_an_aliased_security_import_is_still_refused():
+    """NEGATIVE: `from veloce import Security as Guard` must not evade the rule.
+
+    A textual scan for "Security(" matches the source the author typed, so an
+    aliased import missed it. Combined with a default - which sidesteps the
+    no-default rule - the guard never ran and the caller supplied the value:
+    `GET /aliased?user=attacker` returned `200 {"user": "attacker"}`.
+    """
+    from veloce import Security as Guard
+
+    app = Veloce()
+
+    with pytest.raises(TypeError, match="user"):
+
+        @app.get("/aliased")
+        async def aliased(user: Annotated[Missing, Guard(_denies)] = None):  # noqa: F821
+            return {"user": user}
+
+
+def test_a_header_marker_with_a_default_is_refused():
+    """NEGATIVE: a credential declared header-borne must not become query-borne.
+
+    `Header(alias="X-Api-Key")` was dropped with the annotation, so the value
+    sent in the declared header was ignored and one supplied in the query
+    string was accepted instead - and logged with the URL.
+    """
+    app = Veloce()
+
+    with pytest.raises(TypeError, match="key"):
+
+        @app.get("/secret")
+        async def secret(key: Annotated[Missing, Header(alias="X-Api-Key")] = None):  # noqa: F821
+            return {"key": key}
+
+
+def test_a_cookie_marker_with_a_default_is_refused():
+    """NEGATIVE: same for a cookie-borne session identifier."""
+    app = Veloce()
+
+    with pytest.raises(TypeError, match="sid"):
+
+        @app.get("/cookie")
+        async def cookie(sid: Annotated[Missing, Cookie(alias="session")] = None):  # noqa: F821
+            return {"sid": sid}
+
+
+def test_a_marker_built_by_a_factory_is_refused():
+    """NEGATIVE: the marker need not be spelled inline to carry behaviour."""
+
+    def make_guard():
+        return Security(_denies)
+
+    app = Veloce()
+
+    with pytest.raises(TypeError, match="user"):
+
+        @app.get("/factory")
+        async def factory(user: Annotated[Missing, make_guard()] = None):  # noqa: F821
+            return {"user": user}
+
+
+def test_an_unmarked_optional_parameter_still_only_warns():
+    """POSITIVE: widening to every marker must not start refusing safe routes.
+
+    A plain optional parameter carries no marker and has a default, so nothing
+    about where its value comes from changes when the annotation is dropped.
+    """
+    app = Veloce()
+
+    with pytest.warns(UserWarning, match="could not resolve the annotation"):
+
+        @app.get("/plain")
+        async def plain(request, note: Missing = "default"):  # noqa: F821
+            return {"note": note}
+
+    with TestClient(app) as client:
+        assert client.get("/plain").json() == {"note": "default"}
+
+
+def test_an_optional_wrapped_security_marker_is_refused():
+    """NEGATIVE: `Optional[Annotated[T, Security(...)]]` must not hide the marker.
+
+    `Optional[X]` is a Union, so the `Annotated` is no longer outermost and a
+    raw `__metadata__` read finds nothing. Python 3.10's `get_type_hints`
+    produces exactly this shape for any parameter defaulting to `None`, so it
+    is not an exotic spelling. Left unhandled the route registered and
+    `GET /opt?user=attacker` returned `{"user": "attacker"}`.
+    """
+    app = Veloce()
+
+    with pytest.raises(TypeError, match="user"):
+
+        @app.get("/opt")
+        async def opt(user: Optional[Annotated[Missing, Security(_denies)]] = None):  # noqa: F821, UP045
+            return {"user": user}
