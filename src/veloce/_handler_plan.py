@@ -795,9 +795,13 @@ def _annotation_markers(hint_target: Any, annotation: Any) -> tuple[Any, tuple[A
     namespace could not supply comes back as `_UnresolvedName`; the caller
     refuses when one occupies a metadata slot, for the same reason.
 
-    The evaluation is the same one `get_type_hints` performs on the success
-    path, against the same globals, so it introduces no execution the intact
-    path would not already have done.
+    The evaluation is the one `get_type_hints` performs on the success path,
+    against the same globals - but it is not equivalent. Subscript arguments
+    evaluate left to right, so intact evaluation raises on the unresolvable
+    name before reaching the metadata; the placeholder lets it continue, and a
+    metadata expression to the right of that name runs where it previously did
+    not. Registration-time only, on a handler that is already broken, and the
+    expression is the author's own.
     """
     live = annotation
     if isinstance(annotation, str):

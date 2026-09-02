@@ -286,3 +286,63 @@ def test_a_query_parameter_with_no_default_is_still_refused():
         @app.get("/items")
         async def listing(item: Missing):  # noqa: F821
             return {"item": item}
+
+
+#: Records each call so the tests below can observe when the salvage path
+#: evaluates a metadata expression. Module scope because the handler's
+#: `__globals__` is what the annotation is evaluated against.
+_GUARD_CALLS: list[str] = []
+
+
+def _build_guard():
+    """A metadata expression with an observable side effect."""
+    _GUARD_CALLS.append("ran")
+    return lambda request: None
+
+
+def test_salvaging_an_annotation_evaluates_its_metadata_expressions():
+    """POSITIVE: the placeholder evaluation runs metadata the intact path skips.
+
+    Python evaluates subscript arguments left to right, so intact evaluation
+    raises on the unresolvable name before reaching the metadata element. The
+    placeholder makes that name succeed, so evaluation continues into the
+    metadata. Registration-time only, and the expression is the author's own -
+    but it is a real asymmetry, so it is documented rather than claimed away.
+    """
+    _GUARD_CALLS.clear()
+    app = Veloce()
+
+    with pytest.warns(UserWarning, match="could not resolve the annotation"):
+
+        @app.get("/evaluated")
+        async def evaluated(dep: Annotated[Missing, _build_guard()] = None):  # noqa: F821
+            return {}
+
+    assert _GUARD_CALLS == ["ran"]
+
+
+def test_a_healthy_annotation_does_not_reach_the_salvage_path():
+    """NEGATIVE: a resolvable annotation must not be evaluated a third time.
+
+    Under PEP 563 the annotation is a string, so its metadata expression runs
+    whenever something evaluates it. Registration already evaluates it twice,
+    from two independent call sites on the *success* path -
+    `resolve_response_contract` and `build_plan` - which is recorded separately
+    as its own finding.
+
+    What this test pins is the boundary: the salvage path adds no further
+    evaluation for a handler whose annotations all resolve, because it runs
+    only from the failure branch of `get_type_hints`. A third call here would
+    mean the placeholder evaluation had escaped onto the healthy path.
+    """
+    _GUARD_CALLS.clear()
+    app = Veloce()
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+
+        @app.get("/healthy")
+        async def healthy(dep: Annotated[str, _build_guard()] = "x"):
+            return {}
+
+    assert _GUARD_CALLS == ["ran", "ran"]
