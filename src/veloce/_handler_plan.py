@@ -215,16 +215,9 @@ def _raise_kwarg_ambiguity(
     # Only surface the chain for a nested dependency (more than just the
     # handler itself); a top-level handler already names itself below.
     if seen and len(seen) > 1:
-        names = [
-            getattr(c, "__qualname__", None) or getattr(c, "__name__", None) or repr(c)
-            for c in seen
-        ]
+        names = [_callable_name(c) for c in seen]
         chain = f" (in dependency chain {' -> '.join(names)})"
-    where = (
-        getattr(handler, "__qualname__", None)
-        or getattr(handler, "__name__", None)
-        or repr(handler)
-    )
+    where = _callable_name(handler)
     raise ConfigurationError(
         f"parameter {param_name!r} on {where}{chain} is reserved for the injected "
         f"{param_name!r} object but also declares a {marker_name}() marker; the marker "
@@ -665,6 +658,21 @@ def _inspect_handler(
         return sig, _salvage_hints(hint_target, exc, path_params, sig.parameters)
 
 
+def _callable_name(obj: Any) -> str:
+    """Name `obj` for an error or warning the user has to act on.
+
+    `__qualname__` first, so a handler defined as a method or inside a factory
+    keeps its enclosing context; `__name__` next, which a `functools.partial`'s
+    wrapped function and some builtins carry without a qualname; `repr` last.
+
+    One definition because the answer must not depend on which door failed: the
+    websocket listener names its callback through this too, and two different
+    answers to "which callable is this?" for the same class of mistake is worse
+    than either answer.
+    """
+    return getattr(obj, "__qualname__", None) or getattr(obj, "__name__", None) or repr(obj)
+
+
 #: Parameters the plan binds from the name alone (see `build_plan`), plus the
 #: return annotation. An unresolved annotation on one of these changes nothing.
 _BOUND_BY_NAME = frozenset({"request", "ws", "websocket", "return"})
@@ -888,7 +896,7 @@ def _unresolved_declaration_error(hint_target: Any, fatal: list[str], exc: Excep
     shipped that way, so a different type here would leave the two doors
     disagreeing about the same class of mistake.
     """
-    where = getattr(hint_target, "__qualname__", None) or repr(hint_target)
+    where = _callable_name(hint_target)
     named = ", ".join(repr(n) for n in fatal)
     return TypeError(
         f"{where}: could not resolve the annotation on {named} "
@@ -922,7 +930,7 @@ def _warn_unresolved_annotations(hint_target: Any, unresolved: list[str], exc: E
     described a case that can no longer arrive here, and naming a marker the
     parameter does not carry sends the reader looking for one.
     """
-    where = getattr(hint_target, "__qualname__", None) or repr(hint_target)
+    where = _callable_name(hint_target)
     warnings.warn(
         f"{where}: could not resolve the annotation on "
         f"{', '.join(repr(n) for n in unresolved)} ({type(exc).__name__}: {exc}); "
@@ -947,10 +955,7 @@ def _extend_plan_chain(handler: Callable[..., Any], seen: list[Any] | None) -> l
             # Prefer __qualname__ so lambdas and nested/method deps carry
             # scope context (e.g. `test_x.<locals>.<lambda>`) instead of
             # collapsing to bare `<lambda>` everywhere.
-            chain = [
-                getattr(c, "__qualname__", None) or getattr(c, "__name__", None) or repr(c)
-                for c in [*seen, handler]
-            ]
+            chain = [_callable_name(c) for c in [*seen, handler]]
             raise ValueError(f"Circular dependency detected: {' -> '.join(chain)}")
     return [*seen, handler]
 

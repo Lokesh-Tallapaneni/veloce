@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any
 
 import typing_extensions
 
-from veloce._handler_plan import _AnnotationProbe
+from veloce._handler_plan import _AnnotationProbe, _callable_name
 from veloce._internal import _is_async_callable, offload
 from veloce._model_backend import (
     ModelBackend,
@@ -299,16 +299,11 @@ def _msgspec_validator(inner: Any) -> Any:
 def _where(callback: Any) -> str:
     """Name the callback the way `_handler_plan` names a handler.
 
-    `__qualname__` first, so a listener defined as a method or inside a factory
-    keeps its enclosing context - the sibling warning in `_handler_plan`
-    resolves it that way, and two different answers to "which callback is
-    this?" for the same class of failure is worse than either answer.
+    Delegates rather than restating the rule: the two used to spell it
+    differently, so the same class of mistake was reported under two different
+    names depending on which door caught it.
     """
-    return (
-        getattr(callback, "__qualname__", None)
-        or getattr(callback, "__name__", None)
-        or repr(callback)
-    )
+    return _callable_name(callback)
 
 
 def _undiscriminated(callback: Any, annotation: Any, detail: str) -> str:
