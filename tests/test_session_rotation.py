@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+import struct
 import time
 
+import orjson
 import pytest
 
 from veloce import Request, SessionMiddleware, Veloce
@@ -103,3 +108,47 @@ async def test_tampered_cookie_yields_empty_session():
 
     await app.handle_request(_req(cookie="session=not-a-real-token"))
     assert captured["s"] == {}
+
+
+def _b64(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+
+def test_a_rotation_list_with_a_blank_entry_is_refused():
+    """NEGATIVE: the shape `os.environ.get("OLD_SECRET_KEY", "")` produces.
+
+    The blank entry installed a verification key derived from `b""`, so any
+    caller could mint a session cookie with arbitrary contents.
+    """
+    with pytest.raises(ValueError, match="fallback secret must be non-empty"):
+        SessionMiddleware(secret_key=["strong-primary-secret", ""])
+
+
+def test_a_cookie_forged_with_the_empty_derived_key_is_not_accepted():
+    """NEGATIVE: the forgery the guard exists to stop.
+
+    The attacker needs no secret - the key is `HMAC-SHA256(b"", salt)`, which
+    is computable from published source. This decoded to an arbitrary admin
+    payload while a blank rotation entry was accepted.
+    """
+    payload = _b64(orjson.dumps({"user_id": 1, "role": "admin"}))
+    timestamp = _b64(struct.pack(">Q", int(time.time())))
+    key = hmac.new(b"", b"veloce.session", hashlib.sha256).digest()
+    signature = _b64(hmac.new(key, f"{payload}.{timestamp}".encode(), hashlib.sha256).digest())
+    forged = f"{payload}.{timestamp}.{signature}"
+
+    good = SessionMiddleware(secret_key=["strong-primary-secret", "previous-secret"])
+    assert good.decode_cookie(forged) is None
+
+
+def test_a_rotation_list_of_real_secrets_still_reads_an_old_cookie():
+    """POSITIVE: the guard must not break the rotation it protects.
+
+    A cookie written under the previous secret must still decode after the
+    new secret becomes primary.
+    """
+    previous = SessionMiddleware(secret_key="previous-secret")
+    cookie = previous.encode_cookie({"user_id": 7})
+
+    rotated = SessionMiddleware(secret_key=["current-secret", "previous-secret"])
+    assert rotated.decode_cookie(cookie) == {"user_id": 7}
