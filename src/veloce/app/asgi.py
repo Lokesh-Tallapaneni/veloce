@@ -686,6 +686,17 @@ class AsgiMixin(AppHost):
                 if message.get("more_body", False):
                     body_parts = [body] if body else []
                     received = len(body)
+                    if max_size is not None and received > max_size:
+                        # The follow-up loop compares only what it appends, so
+                        # without this the first message is never measured - and
+                        # a body delivered as one large message plus an empty
+                        # terminator escaped the cap entirely, with
+                        # `_length_enforced` then suppressing the dispatch-side
+                        # check too.
+                        await self._refuse_too_large(
+                            send, method, path, query, raw_headers, scope, cp, max_size
+                        )
+                        return
                     while True:
                         message = await receive()
                         chunk = message.get("body", b"")

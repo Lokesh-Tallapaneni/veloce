@@ -159,3 +159,95 @@ def test_no_limit_configured_serves_a_large_body():
     app = _app()
     app.config["MAX_CONTENT_LENGTH"] = None
     assert TestClient(app).post("/buffered", content=b"x" * 5000).json() == {"n": 5000}
+
+
+# ── the first ASGI body message is a refusal point too ───────────────
+#
+# `received = len(body)` recorded the first message's size and never compared
+# it: the comparison sat inside `if chunk:` of the follow-up loop. A body
+# delivered as one large message plus an empty `more_body=False` terminator -
+# what a body-buffer-and-replay ASGI middleware emits - was never measured, and
+# `_length_enforced` then suppressed the downstream check as well. Driven
+# through the ASGI callable directly, since the framing is the thing under test.
+
+
+def _asgi_status(app: Veloce, messages: list[dict]) -> int | None:
+    """Call the ASGI app with exactly `messages` and return the status."""
+    sent: list[dict] = []
+    pending = iter(messages)
+
+    async def receive():
+        return next(pending)
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/buffered",
+        "query_string": b"",
+        "headers": [(b"host", b"x"), (b"content-type", b"application/octet-stream")],
+        "client": ("1.2.3.4", 5),
+        "server": ("h", 80),
+        "scheme": "http",
+        "http_version": "1.1",
+        "asgi": {"version": "3.0"},
+    }
+    coro = app(scope, receive, send)
+    try:
+        while True:
+            coro.send(None)
+    except StopIteration:
+        pass
+    return next((m["status"] for m in sent if m["type"] == "http.response.start"), None)
+
+
+def _first_message(body: bytes) -> list[dict]:
+    return [
+        {"type": "http.request", "body": body, "more_body": True},
+        {"type": "http.request", "body": b"", "more_body": False},
+    ]
+
+
+def test_an_over_limit_first_body_message_is_refused():
+    """NEGATIVE: the cap must not depend on how the body was framed."""
+    app = _app()
+    app._run_lifecycle("startup")
+
+    assert _asgi_status(app, _first_message(b"x" * (_LIMIT * 5))) == 413
+
+
+def test_an_over_limit_single_body_message_is_still_refused():
+    """POSITIVE: the framing that already worked must keep working."""
+    app = _app()
+    app._run_lifecycle("startup")
+
+    messages = [{"type": "http.request", "body": b"x" * (_LIMIT * 5), "more_body": False}]
+    assert _asgi_status(app, messages) == 413
+
+
+def test_an_under_limit_body_split_across_messages_is_served():
+    """POSITIVE: splitting a legal body must not start refusing it."""
+    app = _app()
+    app._run_lifecycle("startup")
+
+    assert _asgi_status(app, _first_message(b"x" * (_LIMIT // 2))) == 200
+
+
+def test_a_body_that_only_exceeds_the_limit_across_messages_is_refused():
+    """POSITIVE: the running total must still catch a body split into halves.
+
+    Neither message alone exceeds the cap; together they do. That is what the
+    follow-up loop's check is for, and it must survive the new one.
+    """
+    app = _app()
+    app._run_lifecycle("startup")
+
+    half = b"x" * ((_LIMIT // 2) + 10)
+    messages = [
+        {"type": "http.request", "body": half, "more_body": True},
+        {"type": "http.request", "body": half, "more_body": True},
+        {"type": "http.request", "body": b"", "more_body": False},
+    ]
+    assert _asgi_status(app, messages) == 413
