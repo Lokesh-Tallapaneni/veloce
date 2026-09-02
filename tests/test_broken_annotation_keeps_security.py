@@ -22,7 +22,7 @@ from typing import Annotated
 
 import pytest
 
-from veloce import Depends, Veloce
+from veloce import Depends, Security, Veloce
 from veloce._handler_plan import K_QUERY, K_REQUEST, build_plan
 from veloce.security.http import HTTPBearer
 from veloce.testclient import TestClient
@@ -182,3 +182,39 @@ def test_a_sound_signature_warns_about_nothing():
         build_plan(handler)
 
     assert not [w for w in caught if "could not resolve" in str(w.message)]
+
+
+def _denies(request):
+    """A guard that refuses everything, so a bypass shows up as a 200."""
+    raise RuntimeError("this dependency must never run")
+
+
+def test_a_pep604_union_with_a_default_only_warns():
+    """POSITIVE: `Tag | None` must not be stricter than `Optional[Tag]`.
+
+    The placeholder defined no `__or__`, so evaluating the union raised and the
+    "cannot tell" branch refused - while the identical `Optional[Tag]` spelling
+    evaluated fine and only warned. The docs promise a parameter that has a
+    default still only warns.
+    """
+    app = Veloce()
+
+    with pytest.warns(UserWarning, match="could not resolve the annotation"):
+
+        @app.get("/pep604")
+        async def pep604(tag: Missing | None = None):  # noqa: F821
+            return {"tag": tag}
+
+    with TestClient(app) as client:
+        assert client.get("/pep604").json() == {"tag": None}
+
+
+def test_a_marker_on_the_left_of_a_union_is_still_refused():
+    """NEGATIVE: a union must not become a way to drop a `Security` marker."""
+    app = Veloce()
+
+    with pytest.raises(TypeError, match="user"):
+
+        @app.get("/unionmarker")
+        async def unionmarker(user: Ann[Missing, Security(_denies)] | None = None):  # noqa: F821
+            return {"user": user}

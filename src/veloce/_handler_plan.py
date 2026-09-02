@@ -726,6 +726,15 @@ class _UnresolvedName:
     def __call__(self, *args: Any, **kwargs: Any) -> _UnresolvedName:
         return self
 
+    def __or__(self, other: Any) -> _UnresolvedName:
+        # `X | None` must reach the same verdict as `Optional[X]`; without this
+        # the union raises and "cannot evaluate" refuses a parameter a default
+        # makes harmless. Returning self carries any recovered metadata through
+        # the union rather than dropping it.
+        return self
+
+    __ror__ = __or__
+
     def __repr__(self) -> str:
         return f"<unresolved {self.name}>"
 
