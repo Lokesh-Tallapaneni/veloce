@@ -18,7 +18,6 @@ from __future__ import annotations
 import inspect
 import types
 import typing
-import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -155,23 +154,18 @@ def _message_annotation(callback: Any, wants_socket: bool) -> Any:
     try:
         hints = typing_extensions.get_type_hints(_hint_target(callback), include_extras=True)
     except Exception as exc:  # noqa: BLE001 - the name genuinely cannot be resolved
-        # Never silent: an unresolved annotation means the frames the callback
-        # was promised would be validated arrive raw instead, and a listener
-        # written against a model would fail on attribute access rather than
-        # at the boundary. Same reason the handler plan warns.
-        warnings.warn(
+        # Refused, not warned: the frame is the only source of this value, so a
+        # dropped annotation means every message reaches the callback
+        # unvalidated - the contract the author declared silently stops being
+        # enforced. There is no "has a default" escape as there is on the HTTP
+        # side; an annotated message parameter is always load-bearing.
+        raise TypeError(
             f"{_where(callback)}: could not resolve the annotation on "
-            f"{target.name!r} ({type(exc).__name__}: {exc}); messages are passed "
-            "through unvalidated - define the message type at module level, or "
-            "import it at runtime rather than only under TYPE_CHECKING",
-            # `_message_annotation` -> `_build_message_contract` ->
-            # `build_listener_handler` -> the router's decorator -> the user's
-            # `@app.websocket_listener` line, which is the only frame worth
-            # pointing at. Pinned by a test, because adding a helper in between
-            # silently moves it.
-            stacklevel=5,
-        )
-        return None
+            f"{target.name!r} ({type(exc).__name__}: {exc}). The listener is "
+            "refused rather than registered unvalidated - define the message "
+            "type at module level, or import it at runtime rather than only "
+            "under TYPE_CHECKING."
+        ) from exc
     return hints.get(target.name)
 
 

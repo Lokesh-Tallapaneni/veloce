@@ -311,39 +311,39 @@ def test_an_optional_msgspec_struct_behaves_the_same_as_pydantic():
     assert contract.discriminator is None
 
 
-def test_the_unresolved_annotation_warning_points_at_the_users_line():
-    """A warning attributed to Veloce's own router tells the author nothing."""
+def test_an_unresolvable_message_annotation_names_the_parameter():
+    """The refusal must say which parameter failed, or it is not actionable.
+
+    This replaced a test that pinned the *warning*'s `filename`. A warning is
+    not a control: the listener it warned about went on to accept every frame
+    unvalidated, so the warning became a `TypeError` and this pins the message
+    the author now sees instead.
+    """
     app = Veloce()
 
-    class LocalOnly(BaseModel):
-        x: int
-
-    with pytest.warns(UserWarning, match="could not resolve the annotation") as caught:
+    with pytest.raises(TypeError) as caught:
 
         @app.websocket_listener("/local")
-        async def local(message: LocalOnly):
+        async def local(message: StillMissing):  # noqa: F821
             return None
 
-    assert caught[0].filename == __file__, (
-        f"warning blamed {caught[0].filename}, not the decorator's own module"
-    )
+    assert "'message'" in str(caught.value)
+    assert "TYPE_CHECKING" in str(caught.value)
 
 
 def test_a_nested_callback_is_named_with_its_enclosing_context():
     """`_handler_plan` names a handler by `__qualname__`; this must agree."""
     app = Veloce()
 
-    class Unresolvable(BaseModel):
-        x: int
+    with pytest.raises(TypeError) as caught:
 
-    with pytest.warns(UserWarning) as caught:
-
-        @app.websocket_listener("/local")
-        async def local(message: Unresolvable):
+        @app.websocket_listener("/nested")
+        async def nested(message: StillMissing):  # noqa: F821
             return None
 
-    message = str(caught[0].message)
-    assert "test_a_nested_callback_is_named_with_its_enclosing_context.<locals>.local" in message
+    assert "test_a_nested_callback_is_named_with_its_enclosing_context.<locals>.nested" in str(
+        caught.value
+    )
 
 
 def test_both_signature_readers_agree_on_a_callable_object():
@@ -470,3 +470,44 @@ def test_an_undiscriminated_dataclass_union_is_refused():
 
     with pytest.raises(TypeError, match="must be discriminated"):
         build_listener_handler(probe)
+
+
+def test_an_unresolvable_message_annotation_refuses_to_register():
+    """NEGATIVE: a declared contract that cannot be resolved is not silently dropped.
+
+    It used to warn and then accept every frame unvalidated, so a listener
+    written against a model received raw dicts and failed on attribute access.
+    """
+    app = Veloce()
+
+    with pytest.raises(TypeError, match="message"):
+
+        @app.websocket_listener("/chat")
+        async def chat(message: MissingModel):  # noqa: F821
+            return None
+
+
+def test_an_untyped_listener_still_registers():
+    """POSITIVE: untyped listeners are a supported shape and must keep working."""
+    app = Veloce()
+
+    @app.websocket_listener("/echo")
+    async def echo(data):
+        return data
+
+    with TestClient(app) as client, client.websocket_connect("/echo") as ws:
+        ws.send_json({"free": "form"})
+        assert ws.receive_json() == {"free": "form"}
+
+
+def test_a_resolvable_message_annotation_still_validates():
+    """POSITIVE: the fix must not disturb the contract it protects."""
+    app = Veloce()
+
+    @app.websocket_listener("/say")
+    async def say(message: Say):
+        return {"text": message.text}
+
+    with TestClient(app) as client, client.websocket_connect("/say") as ws:
+        ws.send_json({"type": "say", "text": "hi"})
+        assert ws.receive_json() == {"text": "hi"}
