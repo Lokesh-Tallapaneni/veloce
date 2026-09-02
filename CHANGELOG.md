@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A slash redirect never emits a protocol-relative `Location`, which left the origin for an attacker's host. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
 - `url_for` percent-encodes path values; a `?`, `#` or `/` in one injected into the built URL. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
 - A short-circuited response gets a real CSP nonce; it shipped the fixed token `nonce-None`. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
+- `completion/complete` checks the owning prompt or resource's scopes before running its completer. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
 
 ### Changed
 
