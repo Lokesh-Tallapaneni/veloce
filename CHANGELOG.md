@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A websocket listener whose message annotation cannot be resolved is refused, not left unvalidated. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
 - `@app.mcp_tool`, `@app.mcp_prompt`, `MCPAuth` and `MCPAuthorizationServer` reject a bare string scope. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
 - `Signer.add_fallback_secret` refuses an empty secret, which installed a publicly derivable verification key. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
+- `Forwarded` with an unbalanced quote is not trusted; it collapsed the hop count to the sender's choice. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
 
 ### Changed
 

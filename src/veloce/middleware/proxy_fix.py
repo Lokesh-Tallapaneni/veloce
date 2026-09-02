@@ -29,7 +29,11 @@ from veloce._constants import (
     HEADER_X_FORWARDED_PREFIX,
     HEADER_X_FORWARDED_PROTO,
 )
-from veloce._header_parsing import split_outside_quotes, unquote_value
+from veloce._header_parsing import (
+    split_outside_quotes,
+    split_outside_quotes_checked,
+    unquote_value,
+)
 from veloce._internal import _extract_host, _reject_header_crlf
 from veloce.http.request import Request
 from veloce.http.response import Response
@@ -232,7 +236,15 @@ class ProxyFix(Middleware):
         """
         # Split on commas OUTSIDE quoted strings so a quoted comma in a
         # directive value (e.g. `host="a,b"`) does not fake an extra hop.
-        elements = [e for e in split_outside_quotes(value, ",") if e.strip()]
+        raw, unterminated = split_outside_quotes_checked(value, ",")
+        if unterminated:
+            # A quoted comma is only legal inside a properly closed
+            # quoted-string (RFC 7239 Sec. 4, RFC 9110 Sec. 5.6.4). Honouring an
+            # unbalanced `"` would let the sender put every comma its trusted
+            # proxies later append inside one quoted region, collapsing the hop
+            # count to whatever element it chose. Trust nothing from it.
+            return {}
+        elements = [e for e in raw if e.strip()]
         parsed = [self._parse_forwarded_element(e) for e in elements]
 
         result: dict[str, str] = {}

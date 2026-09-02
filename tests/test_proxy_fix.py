@@ -544,3 +544,40 @@ def test_forwarded_ipv6_host_with_port_survives():
     body = resp.json()
     assert body["netloc"] == "[2001:db8::1]:8443"
     assert body["port"] == 8443
+
+
+# ── a malformed quote must not shrink the hop count ──────────────────
+
+
+def test_an_unterminated_quote_in_forwarded_is_not_trusted():
+    """NEGATIVE: one `"` must not collapse the hop count.
+
+    The trusted proxies append after the attacker's element, so an unclosed
+    quote puts every comma they append inside one quoted region and the
+    element count collapses - `_pick_hop` then selects the attacker's element.
+    Control and attack differ by exactly that one character.
+    """
+    proxy_fix = ProxyFix(x_for=2, x_proto=2, x_host=2)
+    header = 'proto=https;host=evil.example.net;for=1.2.3.4, x=", for=198.51.100.7, for=203.0.113.9'
+
+    assert proxy_fix._parse_forwarded(header, 2, 2, 2, 0) == {}
+
+
+def test_an_ordinary_forwarded_chain_still_picks_the_right_hop():
+    """POSITIVE: the control case - the same header without the quote."""
+    proxy_fix = ProxyFix(x_for=2, x_proto=2, x_host=2)
+    header = "proto=https;host=evil.example.net;for=1.2.3.4, x=, for=198.51.100.7, for=203.0.113.9"
+
+    assert proxy_fix._parse_forwarded(header, 2, 2, 2, 0)["for"] == "198.51.100.7"
+
+
+def test_a_properly_quoted_comma_still_does_not_fake_a_hop():
+    """POSITIVE: failing closed on a malformed quote must not reject a legal one.
+
+    A quoted comma inside a closed quoted-string is exactly what
+    `split_outside_quotes` exists to handle, and must still be one element.
+    """
+    proxy_fix = ProxyFix(x_for=1, x_proto=1, x_host=1)
+    header = 'host="a,b";for=198.51.100.7'
+
+    assert proxy_fix._parse_forwarded(header, 1, 1, 1, 0)["for"] == "198.51.100.7"

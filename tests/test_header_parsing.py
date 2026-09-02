@@ -9,6 +9,7 @@ from veloce._header_parsing import (
     parse_header_params,
     parse_media_type_params,
     split_outside_quotes,
+    split_outside_quotes_checked,
 )
 from veloce.http.datastructures import AcceptHeader
 
@@ -342,3 +343,23 @@ def test_whitespace_outside_a_quoted_value_is_trimmed_from_both_sides(value, exp
 )
 def test_a_media_type_parameter_trims_the_same_way(rest, expected):
     assert dict(parse_media_type_params(rest))["charset"] == expected
+
+
+def test_a_balanced_header_reports_no_unterminated_quote():
+    """POSITIVE: the ordinary case must not be flagged."""
+    parts, unterminated = split_outside_quotes_checked('a=1, b="x,y", c=3', ",")
+    assert parts == ["a=1", ' b="x,y"', " c=3"]
+    assert unterminated is False
+
+
+def test_an_unterminated_quote_is_reported():
+    """NEGATIVE: the state that lets a comma swallow every later element."""
+    parts, unterminated = split_outside_quotes_checked('a=", b=2, c=3', ",")
+    assert unterminated is True
+    assert len(parts) == 1
+
+
+def test_the_plain_splitter_still_returns_only_the_parts():
+    """POSITIVE: the shared caller's contract must not move."""
+    value = 'a=1, b="x,y"'
+    assert split_outside_quotes(value, ",") == split_outside_quotes_checked(value, ",")[0]

@@ -103,6 +103,16 @@ def unquote_value(value: str) -> str:
 def split_outside_quotes(value: str, delimiter: str) -> list[str]:
     """Split `value` on `delimiter`, but never inside a double-quoted string.
 
+    The terminal quote state is dropped here. A caller that must refuse a
+    malformed header - one whose last quote is never closed - uses
+    `split_outside_quotes_checked` instead.
+    """
+    return split_outside_quotes_checked(value, delimiter)[0]
+
+
+def split_outside_quotes_checked(value: str, delimiter: str) -> tuple[list[str], bool]:
+    """Split as `split_outside_quotes`, also reporting an unterminated quote.
+
     Walks `value` once tracking an `in_quotes` flag. A `\\<char>` escape is
     skipped **only inside a quoted string**, which is the whole of what RFC 9110
     Sec. 5.6.4 defines `quoted-pair` for: outside one a backslash is an ordinary
@@ -140,7 +150,10 @@ def split_outside_quotes(value: str, delimiter: str) -> list[str]:
         buf.append(ch)
         i += 1
     parts.append("".join(buf))
-    return parts
+    # `in_quotes` still set means the last quote was never closed, so every
+    # delimiter after it was swallowed. Only a caller that treats that as
+    # malformed needs to know; the rest keep the plain split.
+    return parts, in_quotes
 
 
 def parse_header_params(
