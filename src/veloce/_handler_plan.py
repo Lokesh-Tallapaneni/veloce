@@ -539,12 +539,18 @@ class HandlerPlan:
 
 
 # ── Plan builders ─────────────────────────────────────────
+#: Shared empty set so the common call allocates nothing and no mutable default
+#: is introduced.
+_NO_PATH_PARAMS: frozenset[str] = frozenset()
+
+
 def _build_depends_slot(
     name: str,
     dep: Any,
     inferred: Any = None,
     *,
     websocket: bool = False,
+    path_params: frozenset[str] = _NO_PATH_PARAMS,
     _seen: list | None = None,
 ) -> _Slot:
     """Build a K_DEPENDS slot, recursively planning the sub-callable.
@@ -568,7 +574,7 @@ def _build_depends_slot(
     slot.dep_offload = bool(getattr(dep, "offload", False)) and not (
         slot.dep_is_coro or slot.dep_is_gen or slot.dep_is_async_gen
     )
-    slot.sub_plan = build_plan(callable_, websocket=websocket, _seen=_seen)
+    slot.sub_plan = build_plan(callable_, websocket=websocket, path_params=path_params, _seen=_seen)
     # Security() scopes flow down the chain so a `SecurityScopes`
     # parameter anywhere below sees the union. Plain `Depends` has no
     # scopes attribute; we read defensively.
@@ -610,6 +616,7 @@ def _subgraph_reads_scopes(plan: HandlerPlan | None, seen_plans: set[int]) -> bo
 
 def _inspect_handler(
     handler: Callable[..., Any],
+    path_params: frozenset[str] = _NO_PATH_PARAMS,
 ) -> tuple[inspect.Signature, dict[str, Any]] | None:
     """Return `handler`'s signature and resolved type hints, or `None`.
 
@@ -655,7 +662,7 @@ def _inspect_handler(
         # parameter did not resolve stopped authenticating and answered 200.
         # Resolve what can be resolved instead, so a broken annotation costs
         # only its own parameter, and say so rather than degrading in silence.
-        return sig, _salvage_hints(hint_target, exc)
+        return sig, _salvage_hints(hint_target, exc, path_params)
 
 
 #: Parameters the plan binds from the name alone (see `build_plan`), plus the
@@ -663,7 +670,9 @@ def _inspect_handler(
 _BOUND_BY_NAME = frozenset({"request", "ws", "websocket", "return"})
 
 
-def _salvage_hints(hint_target: Any, exc: Exception) -> dict[str, Any]:
+def _salvage_hints(
+    hint_target: Any, exc: Exception, path_params: frozenset[str] = _NO_PATH_PARAMS
+) -> dict[str, Any]:
     """Resolve each annotation on its own, keeping the ones that succeed.
 
     Each is resolved through the same `get_type_hints` the whole-signature call
@@ -693,7 +702,9 @@ def _salvage_hints(hint_target: Any, exc: Exception) -> dict[str, Any]:
         fatal = [
             name
             for name in consequential
-            if _declaration_is_load_bearing(hint_target, annotations.get(name), name, parameters)
+            if _declaration_is_load_bearing(
+                hint_target, annotations.get(name), name, parameters, path_params
+            )
         ]
         if fatal:
             raise _unresolved_declaration_error(hint_target, fatal, exc)
@@ -805,7 +816,11 @@ def _annotation_markers(hint_target: Any, annotation: Any) -> tuple[Any, tuple[A
 
 
 def _declaration_is_load_bearing(
-    hint_target: Any, annotation: Any, name: str, parameters: Any
+    hint_target: Any,
+    annotation: Any,
+    name: str,
+    parameters: Any,
+    path_params: frozenset[str] = _NO_PATH_PARAMS,
 ) -> bool:
     """Whether dropping this unresolved annotation would change what runs.
 
@@ -842,6 +857,11 @@ def _declaration_is_load_bearing(
         return True
     if any(isinstance(item, _UnresolvedName) for item in metadata):
         return True
+    if name in path_params:
+        # The name is in the route template, so the resolver reads it from
+        # `path_params` before the query string - the source the declaration
+        # named is the source it still has.
+        return False
     parameter = parameters.get(name)
     return parameter is not None and parameter.default is inspect.Parameter.empty
 
@@ -1063,7 +1083,11 @@ def _build_annotated_slot(
 
 
 def build_plan(
-    handler: Callable[..., Any], *, websocket: bool = False, _seen: list[Any] | None = None
+    handler: Callable[..., Any],
+    *,
+    websocket: bool = False,
+    path_params: frozenset[str] = _NO_PATH_PARAMS,
+    _seen: list[Any] | None = None,
 ) -> HandlerPlan:
     """Inspect `handler` and freeze a resolution plan.
 
@@ -1089,7 +1113,7 @@ def build_plan(
     if websocket:
         ws_type = WebSocket
 
-    inspected = _inspect_handler(handler)
+    inspected = _inspect_handler(handler, path_params)
     if inspected is None:
         return HandlerPlan(handler, [], [])
     sig, hints = inspected
@@ -1181,6 +1205,7 @@ def build_plan(
                     default,
                     inferred=annotation,
                     websocket=websocket,
+                    path_params=path_params,
                     _seen=_seen,
                 )
             )
@@ -1205,7 +1230,12 @@ def build_plan(
     return HandlerPlan(handler, slots, [])
 
 
-def build_route_dep_plans(route_dependencies: list[Any], *, websocket: bool = False) -> list[_Slot]:
+def build_route_dep_plans(
+    route_dependencies: list[Any],
+    *,
+    websocket: bool = False,
+    path_params: frozenset[str] = _NO_PATH_PARAMS,
+) -> list[_Slot]:
     """Pre-plan a route's `dependencies=[Depends(...), ...]` list.
 
     An entry that is not a `Depends` (or a `Security`, which subclasses it) is
@@ -1220,7 +1250,7 @@ def build_route_dep_plans(route_dependencies: list[Any], *, websocket: bool = Fa
     for dep in route_dependencies:
         if not isinstance(dep, Depends):
             raise TypeError(_dependency_entry_error(dep))
-        out.append(_build_depends_slot("", dep, websocket=websocket))
+        out.append(_build_depends_slot("", dep, websocket=websocket, path_params=path_params))
     return out
 
 

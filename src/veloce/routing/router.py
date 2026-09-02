@@ -13,7 +13,12 @@ from urllib.parse import urlencode
 from typing_extensions import Doc
 
 from veloce._constants import MSG_SUCCESSFUL_RESPONSE
-from veloce._handler_plan import K_REQUEST, build_plan, build_route_dep_plans
+from veloce._handler_plan import (
+    _NO_PATH_PARAMS,
+    K_REQUEST,
+    build_plan,
+    build_route_dep_plans,
+)
 from veloce._model_backend import resolve_response_contract
 from veloce._protocol_constants import (
     HTTP_METHOD_DELETE,
@@ -713,11 +718,20 @@ class Router:
 
         Registration-time only; nothing here runs per request.
         """
+        # Most routes declare no path parameter; reuse the shared empty set
+        # rather than allocating one per registration.
+        path_params = (
+            frozenset(route_info.param_names) if route_info.param_names else _NO_PATH_PARAMS
+        )
         if reuse_handler_plan is not None:
             route_info.handler_plan = reuse_handler_plan
         else:
-            route_info.handler_plan = build_plan(route_info.handler, websocket=is_ws)
-        route_info.route_dep_plans = build_route_dep_plans(route_info.dependencies, websocket=is_ws)
+            route_info.handler_plan = build_plan(
+                route_info.handler, websocket=is_ws, path_params=path_params
+            )
+        route_info.route_dep_plans = build_route_dep_plans(
+            route_info.dependencies, websocket=is_ws, path_params=path_params
+        )
         # Derived from the handler, like the plan above: the listener wrapper
         # carries its message contract, so every registration path picks it up
         # here rather than each copy forwarding a field it could forget.

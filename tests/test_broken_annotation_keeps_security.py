@@ -251,3 +251,38 @@ def test_a_marker_beside_a_typing_name_is_still_refused():
             user: Annotated[Missing, Doc("who"), Security(_denies)] = None,  # noqa: F821
         ):
             return {"user": user}
+
+
+def test_a_path_parameter_with_an_unresolvable_annotation_still_registers():
+    """POSITIVE: the value comes from the URL path, not the query string.
+
+    A dropped annotation leaves a `K_QUERY` slot, which the resolver satisfies
+    from `path_params` first - so the parameter is still read from the path
+    exactly as declared. Refusing it closed no bypass.
+    """
+    app = Veloce()
+
+    with pytest.warns(UserWarning, match="could not resolve the annotation"):
+
+        @app.get("/users/{uid}")
+        async def show(uid: Missing):  # noqa: F821
+            return {"uid": uid}
+
+    with TestClient(app) as client:
+        assert client.get("/users/42").json() == {"uid": "42"}
+
+
+def test_a_query_parameter_with_no_default_is_still_refused():
+    """NEGATIVE: the exemption must cover the path template and nothing else.
+
+    The same handler shape, with the parameter absent from the route template,
+    degrades into a *required query* parameter - the source really did change,
+    so it must still refuse.
+    """
+    app = Veloce()
+
+    with pytest.raises(TypeError, match="item"):
+
+        @app.get("/items")
+        async def listing(item: Missing):  # noqa: F821
+            return {"item": item}
