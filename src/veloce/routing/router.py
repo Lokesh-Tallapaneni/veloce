@@ -1273,7 +1273,14 @@ class Router:
             return RouteMatch(route_info=info, path_params={})
         match = self._match_tree(method, path)
         if match is not None:
-            return match
+            # The tree drops empty segments, so `//admin/users` reached the
+            # handler for `/admin/users` while `request.path` still read
+            # `//admin/users` - a prefix check written against the path saw a
+            # different string than the router matched. Only a tree hit can
+            # disagree this way (the static map is keyed by the exact path and
+            # regex routes match the raw one), so only a tree hit is checked
+            # and a miss pays nothing.
+            return None if "//" in path else match
         # Zero cost when no regex route is registered: the guard short-circuits
         # before touching the (empty) list.
         if self._regex_routes:
@@ -1398,6 +1405,12 @@ class Router:
         one method and a regex handler on another reports both for 405/OPTIONS.
         Tree methods are listed first (dispatch precedence); duplicates removed.
         """
+        # Same rule as `match`: an empty segment is not a path segment. Without
+        # this the two disagree - `match` refuses `/a//b` while `Allow` reports
+        # the methods of `/a/b`, turning a 404 into a 405 that confirms the
+        # route exists.
+        if "//" in path:
+            return []
         segments = self._split_path(path)
         request_has_slash = path.endswith("/") and path != "/"
         params: dict[str, str] = {}
