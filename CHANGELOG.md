@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Forwarded` with an unbalanced quote is not trusted; it collapsed the hop count to the sender's choice. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
 - Repeated `Forwarded` / `X-Forwarded-*` lines are joined in received order; only the first was read. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
 - A request path with an empty segment no longer matches; `//admin/x` reached the handler for `/admin/x`. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
+- A CSRF cookie that fails verification is replaced on the refusal; it previously refused every write for good. ([#296](https://github.com/Lokesh-Tallapaneni/veloce/pull/296))
 
 ### Changed
 
