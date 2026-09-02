@@ -166,6 +166,7 @@ class HttpProtocol(asyncio.Protocol):
         "_keep_alive_handle",
         "_request_timer",
         "_header_bytes_total",
+        "_header_phase_bytes",
         "_headers_done",
         "_oversized",
         "_counted",
@@ -249,6 +250,10 @@ class HttpProtocol(asyncio.Protocol):
         self._keep_alive_handle: asyncio.TimerHandle | None = None
         self._request_timer: asyncio.TimerHandle | None = None
         self._header_bytes_total: int = 0
+        # Bytes delivered since the header phase began. `on_header` fires only
+        # once a line terminates, so it cannot bound a line still in progress -
+        # the budget is spent against what has actually been read.
+        self._header_phase_bytes: int = 0
         # True between headers-complete and message-complete. Chunked trailer
         # fields (RFC 9112 Sec. 7.1.2) arrive through the same `on_header`
         # callback as ordinary headers; this flag marks them as belonging to
@@ -387,6 +392,7 @@ class HttpProtocol(asyncio.Protocol):
         self.url = b""
         self.headers = []
         self._header_bytes_total = 0
+        self._header_phase_bytes = 0
         self._raw_content_length = None
         self._has_expect_continue = False
 
@@ -690,6 +696,7 @@ class HttpProtocol(asyncio.Protocol):
         # header phase and zero the size budget that trailers counted against.
         self._headers_done = False
         self._header_bytes_total = 0
+        self._header_phase_bytes = 0
         # The body finished arriving in time - stand the slowloris guard down
         # and signal EOF to the in-flight source so a streaming consumer ends.
         if self._request_timer is not None:
@@ -1201,6 +1208,7 @@ class HttpProtocol(asyncio.Protocol):
         # a pipelined follow-up's first bytes re-arm it here.
         if self._request_timer is None:
             self._arm_request_timer()
+        self._header_phase_bytes += len(data)
         try:
             self.parser.feed_data(data)
         except httptools.HttpParserUpgrade as upgrade:
@@ -1226,6 +1234,15 @@ class HttpProtocol(asyncio.Protocol):
                         self._websocket.feed_data(data[offset:])
         except httptools.HttpParserError:
             self._send_bad_request()
+            return
+        # Tested after the feed so the resets it fires are respected: a segment
+        # completing several pipelined requests must not read as one oversized
+        # header. Gated on the header phase so a body is never counted here.
+        if not self._headers_done and self._header_phase_bytes > MAX_TOTAL_HEADERS_SIZE:
+            self._reject_oversized(
+                status.HTTP_431_REQUEST_HEADER_FIELDS_TOO_LARGE,
+                b"Request Header Fields Too Large",
+            )
 
     def _send_bad_request(self) -> None:
         """Write a minimal `400 Bad Request` and close the connection."""
