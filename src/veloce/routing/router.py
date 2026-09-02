@@ -164,7 +164,23 @@ def _path_shape(path: str) -> str:
 
 @functools.lru_cache(maxsize=512)
 def _cached_split_path(path: str) -> tuple[str, ...]:
-    return tuple(s for s in path.split("/") if s)
+    """Split `path` into segments, keeping any the path actually contains.
+
+    An absolute path always starts with an empty part, and a trailing slash
+    adds one; both are structural and dropped. Every *other* empty is a real
+    empty segment (`//admin/x`, `/a//b`) and is kept, so the radix walk looks
+    for a child named `""`, finds none, and the path simply does not match.
+
+    Dropping them instead made `//admin/x` produce the same segments as
+    `/admin/x` and match the same route, while `request.path` still read the
+    original - which is how a prefix check and the router came to disagree.
+    Keeping them makes the refusal structural: there is nothing to check on the
+    match path, because a path that cannot be walked cannot be matched.
+    """
+    parts = path.split("/")
+    end = len(parts) - 1 if len(parts) > 1 and parts[-1] == "" else len(parts)
+    start = 1 if parts and parts[0] == "" else 0
+    return tuple(parts[start:end])
 
 
 def _reverse_converters_for(template: str) -> dict[str, Converter]:
@@ -1268,14 +1284,7 @@ class Router:
             return RouteMatch(route_info=info, path_params={})
         match = self._match_tree(method, path)
         if match is not None:
-            # The tree drops empty segments, so `//admin/users` reached the
-            # handler for `/admin/users` while `request.path` still read
-            # `//admin/users` - a prefix check written against the path saw a
-            # different string than the router matched. Only a tree hit can
-            # disagree this way (the static map is keyed by the exact path and
-            # regex routes match the raw one), so only a tree hit is checked
-            # and a miss pays nothing.
-            return None if "//" in path else match
+            return match
         # Zero cost when no regex route is registered: the guard short-circuits
         # before touching the (empty) list.
         if self._regex_routes:
@@ -1400,12 +1409,6 @@ class Router:
         one method and a regex handler on another reports both for 405/OPTIONS.
         Tree methods are listed first (dispatch precedence); duplicates removed.
         """
-        # Same rule as `match`: an empty segment is not a path segment. Without
-        # this the two disagree - `match` refuses `/a//b` while `Allow` reports
-        # the methods of `/a/b`, turning a 404 into a 405 that confirms the
-        # route exists.
-        if "//" in path:
-            return []
         segments = self._split_path(path)
         request_has_slash = path.endswith("/") and path != "/"
         params: dict[str, str] = {}
