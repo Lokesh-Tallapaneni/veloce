@@ -15,3 +15,7 @@ behind the framework.
 - [Reflection-free request dispatch: how Veloce compiles the dependency graph](reflection-free-dispatch.md)
   — what it means to compile each handler once at registration, and an honest
   account of what that does and doesn't buy you.
+- [Eighteen security fixes in one release](security-audit-0-20-0.md)
+  — what the internal audit covered, the one fail-open default behind a third
+  of the findings, what was deliberately left alone, and what still needs an
+  outside reviewer.
