@@ -683,7 +683,10 @@ def build_parser(plugin_command: str | None = None) -> argparse.ArgumentParser:
     """
     parser = _VeloceArgumentParser(
         prog="veloce",
-        description="Veloce - ultra-fast async Python web framework.",
+        description=(
+            "Veloce - async Python web framework where one route definition drives "
+            "an HTTP endpoint, an OpenAPI operation and an MCP tool."
+        ),
     )
     parser.add_argument(
         "--version",

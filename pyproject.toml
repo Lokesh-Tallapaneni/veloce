@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "veloceframework"
 version = "0.20.0"
-description = "Ultra-fast async Python web framework — ASGI-native, batteries included"
+description = "Async Python web framework where one route is an HTTP endpoint, an OpenAPI operation and an MCP tool"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
@@ -86,6 +86,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# The recommended install for an application: the production ASGI server plus
+# the two extras whose absence is silently felt rather than reported - `br`
+# compression the middleware would otherwise not offer, and the msgspec
+# validation backend that stays inert without it. Every name in it is also
+# available on its own, and a plain install still serves via `app.run()`.
+# Install with `pip install veloceframework[standard]`.
+standard = [
+    "uvicorn[standard]>=0.23",
+    "brotli>=1.0",
+    "msgspec>=0.16",
+]
 # uvicorn is the recommended production ASGI server and what `veloce run` hands
 # the app to. It is optional because veloce does NOT need it to serve: the
 # built-in `app.run()` server (and the gunicorn `VeloceWorker`) run the app
@@ -237,6 +248,7 @@ dev = [
 docs = [
     "mkdocs-material[imaging]>=9.5",
     "mkdocstrings[python]>=0.26",
+    "mkdocs-llmstxt>=0.5",
 ]
 
 [tool.hatch.build.targets.wheel]

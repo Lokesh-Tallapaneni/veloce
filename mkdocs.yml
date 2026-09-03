@@ -1,6 +1,8 @@
 site_name: Veloce
 site_description: >-
-  Veloce framework (veloceframework) — ultra-fast async Python web framework, ASGI-native, batteries included.
+  Veloce framework (veloceframework) — async Python web framework where one route
+  definition drives an HTTP endpoint, an OpenAPI operation and an MCP tool.
+  ASGI-native, typed dependency injection, WebSockets.
 site_url: https://veloceframework.com/  # docs/CNAME must match this domain
 site_author: Lokesh Tallapaneni
 copyright: Copyright &copy; 2026 Veloce maintainers
@@ -127,6 +129,33 @@ plugins:
             show_symbol_type_toc: true
             filters:
               - "!^_"
+  # Emits /llms.txt (a curated index) and /llms-full.txt (every page as one
+  # Markdown file) per the llmstxt.org convention, so an agent can ingest the
+  # documentation without crawling 95 rendered HTML pages. Must stay last:
+  # it reads the rendered output of the plugins above it.
+  - llmstxt:
+      markdown_description: >-
+        Veloce is an async Python web framework where one route definition
+        drives an HTTP endpoint, an OpenAPI operation and an MCP tool.
+      full_output: llms-full.txt
+      sections:
+        Start here:
+          - index.md
+          - getting-started.md
+        Tutorial:
+          - tutorial/*.md
+        Guide:
+          - guide/*.md
+        How-to:
+          - how-to/*.md
+        Deployment:
+          - deployment/*.md
+        API reference:
+          - reference/*.md
+        About:
+          - surpass/*.md
+          - comparison.md
+          - policies.md
 
 nav:
   - Home: index.md

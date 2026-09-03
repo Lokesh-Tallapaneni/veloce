@@ -6,6 +6,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `veloceframework[standard]` installs uvicorn, `brotli` and `msgspec` together. ([#298](https://github.com/Lokesh-Tallapaneni/veloce/pull/298))
+- The documentation site publishes `/llms.txt` and `/llms-full.txt`. ([#298](https://github.com/Lokesh-Tallapaneni/veloce/pull/298))
+
 ## [0.20.0] - 2026-09-02
 
 ### Security
