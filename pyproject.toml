@@ -248,6 +248,7 @@ dev = [
 docs = [
     "mkdocs-material[imaging]>=9.5",
     "mkdocstrings[python]>=0.26",
+    "mkdocs-llmstxt>=0.5",
 ]
 
 [tool.hatch.build.targets.wheel]
