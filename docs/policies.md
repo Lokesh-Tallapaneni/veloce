@@ -12,6 +12,25 @@ breaking changes deliberate and documented, but a stable-forever API contract
 begins at `1.0`. Pin a version range you have tested (for example
 `veloceframework>=0.4,<0.5`) until `1.0` is released.
 
+## Supported Python versions
+
+Veloce supports **3.10 through 3.14**. Every one of them runs the full test
+suite on each commit, and the PyPI classifiers list exactly the versions CI
+exercises - a test enforces that the two agree, so a classifier is never an
+untested promise.
+
+A version is dropped only in a minor release, and only once it has reached
+[end of life](https://devguide.python.org/versions/).
+
+!!! note "Free-threaded builds"
+
+    Free-threaded (`3.14t`, PEP 703) builds are **not yet supported**. The
+    blocker is external rather than architectural: `orjson` is a required
+    dependency and publishes no free-threaded wheels, so the interpreter
+    cannot install Veloce at all. This is tracked and will be revisited when
+    that changes; nothing in Veloce's own design assumes the GIL for
+    correctness.
+
 ## What is the public API
 
 The public API is:

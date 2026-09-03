@@ -249,3 +249,61 @@ def test_the_floors_quoted_in_the_docs_match_the_manifest():
     }
     for name, version in quoted.items():
         assert declared.get(name) == version, f"{name}: docs say {version}"
+
+
+# ── Supported Python versions ──
+#
+# The CI matrix and the PyPI classifiers state the same fact in two files. A
+# version tested but not classified is supported without saying so; a version
+# classified but not tested is an untested promise. Nothing tied the two files
+# together, and they drifted - 3.14 was absent from both long after release.
+
+CI_WORKFLOW = ROOT / ".github/workflows/ci.yml"
+
+
+def _classifier_versions() -> set[tuple[int, int]]:
+    """Versions named by a `Programming Language :: Python :: X.Y` classifier."""
+    found = set()
+    for line in _pyproject()["project"]["classifiers"]:
+        match = re.fullmatch(r"Programming Language :: Python :: (\d+)\.(\d+)", line)
+        if match:
+            found.add((int(match.group(1)), int(match.group(2))))
+    return found
+
+
+def _matrix_versions() -> set[tuple[int, int]]:
+    """Versions in the test job's `python-version` matrix in `ci.yml`."""
+    text = CI_WORKFLOW.read_text(encoding="utf-8")
+    match = re.search(r"^\s*python-version: \[(.+)\]\s*$", text, re.MULTILINE)
+    assert match is not None, "no python-version matrix list found in ci.yml"
+    return {
+        (int(major), int(minor)) for major, minor in re.findall(r'"(\d+)\.(\d+)"', match.group(1))
+    }
+
+
+def test_the_version_scan_finds_versions_in_both_files():
+    """The guard is worthless if either pattern matches nothing."""
+    assert len(_classifier_versions()) >= 4
+    assert len(_matrix_versions()) >= 4
+
+
+def test_classifiers_and_ci_matrix_name_the_same_versions():
+    """A version present in one file but not the other is drift."""
+    classifiers, matrix = _classifier_versions(), _matrix_versions()
+    assert not classifiers - matrix, (
+        f"classified but never tested in CI: {sorted(classifiers - matrix)}"
+    )
+    assert not matrix - classifiers, (
+        f"tested in CI but not classified on PyPI: {sorted(matrix - classifiers)}"
+    )
+
+
+def test_requires_python_floor_matches_the_lowest_tested_version():
+    """`requires-python` must not exclude a version CI tests."""
+    requires = _pyproject()["project"]["requires-python"]
+    match = re.fullmatch(r">=(\d+)\.(\d+)", requires.strip())
+    assert match is not None, f"unexpected requires-python spelling: {requires!r}"
+    floor = (int(match.group(1)), int(match.group(2)))
+    assert floor == min(_matrix_versions()), (
+        f"requires-python is {requires} but the lowest CI leg is {min(_matrix_versions())}"
+    )
