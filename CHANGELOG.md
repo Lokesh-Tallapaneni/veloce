@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The `/surpass/` documentation pages moved to `/why-veloce/`; the old paths redirect. ([#300](https://github.com/Lokesh-Tallapaneni/veloce/pull/300))
 
+### Fixed
+
+- A `functools.partial` route handler can be registered without `name=`.
+
 ## [0.20.0] - 2026-09-02
 
 ### Security
