@@ -5,7 +5,11 @@ site_description: >-
   ASGI-native, typed dependency injection, WebSockets.
 site_url: https://veloceframework.com/  # docs/CNAME must match this domain
 site_author: Lokesh Tallapaneni
-copyright: Copyright &copy; 2026 Veloce maintainers
+copyright: >-
+  Copyright &copy; 2026 Lokesh Tallapaneni and contributors
+  <span class="vl-trademark">Veloce is an independent open-source project. It is
+  not affiliated with, endorsed by, or connected to any other product, company or
+  project of the same name.</span>
 
 repo_url: https://github.com/Lokesh-Tallapaneni/veloce
 repo_name: Lokesh-Tallapaneni/veloce

@@ -17,7 +17,7 @@ Veloce is pre-1.0 (`0.x`). Security fixes land on the latest released
 Report it privately through GitHub's **private vulnerability reporting**:
 open the repository's **Security** tab and choose **"Report a
 vulnerability"**. This creates a private advisory visible only to the
-maintainers and to you.
+maintainer and to you.
 
 A useful report includes:
 
@@ -31,7 +31,7 @@ A useful report includes:
 - **Acknowledgement** within a few days of the report.
 - An initial assessment (severity, affected versions) shortly after.
 - A fix developed under the private advisory, with a coordinated
-  release. We will keep you updated and credit you in the advisory and
+  release. You will be kept updated and credited in the advisory and
   changelog unless you ask otherwise.
 - Please allow a reasonable disclosure window before any public
   write-up so a fixed release can ship first.

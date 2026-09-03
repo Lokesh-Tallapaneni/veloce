@@ -66,9 +66,9 @@ async def get_user(user_id: int):
 ```
 
 There is no second service and no re-declared schema. An HTTP client calls the
-endpoint, an agent calls the tool, and both run the same dependencies, the same
-validation and the same `Security()` check — because they are two emissions of
-one route contract, not two implementations. New here?
+endpoint, an agent calls the tool, and both reach the same handler, the same
+dependencies and the same `Security()` check — because both doors emit from one
+route contract instead of a hand-written mirror of it. New here?
 [Why Veloce Exists](why-veloce/why-veloce-exists.md) explains the one-IR
 architecture the rest of the framework follows from.
 

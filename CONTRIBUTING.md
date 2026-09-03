@@ -168,11 +168,15 @@ Do not open a public issue for a security vulnerability. Follow the process in
 
 ## Becoming a maintainer
 
-Veloce is actively looking for contributors and co-maintainers. The path is
-straightforward: land a few quality pull requests, help triage issues and review
-other people's PRs, and you'll be offered triage and then commit access. If you'd
-like to own an area - the docs, a specific module, the MCP layer - say so in an
-issue; maintenance is shared with the people who show up.
+Veloce is looking for contributors and, in time, co-maintainers. What that
+looks like: land a few quality pull requests, help triage issues, and review
+other people's. Commit rights follow demonstrated judgement rather than a
+count of merged PRs, and the maintainer raises it rather than asking you to
+apply - so there is no checklist to complete and nothing to submit.
+
+If you want to work on a particular area - the docs, a module, the MCP layer -
+say so in an issue. Nobody holds commit rights but the maintainer today;
+[GOVERNANCE.md](GOVERNANCE.md) describes how that changes.
 
 ## Code of conduct
 
