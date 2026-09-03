@@ -1,6 +1,8 @@
 site_name: Veloce
 site_description: >-
-  Veloce framework (veloceframework) — ultra-fast async Python web framework, ASGI-native, batteries included.
+  Veloce framework (veloceframework) — async Python web framework where one route
+  definition drives an HTTP endpoint, an OpenAPI operation and an MCP tool.
+  ASGI-native, typed dependency injection, WebSockets.
 site_url: https://veloceframework.com/  # docs/CNAME must match this domain
 site_author: Lokesh Tallapaneni
 copyright: Copyright &copy; 2026 Veloce maintainers

@@ -1,7 +1,8 @@
 # Veloce
 
 <p align="center">
-  <em>Fast, ergonomic async Python web framework — ASGI-native, batteries included.</em>
+  <em>Async Python web framework where one route definition drives an HTTP endpoint,
+  an OpenAPI operation and an MCP tool — ASGI-native, batteries included.</em>
 </p>
 
 <p align="center">
@@ -62,6 +63,13 @@ Veloce depends on `orjson`, `httptools`, `pydantic` v2, `python-multipart`,
 
 ```bash
 pip install veloceframework
+```
+
+That alone serves, via the built-in `app.run()` server. For a deployment, the
+`standard` extra adds uvicorn, `brotli` and `msgspec`:
+
+```bash
+pip install "veloceframework[standard]"
 ```
 
 The installed package exposes the `veloce` import:

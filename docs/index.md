@@ -1,5 +1,5 @@
 ---
-description: Veloce framework (veloceframework) is a fast, ASGI-native Python web framework with typed dependency injection, OpenAPI 3.1, and WebSockets.
+description: Veloce framework (veloceframework) is an async Python web framework where one route definition drives an HTTP endpoint, an OpenAPI operation and an MCP tool. ASGI-native, typed dependency injection, WebSockets.
 hide:
   - navigation
   - toc
@@ -7,14 +7,15 @@ hide:
 
 <div class="vl-hero" markdown>
 
-<span class="vl-eyebrow">async · ASGI-native · typed</span>
+<span class="vl-eyebrow">async · ASGI-native · typed · MCP-native</span>
 
 # Veloce — Async Python Web Framework { .vl-hero__title }
 
 <p class="vl-hero__tagline" markdown>
-Fast, ergonomic async Python web framework. Routing, dependency
-injection, OpenAPI, WebSockets, templating, sessions, and a built-in
-test client — all in one tree.
+One route definition is an HTTP endpoint, an OpenAPI operation and an
+MCP tool. Routing, typed dependency injection, WebSockets, templating,
+sessions and a built-in test client — all in one tree, no second service
+to keep in sync.
 </p>
 
 [Get started](getting-started.md){ .md-button .md-button--primary }
@@ -23,7 +24,7 @@ test client — all in one tree.
 <p class="vl-hero__badges" markdown>
 <span class="vl-badge">Python 3.10+</span>
 <span class="vl-badge">MIT licensed</span>
-<span class="vl-badge">Type-checked</span>
+<span class="vl-badge">MCP built in</span>
 <span class="vl-badge">pip install veloceframework</span>
 </p>
 
@@ -32,7 +33,7 @@ test client — all in one tree.
 Veloce framework (PyPI: `veloceframework`) is an ASGI-native, async-first Python web framework for building APIs and full-stack applications. It draws Flask-compatible patterns (`g`, `flash`, blueprints, `@app.route`) and FastAPI-style typed dependency injection together into one tree — without depending on either. Requires Python 3.10+.
 
 ```python title="app.py"
-from veloce import Veloce, Request
+from veloce import Veloce
 
 app = Veloce()
 
@@ -48,7 +49,27 @@ if __name__ == "__main__":
 
 Type-annotated path parameters are coerced automatically, dictionaries become
 JSON responses, and the route is registered on the radix tree at import time.
-New here? [Why Veloce Exists](surpass/why-veloce-exists.md) explains the one-IR
+
+One flag also serves that handler to an AI agent as an
+[MCP](guide/mcp.md) tool:
+
+```python title="app.py" hl_lines="4"
+from veloce import Veloce
+
+app = Veloce()
+
+
+@app.get("/users/{user_id}", expose_as_mcp_tool=True,
+         mcp_description="Fetch a user by id")
+async def get_user(user_id: int):
+    return {"id": user_id}
+```
+
+There is no second service and no re-declared schema. An HTTP client calls the
+endpoint, an agent calls the tool, and both run the same dependencies, the same
+validation and the same `Security()` check — because they are two emissions of
+one route contract, not two implementations. New here?
+[Why Veloce Exists](surpass/why-veloce-exists.md) explains the one-IR
 architecture the rest of the framework follows from.
 
 ## Why Veloce

@@ -12,12 +12,19 @@ Veloce requires **Python 3.10 or newer**.
 pip install veloceframework
 ```
 
-To run an app you will also want an ASGI server such as
-[uvicorn](https://www.uvicorn.org/):
+That is enough to serve: the built-in `app.run()` server needs nothing else.
+For an application you are deploying, the `standard` extra adds the production
+ASGI server plus the two pieces whose absence is silently felt rather than
+reported — `br` compression and the msgspec validation backend:
 
 ```bash
-pip install uvicorn
+pip install "veloceframework[standard]"
 ```
+
+That is [uvicorn](https://www.uvicorn.org/), `brotli` and `msgspec`. Every
+other integration — Redis, gunicorn, OpenTelemetry, Prometheus, `zstd`,
+`ciso8601`, Click — stays opt-in and is named where its guide introduces it;
+`[all]` installs the lot.
 
 ## Your first app
 
