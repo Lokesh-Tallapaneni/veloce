@@ -210,5 +210,5 @@ for the full set of built-in response classes.
 - [Middleware](../guide/middleware.md) — the full `Middleware` and `BaseHTTPMiddleware` surface.
 - [Dependency injection](../guide/dependency-injection.md) — `Depends`, sub-dependencies, and overrides.
 - [Requests and responses](../guide/requests-responses.md) — `request.state`, response classes, and raw access.
-- [Migrating from FastAPI](../surpass/migrating-from-fastapi.md) — other behaviours that differ from FastAPI.
+- [Migrating from FastAPI](../why-veloce/migrating-from-fastapi.md) — other behaviours that differ from FastAPI.
 - Full signatures are in the [API reference](../reference/index.md).

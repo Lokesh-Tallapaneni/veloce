@@ -129,6 +129,17 @@ plugins:
             show_symbol_type_toc: true
             filters:
               - "!^_"
+  # The pages below lived under `/surpass/` - an internal codename that had
+  # leaked into public, indexed URLs. The old paths stay resolvable so external
+  # links and search results do not break.
+  - redirects:
+      redirect_maps:
+        surpass/why-veloce-exists.md: why-veloce/why-veloce-exists.md
+        surpass/performance.md: why-veloce/performance.md
+        surpass/benchmarks.md: why-veloce/benchmarks.md
+        surpass/native-server.md: why-veloce/native-server.md
+        surpass/veloce-vs-starlette.md: why-veloce/veloce-vs-starlette.md
+        surpass/migrating-from-fastapi.md: why-veloce/migrating-from-fastapi.md
   # Emits /llms.txt (a curated index) and /llms-full.txt (every page as one
   # Markdown file) per the llmstxt.org convention, so an agent can ingest the
   # documentation without crawling 95 rendered HTML pages. Must stay last:
@@ -153,7 +164,7 @@ plugins:
         API reference:
           - reference/*.md
         About:
-          - surpass/*.md
+          - why-veloce/*.md
           - comparison.md
           - policies.md
 
@@ -251,13 +262,13 @@ nav:
       - Testing: reference/testing.md
       - MCP (AI Tools): reference/mcp.md
   - About:
-      - Why Veloce Exists: surpass/why-veloce-exists.md
-      - Performance: surpass/performance.md
-      - Benchmarks: surpass/benchmarks.md
-      - Native Server Deep Dive: surpass/native-server.md
+      - Why Veloce Exists: why-veloce/why-veloce-exists.md
+      - Performance: why-veloce/performance.md
+      - Benchmarks: why-veloce/benchmarks.md
+      - Native Server Deep Dive: why-veloce/native-server.md
       - Comparison: comparison.md
-      - Veloce vs Starlette: surpass/veloce-vs-starlette.md
-      - Migrating from FastAPI: surpass/migrating-from-fastapi.md
+      - Veloce vs Starlette: why-veloce/veloce-vs-starlette.md
+      - Migrating from FastAPI: why-veloce/migrating-from-fastapi.md
       - Versioning & Stability: policies.md
       - Blog:
           - Overview: blog/index.md
