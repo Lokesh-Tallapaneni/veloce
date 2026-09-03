@@ -23,6 +23,7 @@ What deliberately still buffers:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import tracemalloc
 import warnings
 
@@ -90,15 +91,47 @@ async def _drain(app, path: str, headers: list | None = None) -> dict:
     return stats
 
 
+@contextlib.contextmanager
+def _coverage_paused():
+    """Stop coverage tracing for the duration of a memory measurement.
+
+    `tracemalloc.get_traced_memory` counts every allocation in the process,
+    coverage.py's own included, so a measurement taken under `--cov` reports
+    the tracer's bookkeeping as if the framework had allocated it. The size of
+    that error is interpreter-dependent: on 3.14, whose backend differs, the
+    same 4 MiB download measured 6 MB traced under coverage and under 1 MB
+    without it, which turns a memory assertion into an assertion about
+    coverage.py.
+
+    The lines skipped here are covered by the sibling tests in this module,
+    which drain the same responses without pausing.
+    """
+    try:
+        import coverage
+    except ImportError:
+        yield
+        return
+    tracer = coverage.Coverage.current()
+    if tracer is None:
+        yield
+        return
+    tracer.stop()
+    try:
+        yield
+    finally:
+        tracer.start()
+
+
 async def _peak_mb(coro_factory) -> tuple[float, object]:
     """Peak traced allocation, in MB, while awaiting `coro_factory()`."""
-    tracemalloc.start()
-    try:
-        base = tracemalloc.get_traced_memory()[0]
-        result = await coro_factory()
-        _current, peak = tracemalloc.get_traced_memory()
-    finally:
-        tracemalloc.stop()
+    with _coverage_paused():
+        tracemalloc.start()
+        try:
+            base = tracemalloc.get_traced_memory()[0]
+            result = await coro_factory()
+            _current, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
     return (peak - base) / 1e6, result
 
 
