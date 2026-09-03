@@ -234,4 +234,5 @@ nav:
           - Overview: blog/index.md
           - Why I wrote an ASGI framework from scratch: blog/why-from-scratch.md
           - Reflection-free request dispatch: blog/reflection-free-dispatch.md
+          - Eighteen security fixes in one release: blog/security-audit-0-20-0.md
   - Release Notes: changelog.md
