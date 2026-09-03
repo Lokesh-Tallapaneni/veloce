@@ -172,5 +172,5 @@ by string at runtime, so PyInstaller cannot trace them and you must add them as
 
 - [Docker](docker.md) — containerise the same `app.run()` program instead of freezing it.
 - [Run a server manually](manually.md) — `app.run()`, `veloce run`, and uvicorn compared.
-- [Native server deep dive](../surpass/native-server.md) — what the built-in server does and its hardening knobs.
+- [Native server deep dive](../why-veloce/native-server.md) — what the built-in server does and its hardening knobs.
 - Full signatures are in the [API reference](../reference/index.md).

@@ -69,7 +69,7 @@ There is no second service and no re-declared schema. An HTTP client calls the
 endpoint, an agent calls the tool, and both run the same dependencies, the same
 validation and the same `Security()` check — because they are two emissions of
 one route contract, not two implementations. New here?
-[Why Veloce Exists](surpass/why-veloce-exists.md) explains the one-IR
+[Why Veloce Exists](why-veloce/why-veloce-exists.md) explains the one-IR
 architecture the rest of the framework follows from.
 
 ## Why Veloce

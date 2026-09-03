@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The documentation site publishes `/llms.txt` and `/llms-full.txt`. ([#298](https://github.com/Lokesh-Tallapaneni/veloce/pull/298))
 - Python 3.14 is tested in CI and listed in the PyPI classifiers. ([#299](https://github.com/Lokesh-Tallapaneni/veloce/pull/299))
 
+### Changed
+
+- The `/surpass/` documentation pages moved to `/why-veloce/`; the old paths redirect. ([#300](https://github.com/Lokesh-Tallapaneni/veloce/pull/300))
+
 ## [0.20.0] - 2026-09-02
 
 ### Security

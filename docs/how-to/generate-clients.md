@@ -255,7 +255,7 @@ app = Veloce(disambiguate_operation_ids=False)
 !!! note "No `generate_unique_id_function`"
     Veloce has no FastAPI-style `generate_unique_id_function` hook. Shape ids with
     `operation_id=` per route and rely on automatic disambiguation for the rest. See
-    [Migrating from FastAPI](../surpass/migrating-from-fastapi.md) for the full divergence list.
+    [Migrating from FastAPI](../why-veloce/migrating-from-fastapi.md) for the full divergence list.
 
 ## Grouping operations with tags
 
@@ -291,6 +291,6 @@ module) by most generators, mirroring how the operation appears in the interacti
 ## Next steps
 
 - [OpenAPI, metadata and docs](../guide/openapi.md) — shape the document the generators read.
-- [Migrating from FastAPI](../surpass/migrating-from-fastapi.md) — `operation_id=` in place of `generate_unique_id_function`.
+- [Migrating from FastAPI](../why-veloce/migrating-from-fastapi.md) — `operation_id=` in place of `generate_unique_id_function`.
 - [Testing](../guide/testing.md) — render `/openapi.json` in-process with the `TestClient`.
 - Full signatures are in the [API reference](../reference/index.md).
