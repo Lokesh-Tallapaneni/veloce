@@ -304,6 +304,17 @@ target-version = "py310"
 src = ["src", "tests"]
 extend-exclude = ["build", "dist", ".pytest_cache"]
 
+[tool.ruff.format]
+# ruff 0.16 began formatting Python inside markdown fences. Applied to `docs/`
+# it rewrites 249 lines across 40 pages, and most of that is collapsing the
+# hand-aligned comment columns that make an options block scannable:
+#
+#     workers=1,             # must be 1        ->    workers=1,  # must be 1
+#
+# The guide examples are written to be read. Source formatting is unchanged and
+# still enforced on every `.py` file.
+exclude = ["*.md"]
+
 [tool.ruff.lint]
 select = [
     "E",    # pycodestyle errors
