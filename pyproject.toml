@@ -201,7 +201,7 @@ dev = [
     # backport `tomllib` was upstreamed from. Without it that whole module
     # failed to import and took the 3.10 leg's entire collection with it.
     "tomli>=2.0; python_version < '3.11'",
-    "ruff>=0.6",
+    "ruff>=0.16.5",
     "mypy>=1.10",
     # uvicorn is now an optional extra, but the test suite still exercises the
     # `veloce run` / serving paths, so the dev environment installs it.
@@ -303,6 +303,17 @@ line-length = 100
 target-version = "py310"
 src = ["src", "tests"]
 extend-exclude = ["build", "dist", ".pytest_cache"]
+
+[tool.ruff.format]
+# ruff 0.16 began formatting Python inside markdown fences. Applied to `docs/`
+# it rewrites 249 lines across 40 pages, and most of that is collapsing the
+# hand-aligned comment columns that make an options block scannable:
+#
+#     workers=1,             # must be 1        ->    workers=1,  # must be 1
+#
+# The guide examples are written to be read. Source formatting is unchanged and
+# still enforced on every `.py` file.
+exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = [
