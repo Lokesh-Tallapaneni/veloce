@@ -57,6 +57,7 @@ from veloce.routing.route_info import (
     RouteHandler,
     RouteInfo,
     RouteMatch,
+    _route_name,
 )
 from veloce.status import HTTP_200_OK
 
@@ -974,7 +975,7 @@ class Router:
         _check_duplicate_params(full_path)
         node, regex_route, param_names = self._classify_route_path(full_path, strict_slashes)
 
-        route_name = name or handler.__name__
+        route_name = name or _route_name(handler)
         # Merge router-level dependencies (registered at Router.__init__)
         # with the route-specific list. Router-level dependencies run
         # first (matches the documented semantics - outer scope before inner).
