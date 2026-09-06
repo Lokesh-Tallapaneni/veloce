@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling>=1.25"]
+requires = ["hatchling>=1.32.0"]
 build-backend = "hatchling.build"
 
 [project]
@@ -77,12 +77,12 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "uvloop>=0.19.0; sys_platform != 'win32'",
-    "orjson>=3.11.5",
-    "pydantic>=2.4.0",
-    "multidict>=6.0.0",
-    "python-multipart>=0.0.22",
-    "httptools>=0.6.0",
+    "uvloop>=0.22.1; sys_platform != 'win32'",
+    "orjson>=3.12.0",
+    "pydantic>=2.13.5",
+    "multidict>=6.7.1",
+    "python-multipart>=0.0.32",
+    "httptools>=0.8.0",
     "jinja2>=3.1.6",
 ]
 
@@ -94,9 +94,9 @@ dependencies = [
 # available on its own, and a plain install still serves via `app.run()`.
 # Install with `pip install veloceframework[standard]`.
 standard = [
-    "uvicorn[standard]>=0.23",
+    "uvicorn[standard]>=0.52.4",
     "brotli>=1.0",
-    "msgspec>=0.16",
+    "msgspec>=0.21.1",
 ]
 # uvicorn is the recommended production ASGI server and what `veloce run` hands
 # the app to. It is optional because veloce does NOT need it to serve: the
@@ -104,28 +104,28 @@ standard = [
 # directly, and `veloce run` falls back to the built-in server when uvicorn is
 # absent (its `--reload` then needs this extra). Install with
 # `pip install veloceframework[uvicorn]` to deploy under `uvicorn your:app`.
-uvicorn = ["uvicorn[standard]>=0.23"]
+uvicorn = ["uvicorn[standard]>=0.52.4"]
 # Veloce's built-in server implements the WebSocket protocol itself, so it needs
 # nothing extra. This extra provides the `websockets` library for deploying as an
 # ASGI app under a server that relies on it for WebSocket framing - e.g. plain
 # `uvicorn` (the `[uvicorn]` extra's `uvicorn[standard]` already bundles it).
 # Install with `pip install veloceframework[ws]`.
-ws = ["websockets>=12"]
+ws = ["websockets>=16.1.1"]
 # gunicorn process supervision for the optional `veloce.workers.VeloceWorker`
 # worker class. POSIX-only — gunicorn does not run on Windows — so this extra
 # is opt-in and never pulled in by a plain install. The `uvicorn` extra
 # remains the recommended production server.
-gunicorn = ["gunicorn>=23.0.0; sys_platform != 'win32'"]
+gunicorn = ["gunicorn>=26.2.0; sys_platform != 'win32'"]
 # OpenTelemetry tracing bridge for `veloce.otel.instrument_with_otel`. Only the
 # OTel API is pulled in — the application supplies its own configured SDK,
 # TracerProvider, and exporter. Kept optional so a plain install carries no
 # tracing dependency. Install with `pip install veloceframework[otel]`.
-otel = ["opentelemetry-api>=1.20"]
+otel = ["opentelemetry-api>=1.44.0"]
 # Prometheus metrics exporter for `veloce.metrics.instrument_with_prometheus`.
 # Pulls in `prometheus_client`; the application owns serving `/metrics`. Kept
 # optional so a plain install carries no metrics dependency. Install with
 # `pip install veloceframework[metrics]`.
-metrics = ["prometheus_client>=0.17"]
+metrics = ["prometheus_client>=0.26.0"]
 # msgspec as an opt-in fast validation / serialization backend alongside
 # Pydantic: a handler may type a body param or response as a `msgspec.Struct`
 # and it decodes / encodes in C. Pydantic stays the default and is always
@@ -133,18 +133,18 @@ metrics = ["prometheus_client>=0.17"]
 # floor is set by `msgspec.convert`, which `dependency.py` uses to validate a
 # msgspec-typed body. Install with
 # `pip install veloceframework[fast]`.
-fast = ["msgspec>=0.16"]
+fast = ["msgspec>=0.21.1"]
 # Redis-backed session store, rate-limit backend, and cache for
 # `veloce.contrib.redis` (`RedisSessionStore`, `RedisRateLimitBackend`,
 # `RedisCache`) - shared state across workers. Kept optional so a single-process
 # / in-memory deploy carries no redis dependency.
 # Install with `pip install veloceframework[redis]`.
-redis = ["redis>=4.2"]
+redis = ["redis>=8.1.0"]
 # Click is needed only for Flask-style per-app commands via `app.cli`
 # (`@app.cli.command()`) and `app.test_cli_runner()`. The built-in `veloce` CLI
 # is pure stdlib `argparse` and needs nothing extra, so Click stays opt-in.
 # Install with `pip install veloceframework[cli]`.
-cli = ["click>=8.1"]
+cli = ["click>=8.5.0"]
 # Brotli for `CompressionMiddleware`. Every current browser sends `br` in
 # Accept-Encoding, and it compresses text better than gzip at comparable speed
 # around the quality the middleware defaults to. Without this extra the
@@ -163,14 +163,14 @@ zstd = ["zstandard>=0.21"]
 ciso8601 = ["ciso8601>=2.3"]
 # Everything optional in one shot.
 all = [
-    "uvicorn[standard]>=0.23",
-    "websockets>=12",
-    "gunicorn>=23.0.0; sys_platform != 'win32'",
-    "opentelemetry-api>=1.20",
-    "prometheus_client>=0.17",
-    "msgspec>=0.16",
-    "redis>=4.2",
-    "click>=8.1",
+    "uvicorn[standard]>=0.52.4",
+    "websockets>=16.1.1",
+    "gunicorn>=26.2.0; sys_platform != 'win32'",
+    "opentelemetry-api>=1.44.0",
+    "prometheus_client>=0.26.0",
+    "msgspec>=0.21.1",
+    "redis>=8.1.0",
+    "click>=8.5.0",
     "brotli>=1.0",
     "zstandard>=0.21",
     "ciso8601>=2.3",
@@ -192,33 +192,33 @@ Changelog = "https://github.com/Lokesh-Tallapaneni/veloce/blob/main/CHANGELOG.md
 # exercises (uvicorn for the `veloce run` / serving tests, msgspec for the fast
 # path, click for the `app.cli` tests).
 dev = [
-    "pytest>=7.0",
-    "pytest-asyncio>=0.21",
-    "pytest-cov>=5.0",
-    "hypothesis>=6.0",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "pytest-cov>=7.1.0",
+    "hypothesis>=6.167.1",
     # `tomllib` is stdlib from 3.11; the packaging-claims test reads
     # `pyproject.toml` and `requires-python` is `>=3.10`, so 3.10 needs the
     # backport `tomllib` was upstreamed from. Without it that whole module
     # failed to import and took the 3.10 leg's entire collection with it.
     "tomli>=2.0; python_version < '3.11'",
     "ruff>=0.16.5",
-    "mypy>=1.10",
+    "mypy>=2.3.1",
     # uvicorn is now an optional extra, but the test suite still exercises the
     # `veloce run` / serving paths, so the dev environment installs it.
-    "uvicorn[standard]>=0.23",
+    "uvicorn[standard]>=0.52.4",
     # The `cli` extra's backend, so the default test run exercises the Flask-style
     # `app.cli` / `test_cli_runner` paths; the guarded tests skip without it.
-    "click>=8.1",
+    "click>=8.5.0",
     # The `fast` extra's backend, so the default test run exercises the msgspec
     # path; the no-msgspec CI leg installs without it and the guarded tests skip.
-    "msgspec>=0.16",
+    "msgspec>=0.21.1",
     # In-memory Redis fake so the contrib.redis store/limiter tests run without a
     # real Redis server.
-    "fakeredis>=2.20",
+    "fakeredis>=2.37.1",
     # `fakeredis` executes Lua only with a runtime available; without it the
     # Lua/Python rate-limit parity guard would skip and the duplication of each
     # built-in strategy would be unchecked.
-    "lupa>=2.0",
+    "lupa>=2.8",
     # CodSpeed's pytest plugin — powers the `benchmarks/` suite (`pytest
     # benchmarks --codspeed`) that CI runs to track request-path performance.
     "pytest-codspeed>=5.0.3",
@@ -227,30 +227,30 @@ dev = [
     # not installed, and the GraphQL page's install line was wrong as a result.
     # The guarded tests skip without them; installing them is what makes the
     # guard run.
-    "sqlalchemy[asyncio]>=2.0",
-    "aiosqlite>=0.19",
-    "strawberry-graphql[asgi]>=0.230",
+    "sqlalchemy[asyncio]>=2.0.52",
+    "aiosqlite>=0.22.1",
+    "strawberry-graphql[asgi]>=0.327.2",
     # The `otel` extra ships only `opentelemetry-api`, but the instrumentation
     # tests need a real tracer provider and span exporter to observe what
     # `veloce/otel.py` records - so 36 of `test_otel.py`'s 43 tests skipped in
     # every environment this project defines, and the module sat at ~20%
     # coverage with the suite reporting green. The SDK is a test-only
     # dependency; the shipped extra still requires the API alone.
-    "opentelemetry-sdk>=1.20",
+    "opentelemetry-sdk>=1.44.0",
     # The `metrics` extra's backend. It was present in the working environment
     # only incidentally, so `uv sync --group dev` removed it and eight
     # instrumentation tests began skipping - the same shape as the otel gap
     # above. Named here so the dev environment is reproducible.
-    "prometheus_client>=0.17",
+    "prometheus_client>=0.26.0",
     "brotli>=1.2.0",
     "zstandard>=0.25.0",
     "ciso8601>=2.3.3",
 ]
 docs = [
-    "mkdocs-material[imaging]>=9.5",
-    "mkdocstrings[python]>=0.26",
+    "mkdocs-material[imaging]>=9.7.7",
+    "mkdocstrings[python]>=1.0.6",
     "mkdocs-llmstxt>=0.5",
-    "mkdocs-redirects>=1.2",
+    "mkdocs-redirects>=1.2.3",
 ]
 
 [tool.hatch.build.targets.wheel]
