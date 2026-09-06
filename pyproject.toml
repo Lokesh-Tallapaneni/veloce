@@ -201,7 +201,7 @@ dev = [
     # backport `tomllib` was upstreamed from. Without it that whole module
     # failed to import and took the 3.10 leg's entire collection with it.
     "tomli>=2.0; python_version < '3.11'",
-    "ruff>=0.6",
+    "ruff>=0.16.5",
     "mypy>=1.10",
     # uvicorn is now an optional extra, but the test suite still exercises the
     # `veloce run` / serving paths, so the dev environment installs it.
