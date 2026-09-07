@@ -7,7 +7,7 @@
 
 <p align="center">
   <a href="https://pypi.org/project/veloceframework/"><img alt="PyPI" src="https://img.shields.io/pypi/v/veloceframework.svg"></a>
-  <a href="https://pypi.org/project/veloceframework/"><img alt="Downloads" src="https://img.shields.io/pypi/dm/veloceframework.svg"></a>
+  <a href="https://pepy.tech/project/veloceframework"><img alt="Downloads" src="https://static.pepy.tech/personalized-badge/veloceframework?period=month&units=abbreviation&left_color=grey&right_color=blue&left_text=downloads/month"></a>
   <a href="https://pypi.org/project/veloceframework/"><img alt="Python versions" src="https://img.shields.io/pypi/pyversions/veloceframework.svg"></a>
   <a href="https://github.com/Lokesh-Tallapaneni/veloce/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/pypi/l/veloceframework.svg"></a>
   <a href="https://github.com/Lokesh-Tallapaneni/veloce/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Lokesh-Tallapaneni/veloce/actions/workflows/ci.yml/badge.svg"></a>
