@@ -1,17 +1,32 @@
 version: 2
 updates:
-  - package-ecosystem: pip
+  # `uv`, not `pip`. The pip ecosystem updates the declared constraints in
+  # `pyproject.toml`, so every run proposed raising the runtime floors -
+  # `pydantic>=2.4.0` to `>=2.13.5`, `websockets>=12` to `>=17`, and so on.
+  # A floor is the oldest version that works, not the newest that exists, and
+  # raising one narrows who can install Veloce. The uv ecosystem updates
+  # `uv.lock` instead, which is what should move automatically.
+  - package-ecosystem: uv
     directory: "/"
     schedule:
-      interval: weekly
+      interval: monthly
+    # A release that is days old has not been exercised by anyone yet.
+    cooldown:
+      default-days: 7
     groups:
       python-dependencies:
+        # Development only. Runtime floors are raised by hand, when there is a
+        # reason - a bug fix that is needed, an advisory, an API depended on.
+        dependency-type: development
         patterns:
           - "*"
+
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
-      interval: weekly
+      interval: monthly
+    cooldown:
+      default-days: 7
     groups:
       github-actions:
         patterns:
