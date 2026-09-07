@@ -70,6 +70,30 @@ Publishing the refutation rate is the point. An audit that confirms everything
 it looks at is not an audit; it is a list of suspicions. Several of the eleven
 were plausible, well-argued, and simply wrong once the probe ran.
 
+### The eleven that did not survive
+
+Listed because a rate is not much use to anyone reviewing this code. In every
+case the described *behaviour* reproduced — what failed was the claim that it
+broke a security invariant.
+
+| # | Claim | Why it did not stand |
+|---|---|---|
+| 1 | A middleware short-circuiting before `CSRFMiddleware` rotates the browser's CSRF cookie | Reproduces, and fails closed in every direction: a stale header against a rotated cookie is a 403, never a bypass. The minted token is unreadable to the attacker and there is no attacker-controlled trigger. A correctness defect, not a vulnerability. |
+| 2 | A string passed to `allow_origins` reflects `Access-Control-Allow-Origin: *` | Reproduces end to end, but the config violates the declared type `list[str] \| None`. Type misuse, not a broken invariant. |
+| 3 | `HTTPDigest` accepts any `Authorization: Digest ...` as a credential | The scheme does return a truthy object, but the documented flow fails closed at every shape — the example from the guide answers 401 for a garbage field list. |
+| 4 | JWT and reset tokens accept base64url padding, so one token has several valid encodings | True, and broader than reported: 16 accepted encodings, not 4. But nothing in Veloce keys a control on the raw token string, and everywhere string identity would matter, the comparison fails closed. Canonical-encoding hardening, not a break. |
+| 5 | Parser-callback errors and `100-Continue` writes splice into an in-flight response body | All three wire behaviours confirmed. No configuration exposes another user's data, so the framing does not hold. |
+| 6 | A websocket listener annotation naming a model inside a container or union silently disables frame validation | Reproduces exactly — `list[Join]`, `dict[str, Join]`, `Join \| str` and others all yield no contract. Validation is absent, not bypassed: the handler still receives what it declared it would parse. |
+| 7 | Reserved WebSocket opcodes are dropped rather than failing the connection | RFC 6455 Sec. 5.2 conformance, and worth a one-line fix, but nothing reaches the application unvalidated and no state is corrupted. |
+| 8 | The native transport loses the frame opcode, so `receive_text()` decodes BINARY frames | Behaviour reproduces; the stated cause is wrong, and it is documented rather than an invariant. |
+| 9 | An app mounted with `app.mount()` bypasses the parent's `WebSocketOriginMiddleware` | Exactly the documented contract for an arbitrary ASGI mount, and the framework ships a mechanism that does cover the mounted subtree. |
+| 10 | `send_from_directory` follows symlinks out of the served directory while `StaticFiles` blocks it | `safe_join`'s own docstring says symlinks are not resolved and that callers who distrust them must resolve paths themselves. Documented behaviour, and the asymmetry with `StaticFiles` is the thing worth revisiting, not a traversal hole. |
+| 11 | `TemplateResponse` labels every body `text/html` while autoescape is keyed on file extension, so `.j2` templates render unescaped | Reproduces. It is Jinja's own recommended default, verbatim, and the same default comparable frameworks ship. |
+
+Two of these are worth changing on their own merits — the opcode conformance in
+7 and the `StaticFiles` asymmetry in 10 — but neither is a security fix, and
+calling them one would have inflated the count.
+
 ## What was deliberately not fixed
 
 One confirmed finding shipped unfixed: the native transport can over-admit
