@@ -139,7 +139,7 @@ fast = ["msgspec>=0.16"]
 # `RedisCache`) - shared state across workers. Kept optional so a single-process
 # / in-memory deploy carries no redis dependency.
 # Install with `pip install veloceframework[redis]`.
-redis = ["redis>=4.2"]
+redis = ["redis>=8.1.0"]
 # Click is needed only for Flask-style per-app commands via `app.cli`
 # (`@app.cli.command()`) and `app.test_cli_runner()`. The built-in `veloce` CLI
 # is pure stdlib `argparse` and needs nothing extra, so Click stays opt-in.
@@ -169,7 +169,7 @@ all = [
     "opentelemetry-api>=1.20",
     "prometheus_client>=0.17",
     "msgspec>=0.16",
-    "redis>=4.2",
+    "redis>=8.1.0",
     "click>=8.1",
     "brotli>=1.0",
     "zstandard>=0.21",
