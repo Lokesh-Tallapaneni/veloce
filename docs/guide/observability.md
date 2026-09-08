@@ -165,6 +165,84 @@ from your `/metrics` route rather than the global one.
 Calling `instrument_with_prometheus` without the extra installed raises an
 `ImportError` with an install hint.
 
+## Finding a blocked event loop
+
+A synchronous call inside an `async def` handler — a blocking database driver, a
+`requests` call, a CPU-heavy loop — freezes the whole event loop. Every other
+request stalls behind it, so the symptom is unrelated endpoints getting slow
+while the endpoint that actually contains the problem looks fine.
+
+The event-loop watchdog finds the line responsible. It is opt-in through one
+config key:
+
+```python
+from veloce import Veloce
+
+app = Veloce()
+app.config["EVENT_LOOP_WATCHDOG"] = True
+```
+
+Set it before startup — the watchdog is constructed once, during the lifespan
+startup phase, so assigning to a running app has no effect.
+
+A stall is then reported like this:
+
+```text
+WARNING veloce.watchdog: event loop blocked for 78 ms while serving GET /report
+  - the loop thread is parked in one call - most likely blocking I/O or a
+  sleep. Use an async client, or move the call off the loop with
+  asyncio.to_thread().
+Blocked loop stack:
+  ...
+  File "app.py", line 34, in report
+    rows = connection.execute("select * from ledger").fetchall()
+```
+
+The report names the route and carries the stack of the loop thread *while it is
+still stuck*, which is the part that makes it actionable: the last frame is the
+call that blocked. A blocking call inside a dependency is attributed to that
+dependency rather than to the handler body.
+
+!!! note "The blocking-versus-CPU hint is unreliable"
+
+    The second sentence classifies the stall by comparing two stack samples,
+    and a CPU-bound loop that sits on one line looks the same in both. Tight
+    loops are usually reported as "parked in one call". Read the stack rather
+    than the hint — for CPU-bound work the advice to use `asyncio.to_thread()`
+    does not help, because the GIL keeps that thread contending with the loop.
+    A process pool does.
+
+### Tuning it
+
+Pass a mapping instead of `True` to change the thresholds:
+
+```python
+app.config["EVENT_LOOP_WATCHDOG"] = {"interval": 0.02, "stall_threshold": 0.05}
+```
+
+`interval` (default `0.05`) is how often the heartbeat re-arms on the loop.
+`stall_threshold` (default `0.1`) is how long the loop may go without a
+heartbeat before a stall is reported. Lower both to catch shorter stalls while
+you are hunting one; the cost is a busier watch thread.
+
+Each distinct stall is reported once, however long it lasts, so a handler that
+blocks for ten seconds produces one warning rather than a stream of them.
+
+### Why it is opt-in
+
+The watchdog runs a real OS thread that samples the loop, so an app that never
+sets the key constructs nothing and pays nothing. It is a development aid:
+leaving it on in production spends a thread continuously, and the report
+contains a stack trace, which is the same category of disclosure as a debug
+traceback.
+
+It is also not armed by `debug=True`. The two are independent.
+
+A stall is only reported while the loop is actually running. An idle loop —
+stopped between calls, or parked waiting for I/O with nothing to do — is not a
+stall, so the in-memory [`TestClient`](testing.md), which drives one request at
+a time, does not trigger it. Exercising the watchdog needs a running server.
+
 ## See also
 
 - [Middleware](middleware.md) — `LoggingMiddleware` and `RequestIDMiddleware`
