@@ -1,11 +1,12 @@
 """Tests for the radix tree router."""
 
+import functools
 import logging
 
 import pytest
 
 from veloce import Blueprint, Veloce
-from veloce.routing.router import RadixNode, Router
+from veloce.routing.router import RadixNode, RouteInfo, Router
 from veloce.testclient import TestClient
 
 
@@ -396,3 +397,52 @@ def test_a_blueprint_name_is_still_namespaced(caplog):
 
     assert app.url_for("listing") == "/users"
     assert app.url_for("shop.listing") == "/shop/posts"
+
+
+def test_partial_route_handler_registers_without_name():
+    """A functools.partial handler registers without name= and derives wrapped function's name."""
+    app = Veloce(openapi_url=None)
+
+    async def get_items(request, category: str):
+        return {"category": category}
+
+    partial_handler = functools.partial(get_items, category="books")
+    app.add_route("/items", partial_handler, methods=["GET"])
+
+    assert app.url_for("get_items") == "/items"
+    client = TestClient(app)
+    response = client.get("/items")
+    assert response.status_code == 200
+    assert response.json() == {"category": "books"}
+
+
+def test_nested_partial_route_handler_derived_name():
+    """Nested functools.partial handlers unwrap to the original wrapped function's name."""
+    app = Veloce(openapi_url=None)
+
+    async def user_profile(request, role: str, status: str):
+        return {"role": role, "status": status}
+
+    p1 = functools.partial(user_profile, role="admin")
+    p2 = functools.partial(p1, status="active")
+    app.add_route("/profile", p2, methods=["GET"])
+
+    assert app.url_for("user_profile") == "/profile"
+    client = TestClient(app)
+    response = client.get("/profile")
+    assert response.status_code == 200
+    assert response.json() == {"role": "admin", "status": "active"}
+
+
+def test_partial_route_info_name_and_description():
+    """RouteInfo derives name and description from the wrapped function of a partial."""
+
+    async def sample_handler():
+        """Sample handler docstring."""
+        return None
+
+    partial_handler = functools.partial(sample_handler)
+    info = RouteInfo(handler=partial_handler, param_names=[])
+
+    assert info.name == "sample_handler"
+    assert info.description == "Sample handler docstring."

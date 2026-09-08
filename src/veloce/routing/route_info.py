@@ -11,6 +11,7 @@ resolves.
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Callable, Coroutine, Sequence
 from dataclasses import dataclass
 from typing import Any, get_origin
@@ -20,6 +21,23 @@ from veloce._model_backend import ModelBackend, backend_of
 from veloce.status import HTTP_200_OK
 
 RouteHandler = Callable[..., Coroutine[Any, Any, Any]]
+
+
+def _route_name(handler: Any) -> str:
+    """Derive a route's default name from a handler callable.
+
+    Follows `functools.partial` wrapping to reach the underlying callable,
+    falling back to `__name__`, `__qualname__`, the type name, or `repr`.
+    """
+    real = handler
+    while isinstance(real, functools.partial):
+        real = real.func
+    return (
+        getattr(real, "__name__", None)
+        or getattr(real, "__qualname__", None)
+        or getattr(type(real), "__name__", "")
+        or repr(real)
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,9 +188,12 @@ class RouteInfo:
         self.response_model = response_model
         self.tags = tags or []
         self.summary = summary or ""
-        self.name = name or (handler.__name__ if handler is not None else "")
+        real = handler
+        while isinstance(real, functools.partial):
+            real = real.func
+        self.name = name or (_route_name(handler) if handler is not None else "")
         self.path_template = path_template
-        self.description = description or (handler.__doc__ or "")
+        self.description = description or ((real.__doc__ or "") if real is not None else "")
         self.deprecated = deprecated
         self.response_description = response_description
         self.status_code = status_code
