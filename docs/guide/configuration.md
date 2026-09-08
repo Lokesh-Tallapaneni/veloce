@@ -75,7 +75,7 @@ The defaults are:
 | `GRACEFUL_TASK_TIMEOUT` | `10` | Seconds to wait for background tasks to finish cancelling on shutdown. |
 | `MAX_CONCURRENT_CONNECTIONS` | `1000` | Cap on simultaneous connections on the built-in serving path; the connection past the cap is refused with `503`. Set `None` for unlimited. |
 | `WRITE_BUFFER_HIGH_WATER` | `262144` | Bytes buffered before the built-in server applies write back-pressure. |
-| `EVENT_LOOP_WATCHDOG` | `None` | Truthy enables the event-loop stall watchdog; a mapping tunes it (`interval`, `stall_threshold`). |
+| `EVENT_LOOP_WATCHDOG` | `None` | Truthy enables the event-loop stall watchdog; a mapping tunes it (`interval`, `stall_threshold`). See [finding a blocked event loop](observability.md#finding-a-blocked-event-loop). |
 | `SILENCED_AUDIT_IDS` | `()` | Finding ids `security_audit` drops. Accepts a comma-separated list from an env file. |
 | `MCP_CALL_TIMEOUT` | `None` | Per-call wall-clock budget in seconds for an MCP tool; `None` is unbounded. |
 | `MCP_ENFORCE_LIFECYCLE` | `False` | Require the MCP `initialize` handshake before any other request on a stateful connection. |
