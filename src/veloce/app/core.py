@@ -378,9 +378,8 @@ class Veloce(
                 f"would resolve against the current working directory."
             )
         self._instance_path = instance_path
-        # `import_name` - defaults to the caller's module so
-        # `Veloce(__name__)` works. Used to compute `root_path` (the
-        # package directory) for template / static-file resolution.
+        # Defaults to the caller's module so `Veloce(__name__)` works. Feeds
+        # `package_root` (template / static-file resolution) and the app logger.
         if import_name is None:
             frame = sys._getframe(1)
             import_name = frame.f_globals.get("__name__", "veloce.app")
@@ -433,15 +432,8 @@ class Veloce(
         self.terms_of_service = terms_of_service
         self.swagger_ui_parameters = swagger_ui_parameters
         self.swagger_ui_init_oauth = swagger_ui_init_oauth
-        # OpenAPI generation knobs (consumed by veloce.contrib.openapi):
-        # - `separate_input_output_schemas`: emit a distinct serialization
-        #   (`-Output`) schema for a model whose validation and serialization
-        #   JSON Schemas diverge (computed/write-only fields). When False the
-        #   validation schema is reused for both request and response.
-        # - `disambiguate_operation_ids`: deterministically suffix colliding
-        #   auto-generated operationIds so the document stays codegen-valid.
-        # - `validate_openapi`: run the lightweight structural checker after
-        #   the document is assembled; `None` defers to `app.debug`.
+        # Read by `veloce.contrib.openapi`. With separate schemas off, the
+        # validation schema serves both the request and the response side.
         self.separate_input_output_schemas = separate_input_output_schemas
         self.disambiguate_operation_ids = disambiguate_operation_ids
         self.validate_openapi = validate_openapi
@@ -1281,8 +1273,7 @@ class Veloce(
 
     def _init_middleware_state(self) -> None:
         """Set up the app logger and the ledger middleware registration writes to."""
-        # Set up logger: the logger name is the
-        # `import_name` (already resolved to the caller's module above
+        # `import_name` (already resolved to the caller's module in `__init__`
         # when not passed explicitly).
         self.logger = logging.getLogger(self.import_name)
 
@@ -1543,10 +1534,8 @@ class Veloce(
         # Lazily-built `click.Group` for app-defined CLI commands. Built
         # on first `app.cli` access so `click` isn't a hard import.
         self._cli_group = None
-        # `app.webhooks` - an APIRouter whose routes are pure
-        # documentation: registered for the OpenAPI 3.1 `webhooks`
-        # section, never dispatched.
-
+        # `app.webhooks` - a `Blueprint` whose routes are pure documentation:
+        # registered for the OpenAPI 3.1 `webhooks` section, never dispatched.
         self.webhooks = Blueprint("webhooks")
         # JSON provider: the class attribute is overridable, and the instance is
         # built lazily on first `app.json` access.

@@ -47,8 +47,7 @@ class MCPAuth:
         ))
     """
 
-    # Validates a bearer token and returns the authenticated `Principal`, or
-    # `None` to reject. Must verify the token's audience is this server.
+    # Must verify the token's audience is this server.
     verify: TokenVerifier
     # Scopes every request to the MCP endpoint must carry (a `403` otherwise).
     # Per-tool scopes (`@app.mcp_tool(scopes=...)`) are checked additionally.

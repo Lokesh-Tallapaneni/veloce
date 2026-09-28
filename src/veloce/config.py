@@ -420,9 +420,8 @@ class Config(dict[str, Any]):
         source = _read_config_file(filename, "rb", lambda handle: handle.read(), silent=silent)
         if source is _SILENT_MISS:
             return False
-        # Compile + exec into the module namespace. Errors raised by the
-        # config file itself propagate - they're legitimate misconfig
-        # and silently swallowing them would mask real bugs.
+        # Errors raised by the config file itself propagate - they're legitimate
+        # misconfig and silently swallowing them would mask real bugs.
         code = compile(source, filename, "exec")
         exec(code, module.__dict__)
         for name in dir(module):

@@ -926,8 +926,6 @@ class DispatchMixin(AppHost):
         defaults, endpoint, and url_rule and run URL value preprocessors.
         Raises `HTTPException` for the 404 / constraint-mismatch cases.
         """
-        # Check mounted sub-apps.
-        #
         # A linear prefix scan, kept deliberately. The `has_mounted_apps` gate
         # makes an app with no mounts pay nothing, and beyond that the cost is
         # ~0.07 us per mount per request (measured on the project's benchmark
@@ -1179,11 +1177,9 @@ class DispatchMixin(AppHost):
             response.status_code = route_info.status_code
             response._encoded = None
 
-        # Response injection - merge a handler-injected
-        # Response's status_code + headers onto the final response.
-        # Skipped when the handler returned a Response itself (its own
-        # status/headers already win). `status_code == 0` means the
-        # handler never touched it, so it is not applied.
+        # A handler that returned a Response itself keeps its own status and
+        # headers; injection only fills in for handlers that returned other
+        # values. `status_code == 0` means the handler never set one.
         injected = request._state.get(STATE_INJECTED_RESPONSE) if request._state else None
         if injected is not None and not isinstance(result, Response):
             if injected.status_code:

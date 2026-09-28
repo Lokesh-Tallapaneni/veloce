@@ -187,9 +187,7 @@ class CSRFMiddleware(Middleware):
         # would be refused.
         if request.is_mcp:
             return None
-        # Stash existing cookie value (or None) on request._state for the
-        # response phase. New tokens are minted in process_response when
-        # the cookie is missing.
+        # New tokens are minted in `process_response` when the cookie is missing.
         existing = request.cookies.get(self.cookie_name)
         request._state["_csrf_cookie"] = existing
 
@@ -207,7 +205,6 @@ class CSRFMiddleware(Middleware):
             if denied is not None:
                 return denied
 
-        # Verification: cookie value must match header OR form field.
         cookie_val = existing
         if not cookie_val:
             return self._forbidden("CSRF cookie missing")

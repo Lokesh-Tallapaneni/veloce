@@ -197,7 +197,6 @@ def _python_type_to_schema(annotation: Any) -> dict[str, Any]:
     # not emitted.
     if origin is dict:
         return {"type": "object"}
-    # `Literal["a", "b"]` -> an enum schema of the literal values.
     if origin is Literal:
         return _literal_enum_schema(list(get_args(annotation)))
 
@@ -206,7 +205,6 @@ def _python_type_to_schema(annotation: Any) -> dict[str, Any]:
         # Shallow copy: callers mutate the result (constraints, defaults).
         return dict(mapped)
 
-    # `Enum` subclass -> an enum schema carrying the member values.
     if isinstance(annotation, type) and issubclass(annotation, enum.Enum):
         return _literal_enum_schema([member.value for member in annotation])
 

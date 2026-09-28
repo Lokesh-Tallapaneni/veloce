@@ -520,7 +520,6 @@ class CompressionMiddleware(Middleware):
             if len(b) < self.min_stream_chunk_offload:
                 out = compressor.frame(b)
             else:
-                # Offload large frames to the thread pool, preserving ContextVars.
                 out = await offload(compressor.frame, b)
             if out:
                 yield out
@@ -537,9 +536,6 @@ class CompressionMiddleware(Middleware):
         untouched so we never fabricate a validator. `headers` is a plain dict,
         so accept either spelling and rewrite whichever key holds the tag.
         """
-        # Find the actual stored key (RFC 9110 Sec. 5.1 - field names are
-        # case-insensitive, so a handler-set `Etag`/`ETAG` must be located)
-        # and rewrite the strong validator weak in place under that same key.
         etag_key = header_key(response.headers, HEADER_ETAG)
         if etag_key is not None:
             etag = response.headers[etag_key]

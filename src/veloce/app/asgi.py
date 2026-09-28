@@ -449,7 +449,7 @@ class AsgiMixin(AppHost):
             # WebSocket DI runs through the shared HandlerPlan /
             # DependencyResolver - the same path as HTTP dispatch - so
             # WebSocket dependencies get `yield`-style teardown and
-            # `Security` / `SecurityScopes` support (F8).
+            # `Security` / `SecurityScopes` support.
             if route_info.handler_plan is not None:
                 try:
                     kwargs = await ws_resolver.resolve_ws_plan(
@@ -459,8 +459,8 @@ class AsgiMixin(AppHost):
                         route_info.route_dep_plans,
                     )
                 except RequestValidationError as exc:
-                    # A WebSocket dependency failed validation -
-                    # surface it as the WS-specific error (V9).
+                    # A WebSocket dependency failed validation - surface it
+                    # as the WS-specific error.
                     raise WebSocketRequestValidationError(getattr(exc, "errors", []) or []) from exc
             else:
                 kwargs = {}
@@ -734,9 +734,7 @@ class AsgiMixin(AppHost):
 
             response = await self.handle_request(request, cp, match)
 
-            # Streaming response - emit the body as a sequence of ASGI
-            # `http.response.body` chunks instead of one buffered
-            # payload. No `content-length`: the ASGI server frames it.
+            # No `content-length` by default: the ASGI server frames the chunks.
             if response.is_streamed:
                 # A streamed body usually has no length to advertise, but a
                 # file's is known from its stat - keep the one the response set
@@ -803,12 +801,6 @@ class AsgiMixin(AppHost):
                 head_content_length = length
                 body_out = b""
 
-            # Build the ASGI header list. Each header MUST be its own
-            # `(name, value)` tuple; multiple cookies (`Set-Cookie`) get one
-            # tuple each. `Response.set_cookie` joins multiple cookies into
-            # one header value with `\r\nSet-Cookie: ` literal for the raw
-            # HTTP/1.1 wire path; split that back into per-cookie tuples
-            # here so the ASGI contract is honoured.
             # `None` only when a 304 downgraded from a stream has no knowable
             # length; the header is then omitted rather than claiming zero.
             content_length = (
@@ -830,21 +822,16 @@ class AsgiMixin(AppHost):
             )
             # Single pass over the response headers: emit each as an ASGI
             # tuple while tracking whether a content-type / content-length
-            # was supplied, so the framework default is only prepended when
-            # the response does not already carry it. The buffered path keeps
-            # any response-set content-length (e.g. the compressed length from
-            # `GZipMiddleware`), so it does not skip that header.
+            # was supplied, so the framework default is only added when the
+            # response does not already carry it. The buffered path keeps
+            # any response-set content-length (e.g. the compressed length
+            # from `GZipMiddleware`), so it does not skip that header.
             if response.headers:
                 asgi_headers, has_ct, has_cl = _build_asgi_headers(response.headers)
             else:
                 has_ct = False
                 has_cl = False
                 asgi_headers = []
-            # Prepend the framework default content-type/content-length only
-            # when the response does not already carry that header. A user or
-            # middleware value (e.g. the compressed length from
-            # `GZipMiddleware`) was emitted above and wins; prepending the
-            # default too would put a duplicate header on the wire.
             if not has_cl and _cl_bytes is not None:
                 # ASGI does not mandate header order, so append (O(1)) rather
                 # than insert at the front (O(n) list shift), matching the
@@ -885,14 +872,6 @@ class AsgiMixin(AppHost):
         connection**, before any frame moves, so the call costs nothing that can
         be measured and the HTTP path is 200 lines shorter to read.
         """
-        # ASGI WS dispatch (W1). Match the route table for a
-        # WEBSOCKET-method handler and run it with a WebSocket built
-        # from the ASGI receive/send pair. Path params are coerced
-        # the same way they are for HTTP. The app context
-        # (`_current_app_var` / `g`) is bound inside `_run_websocket`,
-        # shared with the native upgrade path; the host/Origin checks
-        # below do not read it.
-
         # Host and Origin validation for WebSocket handshakes - an HTTP
         # middleware such as TrustedHostMiddleware or
         # WebSocketOriginMiddleware never sees a `websocket` scope, so
@@ -901,6 +880,9 @@ class AsgiMixin(AppHost):
         # is_websocket_origin_allowed)` pairs from the middleware once, so
         # the per-connect path iterates a frozen tuple instead of probing
         # every middleware. `None` (no middleware) skips the gate entirely.
+        # The app context (`_current_app_var` / `g`) is bound later, inside
+        # `_run_websocket`, and is shared with the native upgrade path - so
+        # these checks run without it.
         ws_checks: WsHandshakeChecks | None = cp.ws_handshake
         if ws_checks is not None:
             ws_host = ""

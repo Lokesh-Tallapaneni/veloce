@@ -1183,8 +1183,7 @@ class DependencyResolver:
                 raise _err_missing_marker(loc, slot.name)
             # Per-element `marker.validate(...)` constraints (min_length, ge, regex,
             # ...) are intentionally NOT enforced on list-typed markers here; only
-            # coercion runs. The codegen path matches. Enforcing them is a behavior
-            # change tracked separately, not a behavior-preserving fix.
+            # coercion runs. The codegen path matches.
             return [v if inner is str else _coerce_value(v, inner, slot.name, loc) for v in values]
 
         if mk == 1:  # MK_PATH

@@ -219,12 +219,11 @@ class RouteInfo:
         )
         self.include_in_schema = include_in_schema
         self.responses = responses or {}
-        # Explicit OpenAPI `operationId` override; falls back to the route
-        # name during schema emission.
+        # Falls back to the route name during schema emission.
         self.operation_id = operation_id
-        # `openapi_extra` - an arbitrary dict deep-merged into
-        # this route's OpenAPI operation object (lets users inject
-        # vendor extensions, custom requestBody examples, etc.).
+        # An arbitrary dict deep-merged into this route's OpenAPI operation
+        # object (lets users inject vendor extensions, custom requestBody
+        # examples, etc.).
         self.openapi_extra = openapi_extra
         # The routing-rule `defaults`: fixed values merged into
         # `path_params` at dispatch (without overriding URL-matched
@@ -312,7 +311,6 @@ class RouteInfo:
         # whose result is memoised in `_mw_chain_cache` keyed on the app's
         # middleware-list version so the filter runs at most once per
         # (route, middleware-set) generation, not per request.
-        #: `(names, types)` for a route that opts out of middleware, else `None`.
         #: A name matches `Middleware.middleware_name` exactly; a type matches by
         #: `isinstance`, so it covers subclasses.
         self.excluded_middleware: tuple[frozenset[str], tuple[type, ...]] | None = (

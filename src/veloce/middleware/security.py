@@ -92,7 +92,6 @@ def csp_nonce(request: Request | None = None) -> str | None:
         return None
     if isinstance(cached, str):
         return cached
-    # A factory closure was stored: materialize, cache, return.
     value = cached()
     request._state[_CSP_NONCE_STATE_KEY] = value
     return value
