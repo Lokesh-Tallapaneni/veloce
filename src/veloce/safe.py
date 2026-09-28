@@ -106,7 +106,6 @@ def secure_filename(name: str) -> str:
     # collapse to underscores in the final name.
     name = name.replace(os.sep, "_").replace("/", "_").replace("\\", "_")
 
-    # Sanitise everything else.
     name = _VALID_FILENAME_CHAR.sub("_", name)
 
     name = name.strip("._ ")

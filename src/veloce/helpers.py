@@ -646,7 +646,8 @@ def make_response(
             content_type=ct,
             headers=headers,
         )
-    # Pydantic model
+    # Duck-typed rather than `isinstance(..., BaseModel)` so this module
+    # needs no pydantic import.
     if hasattr(body, "model_dump"):
         return JSONResponse(body.model_dump(), status_code=status_code, headers=headers)
     return JSONResponse(body, status_code=status_code, headers=headers)
@@ -821,14 +822,10 @@ def stream_with_context(generator: Any) -> Any:
 
 # ── Singletons ────────────────────────────────────────────
 
-# `from veloce import current_app`.
 current_app = _CurrentAppProxy()
 
-# `from veloce import request`.
 request = _CurrentRequestProxy()
 
-# `from veloce import session`.
 session = _SessionProxy()
 
-# `from veloce import g`.
 g = _RequestGlobals()

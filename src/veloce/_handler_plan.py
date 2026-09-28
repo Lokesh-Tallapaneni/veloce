@@ -974,9 +974,6 @@ def _build_marker_slot(
     does not have, leaving the parameter to its handler default.
     """
     marker_kind = _marker_kind(marker)
-    # Body / Form / File markers read the HTTP request body, which
-    # a WebSocket handshake does not have - skip them so the
-    # handler default applies instead of crashing at resolve time.
     if websocket and marker_kind in (MK_BODY, MK_FORM, MK_FILE):
         return None
     # A model annotation under a query/header/cookie/form marker groups

@@ -94,8 +94,7 @@ class CacheControl:
         parts: list[str] = []
         for k, v in self._directives.items():
             wire = _to_wire(k)
-            # Bool-True flags emit the bare directive; numeric and string
-            # values share one `name=value` form (int formats identically).
+            # int formats identically to str, so both share the name=value branch.
             if v is True:
                 parts.append(wire)
             else:

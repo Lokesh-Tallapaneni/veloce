@@ -120,10 +120,6 @@ _LAST_EVENT_ID_HEADER = "Last-Event-ID"
 # The same name as the lower-case wire key, encoded once at import.
 _RAW_LAST_EVENT_ID = _LAST_EVENT_ID_HEADER.lower().encode("latin-1")
 
-# The lower-case wire key for the bearer credential, encoded once at import like
-# the one above. `_peek_header_key` compares it against the raw header tuples,
-# so reading the token never materialises the whole header mapping.
-
 # Monotonic source of SSE event ids for the non-resumable priming event. The id
 # makes the stream's first frame addressable; when resumability is off the id is
 # process-local and not persisted (no replay window is kept).
@@ -137,9 +133,6 @@ _STREAM_ID_ENTROPY_BYTES = 12
 # Sentinel marking the end of an SSE response stream (the runner has produced the
 # call's notifications and final response).
 _STREAM_END = object()
-
-
-# ── Response envelopes ────────────────────────────────────
 
 
 # ── Route registration ────────────────────────────────────
@@ -191,12 +184,6 @@ def register_http_transport(
     event_store = SSEEventStore() if resumable else None
 
     async def mcp_endpoint(request: Request) -> Response:
-        # The Streamable HTTP transport is one endpoint serving the spec's verbs:
-        # POST carries a JSON-RPC message; DELETE terminates a session (only when
-        # session management is on); GET resumes a dropped stream when resumability
-        # is on (it carries Last-Event-ID), else there is no standalone
-        # server-to-client stream this server keeps, so a GET is answered 405.
-        #
         # Admission control runs here, above the verb switch, rather than inside
         # each verb's handler. Every verb is subject to the same three rules, and a
         # check that lives in a handler is one a newly added verb can be written
@@ -284,10 +271,7 @@ async def _handle_http(
         except MCPError as exc:
             return _protocol_response(exc.to_error(message.get("id")), status_code=exc.http_status)
     else:
-        # A throwaway session for this POST only: it isolates the in-flight registry
-        # (so a concurrent POST's colliding id cannot cancel this one) but is not a
-        # persistent connection, so it advertises and serves no per-connection
-        # feature (subscriptions, lifecycle gating).
+        # Stateless default: a throwaway per-POST session (see the module docstring).
         session = MCPSession(persistent=False)
 
     is_request = "id" in message and isinstance(message.get("method"), str)

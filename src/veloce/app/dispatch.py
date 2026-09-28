@@ -1157,7 +1157,6 @@ class DispatchMixin(AppHost):
         Response's status / headers.
         """
         route_info = match.route_info
-        # Apply response_model validation + dump flags before coercion.
         # The handler may return a dict/BaseModel/list; if the route
         # declared a response_model, route the value through it so
         # extra fields drop, aliases apply, and unset/None filters fire.
@@ -1170,7 +1169,9 @@ class DispatchMixin(AppHost):
 
         response = self._coerce_response(result, route_info.response_class)
 
-        # Apply route-level status_code override
+        # The route's declared `status_code` applies only while the response
+        # still carries the default 200: a status the handler set itself, via
+        # a returned tuple or Response, must win over the declaration.
         if (
             route_info.status_code != status.HTTP_200_OK
             and response.status_code == status.HTTP_200_OK
@@ -1205,7 +1206,6 @@ class DispatchMixin(AppHost):
         blueprint's, then the per-request one-shot callbacks. Each may return
         a replacement Response.
         """
-        # Run after_request hooks - app-level then matched blueprint.
         for hook in reversed(self._after_request_hooks):
             hook_result = await self._call_after_hook(hook, request, response)
             if isinstance(hook_result, Response):

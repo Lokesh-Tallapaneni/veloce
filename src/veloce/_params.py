@@ -211,21 +211,12 @@ class ParamBase:
         self._regex_compiled = re.compile(self.regex) if self.regex is not None else None
         self.deprecated = deprecated
         self.examples = examples
-        # `Body(embed=True)` - nest the value under the param
-        # name inside the JSON body instead of treating the whole body
-        # as the value. Only meaningful for `Body` markers.
         self.embed = embed
-        # `Header(convert_underscores=...)` - when True (default)
-        # an un-aliased `Header` param's name has `_` rewritten to `-`
-        # (`x_token` -> `x-token`). Only meaningful for `Header` markers.
         self.convert_underscores = convert_underscores
         # Opt-in: spread a model annotation across this source's keys. Off by
         # default because a bare model annotation already means "one key holding
         # a JSON document", which is existing, documented behaviour.
         self.group = group
-        # `include_in_schema` - when False the parameter is
-        # still resolved at runtime but omitted from the OpenAPI
-        # `parameters` list.
         self.include_in_schema = include_in_schema
 
     @property

@@ -492,7 +492,6 @@ def _split_custom_argv(argv: list[str]) -> tuple[list[str], list[str] | None]:
     idx = 1
     while idx < len(argv) and argv[idx].startswith("-") and argv[idx] != "--":
         if argv[idx] == "--env-file":
-            # Skip the flag and its value token.
             idx += 2
         else:
             idx += 1

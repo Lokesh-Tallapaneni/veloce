@@ -101,8 +101,6 @@ def _enable_tcp_keepalive(
     """
     with contextlib.suppress(OSError):
         sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)
-    # `TCP_KEEPIDLE` is the Linux name; macOS spells the idle option
-    # `TCP_KEEPALIVE`. Prefer whichever this build exposes.
     idle_opt = getattr(_socket, "TCP_KEEPIDLE", None)
     if idle_opt is None:
         idle_opt = getattr(_socket, "TCP_KEEPALIVE", None)

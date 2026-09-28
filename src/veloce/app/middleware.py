@@ -155,7 +155,6 @@ class MiddlewareMixin(AppHost):
         (which is instantiated with no args). Returns the registered object so
         it can be used as a decorator.
         """
-        # Class -> instance.
         if isinstance(middleware, type):
             middleware = middleware()
         if not callable(middleware):
