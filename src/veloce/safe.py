@@ -109,7 +109,6 @@ def secure_filename(name: str) -> str:
     # Sanitise everything else.
     name = _VALID_FILENAME_CHAR.sub("_", name)
 
-    # Strip surrounds and collapse repeated underscores.
     name = name.strip("._ ")
     name = _UNDERSCORE_RUN.sub("_", name)
 

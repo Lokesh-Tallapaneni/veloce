@@ -178,7 +178,8 @@ class ServingMixin(AppHost):
                 host,
             )
 
-        # Use uvloop if available (2-4x faster event loop)
+        # uvloop is an optional extra and is unavailable on Windows, so the
+        # import failing is the ordinary path there rather than an error.
         try:
             import uvloop
 
@@ -203,7 +204,6 @@ class ServingMixin(AppHost):
         except KeyboardInterrupt:
             pass
         finally:
-            # Graceful shutdown: drain pending tasks, run lifecycle hooks
             loop.run_until_complete(self._graceful_shutdown(loop))
             loop.close()
 
@@ -317,7 +317,6 @@ class ServingMixin(AppHost):
         from veloce.serving.protocol import HttpProtocol
 
         loop = asyncio.get_running_loop()
-        # Run startup hooks
         await self._run_lifecycle(LIFECYCLE_STARTUP)
 
         # `SO_REUSEPORT` is absent on Windows (and some others); the stdlib
@@ -403,7 +402,6 @@ class ServingMixin(AppHost):
                 timeout=self.config.get("GRACEFUL_DRAIN_TIMEOUT", 30),
             )
 
-        # Cancel any still-running tasks
         for task in HttpProtocol._active_tasks:
             task.cancel()
         HttpProtocol._active_tasks.clear()
@@ -413,5 +411,4 @@ class ServingMixin(AppHost):
         # test harness) must not inherit a stuck "draining" state.
         HttpProtocol.reset_graceful_drain()
 
-        # Run shutdown lifecycle hooks
         await self._run_lifecycle(LIFECYCLE_SHUTDOWN)
