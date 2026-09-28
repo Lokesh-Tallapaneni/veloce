@@ -57,7 +57,8 @@ def http_date(value: datetime | date | struct_time | int | float | None = None) 
     elif isinstance(value, struct_time):
         ts = calendar.timegm(value)
     elif isinstance(value, date):
-        # `date` (not datetime) -> midnight UTC.
+        # `datetime` subclasses `date`, so this branch is reachable only because
+        # the `datetime` check above has already claimed those.
         ts = datetime(value.year, value.month, value.day, tzinfo=timezone.utc).timestamp()
     else:
         ts = float(value)

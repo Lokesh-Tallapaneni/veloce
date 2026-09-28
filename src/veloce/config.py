@@ -517,7 +517,6 @@ class Config(dict[str, Any]):
                     # by name at load time instead of failing per request.
                     self[stripped] = _coerce_env_value(stripped, value, self.get(stripped))
                 continue
-            # Nested: walk segments and set the leaf.
             segments = stripped.split("__")
             if not all(self._is_uppercase_key(s) for s in segments):
                 continue

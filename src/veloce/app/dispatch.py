@@ -276,7 +276,6 @@ class DispatchMixin(AppHost):
         if not self._openapi_setup:
             self._setup_openapi()
 
-        # Inject app reference into request
         request.app = self
 
         # `current_app` / `request` contextvars + per-request g reset.
@@ -967,7 +966,6 @@ class DispatchMixin(AppHost):
                     response = await sub_app.handle_request(sub_request)
                     return await self._run_response_middleware(request, response)
 
-        # Check static files
         if cp.has_static_handlers:
             for static in self._static_handlers:
                 response = await static.handle(request)
@@ -1037,7 +1035,6 @@ class DispatchMixin(AppHost):
                 return response
 
         if match is None:
-            # Check if path exists but method is wrong
             allowed = self.get_allowed_methods(request.path)
             if allowed:
                 # RFC 9110 Sec. 9.3.7: OPTIONS auto-responds with `Allow:` and
@@ -1061,10 +1058,9 @@ class DispatchMixin(AppHost):
                 )
             raise HTTPException(status.HTTP_404_NOT_FOUND, MSG_NOT_FOUND)
 
-        # Set path params + endpoint name on request.
         request.path_params = match.path_params
-        # the routing-rule `defaults` - fill in fixed values for params
-        # not already supplied by the matched URL.
+        # A routing rule's `defaults` fill in fixed values for params the
+        # matched URL did not supply.
         if match.route_info.defaults:
             for _dk, _dv in match.route_info.defaults.items():
                 request.path_params.setdefault(_dk, _dv)
@@ -1161,7 +1157,6 @@ class DispatchMixin(AppHost):
         Response's status / headers.
         """
         route_info = match.route_info
-        # Apply response_model validation + dump flags before coercion.
         # The handler may return a dict/BaseModel/list; if the route
         # declared a response_model, route the value through it so
         # extra fields drop, aliases apply, and unset/None filters fire.
@@ -1174,7 +1169,9 @@ class DispatchMixin(AppHost):
 
         response = self._coerce_response(result, route_info.response_class)
 
-        # Apply route-level status_code override
+        # The route's declared `status_code` applies only while the response
+        # still carries the default 200: a status the handler set itself, via
+        # a returned tuple or Response, must win over the declaration.
         if (
             route_info.status_code != status.HTTP_200_OK
             and response.status_code == status.HTTP_200_OK
@@ -1209,7 +1206,6 @@ class DispatchMixin(AppHost):
         blueprint's, then the per-request one-shot callbacks. Each may return
         a replacement Response.
         """
-        # Run after_request hooks - app-level then matched blueprint.
         for hook in reversed(self._after_request_hooks):
             hook_result = await self._call_after_hook(hook, request, response)
             if isinstance(hook_result, Response):
@@ -1603,7 +1599,6 @@ class DispatchMixin(AppHost):
                 # the status line and headers just changed, so it is stale.
                 resp._encoded = None
                 return resp
-        # Use custom response_class if specified
         if response_class is not None:
             if isinstance(response_class, type) and issubclass(response_class, JSONResponse):
                 if isinstance(result, _PydanticBaseModel):
@@ -1637,7 +1632,6 @@ class DispatchMixin(AppHost):
             return Response(body=result.encode(), content_type=MIME_HTML)
         if isinstance(result, bytes):
             return Response(body=result, content_type=MIME_HTML)
-        # Pydantic model
         if isinstance(result, _PydanticBaseModel):
             return self._json_from_handler(result.model_dump())
         return self._json_from_handler(result)

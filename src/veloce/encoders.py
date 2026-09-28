@@ -497,7 +497,6 @@ def jsonable_encoder(
                 _seen=_seen,
             )
 
-        # Fallback: try to convert to dict
         try:
             return jsonable_encoder(
                 _public_vars(obj),

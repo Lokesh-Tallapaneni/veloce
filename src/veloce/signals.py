@@ -205,7 +205,8 @@ class Signal:
             if target != receiver:
                 continue
             if sender is ANY_SENDER:
-                # "Detach any subscription for this receiver."
+                # ANY_SENDER: drop the subscription whatever sender it was
+                # registered against.
                 del self._subs[i]
                 return
             # Targeted detach: match the stored sender directly.

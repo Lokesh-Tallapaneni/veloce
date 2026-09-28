@@ -1842,7 +1842,8 @@ class Router:
         if name not in self._named_routes:
             raise ValueError(f"No route named {name!r}")
 
-        # Pop control flags before we walk path_params.
+        # Popped before the walk below: anything still in `path_params` after it
+        # is emitted as a query parameter.
         external = path_params.pop("_external", False)
         scheme = path_params.pop("_scheme", None)
         host = path_params.pop("_host", None)
@@ -2048,7 +2049,6 @@ class Router:
 
     def include_router(self, router: Router, prefix: str = "") -> None:
         """Include another router (a sub-router with its own prefix, tags, and hooks)."""
-        # Collect all routes from sub-router and re-add with combined prefix
         extra_prefix = prefix.rstrip("/")
         self._merge_node(router._root, extra_prefix, [])
         # Tree merge above only walks the radix structure; the child's regex
