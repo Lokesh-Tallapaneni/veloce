@@ -72,11 +72,9 @@ class MCPSession:
         # persistent and cannot subscribe or advertise per-connection features.
         self.persistent = persistent
         self.initialized = False
-        # The `capabilities` object the client sent in `initialize`; empty until
-        # then. The server consults it before relying on a client feature.
+        # The server consults this before relying on a client feature.
         self.client_capabilities: dict[str, Any] = {}
-        # The client's `clientInfo` (name / version / title), or `None` when the
-        # client sent none.
+        # Whatever `clientInfo` carried - name / version / title.
         self.client_info: dict[str, Any] | None = None
         # Resource URIs this connection subscribed to via `resources/subscribe`;
         # the server emits `notifications/resources/updated` only to a connection

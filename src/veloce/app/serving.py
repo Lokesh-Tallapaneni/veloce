@@ -382,20 +382,13 @@ class ServingMixin(AppHost):
         # `_serve`, which this shares. These are the only two call sites.
         from veloce.serving.protocol import HttpProtocol
 
-        # Phase one: flip every live connection's drain flag so each self-
-        # quiesces at its own request boundary - no abrupt mid-pipeline cancel.
         HttpProtocol.start_graceful_drain()
 
-        # Phase two (hard fallback): give in-flight dispatch tasks a bounded
-        # window to finish draining, then cancel any straggler so shutdown
-        # cannot block forever on a handler that ignores the drain.
-        #
-        # How long that window is belongs to the deployment, not to the
+        # How long the drain window is belongs to the deployment, not to the
         # framework: it has to fit inside the orchestrator's termination grace
-        # period, which the framework cannot know. Written as a literal here, a
-        # container with a ten-second grace was killed mid-drain and no operator
-        # setting could change it - while the two budgets either side of this
-        # line were both config-driven.
+        # period, which the framework cannot know. This was a literal once, and
+        # a container with a ten-second grace was killed mid-drain with no
+        # operator setting able to change it.
         if HttpProtocol._active_tasks:
             await asyncio.wait(
                 HttpProtocol._active_tasks,

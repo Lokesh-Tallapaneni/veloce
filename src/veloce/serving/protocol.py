@@ -266,6 +266,10 @@ class HttpProtocol(asyncio.Protocol):
         # connection_lost only decrements connections that were counted
         # (a connection refused at the cap never bumps the counter).
         self._counted: bool = False
+        self._pause_reasons = 0
+        self._max_pipelined: int = app.config.get(
+            "MAX_PIPELINED_REQUESTS", HttpProtocol.MAX_PIPELINED_REQUESTS
+        )
         # HTTP/1.1 mandates FIFO response ordering on a connection. A Request
         # is built and enqueued the moment its headers finish parsing (before
         # its body arrives); a single per-connection server-loop task drains
@@ -273,10 +277,6 @@ class HttpProtocol(asyncio.Protocol):
         # response written first. The tuple carries the Request, its body
         # source (the protocol feeds body chunks into it), and the keep-alive
         # flag snapshotted at headers-complete.
-        self._pause_reasons = 0
-        self._max_pipelined: int = app.config.get(
-            "MAX_PIPELINED_REQUESTS", HttpProtocol.MAX_PIPELINED_REQUESTS
-        )
         self._request_queue: deque[tuple[Request, RequestBodySource, bool, RouteMatch | None]] = (
             deque()
         )

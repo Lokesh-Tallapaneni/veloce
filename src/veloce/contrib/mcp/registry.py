@@ -211,8 +211,8 @@ class ToolRegistry(Registry[MCPTool]):
 
     tools: dict[str, MCPTool] = field(default_factory=dict)
     schemas: dict[str, dict[str, Any]] = field(default_factory=dict)
-    # name -> version -> tool, for names registered under more than one version.
-    # Only such a name has an entry, so an unversioned server carries none.
+    # Only a name registered under more than one version has an entry here, so an
+    # unversioned server carries none.
     versions: dict[str, dict[str, MCPTool]] = field(default_factory=dict)
 
     @property

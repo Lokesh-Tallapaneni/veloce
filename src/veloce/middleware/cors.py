@@ -272,12 +272,10 @@ class CORSMiddleware(Middleware):
                 )
             response = Response(status_code=status.HTTP_204_NO_CONTENT, body=b"")
             self._add_cors_headers(response, origin, preflight=True)
-            # Echo the requested headers (filtered) and method.
             requested = request.headers.get(HEADER_ACCESS_CONTROL_REQUEST_HEADERS, "")
             if requested and self._allow_headers_has_star:
                 response.headers[HEADER_ACCESS_CONTROL_ALLOW_HEADERS] = requested
             elif requested:
-                # Intersect requested vs the precomputed lowercased allow-set.
                 tokens = [s for t in requested.split(",") if (s := t.strip())]
                 matched = [t for t in tokens if t.lower() in self._allow_headers_lower]
                 if matched:

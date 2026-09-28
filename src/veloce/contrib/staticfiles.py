@@ -77,7 +77,6 @@ def _precondition_failed(
     if if_match:
         if if_match == ("*",):
             return False
-        # No strong match across the list -> precondition fails (412).
         return all(not _etag_matches_strong(etag, token) for token in if_match)
     if if_unmodified_since is not None:
         # HTTP-dates carry second resolution - floor mtime to compare.
@@ -844,7 +843,6 @@ class StaticFiles:
         base = url_path if url_path.endswith("/") else url_path + "/"
 
         rows: list[str] = []
-        # Parent-directory link unless we're at the prefix root.
         if base.rstrip("/") != self.prefix:
             rows.append('<li><a href="../">../</a></li>')
 

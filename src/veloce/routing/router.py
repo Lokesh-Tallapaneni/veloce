@@ -224,15 +224,6 @@ def _check_duplicate_params(full_path: str) -> None:
         seen.add(ph.name)
 
 
-# ── Radix tree structures ──────────────────────────────────
-
-
-# ── Route metadata ─────────────────────────────────────────
-
-
-# ── Regex fallback routes ──────────────────────────────────
-
-
 # ── Router ─────────────────────────────────────────────────
 
 
@@ -751,11 +742,8 @@ class Router:
         )
         slots = route_info.handler_plan.slots
         has_deps = bool(route_info.route_dep_plans)
-        # A handler with no parameter slots and no route-level dependencies
-        # needs nothing resolved.
         route_info.is_trivial_plan = not slots and not has_deps
-        # Request-only fast path: the handler takes only `request` and the
-        # route has no dependencies. Skip DependencyResolver entirely and bind
+        # The fast path skips DependencyResolver entirely and binds
         # kwargs = {"request": request} directly.
         route_info.is_request_only_plan = (
             len(slots) == 1 and slots[0].kind == K_REQUEST and not has_deps
@@ -1045,9 +1033,6 @@ class Router:
         is_ws = any(m.upper() == ROUTE_METHOD_WEBSOCKET for m in methods)
         self._finalize_plans(route_info, is_ws=is_ws)
 
-        # `node` is the radix leaf for tree routes; `regex_route` is set
-        # instead for regex routes (the two branches above are mutually
-        # exclusive, so exactly one of them holds the handler table).
         if regex_route is not None:
             handler_table = regex_route.handlers
         else:
@@ -1721,7 +1706,6 @@ class Router:
 
         return decorator
 
-    # `websocket_route` is an alias for the `websocket` decorator.
     websocket_route = websocket
 
     def websocket_listener(

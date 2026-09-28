@@ -91,7 +91,7 @@ class URLMap:
     def __getitem__(self, endpoint: str) -> list[URLRule]:
         self._build()
         index = self._by_endpoint
-        # Return a fresh list so a caller mutating it cannot corrupt the index.
+        # A fresh list, so a caller mutating it cannot corrupt the index.
         return list(index.get(endpoint, ())) if index is not None else []
 
     def __repr__(self) -> str:

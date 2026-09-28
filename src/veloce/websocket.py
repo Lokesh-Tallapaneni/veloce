@@ -522,9 +522,9 @@ class WebSocket:
         # with frame boundaries - bytes accumulate here until a whole frame
         # (or several) can be parsed off the front.
         self._recv_buffer: bytearray = bytearray()
-        # ASGI mode (W1). When wired through `Veloce.__call__`'s websocket
-        # branch, the transport is None and we drive the connection through
-        # ASGI receive/send callables instead. Set by `from_asgi`.
+        # When wired through `Veloce.__call__`'s websocket branch, the
+        # transport is None and we drive the connection through ASGI
+        # receive/send callables instead. Set by `from_asgi`.
         self._asgi_receive: Any = None
         self._asgi_send: Any = None
         self.scope: dict[str, Any] | None = None
