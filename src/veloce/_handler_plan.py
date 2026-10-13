@@ -670,6 +670,8 @@ def _callable_name(obj: Any) -> str:
     answers to "which callable is this?" for the same class of mistake is worse
     than either answer.
     """
+    while isinstance(obj, functools.partial):
+        obj = obj.func
     return getattr(obj, "__qualname__", None) or getattr(obj, "__name__", None) or repr(obj)
 
 
