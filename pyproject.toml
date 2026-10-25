@@ -80,7 +80,7 @@ dependencies = [
     "uvloop>=0.19.0; sys_platform != 'win32'",
     "orjson>=3.11.5",
     "pydantic>=2.4.0",
-    "multidict>=6.0.0",
+    "multidict>=6.9.1",
     "python-multipart>=0.0.22",
     "httptools>=0.6.0",
     "jinja2>=3.1.6",
@@ -95,7 +95,7 @@ dependencies = [
 # Install with `pip install veloceframework[standard]`.
 standard = [
     "uvicorn[standard]>=0.23",
-    "brotli>=1.0",
+    "brotli>=1.2.1",
     "msgspec>=0.16",
 ]
 # uvicorn is the recommended production ASGI server and what `veloce run` hands
@@ -150,7 +150,7 @@ cli = ["click>=8.1"]
 # around the quality the middleware defaults to. Without this extra the
 # middleware simply does not offer `br`. Install with
 # `pip install veloceframework[brotli]`.
-brotli = ["brotli>=1.0"]
+brotli = ["brotli>=1.2.1"]
 # Zstandard for `CompressionMiddleware`. Faster than both gzip and brotli at a
 # similar ratio, and increasingly sent by browsers as `zstd`. Without this extra
 # the middleware does not offer `zstd`. Install with
@@ -171,7 +171,7 @@ all = [
     "msgspec>=0.16",
     "redis>=4.2",
     "click>=8.1",
-    "brotli>=1.0",
+    "brotli>=1.2.1",
     "zstandard>=0.21",
     "ciso8601>=2.3",
 ]
@@ -242,7 +242,7 @@ dev = [
     # instrumentation tests began skipping - the same shape as the otel gap
     # above. Named here so the dev environment is reproducible.
     "prometheus_client>=0.17",
-    "brotli>=1.2.0",
+    "brotli>=1.2.1",
     "zstandard>=0.25.0",
     "ciso8601>=2.3.3",
 ]

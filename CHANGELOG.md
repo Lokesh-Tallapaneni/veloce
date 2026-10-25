@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - A JSON body sent with no `Content-Type` is refused, closing a cross-origin send that needs no preflight. ([#339](https://github.com/Lokesh-Tallapaneni/veloce/pull/339))
+- `multidict>=6.9.1` is required, past a reference leak in its items-view operators. ([#339](https://github.com/Lokesh-Tallapaneni/veloce/pull/339))
+- The `brotli` and `standard` extras require `brotli>=1.2.1`, past an out-of-bounds write in its decoder. ([#339](https://github.com/Lokesh-Tallapaneni/veloce/pull/339))
 
 ### Added
 

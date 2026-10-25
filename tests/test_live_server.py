@@ -269,18 +269,29 @@ async def test_startup_and_shutdown_hooks_run_around_serving():
     assert events == ["startup", "shutdown"]
 
 
+def _assert_port_released(port: int) -> None:
+    """Binding the port again is the observable proof the listener is gone.
+
+    `SO_REUSEADDR` is what a server sets and what `LiveServer` itself sets: it
+    permits a rebind over a connection left in `TIME_WAIT` by the request the
+    test just served, which is not the listener and is not what is being
+    proved. It does not permit a bind over a live listener - that needs
+    `SO_REUSEPORT` - so the assertion still fails if the server is still up.
+    """
+    rebind = socket.socket()
+    rebind.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        rebind.bind(("127.0.0.1", port))
+    finally:
+        rebind.close()
+
+
 async def test_the_port_is_released_once_the_server_shuts_down():
     async with LiveServer(_app()) as server:
         port = server.port
         assert (await server.get("/items")).status_code == 200
 
-    # Binding the same port again is the observable proof the listener is gone;
-    # it would raise `OSError` while the socket was still held.
-    rebind = socket.socket()
-    try:
-        rebind.bind(("127.0.0.1", port))
-    finally:
-        rebind.close()
+    _assert_port_released(port)
 
 
 async def test_shutdown_leaves_no_connection_or_dispatch_task_behind():
@@ -366,11 +377,7 @@ async def test_the_port_is_released_even_though_a_client_held_on():
     finally:
         writer.close()
 
-    rebind = socket.socket()
-    try:
-        rebind.bind(("127.0.0.1", port))
-    finally:
-        rebind.close()
+    _assert_port_released(port)
 
 
 async def test_an_idle_connection_is_drained_rather_than_waited_out():
@@ -531,12 +538,7 @@ async def test_a_failed_client_close_still_releases_the_port():
     with pytest.raises(RuntimeError, match="closing this client connection failed"):
         await server.__aexit__()
 
-    # Binding it again is the observable proof the listener is gone.
-    rebind = socket.socket()
-    try:
-        rebind.bind(("127.0.0.1", port))
-    finally:
-        rebind.close()
+    _assert_port_released(port)
 
 
 async def test_a_failed_client_close_still_runs_the_shutdown_hooks():

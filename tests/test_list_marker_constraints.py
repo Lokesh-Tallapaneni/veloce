@@ -1405,13 +1405,37 @@ def test_a_list_in_a_non_field_slot_is_seen_even_though_it_cannot_be_copied():
     assert deepcopyable(holder) is False
 
 
+def _nest(depth: int) -> object:
+    deep: object = ["leaf"]
+    for _ in range(depth):
+        deep = (deep,)
+    return deep
+
+
+def _copyable_depth() -> int:
+    """A nesting depth a plain `copy.deepcopy` handles, with little to spare.
+
+    Measured rather than pinned: the depth that fits depends on the recursion
+    limit, on how many frames one copy level costs - which differs by
+    interpreter version - and on the stack pytest has already spent. A pinned
+    450 copied on 3.12 and overflowed on 3.11.
+    """
+    depth = 0
+    while depth < 2000:
+        try:
+            copy.deepcopy(_nest(depth + 10))
+        except RecursionError:
+            break
+        depth += 10
+    assert depth, "no depth was copyable, so the margin cannot be the difference"
+    return depth
+
+
 def test_a_default_too_deep_to_copy_with_stack_to_spare_is_not_copied():
     """A copy attempted at registration has a shallower stack than the same
     copy inside a request, so a structure in between passed here and raised
     there - a 500 on every request that omitted the value."""
-    deep: object = ["leaf"]
-    for _ in range(450):
-        deep = (deep,)
+    deep = _nest(_copyable_depth())
     assert copy.deepcopy(deep) is not None, "the copy must pass at this depth to be the case"
     assert deepcopyable(deep) is False
 
