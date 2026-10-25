@@ -76,12 +76,9 @@ def _enable_tcp_keepalive(
     """Turn on OS-level TCP keepalive for an accepted connection socket.
 
     SO_KEEPALIVE lets the kernel reap a half-open connection that vanished
-    without a FIN, which the application-level idle timer never observes.
-    The tuning options are platform-specific - Windows exposes none of
-    TCP_KEEPIDLE / TCP_KEEPINTVL / TCP_KEEPCNT - so each is probed with
-    `getattr` and skipped when absent, and a `None` value leaves the OS default
-    in place. Failures are swallowed: keepalive is best-effort hardening, never
-    a reason to drop a serviceable connection.
+    without a FIN, which the idle timer never observes. The tuning options are
+    platform-specific - Windows exposes none of them - so each is probed and
+    skipped when absent, and failures are swallowed as best-effort hardening.
     """
     with contextlib.suppress(OSError):
         sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)
@@ -123,8 +120,7 @@ CONTENT_TYPE_JSON_LINE = b"Content-Type: application/json\r\n"
 _WS_SUPPORTED_VERSION = b"13"
 
 
-#: `%` as an int: an int in `bytes` is a memchr, a one-byte `bytes` a substring search
-#: an order of magnitude dearer on a per-request path.
+#: An int in `bytes` is a memchr; a one-byte `bytes` a dearer substring search.
 _PERCENT_BYTE = 0x25
 
 
@@ -172,8 +168,7 @@ class HttpProtocol(asyncio.Protocol):
     # Prevents GC of in-flight tasks across all connections.
     _active_tasks: set[asyncio.Task[Any]] = set()
 
-    # Walked by graceful shutdown to flip every `_draining` flag; weak, so a torn-down
-    # connection drops out by itself.
+    # Walked by graceful shutdown; weak, so a torn-down connection drops itself.
     _live_connections: weakref.WeakSet[HttpProtocol] = weakref.WeakSet()
 
     # Installed by the gunicorn worker to drive `max_requests` recycling.
@@ -266,8 +261,8 @@ class HttpProtocol(asyncio.Protocol):
             )
             return
         self._header_bytes_total += field_size
-        # Chunked trailers arrive here and nothing consumes them. Dropped before the
-        # capture, so one named `content-length` cannot poison the early-413 guard.
+        # Dropped pre-capture, so a trailer named `content-length` cannot poison
+        # the early-413 guard (RFC 9112 Sec. 7.1.2).
         if self._headers_done:
             return
         name = name.lower()
@@ -285,10 +280,9 @@ class HttpProtocol(asyncio.Protocol):
 
         Called as soon as a request is built, because the parser keeps advancing
         through pipelined bytes and a follow-up's `on_url` / `on_header` would
-        otherwise append into the live lists. `_headers_done` is deliberately
-        not cleared here, and `on_message_complete` re-zeroes
-        `_header_bytes_total` itself because chunked trailers keep charging that
-        budget after this has run.
+        otherwise append into the live lists. `_header_bytes_total` is re-zeroed
+        by `on_message_complete` instead, because chunked trailers keep charging
+        that budget after this has run.
         """
         self.url = b""
         self.headers = []
@@ -300,19 +294,16 @@ class HttpProtocol(asyncio.Protocol):
     def on_headers_complete(self) -> None:
         """Headers are fully parsed - build the Request and dispatch it now.
 
-        The request is constructed and enqueued before its body arrives, so a
-        handler that streams the body sees chunks as the socket delivers them
-        rather than waiting for the whole body to buffer.
+        Enqueued before the body arrives, so a streaming handler sees chunks as
+        the socket delivers them.
         """
         if self._oversized:
             return
         if self.transport is None or self.transport.is_closing():
             return
 
-        # RFC 6455 native upgrade (Sec. 4.2), gated on the parser's C-level flag so an
-        # ordinary GET never enters the Python header scan. Either way the request must
-        # NOT be enqueued: httptools raises `HttpParserUpgrade` for any upgrade, so
-        # dispatching would run a handler the client is told failed.
+        # RFC 6455 Sec. 4.2, gated on the parser's C-level flag so an ordinary GET
+        # never enters the Python scan. Never enqueued: httptools always raises.
         if self.parser.should_upgrade():
             if not self._handle_websocket_upgrade():
                 self._send_bad_request()
@@ -366,9 +357,8 @@ class HttpProtocol(asyncio.Protocol):
     def _handle_websocket_upgrade(self) -> bool:
         """Attempt the RFC 6455 handshake; return True if the connection diverted.
 
-        True once the connection has been handled (diverted, or terminated with
-        an HTTP error response); False means "not a WebSocket upgrade - fall
-        through to the normal HTTP path".
+        True once handled, whether diverted or terminated with an HTTP error;
+        False means "not an upgrade - fall through to the HTTP path".
         """
         # RFC 6455 Sec. 4.1 requires a GET, so h2c and the rest fall through to HTTP.
         if self.parser.get_method() != b"GET":
@@ -397,8 +387,8 @@ class HttpProtocol(asyncio.Protocol):
 
         path, query_bytes = self._parse_request_target()
 
-        # Applied before the route table, because matching first tells an untrusted
-        # origin whether a path exists. Pre-101, so the refusal is an HTTP 403.
+        # Before the route table, or matching tells an untrusted origin a path
+        # exists. Pre-101, so the refusal is an HTTP 403.
         host_str = _extract_host(host.decode("latin-1")) if host else ""
         origin_str = origin.decode("latin-1") if origin is not None else ""
         if _ws_handshake_rejection(self.app._middlewares, host_str, origin_str):
@@ -461,10 +451,8 @@ class HttpProtocol(asyncio.Protocol):
     def _scan_ws_headers(self) -> tuple[bool, bytes | None, bytes | None, bytes, bytes | None]:
         """Read the handshake fields off the parsed headers (RFC 6455 Sec. 4.2.1).
 
-        Returns `(is_ws_upgrade, key, version, host, origin)`, where
         `is_ws_upgrade` is True only when both halves of the upgrade triplet are
-        present. `connection` may be a comma list ("keep-alive, Upgrade") while
-        the rest are single tokens.
+        present. `connection` may be a comma list ("keep-alive, Upgrade").
         """
         has_upgrade_token = False
         upgrade_is_ws = False
@@ -495,18 +483,16 @@ class HttpProtocol(asyncio.Protocol):
     def _write_ws_http_error(self, status_code: int, reason: bytes, extra: bytes = b"") -> None:
         """Refuse a handshake with a plain HTTP response, then close.
 
-        The upgrade has not completed on any of the pre-101 refusal paths, so
-        the refusal is an ordinary HTTP/1.1 response (RFC 6455 Sec. 4.2.2 /
-        Sec. 4.4), never a WebSocket close frame. `extra` carries additional
-        header lines, such as the 426's `Sec-WebSocket-Version`.
+        No pre-101 path has completed the upgrade, so the refusal is an ordinary
+        HTTP/1.1 response (RFC 6455 Sec. 4.2.2 / Sec. 4.4), never a close frame.
+        `extra` carries extra header lines, such as the 426's version advert.
         """
         self._oversized = True
         self._emit_http_error(status_code, reason, extra=extra)
 
     def on_body(self, body: bytes) -> None:
         """Feed a body chunk to the in-flight request's source."""
-        # The source latches `overflowed` past MAX_CONTENT_LENGTH, so the handler's
-        # next read raises 413; the drop keeps an over-reader from streaming on.
+        # The source latches `overflowed`, so the handler's next read raises 413.
         source = self._current_source
         if source is None:
             return
@@ -532,8 +518,7 @@ class HttpProtocol(asyncio.Protocol):
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
         """Take the transport, admitting the connection against the concurrency cap."""
-        # By capability, not `isinstance(asyncio.Transport)`: uvloop's transport does
-        # not subclass it, so an isinstance check fails every production connection.
+        # By capability: uvloop's transport does not subclass `asyncio.Transport`.
         if not (
             callable(getattr(transport, "write", None))
             and callable(getattr(transport, "pause_reading", None))
@@ -545,9 +530,7 @@ class HttpProtocol(asyncio.Protocol):
         transport = cast("asyncio.Transport", transport)
         self.transport = transport
 
-        # Connection cap (DDoS guard), under the lock so parallel `connection_made`
-        # calls cannot all see `count == cap - 1` and over-admit. `None`
-        # short-circuits because `int >= None` would refuse every connection.
+        # Under the lock, or parallel admits all see `count == cap - 1`.
         cap = self.app.config.get("MAX_CONCURRENT_CONNECTIONS", DEFAULT_MAX_CONCURRENT_CONNECTIONS)
         with HttpProtocol._connections_lock:
             if cap is not None and HttpProtocol._active_connections >= cap:
@@ -626,9 +609,8 @@ class HttpProtocol(asyncio.Protocol):
     def begin_drain(self) -> None:
         """Mark this connection for graceful quiescing.
 
-        The in-flight request runs to completion and the `_serve` loop then
-        closes at the request boundary. An idle keep-alive connection is closed
-        at once, so it does not linger out its idle timer during shutdown.
+        The in-flight request completes and `_serve` closes at the boundary; an
+        idle keep-alive connection closes at once rather than out its timer.
         """
         self._draining = True
         idle = (self._server_loop is None or self._server_loop.done()) and not self._request_queue
@@ -643,10 +625,9 @@ class HttpProtocol(asyncio.Protocol):
     def start_graceful_drain(cls) -> None:
         """Phase one of graceful shutdown: quiesce every live connection.
 
-        Each connection self-quiesces at its own request boundary, so no eager
-        per-connection close races a mid-write transport. The live set is
-        snapshotted first because `begin_drain` may close (and so deregister) a
-        connection, mutating it mid-iteration.
+        Each self-quiesces at its own request boundary, so no eager close races
+        a mid-write transport. The live set is snapshotted first because
+        `begin_drain` may deregister a connection, mutating it mid-iteration.
         """
         global _SHUTTING_DOWN
         _SHUTTING_DOWN = True
@@ -674,9 +655,8 @@ class HttpProtocol(asyncio.Protocol):
     def _set_pause_reason(self, bit: int, paused: bool) -> None:
         """Add or clear one reason to stop reading, pausing the transport once.
 
-        A full request-body buffer and a full pipelining queue both want the
-        socket quiet, so the reasons are reference-counted: a resume for one
-        cannot cancel the other's pause.
+        A full body buffer and a full pipelining queue both want the socket
+        quiet, so a resume for one cannot cancel the other's pause.
         """
         before = self._pause_reasons
         self._pause_reasons = after = (before | bit) if paused else (before & ~bit)
@@ -712,9 +692,8 @@ class HttpProtocol(asyncio.Protocol):
         """Asyncio callback: the transport write buffer crossed the high mark.
 
         Clearing the gate makes the next `drain()` block, throttling a producer
-        that is outrunning a slow client. Idempotent on purpose: asyncio
-        guarantees paired pause/resume, but tolerating a repeat is cheaper than
-        asserting on it.
+        outrunning a slow client. Idempotent, since tolerating a repeated
+        pause/resume is cheaper than asserting on the pairing.
         """
         self._can_write.clear()
 
@@ -728,9 +707,8 @@ class HttpProtocol(asyncio.Protocol):
     async def drain(self) -> None:
         """Block while the transport write buffer is over the high mark.
 
-        Returns immediately on the common path, where the gate is set. A
-        closing or absent transport also returns at once, so a torn-down
-        connection never parks the producer.
+        Returns at once on the common path and on a closing or absent transport,
+        so a torn-down connection never parks the producer.
         """
         if self._can_write.is_set():
             return
@@ -744,9 +722,9 @@ class HttpProtocol(asyncio.Protocol):
     ) -> None:
         """Write a minimal `Connection: close` HTTP/1.1 error response, then close.
 
-        The single framing path for every pre-dispatch refusal. `extra` carries
-        additional header lines. This owns only the wire framing: the
-        `_oversized` latch, source EOF and timer resets stay in the callers.
+        The single framing path for every pre-dispatch refusal, owning only the
+        wire framing: the `_oversized` latch, source EOF and timer resets stay
+        with the callers.
         """
         transport = self.transport
         if transport is None or transport.is_closing():
@@ -771,11 +749,10 @@ class HttpProtocol(asyncio.Protocol):
     def _parse_request_target(self) -> tuple[str, bytes]:
         """Split the parsed request line into `(path, raw_query_bytes)`.
 
-        `path` is percent-decoded as the ASGI scope's `path` is, so one app
-        binds `/items/a%20b` the same way however it is served. The decode is
-        skipped when the target carries no `%` - almost every request - so the
-        common path pays one C-level scan and no allocation. The query is
-        returned raw, so the WebSocket scope can carry the bytes verbatim.
+        `path` is percent-decoded as the ASGI scope's is, so one app binds
+        `/items/a%20b` the same way however it is served. A target with no `%`
+        skips the decode, so the common path pays one C-level scan and no
+        allocation. The query stays raw for the WebSocket scope.
         """
         parsed = httptools.parse_url(self.url)
         raw_path = parsed.path
@@ -817,10 +794,9 @@ class HttpProtocol(asyncio.Protocol):
     def _refusal_request(self) -> Request | None:
         """Build a body-less `Request` for a pre-dispatch refusal, or `None`.
 
-        The request line and headers are already parsed when a declared
-        `Content-Length` is checked, so the refusal can carry the same request
-        the response phase would have seen. There is deliberately no body
-        source: the body is what is being refused.
+        The request line and headers are parsed by the time a declared
+        `Content-Length` is checked, so the refusal carries the request the
+        response phase would have seen. No body source: that is what is refused.
         """
         transport = self.transport
         if transport is None or transport.is_closing():
@@ -843,10 +819,9 @@ class HttpProtocol(asyncio.Protocol):
         """Emit a 413 and close - the body exceeds MAX_CONTENT_LENGTH.
 
         The connection is terminated rather than trusted to resynchronise after
-        a partially-read over-limit body. With a `request`, the refusal runs
-        through the app's response phase so it carries the CORS and security
-        headers a served response would; without one there is nothing to run
-        middleware against and the bare framing is written directly.
+        a partially-read over-limit body. With a `request` the refusal runs
+        through the app's response phase, so it carries the CORS and security
+        headers a served response would; without one the bare framing is written.
         """
         self._oversized = True
         if self._current_source is not None:
@@ -864,8 +839,7 @@ class HttpProtocol(asyncio.Protocol):
                 HttpProtocol._active_tasks.add(task)
                 task.add_done_callback(HttpProtocol._active_tasks.discard)
                 return
-        # The reason phrase is RFC 9110 Sec. 15.5.14's, which the status table still
-        # spells the pre-9110 way; the body is the one the ASGI path answers with.
+        # RFC 9110 Sec. 15.5.14's phrase; the status table spells the pre-9110 one.
         self._emit_http_error(
             status.HTTP_413_CONTENT_TOO_LARGE,
             b"Content Too Large",
@@ -942,10 +916,9 @@ class HttpProtocol(asyncio.Protocol):
     def _ws_task_done(ws: WebSocket, task: asyncio.Task[Any]) -> None:
         """Retire a completed WebSocket dispatch task.
 
-        A handler that raises closes with 1011 first, and that close awaits - so
-        a peer already gone lets `connection_lost` cancel this task
-        mid-handshake and the exception is lost with it. `_run_websocket`
-        records it on the socket beforehand, so a cancellation still reports.
+        A handler that raises closes with 1011 first, and that close awaits, so
+        a peer already gone lets `connection_lost` cancel this task and lose the
+        exception. `_run_websocket` records it on the socket beforehand.
         """
         HttpProtocol._active_tasks.discard(task)
         exc = ws._handler_exc if task.cancelled() else task.exception()
@@ -969,8 +942,7 @@ class HttpProtocol(asyncio.Protocol):
         except httptools.HttpParserUpgrade as upgrade:
             # Not an error: httptools signals the switch `on_headers_complete` made.
             if self._websocket is not None:
-                # The offset of the post-handshake body: a client that pipelines its
-                # first frame leaves it where the HTTP parser never looks.
+                # A client pipelining its first frame leaves it past this offset.
                 offset = upgrade.args[0]
                 if offset < len(data):
                     with contextlib.suppress(WebSocketDisconnect):
@@ -995,8 +967,7 @@ class HttpProtocol(asyncio.Protocol):
         """Per-connection server loop: dispatch queued requests one at a time.
 
         Awaiting each `_dispatch` before pulling the next request is what
-        enforces HTTP/1.1 FIFO response ordering, and bounds in-flight work to
-        one request per connection.
+        enforces HTTP/1.1 FIFO response ordering.
         """
         while self._request_queue and not self._closing:
             request, source, keep_alive, match = self._request_queue.popleft()
@@ -1038,8 +1009,7 @@ class HttpProtocol(asyncio.Protocol):
                     if self.transport is not None and not self.transport.is_closing():
                         self.transport.close()
                     return
-        # Rearmed so an idle connection is reaped, but skipped while a follow-up is
-        # mid-receive: arming both timers could close the transport mid-request.
+        # Skipped mid-receive: both timers armed could close the transport.
         if (
             not self._closing
             and self.transport is not None
@@ -1058,18 +1028,14 @@ class HttpProtocol(asyncio.Protocol):
     ) -> bool:
         """Dispatch one request and write its response.
 
-        The Request was built at headers-complete; its body streams into
-        `source` as the parser delivers it. Once the response is written the
-        source is drained to EOF, because a handler that ignored the body must
-        not strand unparsed bytes that would corrupt the next pipelined request.
-
-        Returns whether the connection should keep serving subsequent requests.
+        The body streams into `source` as the parser delivers it, and is drained
+        to EOF once the response is written: a handler that ignored the body must
+        not strand bytes that would corrupt the next pipelined request. Returns
+        whether the connection should keep serving.
         """
         timeout = self.app.config.get("REQUEST_HANDLER_TIMEOUT", 30)
-        # A non-streaming route wants its body buffered, so the sync `.data` /
-        # `.get_json()` / `.form` accessors find it. A `stream=True` route keeps its
-        # lazy source: draining one a handler is parked on would make a SECOND
-        # waiter on a single-waiter event.
+        # Buffered for the sync `.data` / `.get_json()` / `.form` accessors; a
+        # `stream=True` source stays lazy, or a parked handler gets a 2nd waiter.
         if match is None or not match.route_info.stream:
             # Usually one segment, so this settles with a read and no coroutine.
             if source.at_eof and not source.total_bytes:
@@ -1082,8 +1048,8 @@ class HttpProtocol(asyncio.Protocol):
         inner = self.loop.create_task(self.app.handle_request(request, match=match))
         detached = False
         try:
-            # The shield lets the handler's teardowns finish even when `wait_for`
-            # cancels; the explicit task is the handle on one that outlives the wait.
+            # The shield lets teardowns finish when `wait_for` cancels; the task is
+            # the handle on a handler that outlives the wait.
             response = await asyncio.wait_for(asyncio.shield(inner), timeout=timeout)
         except asyncio.CancelledError:
             # The server loop was cancelled: nobody is left to serve.
@@ -1107,8 +1073,7 @@ class HttpProtocol(asyncio.Protocol):
             detached = not inner.done()
 
         if detached:
-            # The handler outlived the shield: its state is mid-flight, so draining
-            # here would race it and the connection is not reused.
+            # The handler outlived the shield, so draining here would race it.
             HttpProtocol._active_tasks.add(inner)
             inner.add_done_callback(HttpProtocol._active_tasks.discard)
             inner.add_done_callback(self._on_detached_handler_done(source))
@@ -1132,8 +1097,8 @@ class HttpProtocol(asyncio.Protocol):
                     await response.stream_to(self.transport, drain=self.drain, keep_alive=False)
                 self.transport.close()
                 return False
-            # `is_streamed`: a class test drops `EventSourceResponse` and a streamed
-            # `FileResponse` into the buffered encoder, which cannot emit chunks.
+            # Not a class test: that drops a streamed `FileResponse` into the
+            # buffered encoder, which cannot emit chunks.
             if response.is_streamed:
                 if is_head:
                     self.transport.write(response.encode(keep_alive=keep_alive))
@@ -1161,8 +1126,7 @@ class HttpProtocol(asyncio.Protocol):
         """Write a plain error response and close the connection.
 
         For the timeout/error paths where the handler is still detached and
-        alive, so the connection cannot be safely reused. Returns False so the
-        server loop stops serving.
+        alive, so the connection cannot be reused. Returns False to stop serving.
         """
         transport = self.transport
         if transport is not None and not transport.is_closing():
@@ -1179,9 +1143,8 @@ class HttpProtocol(asyncio.Protocol):
         """Build a done-callback that drains the body once a detached handler ends.
 
         A shielded handler still running may be the source's sole consumer, so
-        the body cannot be drained inline; this fires once it completes and no
-        consumer is left. The connection is already closing, so this is purely
-        buffer cleanup and failures are swallowed.
+        the body cannot be drained inline. The connection is already closing, so
+        this is buffer cleanup and failures are swallowed.
         """
 
         def _callback(task: asyncio.Task[Any]) -> None:
@@ -1198,10 +1161,9 @@ class HttpProtocol(asyncio.Protocol):
     def _reset(self) -> None:
         """Reset per-request scratch state for keep-alive connection reuse.
 
-        Deliberately only `_oversized`. This runs after the prior request's
-        dispatch has awaited, by which point the reused parser may already have
-        written a follow-up's `on_url` / `on_header` into the live buffers -
-        clearing those here would dispatch that follow-up with an empty URL.
-        `on_headers_complete` resets them instead, as each request is built.
+        Deliberately only `_oversized`: this runs after the prior dispatch has
+        awaited, by which point the reused parser may already have written a
+        follow-up's `on_url` / `on_header` into the live buffers, so clearing
+        those here would dispatch it with an empty URL.
         """
         self._oversized = False

@@ -1,22 +1,17 @@
 """MCP resource subscriptions — per-connection resource-change notifications.
 
-The Model Context Protocol lets a client subscribe to a resource URI and receive
-a `notifications/resources/updated` whenever that resource changes, plus a
-`notifications/resources/list_changed` when the set of available resources
-changes. Subscriptions are per-connection: a connection's subscribed URIs live on
-its `MCPSession`, and a notification reaches only the connections that subscribed.
+A client subscribes to a resource URI and receives `notifications/resources/
+updated` when it changes, plus `notifications/resources/list_changed` when the
+resource set does. Subscriptions are per-connection: the subscribed URIs live on
+the `MCPSession`, so a notification reaches only the connections that subscribed.
 
-A change is signalled by the application, not derived by the framework — a route's
-data layer knows when its resource changed, so the app calls
-`MCPServer.notify_resource_updated(uri)` (or `notify_resources_list_changed()`)
-and the server fans the notification out to subscribed connections through their
-outbound sinks. This `ConnectionRegistry` holds the live connections so a fan-out
-is a set walk, not a scan of every possible client.
+A change is signalled by the application, not derived by the framework: the app
+calls `MCPServer.notify_resource_updated(uri)` and the server fans out through
+each connection's outbound sink. `ConnectionRegistry` holds the live connections
+so that fan-out is a set walk, not a scan of every possible client.
 
-The feature is opt-in (`MCP_RESOURCE_SUBSCRIPTIONS` in `app.config`): a server
-with it off advertises `subscribe`/`listChanged` as `false`, registers no
-subscribe / unsubscribe handlers, and tracks no connections, so the default path
-allocates nothing and pays no per-request cost.
+Opt-in via `MCP_RESOURCE_SUBSCRIPTIONS`: with it off nothing is advertised,
+registered or tracked, so the default path pays no per-request cost.
 """
 
 from __future__ import annotations
@@ -35,14 +30,12 @@ if TYPE_CHECKING:  # pragma: no cover
 
 _logger = logging.getLogger(__name__)
 
-# The `_meta` key every message on a listen stream carries, identifying which
-# `subscriptions/listen` request it belongs to. On stdio all streams share one
-# channel, so this is how a client demultiplexes them.
+# Names the `subscriptions/listen` request a message belongs to. On stdio all
+# streams share one channel, so this is how a client demultiplexes them.
 META_SUBSCRIPTION_ID = "io.modelcontextprotocol/subscriptionId"
 
-# The notification filter a `subscriptions/listen` may ask for. The boolean topics
-# map to the notification each one enables; `resourceSubscriptions` is a URI list
-# and is handled separately.
+# The boolean topics a `subscriptions/listen` filter may ask for;
+# `resourceSubscriptions` is a URI list and is handled separately.
 LISTEN_TOPICS = {
     "toolsListChanged": "notifications/tools/list_changed",
     "promptsListChanged": "notifications/prompts/list_changed",
@@ -50,8 +43,7 @@ LISTEN_TOPICS = {
 }
 RESOURCE_SUBSCRIPTIONS = "resourceSubscriptions"
 
-# An outbound one-way sink: the connection's `Transport.send`, which delivers a
-# server-initiated JSON-RPC notification to that one client.
+# The connection's `Transport.send`: one-way delivery to that one client.
 Sink = Callable[[dict[str, Any]], Awaitable[None]]
 
 
@@ -75,8 +67,7 @@ def resources_list_changed_notification() -> dict[str, Any]:
 def _stamp(message: dict[str, Any], subscription_id: Any) -> dict[str, Any]:
     """Return `message` carrying its subscription id, without mutating the original.
 
-    Every message on a stream carries the id, so one built notification can be
-    stamped per subscriber rather than rebuilt.
+    One built notification is stamped per subscriber rather than rebuilt.
     """
     params = dict(message.get("params") or {})
     meta = dict(params.get("_meta") or {})
@@ -103,9 +94,8 @@ def subscription_acknowledged_notification(
 def subscription_closed_response(subscription_id: Any) -> dict[str, Any]:
     """Build the response that ends a stream gracefully.
 
-    The JSON-RPC response to the long-lived `subscriptions/listen` request, sent
-    when the server ends the subscription itself. A stream that drops without it
-    signals an abrupt disconnect the client may reconnect from.
+    The response to the long-lived `subscriptions/listen` request. A stream that
+    drops without it signals an abrupt disconnect the client may reconnect from.
     """
     return {
         "jsonrpc": "2.0",
@@ -123,13 +113,10 @@ def subscription_closed_response(subscription_id: Any) -> dict[str, Any]:
 class ConnectionRegistry:
     """The live MCP connections, each pairing its session with its outbound sink.
 
-    A stateful transport registers its connection for the duration it is open so
-    an application-signalled resource change can be fanned out to the connections
-    subscribed to that resource. Each registration is keyed by an opaque token
-    rather than by session, so two concurrent streams on one session id are
-    tracked independently: each receives notifications and unregisters on its own
-    without silencing the other. A `session -> tokens` index keeps the fan-out a
-    set walk and lets an evicted session drop all of its streams at once.
+    Each registration is keyed by an opaque token rather than by session, so two
+    concurrent streams on one session id are tracked independently and neither
+    silences the other on unregister. A `session -> tokens` index keeps the
+    fan-out a set walk and drops an evicted session's streams at once.
     """
 
     __slots__ = ("_sinks", "_by_session")
@@ -171,7 +158,6 @@ class ConnectionRegistry:
 
         Two mechanisms coexist: the handshake-era `resources/subscribe` set, and a
         modern `subscriptions/listen` naming the URI in `resourceSubscriptions`.
-        A listen stream's copy carries its subscription id.
         """
         message = resource_updated_notification(uri)
         for session, sink in list(self._sinks.values()):
@@ -188,10 +174,10 @@ class ConnectionRegistry:
     async def notify_topic(self, topic: str, *, broadcast_unlistened: bool = False) -> None:
         """Send one list-changed notification to the streams that asked for it.
 
-        The spec forbids sending a notification type the client did not request, so
-        a stream receives this only if its filter names `topic`. `broadcast_unlistened`
-        preserves the pre-existing behaviour of the handshake-era resource
-        notification, which goes to every open connection.
+        The spec forbids sending a notification type the client did not request,
+        so a stream receives this only if its filter names `topic`.
+        `broadcast_unlistened` is the handshake-era resource notification, which
+        goes to every open connection.
         """
         method = LISTEN_TOPICS.get(topic)
         if method is None:  # pragma: no cover - guarded by the caller
@@ -207,8 +193,7 @@ class ConnectionRegistry:
     def forget_streams(self, token: object) -> None:
         """Drop the listen streams a closing connection held, sending nothing.
 
-        The transport is already gone, so a graceful close cannot be delivered;
-        this only stops the fan-out from walking a session no longer reachable.
+        The transport is already gone, so no graceful close can be delivered.
         """
         entry = self._sinks.get(token)
         if entry is not None:
@@ -217,8 +202,7 @@ class ConnectionRegistry:
     async def close_streams(self, session: MCPSession) -> None:
         """End a connection's streams gracefully, then forget them.
 
-        Sent when the server tears a connection down on its own initiative, so the
-        client can tell a clean close from a dropped transport.
+        Lets the client tell a clean close from a dropped transport.
         """
         if not session.listen_streams:
             return
@@ -230,8 +214,7 @@ class ConnectionRegistry:
 
     @staticmethod
     async def _send(sink: Sink, message: dict[str, Any]) -> None:
-        # A dead or slow sink must not fail the caller's signal: a notification is
-        # advisory, and one closed connection cannot block the others.
+        # A notification is advisory, so one dead sink cannot fail the signal.
         try:
             await sink(message)
         except Exception:  # pragma: no cover - defensive against a torn-down sink
@@ -244,12 +227,10 @@ class ConnectionRegistry:
 class SubscriptionsCapability(_ServerCapability):
     """The `resources/subscribe` / `resources/unsubscribe` methods, opt-in.
 
-    Folded into the resource area but kept a separate capability so the base
-    `ResourcesCapability` stays unchanged when subscriptions are off. It
-    contributes no `initialize` entry of its own — the resource advertisement
-    (the `subscribe`/`listChanged` sub-capability flags) lives on
-    `ResourcesCapability`, which reads the same opt-in flag — so `advertise`
-    returns `None`.
+    Separate from `ResourcesCapability` so that stays unchanged when
+    subscriptions are off. `advertise` returns `None` because the
+    `subscribe`/`listChanged` flags live on `ResourcesCapability`, which reads
+    the same opt-in flag.
     """
 
     __slots__ = ()
@@ -267,13 +248,10 @@ class SubscriptionsCapability(_ServerCapability):
     async def _listen(self, params: dict[str, Any]) -> Any:
         """Open a long-lived notification stream (`subscriptions/listen`).
 
-        The stream is identified by the JSON-RPC id of this request, which every
-        message on it carries. The acknowledgement is sent first and reports the
-        subset of the requested filter the server will honour; a type this server
-        cannot serve is omitted rather than echoed, and is never sent.
-
-        No response is produced now: this request is answered only when the stream
-        ends, so the caller defers it.
+        The stream is identified by this request's JSON-RPC id, which every
+        message on it carries. The acknowledgement goes first and reports the
+        subset of the filter the server will honour. No response is produced
+        now: the request is answered when the stream ends, so the caller defers it.
         """
         session = self._require_open_stream()
         subscription_id = self._server.current_request_id()
@@ -304,13 +282,9 @@ class SubscriptionsCapability(_ServerCapability):
     def _require_open_stream(self) -> MCPSession:
         """Return the session that will hold this `subscriptions/listen` stream.
 
-        What a listen stream needs is somewhere to deliver, not a session that
-        outlives the request: the open stream *is* the subscription, and it ends
-        when the request does. The revision that introduced this method is also
-        the one that removed sessions, so requiring a persistent connection made
-        it reachable only where it is not defined - in particular it refused the
-        default HTTP deployment, which opens a real SSE stream over a session
-        built for the one request.
+        A listen stream needs somewhere to deliver, not a session that outlives
+        the request: the open stream *is* the subscription and ends with the
+        request, so a persistent connection is deliberately not required.
         """
         session = self._server.current_session()
         if session is None or not self._server.connection_can_stream(session):
@@ -323,10 +297,8 @@ class SubscriptionsCapability(_ServerCapability):
     def _require_session(self, method: str) -> MCPSession:
         """Return the dispatching connection's session, or reject a sessionless call.
 
-        Subscriptions are per-connection state, so a subscribe / unsubscribe is
-        meaningful only on a stateful transport that threads its session into the
-        dispatch. A stateless call (no session) cannot hold a subscription, which
-        is an invalid request for this method.
+        Subscriptions are per-connection state, so a stateless call cannot hold
+        one and is an invalid request for this method.
         """
         session = self._server.current_session()
         if session is None or not session.persistent:
@@ -343,9 +315,8 @@ class SubscriptionsCapability(_ServerCapability):
 def _agreed_filter(requested: Any) -> dict[str, Any]:
     """Return the subset of a requested notification filter this server will honour.
 
-    Every field is optional and an unknown one is dropped: the acknowledgement
-    reports only what will actually be sent, so a client can compare it against
-    what it asked for.
+    Every field is optional and an unknown one is dropped, so the
+    acknowledgement reports only what will actually be sent.
     """
     if not isinstance(requested, dict):
         return {}

@@ -1,17 +1,11 @@
 """Test client — in-memory driver for the app's ASGI surface.
 
 Constructs ASGI scopes directly and calls `app.__call__(scope, receive, send)`
-on a dedicated event loop. This exercises the same path a production ASGI
-server would take - the radix router, dependency resolver, middleware chain,
-response encoder, and ASGI lifespan handshake.
-
-The external API exposes both an `app.test_client()` factory and a
-`TestClient` class: `client.get(...)`, `client.post(json=...)`,
-`response.status_code`, `response.json()`, `response.text`, `response.headers`,
-`response.content_type`, plus cookie persistence across calls.
-
-The ASGI scope shape, message names, and header byte-list layout follow
-the ASGI specification.
+on a dedicated event loop, so the radix router, dependency resolver, middleware
+chain, response encoder and lifespan handshake all run as they would under a
+production server. Reached through `app.test_client()` or the `TestClient`
+class; the scope shape, message names and header byte-list layout follow the
+ASGI specification.
 """
 
 from __future__ import annotations
@@ -96,22 +90,16 @@ StreamBody = Iterable[bytes | str] | AsyncIterable[bytes | str]
 
 # ── Shared module helpers ─────────────────────────────────
 
-# Set-Cookie header-name match is case-insensitive; precompute the lowercased
-# form once so the per-header scan in `TestResponse` and the cookie-jar update
-# do not recompute it on every header.
+# Lowercased once, so the per-header scan does not recompute it.
 _SET_COOKIE_LOWER = HEADER_SET_COOKIE.lower()
 
 
 def _decode_cookie_value(value: str) -> str:
     """Return what a handler is given for a jar value, undoing `dump_cookie`.
 
-    The jar keeps the wire form so it can re-emit it verbatim; every read
-    surface reports this instead, so what a test asserts on is what the server
-    parses. It goes through `iter_cookies` - the one cookie reader - rather than
-    repeating its unquoting, which is how the two came to disagree.
-
-    This is a test-client path, so the synthetic header costs nothing that
-    matters; `iter_cookies` itself stays untouched for the request path.
+    The jar keeps the wire form so it can re-emit it verbatim; every read surface
+    reports this instead, so a test asserts on what the server parses. Through
+    `iter_cookies`, the one cookie reader, rather than repeating its unquoting.
     """
     for _name, decoded in iter_cookies("v=" + value):
         return decoded
@@ -121,18 +109,12 @@ def _decode_cookie_value(value: str) -> str:
 def _parse_set_cookie_first_pair(value: str, *, decode: bool = True) -> tuple[str, str] | None:
     """Return the `(name, value)` of a Set-Cookie header's first segment.
 
-    The leading `name=value` pair is the cookie itself; the rest are
-    attributes. Returns `None` when the first segment has no `=`.
+    The leading `name=value` pair is the cookie itself and the rest are
+    attributes; `None` when the first segment has no `=`.
 
-    `decode=True` percent-decodes the value through `iter_cookies`, the
-    framework's one cookie reader - so what a test asserts on is what the
-    handler will be given. `decode=False` keeps the wire form, which is what the
-    jar stores: it re-emits the bytes the server sent, the way a browser does.
-
-    Both were the raw form before, which meant `client.cookies["pref"]` and
-    `request.cookies["pref"]` disagreed for any value carrying an escape - a
-    test asserting the value the handler sees failed against a server that was
-    sending exactly that.
+    `decode=True` percent-decodes through `iter_cookies`, so a test asserts on
+    what the handler is given. `decode=False` keeps the wire form the jar stores,
+    which it re-emits as a browser does.
     """
     first = value.split(";", 1)[0].strip()
     if "=" not in first:
@@ -148,9 +130,9 @@ def _parse_set_cookie_first_pair(value: str, *, decode: bool = True) -> tuple[st
 def _resolve_redirect_location(location: str, base_url: str) -> tuple[str, str]:
     """Decompose a `Location` header into `(path, query)` for the next hop.
 
-    The test client has no live network: an absolute URL whose host is not the
-    test client's own host cannot be followed. Same-host absolute URLs are
-    reduced to `path?query#fragment`; relative locations pass through.
+    With no live network an absolute URL to another host cannot be followed; a
+    same-host one reduces to `path?query#fragment` and a relative one passes
+    through.
     """
     parsed = urlparse(location)
     if parsed.scheme and parsed.netloc:
@@ -201,16 +183,13 @@ async def _follow_redirects(
 ) -> TestResponse:
     """Drive the request/redirect loop shared by both test clients.
 
-    `send_one` is the per-hop async dispatch (`_send_one_request`); the only
-    difference between the sync and async clients is how that coroutine is
-    awaited, which stays in each client's `_make_request`. The status
-    classification, GET-rewrite, one-shot-stream replay guard, and hop cap
-    live here so a redirect-semantics fix lands in one place.
+    `send_one` is the per-hop async dispatch; how that coroutine is awaited is
+    the only difference between the two clients. The status classification,
+    GET-rewrite, replay guard and hop cap live here, so a redirect-semantics fix
+    lands once.
 
-    RFC 9110 Sec. 15.4: 303 always changes the method to GET and drops the
-    body; 301/302 historically did the same (every browser does), and for
-    test-client predictability the same browser convention is followed here.
-    307/308 strictly preserve method and body.
+    RFC 9110 Sec. 15.4: 303 always rewrites the method to GET and drops the body,
+    and 301/302 follow the same browser convention here; 307/308 preserve both.
     """
     current_method = method
     current_path = path
@@ -242,9 +221,8 @@ async def _follow_redirects(
             # is no longer needed (and must not be re-consumed).
             current_stream = None
         elif current_stream is not None:
-            # 307/308 must replay method + body, but a consumed one-shot
-            # iterator cannot be re-read. Fail loudly rather than silently
-            # sending an empty body.
+            # 307/308 must replay method and body, and a consumed one-shot iterator
+            # cannot be re-read - so fail loudly rather than send an empty body.
             raise RuntimeError(
                 "streamed request body cannot be replayed across redirects; "
                 "pass follow_redirects=False"
@@ -258,10 +236,9 @@ async def _follow_redirects(
 async def _aiter_body_chunks(stream: Any) -> AsyncIterator[bytes]:
     """Normalise a user-supplied streaming body into an async iterator of bytes.
 
-    Accepts a sync `Iterable[bytes | str]` or an `AsyncIterable[bytes | str]`;
-    `str` chunks are UTF-8 encoded. Other element types raise `TypeError`. A
-    plain `bytes` object is rejected here (it is not a stream) - callers pass
-    raw bytes through `content=` instead.
+    A sync or async iterable of `bytes` / `str`, the latter UTF-8 encoded; any
+    other element type raises `TypeError`. A plain `bytes` is not a stream and is
+    rejected, since raw bytes go through `content=`.
     """
     if hasattr(stream, "__aiter__"):
         async for chunk in stream:
@@ -285,37 +262,24 @@ def _coerce_chunk(chunk: Any) -> bytes:
     raise TypeError(f"stream chunk must be bytes or str, got {type(chunk).__name__}")
 
 
-# Event-loop turns a read past end-of-body yields before it is told the client
-# is gone. It exists to outlast a *peek*, not to wait for anything:
-# `ASGIBodySource.poll_disconnected` starts a read and cancels it after a single
-# turn, so an answer given inside that turn would tell a streaming handler its
-# client had gone. A caller that is really waiting for input survives all of
-# these and is answered in microseconds - no timer, so an in-dispatch drain
-# (a mounted ASGI sub-app, a middleware that reads to `http.disconnect`) costs
-# nothing measurable. Three rather than two leaves room for a probe that needs
-# a second step before it cancels.
+# Turns a read past end-of-body yields before it is told the client is gone.
+# `poll_disconnected` cancels after one, so answering inside it would tell a
+# streaming handler its client had gone; a real read survives and is answered.
 _PEEK_TURNS = 3
 
 
 class _ClientChannel:
     """The ASGI `receive` channel both test clients hand the app.
 
-    With no `stream`, a single `http.request` frame carries the whole body (the
-    historical fast path). With a `stream`, each iterator chunk becomes a
-    `more_body: True` frame followed by a terminal empty `more_body: False` one.
+    With no `stream` a single `http.request` frame carries the whole body; with
+    one, each chunk becomes a `more_body: True` frame before a terminal empty one.
 
-    A read past end-of-body is answered `http.disconnect` - there is no more
-    input, and this client has no socket, so nothing else can ever arrive - but
-    not within the turn a *peek* lasts. `request.is_disconnected()` cannot tell
-    a harness saying "no more input" from a server saying "the peer is gone", so
-    answering its one-turn poll aborted every streaming handler on its first
-    iteration and an SSE route emitted nothing under this client. Yielding
-    `_PEEK_TURNS` first separates the two callers by what they do rather than by
-    what they ask: a peek is gone by then, a real read is answered at once.
-
-    Once the exchange is finished the answer is immediate, with no yielding: the
-    response is complete, which is where a server does report the disconnect, and
-    a handler's own request object polled afterwards should see it.
+    A read past end-of-body is answered `http.disconnect`, since this client has
+    no socket and nothing else can arrive - but not within the turn a *peek*
+    lasts. `request.is_disconnected()` cannot tell "no more input" from "the peer
+    is gone", so yielding `_PEEK_TURNS` first separates the two callers by what
+    they do rather than what they ask. Once the exchange is finished the answer is
+    immediate, which is where a server does report the disconnect.
     """
 
     __slots__ = ("_body", "_chunks", "_body_sent", "_exhausted", "_finished")
@@ -351,20 +315,17 @@ class _ClientChannel:
         return {"type": ASGI_EVENT_HTTP_DISCONNECT}
 
 
-#: What a caller may pass as `headers=`: a mapping, or ordered pairs when a
-#: header has to appear more than once. Private: callers pass the value, not
-#: the name of its type.
+#: A mapping, or ordered pairs when a header must appear more than once.
+#: Private: callers pass the value, not the name of its type.
 _HeadersArg = Mapping[str, str] | Sequence[tuple[str, str]] | None
 
 
 def _header_pairs(headers: _HeadersArg) -> list[tuple[str, str]]:
     """Normalise a headers argument to ordered `(name, value)` pairs.
 
-    A mapping cannot carry a header twice, and HTTP allows it - two
-    `Authorization` headers, several `X-Forwarded-For` hops. Collapsing a
-    sequence of pairs into a dict here left no way to send that through this
-    client, so behaviour that depends on it could only be tested by building an
-    ASGI scope by hand.
+    A mapping cannot carry a header twice and HTTP allows it - two
+    `Authorization` headers, several `X-Forwarded-For` hops - so pairs are
+    accepted and kept in order.
     """
     if headers is None:
         return []
@@ -397,11 +358,8 @@ def _build_request_headers(
     stay in lockstep.
     """
     extra_pairs = _header_pairs(extra)
-    # A per-call header replaces a client-level one of the same name, and so
-    # does a per-call `cookie` replace the jar - but repeats within the call are
-    # all kept, which is the reason pairs are accepted at all. Dropping the
-    # overridden names first, rather than overwriting as each pair arrives,
-    # is what lets two of one name both survive.
+    # A per-call header replaces a client-level one of the same name, but repeats
+    # within the call are kept - which is why overridden names are dropped first.
     overridden = {name.lower() for name, _ in extra_pairs}
     merged = [(name, value) for name, value in base.items() if name.lower() not in overridden]
     if cookies and "cookie" not in overridden:
@@ -422,9 +380,7 @@ def _apply_set_cookie_to_jar(jar: dict[str, str], raw_headers: list[tuple[bytes,
         if name.lower() != _SET_COOKIE_LOWER:
             continue
         value = value_bytes.decode("latin-1")
-        # `decode=False`: the jar re-emits these bytes verbatim on the next
-        # request, which is what a browser does. The decoded form is what the
-        # read side shows.
+        # `decode=False`: the jar re-emits the bytes verbatim, as a browser does.
         pair = _parse_set_cookie_first_pair(value, decode=False)
         if pair is None:
             continue
@@ -440,11 +396,8 @@ def _apply_set_cookie_to_jar(jar: dict[str, str], raw_headers: list[tuple[bytes,
 def _guess_content_type(filename: str | None, content: Any) -> str:
     """Pick a Content-Type for a multipart file part.
 
-    Prefers the file-like object's `.type` attribute when present (matches
-    Python's `cgi.FieldStorage` shape that some test helpers expose), then
-    falls back to `mimetypes.guess_type(filename)`, finally to the
-    `application/octet-stream` default the multipart spec recommends for
-    unknown payloads.
+    The file-like's `.type` when present, else `mimetypes.guess_type`, else the
+    `application/octet-stream` the multipart spec recommends for an unknown one.
     """
     explicit = getattr(content, "type", None)
     if explicit:
@@ -462,28 +415,21 @@ def _encode_multipart(
 ) -> tuple[bytes, str]:
     """Build a `multipart/form-data` body from files + extra form fields.
 
-    `files` shape per RFC 7578 Sec. 4 - values can be:
+    `files` shape per RFC 7578 Sec. 4, mirroring `requests` / `httpx` - values
+    can be:
     - `bytes` / `str`: raw file content, filename inferred from key.
-    - file-like (`BytesIO`, open file handle, anything with `.read()`):
-      content read on demand, filename from `getattr(spec, "name", key)`.
+    - file-like (anything with `.read()`): filename from `.name`, else the key.
     - `(filename, content_or_filelike)`: 2-tuple.
     - `(filename, content_or_filelike, content_type)`: 3-tuple.
 
-    For shapes that don't carry an explicit content-type, the helper
-    guesses one from the filename extension and falls back to
-    `application/octet-stream`. Mirrors `requests` / `httpx` shape so
-    test code migrating from those clients works unchanged.
-
-    `fields` are non-file form parts. Both files and fields appear in
-    the body in registration order. Returns `(body, content_type)`
-    where the content_type carries the random boundary.
+    A shape with no explicit content-type has one guessed from the filename.
+    `fields` are non-file parts; both appear in registration order. Returns
+    `(body, content_type)`, where the content type carries the random boundary.
     """
 
     def _q(value: str) -> str:
         # Per RFC 7578 Sec. 4.2 / RFC 2616 Sec. 2.2 quoted-string: escape `"` and
-        # `\`; reject embedded CR or LF which cannot be carried inside a
-        # quoted-string and would otherwise let a caller inject header
-        # fields into the multipart preamble.
+        # `\`, and reject CR / LF, which would inject header fields into the preamble.
         if "\r" in value or "\n" in value:
             raise ValueError("multipart name / filename must not contain CR or LF")
         return _quote_header_value(value)
@@ -499,13 +445,8 @@ def _encode_multipart(
         parts.append(b"\r\n")
 
     for name, spec in files.items():
-        # Match `requests` / `httpx`: accept bytes / str, file-likes (any
-        # object with `.read()` - BytesIO, open file handle, IO[bytes]),
-        # 2-tuple `(filename, content_or_filelike)`, or 3-tuple
-        # `(filename, content_or_filelike, content_type)`. The bare
-        # file-like form is what a test written against a client library's
-        # `files={"f": BytesIO(...)}` passes, so it is accepted directly
-        # rather than raising `TypeError` on the way in.
+        # Match `requests` / `httpx`: bytes / str, a file-like (anything with
+        # `.read()`), or a 2- or 3-tuple adding the filename and content type.
         if isinstance(spec, (bytes, str)):
             filename, content, ct = name, spec, MIME_OCTET_STREAM
         elif isinstance(spec, tuple) and len(spec) == 2:
@@ -514,9 +455,7 @@ def _encode_multipart(
         elif isinstance(spec, tuple) and len(spec) == 3:
             filename, content, ct = spec
         elif hasattr(spec, "read"):
-            # Bare file-like - pull filename from `.name` when present
-            # (open()'d files set it; BytesIO doesn't), fall back to
-            # the field name.
+            # `.name` when present (an open file sets it, BytesIO does not).
             filename = getattr(spec, "name", None) or name
             content = spec
             ct = _guess_content_type(filename, content)
@@ -574,10 +513,9 @@ def _prepare_body_request(
 ) -> tuple[list[tuple[str, str]], bytes | None]:
     """Return `(headers, body)` for a body-carrying request.
 
-    `body` is `None` when `stream` was given, which excludes every buffered
-    form - enforcing that here keeps the API misuse loud (Veloce's convention)
-    rather than silently sending one and dropping another, and keeps both
-    clients on one answer about which argument wins.
+    `body` is `None` when `stream` was given, which excludes every buffered form.
+    Enforced here, so the misuse is loud rather than one argument silently
+    winning, and so both clients answer the same way.
     """
     if stream is not None:
         assert json is None and data is None and content is None and files is None, (
@@ -644,15 +582,11 @@ def _build_scope(
         "http_version": "1.1",
         "method": method.upper(),
         "scheme": scheme,
-        # ASGI defines `path` as the target with percent-encoded sequences
-        # decoded, which is what a real server hands the app - so the client
-        # decodes too. Without it a decoding-dependent bug that appears under
-        # uvicorn is invisible to the in-process suite.
+        # ASGI defines `path` percent-decoded, as a real server hands it to the app,
+        # or a decoding-dependent bug is invisible to the in-process suite.
         "path": unquote(path),
-        # ASGI permits non-ASCII bytes in `raw_path` (UTF-8 is the only
-        # universally-decodable encoding for percent-decoded paths). Plain
-        # `path.encode("ascii")` would crash the moment a test reached a
-        # non-ASCII URL. This one stays undecoded - it is the raw target.
+        # ASGI permits non-ASCII bytes in `raw_path`, so `encode('ascii')` would
+        # crash on a non-ASCII URL. This stays undecoded - it is the raw target.
         "raw_path": path.encode("utf-8"),
         "query_string": query_string.encode("ascii"),
         "root_path": root_path,
@@ -686,9 +620,8 @@ async def _collect_response(
             if chunk:
                 body_chunks.append(chunk)
             if not message.get("more_body", False):
-                # End of response: where a server starts reporting
-                # `http.disconnect`, so from here a read past end-of-body is
-                # answered without yielding and a poll of this request sees it.
+                # End of response: where a server starts reporting `http.disconnect`, so
+                # from here a read past end-of-body is answered without yielding.
                 receive.exchange_finished()
 
     try:
@@ -700,10 +633,8 @@ async def _collect_response(
     return TestResponse(status_code, b"".join(body_chunks), raw_headers)
 
 
-#: `SO_LINGER` with `onoff=1, linger=0` - close sends RST instead of FIN, so the
-#: socket skips `TIME_WAIT` and its port is immediately reusable. Windows lays
-#: `linger` out as two `u_short` and POSIX as two `int`; packing the platform's
-#: own width keeps it correct rather than correct-by-byte-order.
+#: `SO_LINGER` with `onoff=1, linger=0` - close sends RST, so the socket skips
+#: `TIME_WAIT`. Windows lays `linger` out as two `u_short`, POSIX as two `int`.
 _ABORTIVE_CLOSE = struct.pack("HH" if sys.platform == "win32" else "ii", 1, 0)
 
 
@@ -712,25 +643,17 @@ def _abort_self_pipe_on_close(loop: asyncio.AbstractEventLoop) -> None:
 
     The pipe is a loopback TCP socketpair, and a normal close leaves one end in
     `TIME_WAIT` for minutes - one ephemeral port per client, against a dynamic
-    range only 16384 wide. The pipe carries wakeup bytes that nothing reads at
-    shutdown, so an abortive close loses nothing.
+    range only 16384 wide. It carries wakeup bytes nothing reads at shutdown, so
+    an abortive close loses nothing.
 
-    This covers the loops `_new_loop` builds and nothing else. A loop created
-    elsewhere - `pytest-asyncio`'s own, for one - makes its wakeup pipe the
-    same way and is not reached from here, so this reduces the rate at which
-    the range is consumed rather than removing the failure: a host whose
-    ephemeral pool is already saturated still refuses `bind(("127.0.0.1", 0))`
-    for every socket, and no cleanup on this side recovers it.
-
-    `_ssock` / `_csock` are CPython internals: a version that renames them gets
-    today's behaviour back rather than an exception.
+    Only the loops `_new_loop` builds, so this slows the rate at which the range
+    is consumed rather than removing the failure. `_ssock` / `_csock` are CPython
+    internals, so a rename gets today's behaviour back rather than an exception.
     """
     for name in ("_ssock", "_csock"):
         sock = getattr(loop, name, None)
         if sock is not None:
-            # Best effort, like the attribute reads above: a socket family that
-            # refuses `SO_LINGER` - or a local policy that does - must not turn
-            # a port optimisation into a failure of every test on the platform.
+            # Best effort: a family refusing `SO_LINGER` must not fail every test.
             with contextlib.suppress(OSError):
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, _ABORTIVE_CLOSE)
 
@@ -738,19 +661,13 @@ def _abort_self_pipe_on_close(loop: asyncio.AbstractEventLoop) -> None:
 def _new_loop() -> asyncio.AbstractEventLoop:
     """Build the event loop a test client drives its app on.
 
-    On Windows the default is the proactor loop, whose every iteration goes
-    through an I/O completion port. The in-memory client opens no socket and
-    spawns no process, so that machinery runs on each request and finds nothing
-    to do; the selector loop does the same work materially cheaper - measured at
-    15.5% more requests per second for this client.
+    On Windows the default proactor loop runs an I/O completion port per
+    iteration, and the in-memory client opens no socket for it to find: the
+    selector loop measured 15.5% more requests per second here. It costs a
+    socketpair, whose port `_abort_self_pipe_on_close` hands straight back.
 
-    What it costs is a socketpair for its wakeup pipe, whose port
-    `_abort_self_pipe_on_close` hands straight back.
-
-    The one thing it cannot do is `asyncio.create_subprocess_*`, which on
-    Windows requires the proactor loop. A test whose handler spawns a
-    subprocess passes its own loop instead: `TestClient(app,
-    loop=asyncio.ProactorEventLoop())`.
+    It cannot run `asyncio.create_subprocess_*`, so a handler that spawns one
+    takes `TestClient(app, loop=asyncio.ProactorEventLoop())` instead.
     """
     if sys.platform == "win32":
         loop = asyncio.SelectorEventLoop()
@@ -764,11 +681,8 @@ class TestResponse:
 
     A read-only view of one ASGI response cycle: `status_code`, the decoded
     `text` and parsed `json()`, a case-insensitive `headers` mapping, the parsed
-    `cookies`, and `raw_headers` for the cases the mapping flattens (several
-    `Set-Cookie` lines arrive as one joined value in `headers`, and separately in
-    `raw_headers`).
-
-    Not constructed directly - the clients build it.
+    `cookies`, and `raw_headers` for what the mapping flattens (several
+    `Set-Cookie` lines join into one `headers` value). The clients build it.
 
     Usage::
 
@@ -798,12 +712,8 @@ class TestResponse:
         self.status_code = status_code
         self.body = body
         self.raw_headers = raw_headers
-        # Convert raw header list into a case-insensitive mapping so callers
-        # that check `headers["Content-Type"]` work regardless of whether
-        # the ASGI app lower-cased its keys (it should, per the spec).
-        # Set-Cookie is multi-valued in the ASGI list, but we collapse to
-        # the joined-by-`\r\nSet-Cookie: ` form for the headers mapping
-        # for back-compat; the full per-cookie list lives in `raw_headers`.
+        # Case-insensitive, so `headers["Content-Type"]` works whether or not the app
+        # lower-cased its keys. Set-Cookie joins here; `raw_headers` keeps the list.
         flat: CIMultiDict[str] = CIMultiDict()
         set_cookies: list[str] = []
         for k, v in raw_headers:
@@ -884,13 +794,8 @@ class TestClient:
                 self._loop = _new_loop()
                 self._owns_loop = True
 
-        # The in-memory test client is a testing tool: relax the
-        # first-request setup lock so a test can register routes/hooks between
-        # calls (the lock guards real concurrent serving, not single-threaded
-        # test dispatch). Remembered and restored on `close()`, because the app
-        # is not the client's to change permanently: an app touched by a
-        # TestClient and then served in the same process never froze its route
-        # table again, whatever DEBUG or TESTING said.
+        # Relaxed so a test can register routes between calls, and restored on
+        # `close()`, or the app would never freeze its route table when served.
         self._prior_setup_lock: bool | None = None
         if hasattr(app, "_setup_lock_enabled"):
             self._prior_setup_lock = app._setup_lock_enabled
@@ -908,11 +813,9 @@ class TestClient:
     def cookies(self) -> _TestClientCookies:
         """Live view of the client's cookie jar.
 
-        Supports dict-like access (`client.cookies["session"]`),
-        assignment (`client.cookies["k"] = "v"`), deletion, iteration,
-        and bulk `clear()`. Cookies the server sends on responses are
-        automatically merged in via `_update_cookies`. The state
-        persists across calls until the client is closed.
+        Dict-like access, assignment, deletion, iteration and `clear()`. Cookies
+        the server sends are merged in, and the state persists across calls until
+        the client is closed.
         """
         return _TestClientCookies(self)
 
@@ -927,10 +830,9 @@ class TestClient:
     def wait_for_background_tasks(self, timeout: float | None = 5.0) -> bool:
         """Wait for the app's background tasks to finish, on this client's loop.
 
-        A response's background task runs after the response is returned, so a
-        test asserting its effect otherwise has to reach for `client._loop` and
-        drive it with a hand-picked number of turns. Returns `True` when
-        everything finished, `False` on timeout.
+        A background task runs after the response is returned, so a test
+        asserting its effect would otherwise drive `client._loop` by hand.
+        Returns `True` when everything finished, `False` on timeout.
 
         Usage::
 
@@ -944,10 +846,9 @@ class TestClient:
     def session_transaction(self) -> Generator[Session, None, None]:
         """Mutate the session outside a request.
 
-        Yields a `Session` dict pre-loaded from the current session
-        cookie (if any). On block exit the session is re-signed with the
-        app's `SessionMiddleware` secret and stored in the cookie jar, so
-        the next request carries it::
+        Yields a `Session` dict pre-loaded from the current session cookie. On
+        exit it is re-signed with the app's `SessionMiddleware` secret and stored
+        in the cookie jar, so the next request carries it::
 
             with client.session_transaction() as sess:
                 sess["user_id"] = 7
@@ -960,9 +861,7 @@ class TestClient:
         registered = self.app.middlewares
         mw = next((m for m in registered if isinstance(m, SessionMiddleware)), None)
         if mw is None:
-            # Distinguish "no session at all" from "a session this cannot seed":
-            # the second is a real setup, and the generic message sent the reader
-            # looking for a mistake they had not made.
+            # Distinguished from "no session at all", which is a different mistake.
             other = next((m for m in registered if isinstance(m, SessionMiddlewareBase)), None)
             if other is not None:
                 raise RuntimeError(
@@ -971,24 +870,17 @@ class TestClient:
                 )
             raise RuntimeError("session_transaction() requires SessionMiddleware on the app")
 
-        # The signing key may still be waiting on `SECRET_KEY`: it is settled on
-        # the first request, and seeding a session before one is exactly what
-        # this helper is for. Ask the middleware to settle it now rather than
-        # keeping a second copy of that resolution here.
+        # The signing key may still be waiting on `SECRET_KEY`, which is settled on
+        # the first request - so ask the middleware rather than resolve it here.
         mw.bind_secret_key(self.app.config, hint="before session_transaction()")
 
-        # The wire name, not `cookie_name`: a `cookie_prefix` puts `__Host-` or
-        # `__Secure-` in front, and the middleware reads only the prefixed name.
-        # Seeded under the bare name the cookie was simply never found, so a test
-        # asserting authenticated behaviour silently exercised the anonymous path
-        # and passed anyway.
+        # The wire name, not `cookie_name`: a `cookie_prefix` prepends `__Host-` or
+        # `__Secure-`, and the middleware reads only the prefixed name.
         wire_name = mw.wire_cookie_name
         sess = Session()
         existing = self._cookies.get(wire_name)
         if existing:
-            # The middleware's own decode, so what this helper reads back is
-            # exactly what a request would have read - including the age
-            # ceiling, which the hand-rolled `loads` here did not apply.
+            # The middleware's own decode, so the age ceiling applies here too.
             decoded = mw.decode_cookie(existing)
             if decoded is not None:
                 sess = Session(decoded)
@@ -1034,9 +926,8 @@ class TestClient:
             query_string = f"{path_qs}&{query_string}" if query_string else path_qs
 
         follow = self.follow_redirects if follow_redirects is None else follow_redirects
-        # The redirect loop lives in the shared `_follow_redirects` driver; the
-        # sync client's only specialisation is running the whole coroutine on
-        # its dedicated loop (the async client awaits it instead).
+        # The shared `_follow_redirects` driver; the sync client's only
+        # specialisation is running the coroutine on its dedicated loop.
         return self._loop.run_until_complete(
             _follow_redirects(
                 build_headers=self._build_headers,
@@ -1221,11 +1112,9 @@ class TestClient:
     ) -> TestResponse:
         """Dispatch a request of any verb - httpx/test-client shape.
 
-        `client.request("PATCH", "/x", json=...)` is the verb-agnostic
-        form of `client.get` / `client.post` / .... Bodies (`json` /
-        `data` / `content` / `files` / `stream`) and `params` are handled
-        exactly as the per-verb methods do; `stream` (see `post`) excludes
-        the buffered body forms.
+        The verb-agnostic form of `client.get` / `client.post` / .... Bodies and
+        `params` are handled exactly as the per-verb methods do, and `stream`
+        excludes the buffered body forms.
         """
         verb = method.upper()
         if (
@@ -1265,10 +1154,8 @@ class TestClient:
     ) -> _WebSocketSession:
         """Open an in-memory WebSocket against the app - context manager.
 
-        Drives the ASGI websocket protocol: synthesise the scope, send
-        `websocket.connect`, route to the handler, then forward
-        `send_text` / `receive_text` / `close` calls to the running
-        handler through a pair of asyncio queues.
+        Synthesises the scope, sends `websocket.connect`, routes to the handler,
+        then forwards calls to it through a pair of asyncio queues.
         """
         return _WebSocketSession(self, path, subprotocols, headers)
 
@@ -1293,18 +1180,9 @@ class TestClient:
         self.close()
 
     def __del__(self) -> None:
-        # Read through `getattr`: when `__init__` raises before setting these -
-        # an unexpected keyword argument, say - the finaliser still runs, and an
-        # `AttributeError` here surfaces through the unraisable hook *above* the
-        # real constructor error, burying it.
-        #
-        # The setup lock is restored here as well as in `close()`. The client
-        # disables it on construction and only `close()` put it back, so a client
-        # used without its context manager left the app's setup-lock protection
-        # off for good - a later "registering after serving is refused" check on
-        # that app would then silently not be checking anything. A plain
-        # attribute assignment is safe in a finaliser; the async shutdown
-        # lifecycle is not, and still needs `close()`.
+        # Read through `getattr`, or an `AttributeError` here would surface above a
+        # constructor error. The lock is restored here as well as in `close()`, since
+        # a client used without its context manager would leave it off for good.
         prior = getattr(self, "_prior_setup_lock", None)
         if prior is not None:
             with contextlib.suppress(Exception):
@@ -1322,12 +1200,9 @@ class TestClient:
 class _WebSocketSession:
     """Sync wrapper around an in-memory ASGI websocket session.
 
-    The handler runs as a background task on the TestClient's loop.
-    Calls to `send_text`/`receive_text`/`close` route through two
-    asyncio queues that play the role the network would normally play
-    - the client-side `send_text` enqueues `websocket.receive` for the
-    handler, and the handler's `send_text` enqueues `websocket.send`
-    back for the client to pull.
+    The handler runs as a background task on the TestClient's loop, and
+    `send_text` / `receive_text` / `close` route through two asyncio queues that
+    play the part the network would.
     """
 
     def __init__(
@@ -1361,16 +1236,13 @@ class _WebSocketSession:
                 if k.lower() == "host":
                     seen_host = True
                 scope_headers.append((k.lower().encode("latin-1"), v.encode("latin-1")))
-            # RFC 6455 Sec. 4.1 requires the opening handshake to carry `Host`, and
-            # the HTTP path already synthesises one. Without it any app running
-            # host validation refuses every in-memory socket before routing.
+            # RFC 6455 Sec. 4.1 requires `Host` on the opening handshake; without it an
+            # app running host validation refuses every in-memory socket.
             if not seen_host:
                 scope_headers.append((b"host", b"testserver"))
 
-            # Split any `?query` off the connect path, mirroring
-            # `_make_request` for HTTP. A real ASGI server does this; the
-            # in-memory client must too, or route matching sees the `?`
-            # and `WebSocket.query_params` stays empty.
+            # Split as `_make_request` does, or route matching sees the `?` and
+            # `WebSocket.query_params` stays empty.
             ws_path, _, ws_query = self._path.partition("?")
 
             scope = {
@@ -1468,10 +1340,8 @@ class _WebSocketSession:
 class _TestClientCookies:
     """Live view of a `TestClient`'s cookie jar.
 
-    Backs onto `TestClient._cookies`. Dict-like access + iteration +
-    `clear()`. Cookies added here apply to every subsequent request;
-    cookies the server sends back are merged into the same backing
-    dict via `TestClient._update_cookies`.
+    Backs onto `TestClient._cookies`, so a cookie added here applies to every
+    later request and one the server sends merges into the same dict.
     """
 
     __slots__ = ("_client",)
@@ -1526,20 +1396,16 @@ class _TestClientCookies:
 class AsyncTestClient:
     """Async in-memory test client - drives the app through its ASGI surface.
 
-    The async counterpart of `TestClient`: used as an async context
-    manager inside an async test, so each request is `await`ed on the
-    test's own running event loop instead of through a private loop. The
-    request methods (`get` / `post` / ...) are coroutines.
+    Used as an async context manager inside an async test, so each request is
+    awaited on the test's own running loop rather than a private one.
 
     Usage::
 
         async with AsyncTestClient(app) as client:
             resp = await client.get("/")
 
-    Cookie persistence, redirect following, and the JSON / form / files
-    body shapes match `TestClient` exactly. WebSocket testing stays on
-    the sync `TestClient.websocket_connect`, and seeding a session outside
-    a request stays on the sync `TestClient.session_transaction`.
+    Cookie persistence, redirect following and the body shapes match `TestClient`
+    exactly. WebSocket testing and `session_transaction` stay on `TestClient`.
     """
 
     __test__ = False  # don't let pytest collect this as a test class
@@ -1558,15 +1424,10 @@ class AsyncTestClient:
         self._cookies: dict[str, str] = {}
         self._base_headers: dict[str, str] = {}
         self._lifespan_run = False
-        # Set in `__aenter__`, restored in `__aexit__`. Declared here so the
-        # object's attribute set is readable from its constructor. There is no
-        # `__del__` counterpart to the sync client's: a finaliser cannot await
-        # the shutdown lifecycle, and restoring the lock without it would hand
-        # back an app that had been started and never stopped.
+        # Set in `__aenter__`, restored in `__aexit__`. No `__del__` counterpart to
+        # the sync client's: a finaliser cannot await the shutdown lifecycle.
         self._prior_setup_lock: bool | None = None
-        # True between `__aenter__` and `__aexit__`. Async startup work
-        # cannot run in `__init__`, so requests are refused until the
-        # client has been entered as a context manager.
+        # Async startup cannot run in `__init__`, so requests are refused until entry.
         self._entered = False
 
     # ── Async context manager ─────────────────────────────
@@ -1577,9 +1438,7 @@ class AsyncTestClient:
 
     async def __aenter__(self) -> AsyncTestClient:
         self._entered = True
-        # Relax the first-request setup lock for the same reason as the sync
-        # TestClient, and restore it on exit for the same reason: the app is
-        # not the client's to change permanently.
+        # Relaxed and restored for the same reasons as on the sync TestClient.
         self._prior_setup_lock = None
         if hasattr(self.app, "_setup_lock_enabled"):
             self._prior_setup_lock = self.app._setup_lock_enabled
@@ -1656,10 +1515,8 @@ class AsyncTestClient:
             query_string = f"{path_qs}&{query_string}" if query_string else path_qs
 
         follow = self.follow_redirects if follow_redirects is None else follow_redirects
-        # Shares the `_follow_redirects` driver with the sync client - the async
-        # client simply awaits the coroutine where the sync client runs it on
-        # its loop. The driver keeps `current_headers` across hops, so the
-        # caller's headers (Authorization, custom) reach the redirected request.
+        # The shared `_follow_redirects` driver, awaited rather than run on a loop.
+        # It keeps `current_headers` across hops, so the caller's reach the redirect.
         return await _follow_redirects(
             build_headers=self._build_headers,
             send_one=self._send_one_request,

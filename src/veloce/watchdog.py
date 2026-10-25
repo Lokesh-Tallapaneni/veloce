@@ -1,19 +1,11 @@
 """Event-loop watchdog — a development-mode detector for blocking calls.
 
-A coroutine that makes a *blocking* call - a synchronous database driver,
-`time.sleep`, a CPU-heavy loop - freezes the whole event loop: every
-other request stalls behind it. This watchdog notices the stall and logs
-a warning carrying the stack of the blocked code, so the offending call
-is easy to find.
+A blocking call inside a coroutine freezes the whole loop, so this logs a
+warning carrying the stack of the blocked code. Opt-in via the
+`EVENT_LOOP_WATCHDOG` config key; a development aid, not for production.
 
-It is opt-in via the `EVENT_LOOP_WATCHDOG` config key - when that key is
-unset nothing is constructed and a production app pays nothing. It is a
-development aid and is not meant to run in production.
-
-A stall is only reported while the loop is actually *running*: an idle
-loop (stopped between calls, or parked waiting for I/O) is not a stall,
-so the in-memory test client - which drives the loop one request at a
-time - does not produce false positives.
+A stall is only reported while the loop is actually *running*, so an idle loop
+(the in-memory test client drives one request at a time) is not a false positive.
 """
 
 from __future__ import annotations
@@ -34,9 +26,7 @@ if TYPE_CHECKING:  # pragma: no cover
 def _classify_block(first_stack: str, second_stack: str) -> str:
     """Turn two stack samples of the blocked loop thread into a hint.
 
-    Two identical samples mean the loop thread is parked in one place - a
-    blocking call or a sleep. Differing samples mean it is moving through
-    code - CPU-bound work.
+    Identical samples mean the thread is parked; differing ones, CPU-bound work.
     """
     if first_stack == second_stack:
         return (
@@ -53,16 +43,11 @@ def _classify_block(first_stack: str, second_stack: str) -> str:
 class EventLoopWatchdog:
     """Detects event-loop stalls and reports the blocked stack.
 
-    A heartbeat callback re-arms itself on the loop every `interval`
-    seconds; a separate daemon thread measures how long it has been since
-    the last heartbeat *while the loop is running*. When that gap exceeds
-    `stall_threshold` something is blocking the loop, and the watchdog
-    logs a warning with the loop thread's current stack plus a
-    prescriptive hint (blocking-I/O versus CPU-bound).
-
-    Each distinct stall is reported once - the heartbeat counter is frozen
-    for the stall's whole duration, and the watch thread reports a given
-    counter value at most once.
+    A heartbeat callback re-arms itself on the loop every `interval` seconds
+    while a daemon thread measures the gap since the last beat; a gap over
+    `stall_threshold` is logged with the loop thread's stack and a hint. Each
+    distinct stall is reported once, since the beat counter is frozen for its
+    whole duration.
     """
 
     __slots__ = (
@@ -92,14 +77,12 @@ class EventLoopWatchdog:
         self._interval = interval
         self._stall_threshold = stall_threshold
         self._logger = logger or logging.getLogger(__name__)
-        # Optional app-supplied callable mapping the blocked loop frame to the
-        # route (and dependency) it is executing. Kept app-agnostic: the watchdog
-        # only invokes it; the app builds it from its route table.
+        # Maps the blocked loop frame to the route it is executing. The app
+        # builds it from its route table; the watchdog only invokes it.
         self._attributor = attributor
         self._loop_thread_id = 0
         self._last_beat = time.monotonic()
-        # Bumped by every heartbeat - the loop thread is its only writer.
-        # The watch thread reads it to report each distinct stall once.
+        # The loop thread is its only writer; the watch thread only reads it.
         self._beat_count = 0
         self._beat_handle: asyncio.TimerHandle | None = None
         self._thread: threading.Thread | None = None
@@ -149,28 +132,23 @@ class EventLoopWatchdog:
         last_reported = -1
         while not self._stopped.wait(self._interval):
             if not self._loop.is_running():
-                # The loop is idle (stopped, or between calls), not
-                # blocked - keep the heartbeat fresh so the idle gap is
-                # not mistaken for a stall once the loop resumes.
+                # Idle, not blocked: keep the beat fresh so the gap is not read
+                # as a stall once the loop resumes.
                 self._last_beat = time.monotonic()
                 continue
             elapsed = time.monotonic() - self._last_beat
             if elapsed <= self._stall_threshold:
                 continue
-            # A genuine stall while the loop is running. The beat counter
-            # is frozen for the stall's duration, so report each value
-            # once. Re-check `is_running()` to skip a loop that stopped
-            # in the gap since the elapsed measurement.
+            # The frozen beat counter is reported once; `is_running()` is
+            # re-checked to skip a loop that stopped since the measurement.
             count = self._beat_count
             if count != last_reported and self._loop.is_running():
                 last_reported = count
                 self._report(elapsed)
 
     def _loop_frame(self) -> FrameType | None:
-        # sys._current_frames() is the only way to read another thread's
-        # stack from outside it. It is a CPython-private API (leading
-        # underscore, no cross-implementation guarantee), but there is no
-        # public equivalent; this is acceptable for a dev-only diagnostic.
+        # CPython-private, but the only way to read another thread's stack from
+        # outside it - acceptable for a dev-only diagnostic.
         return sys._current_frames().get(self._loop_thread_id)
 
     @staticmethod
@@ -185,9 +163,7 @@ class EventLoopWatchdog:
     def _attribution(self, frame: FrameType | None) -> str:
         """Return " while serving <route>" for the frame, or "" if unattributable.
 
-        Resolves the route/dependency via the app-supplied attributor; any
-        failure degrades silently to no attribution (the stack still pinpoints
-        the call).
+        Any attributor failure degrades silently; the stack still pinpoints the call.
         """
         if self._attributor is None or frame is None:
             return ""
@@ -199,7 +175,7 @@ class EventLoopWatchdog:
 
     def _report(self, elapsed: float) -> None:
         """Log a stall - runs in the watchdog thread, never on the loop."""
-        # Sample the loop thread's stack twice to classify the block.
+        # Two samples, to classify the block.
         first = self._capture_stack()
         time.sleep(0.005)
         frame = self._loop_frame()

@@ -1,35 +1,24 @@
 """HTTP session store — opt-in `Mcp-Session-Id` lifecycle for the HTTP transport.
 
-The Streamable HTTP transport is stateless by default: each POST is an isolated
-JSON-RPC message. When session management is enabled the server assigns an
-`Mcp-Session-Id` on the `initialize` result and then ties every later request to
-that id — validating the echoed header, answering an unknown or terminated id with
-HTTP 404, and accepting a `DELETE` to terminate the session.
+The Streamable HTTP transport is stateless by default. With session management
+enabled the server assigns an `Mcp-Session-Id` on the `initialize` result and
+ties every later request to it: the echoed header is validated, an unknown or
+terminated id answers HTTP 404, and a `DELETE` terminates the session.
 
 Each live id owns a real `MCPSession`, so a stateful HTTP connection is a
-first-class `MCPServer` connection exactly as the stdio loop's is: it records the
-client's advertised capabilities from `initialize`, scopes the in-flight
-cancellation registry, holds the connection's resource subscriptions, and bounds
-lifecycle ordering. The transport's dispatch path consults one small object behind
-the `Transport` contract instead of growing session bookkeeping inline.
+first-class `MCPServer` connection exactly as the stdio loop's is. A session the
+client never `DELETE`s is reclaimed by an idle time-to-live. The store exists
+only when the feature is enabled, so the default path pays no per-request cost.
 
-A session that a client never `DELETE`s is reclaimed by an idle time-to-live so a
-long-running server does not accumulate abandoned ids without bound. The store is
-created only when the feature is enabled, so the default stateless path allocates
-nothing and pays no per-request cost.
+Sessions live in this process, so behind more than one worker a client's second
+request may reach a worker that never saw its id. A `SessionBackend` closes that:
+the store consults it for what an id means independently of who serves it.
 
-Sessions live in this process. Behind more than one worker a client's second
-request may reach a worker that never saw its id, which answers 404 and makes the
-client start over. A `SessionBackend` closes that: the store consults it for what
-a session id means independently of who is serving it, so any worker can pick up
-a session another minted.
-
-Only part of a session travels. `initialized`, the client's advertised
-capabilities and its `clientInfo` are true wherever the session is served, so they
-are what a backend holds. Subscriptions, open listen streams, background tasks and
-the in-flight cancellation registry belong to the worker holding the connection -
-a task cannot be cancelled from a process that is not running it - so they stay
-local and are rebuilt per worker.
+Only part of a session travels. `initialized`, the advertised capabilities and
+`clientInfo` are true wherever the session is served, so they are what a backend
+holds. Subscriptions, listen streams, tasks and the cancellation registry belong
+to the worker holding the connection - a task cannot be cancelled from a process
+that is not running it - so they stay local and are rebuilt per worker.
 """
 
 from __future__ import annotations
@@ -45,14 +34,10 @@ from veloce.contrib.mcp.transports._common import _SESSION_ID_ENTROPY_BYTES
 if TYPE_CHECKING:  # pragma: no cover
     from collections.abc import Callable
 
-# Live sessions held per worker. Generous for any real deployment; the point is
-# that the count has a ceiling that does not depend on clients behaving.
+# Per worker: generous for a real deployment, but a ceiling clients cannot lift.
 _DEFAULT_MAX_SESSIONS = 10_000
 
-# Idle seconds a session is retained without being touched before it is reclaimed.
-# A client that initializes and disappears (never sending `DELETE`) would otherwise
-# leak its id and its `MCPSession` for the process lifetime; eviction runs lazily
-# on session resolution so no background timer is needed.
+# Idle seconds before a session is reclaimed, lazily on resolution not on a timer.
 _DEFAULT_IDLE_TTL_SECONDS = 3600.0
 
 
@@ -63,9 +48,8 @@ _DEFAULT_IDLE_TTL_SECONDS = 3600.0
 class SessionRecord:
     """What a session id means, independently of the worker serving it.
 
-    This is the whole of what a shared backend stores: the lifecycle flag and the
-    identity the client declared. Everything else a session owns is bound to one
-    worker's connection and is rebuilt there.
+    The whole of what a shared backend stores; everything else a session owns is
+    bound to one worker's connection and is rebuilt there.
     """
 
     initialized: bool = False
@@ -77,8 +61,8 @@ class SessionRecord:
 class SessionBackend(Protocol):
     """Where session records live when more than one worker serves a client.
 
-    The methods are async because a shared backend is I/O - a round trip to Redis
-    or a database - and a blocking call would stall the worker's event loop.
+    The methods are async because a shared backend is I/O, and a blocking call
+    would stall the worker's event loop.
 
     Usage::
 
@@ -143,28 +127,16 @@ class HttpSessionStore:
             raise ValueError("max_sessions must be >= 1")
         self._live: dict[str, _LiveSession] = {}
         self._idle_ttl = idle_ttl
-        # Live sessions are bounded independently of the idle TTL. Minting a
-        # session costs a client one request, so within one TTL window an
-        # unauthenticated caller could otherwise accumulate them without limit.
+        # Bounded independently of the TTL: minting a session costs one request.
         self._max_sessions = max_sessions
-        # Where session records are shared with other workers. `None` - the
-        # default - keeps sessions in this process, which is what a single-worker
-        # deployment wants and costs nothing.
+        # `None` keeps sessions in this process, which is what one worker wants.
         self._backend = backend
-        # Called with a session when its id is terminated or evicted, so the
-        # transport can reclaim what the session owns (its subscription connection
-        # and its tasks). `None` when no cleanup is needed.
         self._on_evict = on_evict
 
     async def create(self) -> tuple[str, MCPSession]:
         """Mint a new session id with its `MCPSession`, record it, and return both."""
         self._evict_idle()
-        # At capacity, reclaim the least-recently-touched session rather than
-        # refusing the new one: `_live` is ordered oldest-touched-first (see
-        # `_touch`), so the victim is the entry least likely to be in active use,
-        # and a flood cannot lock legitimate clients out of the transport
-        # entirely. `_on_evict` fires as it does for an idle reclaim, so the
-        # transport still releases what the session owned.
+        # Reclaimed rather than refused, so a flood cannot lock clients out.
         while len(self._live) >= self._max_sessions:
             oldest_id, oldest = next(iter(self._live.items()))
             del self._live[oldest_id]
@@ -180,14 +152,11 @@ class HttpSessionStore:
     async def resolve(self, session_id: str) -> MCPSession | None:
         """Return the live session for `session_id`, touching it, or `None`.
 
-        Resolving an id refreshes its idle deadline so an actively-used session is
-        never reclaimed; an unknown or already-evicted id returns `None`.
-
-        With a backend the record is read on every resolution, not cached: it is
-        how this worker learns that another ended the session or completed its
-        handshake. What stays local is the connection-bound state - an id this
-        worker has not served before is adopted with that state empty, which is
-        what it means for another worker to take over the conversation.
+        Resolving refreshes the idle deadline, so an actively-used session is
+        never reclaimed. With a backend the record is read every time rather than
+        cached, which is how this worker learns that another ended the session or
+        completed its handshake; connection-bound state stays local, so an id
+        this worker has not served is adopted with that state empty.
         """
         self._evict_idle()
         if self._backend is None:
@@ -217,9 +186,8 @@ class HttpSessionStore:
     async def persist(self, session_id: str, session: MCPSession) -> None:
         """Publish what a dispatch changed about `session` to the backend.
 
-        Called after each message so a later request served by another worker sees
-        the handshake this one completed. Without a backend there is nobody to
-        publish to and this returns immediately.
+        Called after each message, so a later request on another worker sees the
+        handshake this one completed. Without a backend it returns immediately.
         """
         if self._backend is None:
             return
@@ -232,10 +200,7 @@ class HttpSessionStore:
             self._on_evict(entry.session)
         if self._backend is None:
             return entry is not None
-        # The client asked for the session to end, so it ends everywhere - not only
-        # on the worker that happened to receive the DELETE. Whether it was live is
-        # the backend's answer, since the DELETE may reach a worker that never
-        # served it; an id nobody ever minted is still a no-op.
+        # Ends everywhere, not only on the worker that received the DELETE.
         was_live = await self._backend.read(session_id) is not None
         await self._backend.delete(session_id)
         return was_live or entry is not None
@@ -249,9 +214,8 @@ class HttpSessionStore:
     def _touch(self, session_id: str, entry: _LiveSession) -> None:
         """Refresh an entry's deadline and move it to the end of `_live`.
 
-        The move is what keeps `_evict_idle` off a full scan: with every touch
-        re-inserting, `_live` is ordered oldest-first, so the sweep stops at the
-        first entry still inside the window.
+        The move keeps `_live` ordered oldest-first, so `_evict_idle` stops at the
+        first entry still inside the window instead of scanning.
         """
         entry.touched_at = time.monotonic()
         del self._live[session_id]
@@ -260,24 +224,15 @@ class HttpSessionStore:
     def _evict_idle(self) -> None:
         """Reclaim sessions untouched past the idle time-to-live.
 
-        This reclaims what this worker holds. A shared record is left for its own
-        expiry: another worker may still be serving the session, and dropping the
-        record because *this* worker went quiet would end a live conversation.
-
-        `_live` is ordered oldest-touched first (see `_touch`), so this walks only
-        the entries it actually reclaims and stops at the first live one. It runs
-        on `resolve`, which is every MCP request, and a full scan there cost one
-        pass over every live session per request.
+        Only what this worker holds: a shared record is left for its own expiry,
+        since another worker may still be serving the session. Runs on `resolve`,
+        so it walks only the entries it reclaims and stops at the first live one.
         """
         if not self._live:
             return
-        # `<=` so a session exactly at the deadline is reclaimed: with `idle_ttl=0`
-        # ("evict on next access") and a coarse monotonic clock (Windows' ~15ms
-        # granularity can read the same value twice), a strict `<` would never fire.
+        # With `idle_ttl=0` and Windows' ~15 ms clock, a strict `<` never fires.
         deadline = time.monotonic() - self._idle_ttl
         expired: list[tuple[str, _LiveSession]] = []
-        # Iterated lazily and stopped at the first live entry, so the walk is the
-        # length of what is being reclaimed - not of the whole map.
         for sid, entry in self._live.items():
             if entry.touched_at > deadline:
                 break
