@@ -82,26 +82,17 @@ def _constructor_parameter_names() -> frozenset[str]:
 def _warn_on_misspelled_parameters(extra: dict[str, Any]) -> None:
     """Warn when an `**extra` key looks like a misspelling of a real parameter.
 
-    `**extra` is an open namespace, so an unknown key is not an error - an
-    extension may legitimately put anything there. A key one edit away from a
-    real parameter name is a different thing: `Veloce(tittle="My API")` was
-    accepted, stashed where nothing reads it, and the app served the default
-    title with no error, no warning and no log line.
-
-    Only reached when `extra` is non-empty, so an app that passes none pays
-    nothing - neither `difflib`, which is why it is imported here, nor the
-    signature read. The parameter names are read once and cached: introspecting a
-    35-parameter `Annotated` signature costs ~140us, and an app using `**extra`
-    legitimately would otherwise pay that on every construction.
+    `**extra` is an open namespace, so an unknown key is not an error; a key one
+    edit away from a real parameter name almost certainly is. Only reached when
+    `extra` is non-empty, and the names are cached - introspecting the
+    35-parameter `Annotated` signature costs ~140us.
     """
     import difflib
 
     known = _constructor_parameter_names()
     for key in extra:
         # A similarity ratio is `2M / (len(a) + len(b))` with `M <= min(len)`, so
-        # 0.8 is unreachable once one name is more than half again as long as the
-        # other. Filtering on that first keeps the comparison off the names that
-        # cannot match - most of them, for a typical extension key.
+        # 0.8 is unreachable once one name is half again as long as the other.
         span = range(int(len(key) * 0.66), int(len(key) * 1.5) + 1)
         candidates = [name for name in known if len(name) in span]
         close = difflib.get_close_matches(key, candidates, n=1, cutoff=0.8) if candidates else []
@@ -145,22 +136,12 @@ class Veloce(
         app.run()
     """
 
-    # Veloce exposes `openapi_version` and `openapi_schema` as direct
-    # attributes for customisation. veloce stores `openapi_schema` on
-    # the instance (None until first `openapi()` call); `openapi_version`
-    # is the spec version string emitted in the document.
-    #
-    # It changes that string and nothing else: the schema objects are written
-    # in JSON Schema 2020-12, which is the dialect OpenAPI 3.1 adopts. That was
-    # already true of `examples` inside a schema before `prefixItems` joined
-    # it, so setting a 3.0 version here declares a version the document does
-    # not speak rather than switching dialect.
+    # The version string emitted in the document, and nothing else: the schema
+    # objects are written in JSON Schema 2020-12, the dialect OpenAPI 3.1 adopts,
+    # so a 3.0 version here declares a dialect the document does not speak.
     openapi_version: str = "3.1.0"
 
-    # Attributes built lazily on first access, declared here so their type does
-    # not depend on which method the runtime happens to reach first: the
-    # construction helpers below assign the initial `None`, and the accessors
-    # replace it with the built value.
+    # Built lazily; declared so the type is not set by whichever method runs first.
     _cached_routes: list[dict[str, Any]] | None
     _cached_view_functions: dict[str, Callable[..., Any]] | None
     _cached_url_map: URLMap | None
@@ -341,10 +322,6 @@ class Veloce(
         ] = "error",
         **extra: Any,
     ) -> None:
-        # App-level `dependencies` / `responses` - applied
-        # to every route registered on the app (per-route entries are
-        # appended / overlaid on top). `on_duplicate` controls what happens
-        # when two handlers claim the same path+method (default: raise).
         super().__init__(
             prefix=prefix,
             default_response_class=default_response_class,
@@ -352,29 +329,13 @@ class Veloce(
             responses=responses,
             on_duplicate=on_duplicate,
         )
-        # arbitrary `**extra` ctor kwargs are stashed on
-        # `app.extra` for extensions / OpenAPI customisation to read. The
-        # namespace is open by design, so a key that is merely unknown is fine -
-        # but one that is a near-miss of a real parameter is almost certainly a
-        # typo, and absorbing `tittle=` silently meant the app ran with the
-        # default title and nothing said so.
         if extra:
             _warn_on_misspelled_parameters(extra)
         self.extra: dict[str, Any] = dict(extra)
-        # instance folder - explicit override, else computed from
-        # `package_root` on first `instance_path` access.
-        # Refused rather than resolved: the computed default is rooted, and a
-        # relative override would resolve against the working directory the
-        # process happened to be launched from - so the same deployment would put
-        # its SQLite file and uploads somewhere different depending on where it
-        # was started. The location of a per-deployment writable directory is not
-        # something to leave to that.
-        #
-        # A leading separator counts as rooted even where `os.path.isabs` says
-        # otherwise: on Windows `isabs("/srv/app")` is False because there is no
-        # drive, but the path is still not relative to the working directory - and
-        # refusing it would reject a POSIX deployment path written on a Windows
-        # development machine, which is the ordinary case here.
+        # Refused rather than resolved: a relative override would resolve against
+        # the working directory the process was launched from. A leading separator
+        # counts as rooted even where `os.path.isabs` says otherwise - on Windows
+        # `isabs("/srv/app")` is False for want of a drive, yet it is not relative.
         if instance_path is not None and not (
             os.path.isabs(instance_path) or instance_path[:1] in ("/", "\\")
         ):
@@ -384,19 +345,15 @@ class Veloce(
                 f"would resolve against the current working directory."
             )
         self._instance_path = instance_path
-        # Defaults to the caller's module so `Veloce(__name__)` works. Feeds
-        # `package_root` (template / static-file resolution) and the app logger.
+        # Feeds `package_root` (template / static-file resolution) and the logger.
         if import_name is None:
             frame = sys._getframe(1)
-            # A frame's globals are untyped, so the fallback also covers a
-            # `__name__` that is not a string.
+            # A frame's globals are untyped, so a non-string `__name__` falls back too.
             caller = frame.f_globals.get("__name__")
             import_name = caller if isinstance(caller, str) else "veloce.app"
         self.import_name = import_name
         # Both are REQUIRED strings in the document these build (OpenAPI 3.1
-        # Sec. 4.8.2) and both are interpolated into the two HTML pages, where a
-        # non-string reached `html.escape` and answered 500. Refused here, at the
-        # one place they enter, rather than on a request to `/docs`.
+        # Sec. 4.8.2), and both are interpolated into the two HTML pages.
         for _field, _value in (("title", title), ("version", version)):
             if not isinstance(_value, str) or not _value:
                 raise ValueError(
@@ -405,18 +362,12 @@ class Veloce(
                 )
         self.title = title
         self.version = version
-        # Identity the MCP `serverInfo` publishes beyond name and version. Held on
-        # the app so one server describes itself in one place, whichever door.
         self.website_url = website_url
         self.mcp_icons = mcp_icons
         self.description = description
-        # OpenAPI 3.1 Sec. 4.8.2 `info.summary` - a short one-line summary
-        # of the API, distinct from the longer `description`.
+        # OpenAPI 3.1 Sec. 4.8.2 `info.summary`, distinct from `description`.
         self.summary = summary
-        # An empty string disables a UI, the same way `openapi_url` is already
-        # guarded on truthiness. Registered instead, `docs_url=""` mounted Swagger
-        # at the site root - and if the app also owned `/`, the collision only
-        # surfaced on the first request, because the doc routes register lazily.
+        # An empty string disables a UI; registered, `docs_url=""` mounts at `/`.
         self._docs_url = docs_url or None
         self._redoc_url = redoc_url or None
         if self._docs_url is not None and self._docs_url == self._redoc_url:
@@ -429,9 +380,7 @@ class Veloce(
         self._openapi_setup = False
         self.openapi_schema: dict[str, Any] | None = None
         self.redirect_slashes = redirect_slashes
-        # Normalised once here rather than at each reader: a trailing slash
-        # would double the separator in every URL built from it, and the value
-        # is compared and concatenated in several places.
+        # Normalised once: a trailing slash would double the separator in every URL.
         self.root_path = "/" + root_path.strip("/") if root_path.strip("/") else ""
         self.openapi_tags = openapi_tags
         self.openapi_external_docs = openapi_external_docs
@@ -441,8 +390,6 @@ class Veloce(
         self.terms_of_service = terms_of_service
         self.swagger_ui_parameters = swagger_ui_parameters
         self.swagger_ui_init_oauth = swagger_ui_init_oauth
-        # Read by `veloce.contrib.openapi`. With separate schemas off, the
-        # validation schema serves both the request and the response side.
         self.separate_input_output_schemas = separate_input_output_schemas
         self.disambiguate_operation_ids = disambiguate_operation_ids
         self.validate_openapi = validate_openapi
@@ -450,35 +397,20 @@ class Veloce(
         from veloce.config import Config
 
         self.state: State = State()
-        # Configuration. `Config` is a dict subclass with
-        # loader methods (from_object, from_pyfile, from_mapping, ...).
-        # Seeded with the documented default keys so `app.config[k]`
-        # returns a value rather than raising `KeyError`.
+        # Seeded with the documented defaults so `app.config[k]` never raises.
         self.config: Config = Config(Config.default_config())
-        # `debug` is a property bound to `config["DEBUG"]` (below), so seed the
-        # config key from the constructor arg - this is the single source of
-        # truth, keeping `app.debug` and `config["DEBUG"]` from drifting apart.
+        # `app.debug` is a property over this key, so the two cannot drift apart.
         self.config["DEBUG"] = debug
         self.extensions: dict[str, Any] = {}
         self._lifespan = lifespan
-        # Additional lifespan context managers contributed by plugins and
-        # extensions. Entered on the same exit stack as `lifespan=`, so they
-        # inherit its reverse-order teardown and error aggregation.
+        # Entered on the same exit stack as `lifespan=`, so teardown is reversed.
         self._extra_lifespans: list[Any] = []
         self._init_runtime_state()
-        # `exception_handlers=` ctor mapping - keys are
-        # exception classes or integer status codes.
         for _key, _handler in (exception_handlers or {}).items():
             self.add_exception_handler(_key, _handler)
-        # ASGI shape `middleware=` ctor list - each entry is
-        # a middleware instance applied in the given order.
         for _mw in middleware or []:
             self.add_middleware(_mw)
         self._init_registries()
-        # `template_folder`: when set, build a Jinja2Templates
-        # and bind it on `app._templates` so `render_template(name, ...)`
-        # works without manual wiring. Relative paths resolve under
-        # `package_root` (same convention as static_folder).
         self.template_folder: str | None = template_folder
         self._templates = None
         if template_folder is not None:
@@ -496,15 +428,14 @@ class Veloce(
     def debug(self) -> bool:
         """Whether debug mode is enabled; bound to `config['DEBUG']`.
 
-        Interprets a dotenv-style string (`DEBUG=false`) correctly rather than
-        treating any non-empty string as truthy.
+        A dotenv-style string (`DEBUG=false`) is interpreted rather than treated
+        as truthy because it is non-empty.
         """
         return _coerce_bool(self.config.get("DEBUG", False))
 
     @debug.setter
     def debug(self, value: bool) -> None:
-        # Coerce the same way the getter does, so `app.debug = "false"` (a
-        # string from an env source) stores False rather than a truthy string.
+        # Coerced like the getter, so `app.debug = "false"` stores False.
         self.config["DEBUG"] = _coerce_bool(value)
 
     @property
@@ -525,13 +456,10 @@ class Veloce(
     def url_map(self) -> URLMap:
         """Read-only mapping of registered URL rules.
 
-        Iterating it yields `URLRule` objects (rule, methods, endpoint).
-        Subscript by endpoint name (`app.url_map["users.detail"]`) returns
-        a list of rules registered under that endpoint. Length is the
-        total registered route count.
-
-        This is the introspection-friendly view of `Veloce.routes`;
-        callers who just want the dict-list keep using `app.routes`.
+        Iterating yields `URLRule` objects (rule, methods, endpoint);
+        subscripting by endpoint name (`app.url_map["users.detail"]`) returns
+        that endpoint's rules, and `len()` is the total route count. The
+        introspection-friendly view of `Veloce.routes`.
         """
         cached = self._cached_url_map
         if cached is None:
@@ -565,27 +493,21 @@ class Veloce(
     def _invalidate_route_caches(self) -> None:
         """Drop all cached views of the route table.
 
-        Called from every route-mutation entry-point (`add_route`,
-        `include_router`); `register_blueprint` and `add_url_rule`
-        funnel through `add_route` so they are covered transitively.
-        Also resets the `URLMap` instance cache so its own built-list
-        cache is rebuilt on next access.
+        Called from `add_route` and `include_router`; every higher-level
+        registration funnels through one of the two.
         """
         self._cached_routes = None
         self._cached_view_functions = None
         self._cached_url_map = None
-        # Route mutation can flip the mount/static fast-path flags carried on the
-        # compiled pipeline, so bump the generation counter here too - the single
-        # route-mutation funnel doubles as a pipeline-invalidation sink.
+        # Route mutation can flip the compiled pipeline's fast-path flags.
         self._gen += 1
 
     def _ensure_pipeline(self) -> CompiledPipeline:
         """Return the compiled pipeline, recompiling if the registry changed.
 
-        The generation check is the whole invalidation mechanism: any
-        registration bumps `_gen`, so a stale `cp.gen` triggers a rebuild. In
-        production `_gen` freezes once the setup lock latches, so this compiles
-        exactly once and thereafter is a single int compare.
+        Any registration bumps `_gen`, so a stale `cp.gen` triggers a rebuild.
+        In production `_gen` freezes once the setup lock latches, leaving a
+        single int compare per request.
         """
         cp = self._pipeline
         if cp is None or cp.gen != self._gen:
@@ -596,10 +518,8 @@ class Veloce(
         """Append compiled-feature state and bump the generation counter.
 
         The single sink for non-route, non-middleware-ledger feature state. It
-        ONLY appends and bumps `_gen`; it deliberately does NOT call
-        `_assert_mutable` so a caller's existing mutability contract is preserved
-        exactly (callers that already assert keep their own assert; callers that
-        do not stay unguarded).
+        deliberately does NOT call `_assert_mutable`, so each caller keeps its
+        own mutability contract.
         """
         target.append(value)
         self._gen += 1
@@ -608,9 +528,8 @@ class Veloce(
         """Reject setup mutation once the app has started serving.
 
         A no-op until the first dispatch latches `_setup_locked` (skipped under
-        DEBUG/TESTING), so registration during construction pays a single
-        boolean check. After the lock trips, route/hook/blueprint registration
-        raises `SetupError` rather than racing in-flight requests.
+        DEBUG/TESTING), so registration during construction costs one boolean
+        check; after the lock trips, registration would race in-flight requests.
         """
         if self._setup_locked:
             raise SetupError(
@@ -625,15 +544,10 @@ class Veloce(
     def add_route(self, *args: Any, **kwargs: Any) -> None:
         """Register a route. See `Router.add_route` for the full signature.
 
-        This override exists only to bracket the base implementation: refuse a
-        mutation once the app is serving, and drop the route caches the new
-        route invalidates. It forwards everything untouched, so the parameters,
-        defaults and `Doc(...)` annotations are the base method's.
-
-        `__doc__` and `__signature__` are re-pointed at the base just below, so
-        `help(app.add_route)` and an editor's signature hint show the documented
-        surface rather than `(*args, **kwargs)`. Restating the parameter list
-        here instead would add a ninth hand-maintained copy of it.
+        Brackets the base implementation: refuse a mutation once the app is
+        serving, then drop the caches the new route invalidates. Everything is
+        forwarded untouched, so the parameters, defaults and `Doc(...)`
+        annotations are the base method's.
         """
         self._assert_mutable()
         super().add_route(*args, **kwargs)
@@ -655,14 +569,10 @@ class Veloce(
     ) -> None:
         """Mount a sub-router under an optional path prefix.
 
-        Accepts either a `Blueprint` (delegates to `register_blueprint`,
-        honouring its hooks / error handlers / url processors) or a plain
-        `Router` (delegates to `Router.include_router`).
-
-        `prefix` and `url_prefix` are interchangeable and name the same thing;
-        both spellings are accepted so router-style and blueprint-style calling
-        code can each use the one that reads naturally, and `url_prefix` wins
-        when both are given.
+        A `Blueprint` delegates to `register_blueprint`, honouring its hooks,
+        error handlers and url processors; a plain `Router` delegates to
+        `Router.include_router`. `prefix` and `url_prefix` name the same thing,
+        and `url_prefix` wins when both are given.
         """
         self._assert_mutable()
 
@@ -677,13 +587,9 @@ class Veloce(
     def instrumentation_hooks(self) -> tuple[Callable[..., Any], ...]:
         """The registered instrumentation hooks, in the order they will run.
 
-        The read half of `add_instrumentation`, which had none: a caller
-        checking whether it has already installed its own hook - the
-        idempotency guard `veloce.otel` performs - otherwise has to read the
-        private list the dispatch core iterates.
-
-        A tuple, so a caller cannot register or reorder through it; use
-        `add_instrumentation` for that.
+        The read half of `add_instrumentation`, for a caller checking whether it
+        has already installed its own hook. A tuple, so a caller cannot register
+        or reorder through it; use `add_instrumentation` for that.
         """
         return tuple(self._instrumentation)
 
@@ -702,10 +608,8 @@ class Veloce(
         a plain function or a coroutine function. A hook that raises is
         logged and skipped, so instrumentation never breaks a response.
 
-        Returns `hook` unchanged, so it also works as a decorator. Both the
-        no-argument and the keyword-argument decorator forms are supported -
-        when `hook` is omitted a decorator is returned that captures
-        `exclude_routes` and registers the function it wraps:
+        Returns `hook` unchanged, so it also works as a decorator, in either
+        the no-argument or the keyword-argument form:
 
             @app.add_instrumentation
             def export(metrics):
@@ -715,30 +619,20 @@ class Veloce(
             def export(metrics):
                 statsd.timing(metrics.route or "unmatched", metrics.duration_ms)
 
-        Pass `exclude_routes` to suppress this hook for noisy routes - a set
-        of matched route *templates* (e.g. `{"/health", "/metrics"}`). When a
-        finished request's route template is in the set the hook is skipped,
-        so health checks and scrape endpoints never pollute traces or metric
-        series. Matching is on the low-cardinality template resolved during
-        routing (never the concrete, attacker-controlled path), so there is
-        no per-request regex and no path-normalisation bypass. The filter is
-        applied in the core delivery loop, so every consumer of this hook -
-        tracing, metrics, access logs, custom - honours the same exclusion.
-        An unmatched request (route template `None`) is never excluded by a
-        named-route set.
+        `exclude_routes` suppresses this hook for noisy routes - a set of
+        matched route *templates* (e.g. `{"/health", "/metrics"}`), so health
+        checks and scrape endpoints never pollute traces or metric series.
+        Matching is on the low-cardinality template resolved during routing,
+        never the concrete attacker-controlled path, so there is no per-request
+        regex and no path-normalisation bypass; an unmatched request is never
+        excluded by a named-route set. The filter is applied in the core
+        delivery loop, so every consumer of this hook honours it.
 
         With no hook registered the request path carries no instrumentation
         cost - not even a clock read.
         """
-        # Registration mutates the per-request `_instrumentation` list the
-        # dispatch core iterates, so it follows the same setup-lock contract as
-        # routes and other hooks: late registration races concurrent dispatch
-        # and is rejected (relaxed under DEBUG/TESTING).
         self._assert_mutable()
 
-        # Decorator-with-arguments form: `@app.add_instrumentation(...)` calls
-        # this with `hook=None`, so return a decorator that captures the keyword
-        # options and registers the function it wraps.
         if hook is None:
 
             def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
@@ -759,11 +653,9 @@ class Veloce(
         """Register `component` to report to `veloce check` and `security_audit`.
 
         Middleware reports on itself through `Middleware.audit` without being
-        registered anywhere - it is already in the stack. Something that hardens
-        or exposes the app *without* being middleware has nowhere to say so, and
-        a mounted MCP endpoint is the case in tree: it registers routes, so
-        without this the audit had nothing to ask about a tool-execution
-        endpoint with no authentication.
+        registered anywhere - it is already in the stack. This is for something
+        that hardens or exposes the app *without* being middleware, such as a
+        mounted MCP endpoint, which registers routes instead.
 
         `component` needs an `audit(ctx)` yielding `Finding`s, exactly as a
         middleware's does; it may also carry the `Auditable` class markers
@@ -796,12 +688,11 @@ class Veloce(
         needs to tell an `error` from a `warning`; this stays a list of lines
         to print. An empty list means nothing was flagged.
 
-        Middleware reports on itself through `Middleware.audit`, so a
-        middleware written outside this package is audited on the same terms
-        as a built-in one. What stays invisible is hardening the app does not
-        own - a reverse proxy terminating TLS, or a middleware that reports
-        nothing - so a clean audit is a statement about this app's middleware,
-        not about the deployment around it.
+        Middleware reports on itself through `Middleware.audit`, so one written
+        outside this package is audited on the same terms as a built-in. What
+        stays invisible is hardening the app does not own - a reverse proxy
+        terminating TLS - so a clean audit is a statement about this app's
+        middleware, not about the deployment around it.
         """
         return [str(finding) for finding in audit_run(self)]
 
@@ -809,13 +700,11 @@ class Veloce(
         """Return human-readable findings about each route's response contract.
 
         A rendering of the `response-model-contradiction` and
-        `routes-undocumented` findings from `veloce.audit.run(self)`, which is
-        the structured form. A route whose `response_model=` names a different
-        model than its return annotation is a `warning`; a route with no
-        response contract at all is `info`, because many such routes are
-        legitimate - HTML pages, redirects, streams.
-
-        An empty list means nothing was flagged.
+        `routes-undocumented` findings from `veloce.audit.run(self)`. A route
+        whose `response_model=` names a different model than its return
+        annotation is a `warning`; a route with no response contract at all is
+        `info`, because many such routes are legitimate - HTML pages,
+        redirects, streams. An empty list means nothing was flagged.
         """
         contract_ids = {"response-model-contradiction", "routes-undocumented"}
         return [str(finding) for finding in audit_run(self) if finding.id in contract_ids]
@@ -828,15 +717,12 @@ class Veloce(
         encoders is just: `app.json_provider_class = MyJSONProvider`.
         Setting `app.json = instance` replaces it explicitly.
 
-        The provider serialises every value a handler returns - a `dict`, a
-        `list`, a model, a msgspec struct, a `(body, status)` tuple, `jsonify`,
-        and a `JSONResponse` subclass named by `response_class` - so one dialect
-        covers the application. An app that configures nothing keeps the direct
-        orjson path and pays nothing for the indirection.
-
-        It does not reach the framework's own wire formats: cache keys always
-        sort so equal mappings hash alike, and signed cookies, JWTs and protocol
-        frames are not the application's to restyle.
+        The provider serialises every value a handler returns, so one dialect
+        covers the application; an app that configures nothing keeps the direct
+        orjson path and pays nothing for the indirection. It does not reach the
+        framework's own wire formats: cache keys always sort so equal mappings
+        hash alike, and signed cookies, JWTs and protocol frames are not the
+        application's to restyle.
         """
         if self._json_provider is None:
             self._json_provider = self.json_provider_class(self)
@@ -851,11 +737,10 @@ class Veloce(
 
         `None` is returned when the active provider is the stock one with no
         configured options, because the direct path already produces exactly
-        what it would. Resolved once: like the provider itself, the options are
-        read when first asked for, so set them before the first request.
+        what it would. Resolved once, so set the options before the first
+        request.
         """
-        # Deferred like the sibling import above it: `json_provider` reaches
-        # back into the app package.
+        # Deferred: `json_provider` reaches back into the app package.
         from veloce.json_provider import resolve_dumps
 
         return resolve_dumps(self)
@@ -864,13 +749,10 @@ class Veloce(
         """Serve a file from `app.static_folder`.
 
         `app.static_folder` defaults to `"static"` (relative to
-        `app.package_root`). Use `app.static_url_path` to control the
-        URL prefix when mounting via `app.static(...)`. Returns a
-        `FileResponse`; traversal-safe via `safe_join`.
-
-        This reads the file synchronously and emits a
-        `DeprecationWarning` when called on a running loop. From async
-        handlers, prefer `send_static_file_async`.
+        `app.package_root`). Returns a `FileResponse`; traversal-safe via
+        `safe_join`. Reads the file synchronously and emits a
+        `DeprecationWarning` when called on a running loop, so async handlers
+        should prefer `send_static_file_async`.
         """
         directory = self.static_folder
         if not os.path.isabs(directory):
@@ -880,9 +762,7 @@ class Veloce(
     async def send_static_file_async(self, filename: str) -> Any:
         """Serve a file from `app.static_folder` - async variant.
 
-        Reads the file in an executor via `send_from_directory_async`, so
-        it never blocks the event loop. Prefer this from async handlers
-        over the sync `send_static_file`.
+        Reads the file in an executor, so it never blocks the event loop.
         """
         directory = self.static_folder
         if not os.path.isabs(directory):
@@ -894,9 +774,8 @@ class Veloce(
         """Filesystem path of the directory containing `import_name`'s module.
 
         Named `package_root` rather than `root_path` because `Veloce.root_path`
-        already means the ASGI mount prefix, which is a different thing entirely
-        - one is a location on disk, the other a URL prefix. Useful for resolving
-        template and static directories relative to the app's source file.
+        already means the ASGI mount prefix - one is a location on disk, the
+        other a URL prefix.
         """
         mod = sys.modules.get(self.import_name)
         mod_file = getattr(mod, "__file__", None) if mod else None
@@ -908,11 +787,10 @@ class Veloce(
     def instance_path(self) -> str:
         """Writable instance folder beside the package.
 
-        Veloce resolves `<package_root>/instance` as a per-deployment
-        writable directory for config, SQLite files, uploads, etc.
-        An explicit `instance_path=` constructor argument overrides
-        this computed default. The directory is *not* auto-created -
-        the caller decides whether to `mkdir` it.
+        `<package_root>/instance`, for config, SQLite files, uploads and the
+        like, overridden by an explicit `instance_path=` constructor argument.
+        The directory is *not* auto-created - the caller decides whether to
+        `mkdir` it.
         """
         if self._instance_path is not None:
             return self._instance_path
@@ -924,9 +802,9 @@ class Veloce(
     def signal_namespace(self) -> Any:
         """Accessor that returns the `veloce.signals` module.
 
-        Veloce ships its signals as module-level singletons, so this
-        attribute returns the module - `app.signal_namespace.request_started`
-        is the same `Signal` instance as `veloce.signals.request_started`.
+        The signals are module-level singletons, so
+        `app.signal_namespace.request_started` is the same `Signal` instance as
+        `veloce.signals.request_started`.
         """
         from veloce import signals
 
@@ -939,10 +817,9 @@ class Veloce(
         `app.aborter(404)` is equivalent to the module-level `abort(404)` helper.
         It is a distinct attribute so applications can subclass `Aborter` to add
         custom code-to-exception mappings: assign to `app.aborter`, or mutate the
-        instance this returns.
-
-        One instance per application, built on first access and kept - so a
-        mutation to its mapping sticks, and does not reach any other app.
+        instance this returns. One instance per application, built on first
+        access and kept, so a mutation to its mapping sticks and reaches no
+        other app.
         """
         if self._aborter is None:
             self._aborter = Aborter()
@@ -956,10 +833,8 @@ class Veloce(
     def got_first_request(self) -> bool:
         """`True` after the first request has been fully handled.
 
-        Read-only compatibility accessor. Useful when conditional setup
-        depends on whether the app has bootstrapped yet, e.g. a
-        `before_first_request` hook firing exactly once is reflected
-        here as `True`.
+        Read-only, for conditional setup that depends on whether the app has
+        bootstrapped yet.
         """
         return self._first_request_fired
 
@@ -974,12 +849,10 @@ class Veloce(
             def init_db():
                 ...
 
-        The `veloce` console script automatically discovers and mounts
-        the group as a `custom` subcommand when launched with an app
-        reference. `click` is required at access time but not at import
-        time - the `ImportError` is deferred and produces a useful
-        message instead of a hard-import crash on environments that
-        don't need the CLI.
+        The `veloce` console script discovers and mounts the group as a `custom`
+        subcommand when launched with an app reference. `click` is required at
+        access time but not at import time, so an environment that does not need
+        the CLI never imports it.
         """
         if self._cli_group is None:
             try:
@@ -997,9 +870,7 @@ class Veloce(
     def test_cli_runner(self, **kwargs: Any) -> Any:
         """Return a Click `CliRunner` bound for testing `app.cli`.
 
-        Veloce exposes this for unit-testing `@app.cli.command(...)`
-        handlers without manual Click import. Kwargs flow through to
-        `click.testing.CliRunner`.
+        Kwargs flow through to `click.testing.CliRunner`.
         """
         try:
             from click.testing import CliRunner
@@ -1020,16 +891,12 @@ class Veloce(
     ) -> None:
         """Mount a `Blueprint`'s routes + hooks onto this app.
 
-        - Re-registers each route under `(url_prefix or bp.url_prefix) + path`
-          so the same blueprint can be mounted twice (e.g. v1/v2 versions).
-        - Buckets the blueprint's `before_request` / `after_request` /
-          `teardown_request` hooks under its name, so they fire only for that
-          blueprint's own routes. They are kept apart from the app-level lists
-          rather than spliced into them and filtered: a per-request scan of every
-          hook is what bucketing avoids.
-        - Buckets blueprint-level error handlers under the blueprint name (and
-          each nested child under its dotted name), scoped to that blueprint's
-          own routes; an app-level handler still catches everything as a fallback.
+        Each route is re-registered under `(url_prefix or bp.url_prefix) + path`,
+        so the same blueprint can be mounted twice (e.g. v1/v2 versions). Its
+        request hooks and error handlers are bucketed under its name - and each
+        nested child under its dotted name - so they fire only for that
+        blueprint's own routes; an app-level error handler still catches
+        everything as a fallback.
 
         Mountable multiple times on different apps with different
         prefixes - the blueprint itself stays unmodified.
@@ -1043,19 +910,10 @@ class Veloce(
 
         effective_prefix = url_prefix if url_prefix is not None else blueprint.url_prefix
         bp_name = blueprint.name
-        # Stash the blueprint under its registered name so `app.blueprints`
-        # and `app.iter_blueprints()` can return it later.
-        #
-        # `already_registered` is identity, not name. The guard below exists for
-        # mounting *this* blueprint at a second prefix, where appending its hooks
-        # again would run each of them twice on one request. A different
-        # blueprint that happens to share the name is not that case, and reading
-        # it as one meant the newcomer's routes ran the incumbent's hooks: a
-        # guard registered on the second was silently absent, and the first's ran
-        # against routes it was never written for. Refused rather than resolved,
-        # because both blueprints' routes take the same `<name>.` endpoint
-        # prefix - `url_for` is ambiguous and the hook buckets collide, so one of
-        # the two has to lose whichever way it is decided.
+        # `already_registered` is identity, not name: re-mounting *this* blueprint
+        # at a second prefix must not append its hooks twice. A different
+        # blueprint sharing the name is refused instead, since both would take the
+        # same `<name>.` endpoint prefix and their hook buckets would collide.
         existing = self._blueprints_map.get(bp_name)
         if existing is not None and existing is not blueprint:
             raise ValueError(
@@ -1066,33 +924,16 @@ class Veloce(
         already_registered = existing is not None
         self._blueprints_map[bp_name] = blueprint
 
-        # Splice each route onto the app's tree under the combined prefix.
+        # `<bpname>.` prefixes the name so `url_for` and hook-gating can find it.
         for path, methods, info in blueprint._walk_routes():
             full_path = (effective_prefix or "") + path
-            # The route's name is prefixed with `<bpname>.` so url_for
-            # and dispatcher hook-gating can find it.
             endpoint = f"{bp_name}.{info.name}"
             _readd_route(self, full_path, methods, info, endpoint)
 
-        # Bucket the blueprint's hooks under its name so dispatch can
-        # look them up by the matched route's endpoint prefix instead of
-        # walking every blueprint's gated wrapper on every request. Keyed by
-        # blueprint name so the dispatcher reads `_bp_before_hooks[bp_name]`
-        # directly: a flat list of gated closures would test every hook of
-        # every blueprint on every request, which is O(blueprints * hooks) of
-        # no-op work for an app with many of either.
-        # A nested child's hooks are bucketed under the child's own dotted path,
-        # not the parent's, so they reach the child's routes and not a sibling's.
-        # The ancestor chain is flattened here rather than walked per request:
-        # `<bp>.<child>` holds the blueprint's hooks followed by the child's, so
-        # dispatch still does one lookup with one key.
-        # Mounting the same blueprint twice is supported and re-registers its
-        # routes under the second prefix - but every bucket below is keyed by the
-        # blueprint's *name*, and both mounts give their routes the same
-        # `<bpname>.` endpoint prefix. So one lookup finds one bucket, and
-        # appending to it a second time ran every hook twice on a single
-        # request: a rate-limit or audit `before_request` double-counted.
-        # The routes above are per-mount; everything from here down is per-name.
+        # Bucketed by name so dispatch looks hooks up by the matched route's
+        # endpoint prefix rather than testing every blueprint's gated wrapper per
+        # request. A nested child's ancestor chain is flattened under its own
+        # dotted path. The routes above are per-mount, these per-name - hence the gate.
         for own_attr, scoped_attr, bucket in (
             ()
             if already_registered
@@ -1117,18 +958,12 @@ class Veloce(
                 if chain:
                     bucket.setdefault(f"{bp_name}.{suffix}", []).extend(chain)
             if own or scoped:
-                # Keep the compiled `is_bare` flag fresh when a blueprint
-                # contributes hooks but no routes (a route-bearing blueprint
-                # already bumps `_gen` through route registration).
+                # Keeps `is_bare` fresh for a blueprint with hooks but no routes.
                 self._gen += 1
 
-        # Error handlers stay scoped to the blueprint's own routes: bucket them
-        # under the blueprint name rather than merging into the app-global
-        # tables, so the dispatch error path (consulting `request.blueprints`)
-        # finds them only for a request on this blueprint or a descendant - never
-        # on a sibling blueprint or an app-level route. A nested child's handlers
-        # are bucketed under the child's full dotted name (`<bp>.<child>`), so two
-        # sibling children do not share a single parent bucket.
+        # Bucketed rather than merged into the app-global tables, so the dispatch
+        # error path finds them only for this blueprint or a descendant; a nested
+        # child's go under its own dotted name, not a shared parent bucket.
         if blueprint._exception_handlers:
             self._bp_exception_handlers.setdefault(bp_name, {}).update(
                 blueprint._exception_handlers
@@ -1187,11 +1022,8 @@ class Veloce(
         self.add_route(
             path=rule,
             handler=view_func,
-            # A class-based view already knows its verbs: `View.as_view` sets
-            # `view.methods` from the methods the class actually defines. Reading
-            # it here is what makes that assignment mean something - without it a
-            # `MethodView` defining `get` and `post` was registered for GET alone
-            # and answered its own POST with 405.
+            # `View.as_view` sets `view.methods` from the methods the class
+            # defines, so a class-based view is registered for all of them.
             methods=methods or getattr(view_func, "methods", None) or [HTTP_METHOD_GET],
             name=endpoint,
             **kwargs,
@@ -1220,9 +1052,7 @@ class Veloce(
     @dependency_overrides.setter
     def dependency_overrides(self, value: dict[Callable[..., Any], Callable[..., Any]]) -> None:
         self._dependency_overrides = value
-        # Sub-plans cached for previous override callables can no longer be
-        # reached, but they pin the callable + its plan. Drop them so a
-        # long-lived test suite that swaps in hundreds of fakes doesn't leak.
+        # The previous callables' sub-plans are unreachable but still pin them.
         self._override_subplans.clear()
 
     # ── Construction helpers ──────────────────────────────
@@ -1230,11 +1060,9 @@ class Veloce(
     def _init_runtime_state(self) -> None:
         """Initialise the app's internal runtime and pipeline state.
 
-        The lifecycle bookkeeping, middleware ledger, compiled feature
-        pipeline specs, instrumentation / MCP / error-handler tables, and the
-        route-introspection caches. Arg-free: every value is an empty
-        container, a sentinel, or a FeatureSpec whose enabled/build lambdas
-        read app state lazily at request time. Called once from __init__.
+        Arg-free: every value is an empty container, a sentinel, or a
+        `FeatureSpec` whose lambdas read app state lazily. Called once from
+        `__init__`.
         """
         self._init_lifecycle_state()
         self._init_middleware_state()
@@ -1246,67 +1074,38 @@ class Veloce(
     def _init_lifecycle_state(self) -> None:
         """Lifespan handles, the setup lock, and the spawned-task ledgers."""
         self._lifespan_cm: Any = None
-        # Setup lock: flipped True on the first dispatch (under
-        # `_first_request_lock`) so late route/hook/blueprint registration -
-        # which would race in-flight requests under concurrent ASGI dispatch -
-        # raises `SetupError` instead of silently mutating the live route table.
-        # Initialised here, before the ctor-time `exception_handlers=` /
-        # `middleware=` registration runs, so `_assert_mutable` can read it.
-        # Relaxed under DEBUG/TESTING (decided at lock time) so hot-reload and
-        # test monkeypatching stay ergonomic.
+        # Flipped True on the first dispatch, so late registration raises rather
+        # than racing in-flight requests. Assigned before the ctor-time
+        # `exception_handlers=` / `middleware=` registration reads it.
         self._setup_locked = False
-        # Master switch for the setup lock. The in-memory `TestClient` clears it
-        # so a test can keep registering routes/hooks between requests without
-        # tripping `SetupError`; real serving paths leave it on.
+        # Master switch: the in-memory `TestClient` clears it so a test can keep
+        # registering between requests; real serving paths leave it on.
         self._setup_lock_enabled = True
-        # Single AsyncExitStack driving startup teardown. Entered resources
-        # (the lifespan CM, each `on_shutdown` callback, the watchdog) are
-        # pushed here in startup order, so a failure mid-startup unwinds only
-        # what already succeeded and a clean shutdown unwinds everything in
-        # reverse. `None` until the first startup run.
+        # Entered resources are pushed in startup order, so a failure mid-startup
+        # unwinds only what succeeded and a clean shutdown unwinds in reverse.
         self._lifespan_stack: contextlib.AsyncExitStack | None = None
-        # Mounted Veloce sub-apps started during startup, in start order. Shut
-        # down newest-first BEFORE the parent's own on_shutdown handlers, so a
-        # child releasing work against a shared resource tears down while that
-        # resource is still open (reverse of parent-then-children startup).
-        # Typed by the marker the start loop narrows on, which is also all the
-        # shutdown loop needs: a mounted app owns a Veloce lifecycle, or it is
-        # a foreign ASGI app that is skipped.
+        # In start order, and shut down newest-first BEFORE the parent's own
+        # `on_shutdown` handlers, so a child releasing work against a shared
+        # resource tears down while that resource is still open.
         self._started_subapps: list[LifecycleMixin] = []
-        # App-scoped background tasks spawned via `app.spawn(...)`. Named tasks
-        # live in the dict (cancellable / retrievable by name); anonymous ones
-        # in the set. Both hold strong references so the loop cannot GC an
-        # in-flight task, and both are cancelled-and-drained on shutdown.
+        # Strong references, so the loop cannot GC an in-flight task.
         self._spawned_named: dict[str, asyncio.Task[Any]] = {}
         self._spawned_anon: set[asyncio.Task[Any]] = set()
 
     def _init_middleware_state(self) -> None:
         """Set up the app logger and the ledger middleware registration writes to."""
-        # `import_name` (already resolved to the caller's module in `__init__`
-        # when not passed explicitly).
         self.logger = logging.getLogger(self.import_name)
 
         self._middlewares: list[Middleware] = []
-        # Priority-ordering bookkeeping for `_middlewares`. Each registered
-        # middleware records `(priority, sequence, instance)`; `sequence` is a
-        # monotonic registration counter so equal priorities keep registration
-        # order (a stable tiebreak). `_middleware_seq` issues those sequence
-        # numbers and `_any_priority` stays False until a non-zero priority is
-        # passed - while it is False, `_middlewares` is exactly the append-order
-        # list and the ordered rebuild is skipped entirely, so an app that never
-        # uses priorities pays nothing and its ordering is byte-identical to
-        # before. Once any priority is set, `_middlewares` is rebuilt at
-        # registration time (never per request) as a stable sort by descending
-        # priority, so higher-priority middleware runs earlier in the request
-        # phase and correspondingly later in the response phase.
+        # `(priority, sequence, instance)`, `sequence` being a monotonic counter
+        # so equal priorities keep registration order. While `_any_priority` is
+        # False, `_middlewares` is exactly the append-order list and the sort is
+        # skipped; once a priority is set it is sorted at registration time.
         self._middleware_records: list[tuple[int, int, Middleware]] = []
         self._middleware_seq = 0
         self._any_priority = False
-        # Monotonic generation counter for `_middlewares`, bumped on every
-        # mutation via `add_middleware`. A route's per-route exclusion chain
-        # cache (`RouteInfo._mw_chain_cache`) keys on this so a filtered
-        # chain is recomputed only when the registered middleware set
-        # actually changes, never per request.
+        # A route's exclusion-chain cache (`RouteInfo._mw_chain_cache`) keys on
+        # this, so a filtered chain is recomputed only when the set changes.
         self._mw_version = 0
 
     def _init_feature_pipeline(self) -> None:
@@ -1315,18 +1114,12 @@ class Veloce(
         The `FeatureSpec` declarations are appended in order and read back as a
         sequence, so they stay together here rather than being split by topic.
         """
-        # Feature registry + compiled pipeline. `_features` holds the app-level
-        # `FeatureSpec` declarations; `_gen` is a monotonic generation counter
-        # bumped by every registration funnel; `_pipeline` caches the compiled
-        # artifact and is rebuilt lazily when `cp.gen != self._gen`. Generalises
-        # the `_mw_version` pattern from middleware-only to all compiled features.
+        # `_pipeline` is rebuilt lazily when `cp.gen != self._gen`.
         self._gen = 0
         self._features: list[FeatureSpec] = []
         self._pipeline: CompiledPipeline | None = None
-        # WebSocket handshake host / origin gate: pre-filtered from the
-        # registered middleware at compile time so the per-connect path iterates
-        # a frozen tuple instead of probing every middleware. Enabled only when
-        # middleware exists.
+        # Handshake host / origin gate, pre-filtered at compile time so the
+        # per-connect path iterates a tuple instead of probing every middleware.
         self._features.append(
             FeatureSpec(
                 "ws.handshake",
@@ -1335,11 +1128,8 @@ class Veloce(
                 build=lambda: build_ws_handshake_checks(self),
             )
         )
-        # Response-phase middleware: the `process_response` bound methods in
-        # reversed registration order, fused once at compile so no per-response
-        # `reversed(self._middlewares)` alloc runs. Consumed only when a request
-        # carries no per-route exclusion chain (`_MW_RESPONSE_CHAIN_KEY` absent);
-        # an excluded route falls back to the dynamic filtered walk.
+        # The `process_response` methods in reversed order, fused once so no
+        # per-response `reversed()` alloc runs. Skipped for an excluding route.
         self._features.append(
             FeatureSpec(
                 "http.middleware.response",
@@ -1348,10 +1138,7 @@ class Veloce(
                 build=lambda: build_response_middleware(self),
             )
         )
-        # Request-phase middleware: the `process_request` bound methods in
-        # forward registration order, fused once. Consumed only when a request
-        # carries no per-route exclusion chain; an excluded route uses its
-        # dynamic filtered chain.
+        # The `process_request` methods in forward order, on the same terms.
         self._features.append(
             FeatureSpec(
                 "http.middleware.request",
@@ -1360,9 +1147,8 @@ class Veloce(
                 build=lambda: build_request_middleware(self),
             )
         )
-        # `@app.middleware("http")` call_next chain: the registered functions
-        # fused into a tuple. The slot is `None` when none are registered, so the
-        # around branch in `handle_request` is taken only when funcs exist.
+        # The `@app.middleware("http")` call_next chain. The slot is `None` when
+        # none are registered, so `handle_request` skips the around branch.
         self._features.append(
             FeatureSpec(
                 "http.middleware.around",
@@ -1371,9 +1157,8 @@ class Veloce(
                 build=lambda: tuple(self._http_middleware_funcs),
             )
         )
-        # Instrumentation hooks: the registered hooks fused into a tuple. The
-        # slot is `None` for an un-instrumented app, which then never reads the
-        # perf clock or runs the post-response metrics call.
+        # `None` for an un-instrumented app, which then never reads the perf
+        # clock or runs the post-response metrics call.
         self._features.append(
             FeatureSpec(
                 "http.instrumentation",
@@ -1382,13 +1167,8 @@ class Veloce(
                 build=lambda: tuple(self._instrumentation),
             )
         )
-        # Standard ASGI middleware wrappers: the registered `(cls, options)`
-        # pairs in registration order. Lives at the default `order` so any
-        # higher-order wrapper (the live-otel span, registered with a larger
-        # `order`) sorts ahead of it and ends up the outermost wrapper - the
-        # same position the historical `_asgi_middleware.insert(0, ...)` gave it.
-        # The build returns a list of pairs; `_build_asgi_stack` flattens the
-        # fused slot into one ordered chain.
+        # At the default `order`, so a higher-order wrapper (the live-otel span)
+        # sorts ahead of it and ends up outermost.
         self._features.append(
             FeatureSpec(
                 "asgi.middleware",
@@ -1400,172 +1180,106 @@ class Veloce(
 
     def _init_asgi_stack_state(self) -> None:
         """Set up the ASGI wrapper stack and the observability hooks around it."""
-        # Standard ASGI middleware - `(class, options)` pairs. Each wraps the
-        # whole ASGI application (instantiated as `cls(app, **options)`) and
-        # is assembled lazily into `_asgi_stack` on the first request.
+        # Each instantiated as `cls(app, **options)` on the first request.
         self._asgi_middleware: list[tuple[Any, dict[str, Any]]] = []
-        # The assembled ASGI wrapper stack and the generation it was built at.
-        # Rebuilt when the compiled pipeline's generation advances (a new ASGI
-        # wrapper registered, e.g. the live-otel span), so no wrapper registry
-        # needs its own manual stack reset.
+        # Rebuilt when the compiled pipeline's generation advances, so no wrapper
+        # registry needs its own manual stack reset.
         self._asgi_stack: Callable[..., Any] | None = None
         self._asgi_stack_gen: int = -1
-        # Observability instrumentation hooks - each is invoked once per
-        # finished HTTP request with a `RequestMetrics` record. Empty by
-        # default, so an un-instrumented app pays nothing.
         self._instrumentation: list[Callable[..., Any]] = []
-        # Per-hook route-template exclusions, populated only when a hook is
-        # registered with `exclude_routes`. Sparse on purpose: the common case
-        # (no exclusions) leaves this empty so the dispatch loop skips the
-        # membership test entirely and a hook with no exclusion pays nothing.
+        # Sparse on purpose: empty, the dispatch loop skips the membership test.
         self._instrumentation_excludes: dict[Callable[..., Any], frozenset[str]] = {}
 
     def _init_introspection_caches(self) -> None:
         """Set up the watchdog handle, error-handler maps and lazy route caches."""
-        # Dev-mode event-loop blocking watchdog - armed during startup only
-        # when the `EVENT_LOOP_WATCHDOG` config key is set, so it is `None`
-        # (and free) for every other app.
+        # Armed during startup only when `EVENT_LOOP_WATCHDOG` is set.
         self._watchdog: Any = None
         self._exception_handlers: dict[type[Any], Callable[..., Any]] = {}
         self._status_handlers: dict[int, Callable[..., Any]] = {}
-        # Route-introspection caches - rebuilt lazily on next access after
-        # a mutation. Invalidated through `_invalidate_route_caches()`,
-        # which fires from `add_route` / `include_router` (the two
-        # entry-points every higher-level registration ultimately funnels
-        # through, including `register_blueprint` and `add_url_rule`).
         self._cached_routes = None
         self._cached_view_functions = None
         self._cached_url_map = None
-        # Cached `_find_exception_handler` MRO walks; invalidated on
-        # any `register_error_handler` call. The cache assumes the
-        # exception-type space is bounded - typical applications raise
-        # a fixed set of exception classes, so it never grows beyond a
-        # few dozen entries. An app that synthesises new exception
-        # classes per request would grow this unboundedly; not a target
-        # workload.
+        # Cached `_find_exception_handler` MRO walks. Unbounded in principle; an
+        # app raising a fixed set of exception classes keeps it to a few dozen.
         self._exc_handler_cache: dict[type[Any], Callable[..., Any] | None] = {}
 
     def _init_registries(self) -> None:
         """Initialise the per-app hook, mount, template, and URL registries.
 
-        The request and blueprint hooks, mount lists, template and URL
-        processor registries, and the lazily-built helpers (webhooks router,
-        JSON provider, aborter, static config). Arg-free; called once from
-        __init__ after the constructor-time handler/middleware registration.
+        Arg-free; called once from `__init__` after the constructor-time
+        handler and middleware registration.
         """
         self._on_startup: list[Callable[..., Any]] = []
         self._on_shutdown: list[Callable[..., Any]] = []
         self._static_handlers: list[StaticFiles] = []
         self._dependency_overrides: dict[Callable[..., Any], Callable[..., Any]] = {}
-        # Cross-request cache of `(sub_plan, is_coro, is_gen, is_async_gen)`
-        # for overridden dependencies. Hoisted to the app so each request's
-        # fresh DependencyResolver doesn't pay the build + triple-probe cost.
-        # WeakKeyDictionary so a transient override target (a per-test
-        # lambda, a hot-reloaded factory) does not pin its plan for the
-        # process lifetime - strong-keyed callable caches become leaks
-        # under test-suite churn.
+        # `(sub_plan, is_coro, is_gen, is_async_gen)` per overridden dependency,
+        # so each request's fresh `DependencyResolver` does not pay the build +
+        # triple-probe cost. Weakly keyed: a transient target must not be pinned.
         self._override_subplans: weakref.WeakKeyDictionary[Callable[..., Any], Any] = (
             weakref.WeakKeyDictionary()
         )
         self._before_request_hooks: list[Callable[..., Any]] = []
         self._before_first_request_hooks: list[Callable[..., Any]] = []
-        # Single-fire guard: lock prevents concurrent first requests from
-        # both seeing `_first_request_fired = False` and running hooks twice.
-        # The lock itself is lazy-allocated on first use so it binds to the
-        # currently-running event loop, not to whatever loop happens to be
-        # current at app-construction time (which is typically no loop at
-        # all when Veloce() is instantiated at module scope, and a
-        # different loop when TestClient spins one up later).
+        # The lock stops two concurrent first requests from both seeing
+        # `_first_request_fired = False`. Allocated lazily so it binds to the
+        # running loop - at construction, at module scope, there is none.
         self._first_request_fired = False
         self._first_request_lock: asyncio.Lock | None = None
         self._after_request_hooks: list[Callable[..., Any]] = []
         self._teardown_request_hooks: list[Callable[..., Any]] = []
-        # Blueprint hooks bucketed by blueprint name. Dispatch walks only
-        # the bucket whose name matches the matched route's `endpoint` prefix,
-        # so the cost is the matched blueprint's hooks and not O(B*H) gate
-        # checks across every blueprint's.
+        # Bucketed by name: dispatch walks only the bucket matching the matched
+        # route's `endpoint` prefix, not every blueprint's gate checks.
         self._bp_before_hooks: dict[str, list[Callable[..., Any]]] = {}
         self._bp_after_hooks: dict[str, list[Callable[..., Any]]] = {}
         self._bp_teardown_hooks: dict[str, list[Callable[..., Any]]] = {}
-        # Per-blueprint error handlers, kept out of the app-global tables so a
-        # blueprint's handler only catches exceptions raised by its own (or a
-        # nested descendant's) routes - consulted by `request.blueprints` before
-        # the app-level tables, never across sibling blueprints.
+        # Kept out of the app-global tables so a blueprint's handler catches only
+        # its own (or a nested descendant's) routes, never a sibling's.
         self._bp_exception_handlers: dict[str, dict[type[Any], Callable[..., Any]]] = {}
         self._bp_status_handlers: dict[str, dict[int, Callable[..., Any]]] = {}
         self._teardown_appcontext_hooks: list[Callable[..., Any]] = []
         self._context_processors: list[Callable[..., Any]] = []
-        # `(prefix, prefix + "/", sub_app)` - the second slot is the
-        # boundary string the dispatcher compares against the request path,
-        # precomputed once so the per-request loop avoids re-allocating it.
+        # `(prefix, prefix + "/", sub_app)`; the second slot is the boundary the
+        # dispatcher compares the path against, so the loop does not rebuild it.
         self._mounted_apps: list[tuple[str, str, Any]] = []
         # Same shape for ASGI-layer mounts dispatched with the raw scope.
         self._asgi_mounts: list[tuple[str, str, Any]] = []
-        # Sub-apps mounted with `expose_mcp=True`, whose MCP primitives are
-        # published through this app's own MCP server under a name prefix.
+        # `expose_mcp=True` sub-apps, published through this app's own MCP server.
         self._mcp_mounts: list[tuple[str, Any]] = []
-        # Tools handed over already built rather than derived from a signature:
-        # an upstream's, discovered by `add_mcp_proxy`, or one narrowed by
-        # `derive_tool` and registered with `add_mcp_tool`. Their schema is
-        # whatever built them, so the registry adds them as they are.
+        # Built elsewhere, not derived from a signature, so added as they are.
         self._mcp_prebuilt_tools: list[Any] = []
         self._http_middleware_funcs: list[Callable[..., Any]] = []  # @app.middleware("http") funcs
         # Jinja2 helper registrations - applied to the env on each render.
         self._template_filters: list[tuple[str, Callable[..., Any]]] = []
         self._template_globals: list[tuple[str, Callable[..., Any]]] = []
         self._template_tests: list[tuple[str, Callable[..., Any]]] = []
-        # Objects that report to `veloce check` without being middleware or a
-        # static handler. A mounted MCP endpoint registers routes, so the audit
-        # had nothing to ask about a tool-execution endpoint with no auth.
+        # Non-middleware components that report to `veloce check`.
         self._auditables: list[Any] = []
-        # URL processors: preprocessor runs after route match and
-        # can mutate path_params (e.g. pop a lang segment into g); url_defaults
-        # runs inside url_for/url_path_for and can inject default kwargs.
+        # A preprocessor runs after route match and can mutate `path_params`; a
+        # url_defaults function runs inside `url_for` and injects default kwargs.
         self._url_value_preprocessors: list[Callable[..., Any]] = []
         self._url_default_funcs: list[Callable[..., Any]] = []
-        # Blueprint-contributed URL processors, bucketed by the endpoint's
-        # dotted blueprint name exactly as the request hooks are. Merged into
-        # the app lists as gated closures, every blueprint's processor was
-        # tested on every request - the O(blueprints * processors) of no-op
-        # work the hook buckets exist to avoid - and one of them cost every
-        # route in the app its straight-line dispatch.
+        # Bucketed by dotted blueprint name as the request hooks are.
         self._bp_url_value_preprocessors: dict[str, list[Callable[..., Any]]] = {}
         self._bp_url_default_funcs: dict[str, list[Callable[..., Any]]] = {}
-        # `url_build_error_handlers` - list of `(error, endpoint, values)`
-        # callbacks consulted when `url_for` can't build a URL.
+        # `(error, endpoint, values)` callbacks, when `url_for` cannot build a URL.
         self.url_build_error_handlers: list[Callable[..., Any]] = []
-        # `app.blueprints` view + `iter_blueprints()` iterator -
-        # name -> Blueprint of every successfully registered blueprint.
         self._blueprints_map: dict[str, Any] = {}
-        # `@app.shell_context_processor` registry - each function
-        # returns a dict that's merged into `veloce shell`'s namespace.
+        # Each returns a dict merged into `veloce shell`'s namespace.
         self._shell_context_processors: list[Callable[..., Any]] = []
-        # Lazily-built `click.Group` for app-defined CLI commands. Built
-        # on first `app.cli` access so `click` isn't a hard import.
         self._cli_group = None
-        # `app.webhooks` - a `Blueprint` whose routes are pure documentation:
-        # registered for the OpenAPI 3.1 `webhooks` section, never dispatched.
+        # Routes registered for the OpenAPI 3.1 `webhooks` section, never dispatched.
         self.webhooks = Blueprint("webhooks")
-        # JSON provider: the class attribute is overridable, and the instance is
-        # built lazily on first `app.json` access.
         from veloce.json_provider import DefaultJSONProvider
 
         self.json_provider_class: Any = DefaultJSONProvider
         self._json_provider = None
-        # Resolved on first use from the provider above: `None` means "the
-        # default provider with nothing configured", which is byte-for-byte what
-        # the direct orjson path already emits - so an app that configured
-        # nothing keeps that path and pays only a `None` test. Anything else is
-        # the provider's own `dumps`, so a configured dialect reaches a handler's
-        # `dict` / `list` / model return the way it already reaches `jsonify`.
+        # Resolved on first use. `None` means the default provider with nothing
+        # configured, which is byte-for-byte what the direct orjson path emits.
         self._handler_json_dumps: Any = _UNRESOLVED_JSON_DUMPS
-        # Callable `Aborter`. Lazily built on first `app.aborter`
-        # access so subclasses can override before use without paying
-        # construction cost for apps that don't touch it.
+        # Built on first `app.aborter` access, so a subclass can replace it first.
         self._aborter = None
-        # Static-folder attributes - `static_folder` is
-        # resolved relative to `package_root` if not absolute. Mounting
-        # a `StaticFiles` handler at `static_url_path` is opt-in via
-        # `app.static(prefix=app.static_url_path, directory=app.static_folder)`.
+        # Resolved relative to `package_root` when not absolute; mounting a
+        # `StaticFiles` handler at `static_url_path` is opt-in.
         self.static_folder: str = "static"
         self.static_url_path: str = "/static"

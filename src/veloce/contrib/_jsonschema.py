@@ -1,15 +1,12 @@
 """Python type — JSON Schema, and the `$defs` registry that names the results.
 
-The lower of the two layers `contrib/openapi.py` used to hold. It converts a
-Python annotation into a JSON Schema fragment and gives every model schema a
-stable component name; it knows nothing about OpenAPI documents, operations or
-routes.
+The lower of the two layers `contrib/openapi.py` holds. It converts a Python
+annotation into a JSON Schema fragment and gives every model schema a stable
+component name; it knows nothing about OpenAPI documents, operations or routes.
 
 Separate because it has a second consumer: `contrib.mcp.plan_bridge` builds MCP
-tool input schemas from the same conversion, and used to reach four private
-names out of the document generator to get it — so a signature change here broke
-`contrib.mcp` silently, and importing `veloce.contrib.mcp` eagerly loaded the
-whole OpenAPI assembler to obtain a tool schema.
+tool input schemas from the same conversion, so neither door reaches into the
+other's document generator for one.
 """
 
 from __future__ import annotations
@@ -56,10 +53,8 @@ def _is_model_type(annotation: Any) -> bool:
     same way.
 
     Asked of `backend_of`, the framework's one answer to "is this a model, and
-    whose?", so this gate and the route contract's cannot disagree. Restating it
-    as a pydantic-or-msgspec test omitted `ADAPTED`, and a dataclass response
-    model was emitted with no content at all while the resolver validated and
-    returned it.
+    whose?", so this gate and the route contract's cannot disagree - a
+    pydantic-or-msgspec test here would omit `ADAPTED`.
     """
     return backend_of(annotation) is not ModelBackend.NONE
 
@@ -79,14 +74,9 @@ def _literal_enum_schema(values: list[Any]) -> dict[str, Any]:
 
 
 # Scalar Python types mapped to their fixed OpenAPI / JSON Schema fragment.
-# Hoisted out of `_python_type_to_schema` so the table is built once at import
-# time rather than per call. Callers mutate the schema they get back
-# (`_apply_marker_constraints` writes minimum/maximum/pattern; the parameter
-# builder sets `default`), so a lookup hit must return a fresh shallow copy -
-# never a reference into this shared table. The copy is shallow: nested
-# containers (the `list` entry's `items` dict) are shared across callers, so
-# callers must mutate only top-level keys and never edit `schema["items"]` (or
-# any nested object) in place, which would corrupt this table for every caller.
+# Callers mutate what they get back, so a lookup hit must return a fresh shallow
+# copy - and the copy being shallow, the `list` entry's `items` dict is shared,
+# so writing through one corrupts this table for every caller.
 _SCALAR_TYPE_SCHEMAS: dict[Any, dict[str, Any]] = {
     str: {"type": "string"},
     int: _SCALAR_JSON_SCHEMAS["integer"],
@@ -110,60 +100,35 @@ _SCALAR_TYPE_SCHEMAS: dict[Any, dict[str, Any]] = {
 def _python_type_to_schema(annotation: Any) -> dict[str, Any]:
     """Convert a Python type to its OpenAPI 3.1 / JSON Schema 2020-12 form.
 
-    This builds the schema for a non-body parameter (query / path / header
-    / cookie) or a form field. Those values arrive over the wire as raw
-    strings: the resolver pulls them from `request.query_params`,
-    `request.headers`, `request.cookies`, or `request.form()` and coerces
-    each through `_coerce_value`. The schema therefore documents only what
-    that string-origin pipeline can actually deliver.
+    This builds the schema for a non-body parameter (query / path / header /
+    cookie) or a form field. Those values arrive over the wire as raw strings,
+    so the schema documents only what that string-origin pipeline can deliver:
+    a Pydantic model, including one nested in `list` / `set` / `dict`, keeps
+    `{"type": "string"}` because the resolver parses the raw string as a JSON
+    document (`?tag={"name":"x"}`).
 
-    Scalars resolve to their richer JSON Schema form - `datetime`, `date`,
-    `time`, `UUID`, `Decimal`, `Enum` subclasses and `Literal[...]` all
-    keep their `format` / `enum` keywords. A nullable scalar
-    (`Optional[T]`) unwraps to the inner schema.
+    Scalars keep their richer form - `datetime`, `date`, `time`, `UUID`,
+    `Decimal`, `Enum` subclasses and `Literal[...]` all keep their `format` /
+    `enum` keywords - and a nullable scalar (`Optional[T]`) unwraps to the
+    inner schema.
 
-    Pydantic models - and models nested inside `list` / `set` / `dict` -
-    keep `{"type": "string"}`: the value arrives as a raw string and the
-    resolver parses that string as a JSON document into the model
-    (`?tag={"name":"x"}`), so the wire shape is genuinely a string.
-
-    Multi-member unions are schema'd by which branches a *string* input
-    can actually reach under Pydantic's smart coercion:
-
-    - A union that includes `str` (`int | str`, `int | str | None`)
-      collapses to `{"type": "string"}`: smart-mode coercion keeps a
-      string value as the `str` member, so that is the only reachable
-      branch.
-    - A union with no string-accepting member (`int | float`,
-      `UUID | int`, `date | datetime`) emits an `anyOf` over the members'
-      schemas: the resolver feeds the string to Pydantic, which resolves
-      it to whichever non-string branch matches, so several branches are
-      genuinely reachable.
+    A multi-member union is schema'd by which branches a *string* input can
+    actually reach under Pydantic's smart coercion: one including `str`
+    (`int | str`) collapses to `{"type": "string"}`, since coercion keeps a
+    string as the `str` member; one with no string-accepting member
+    (`int | float`, `UUID | int`) emits an `anyOf`, since the resolver can
+    reach each of them.
     """
     if annotation is None or annotation is inspect.Parameter.empty:
         return {"type": "string"}
-    # `Any` means "any value allowed" - JSON Schema convention is an empty
-    # schema, not a string default. (This does not reach a `dict` value type:
-    # the `dict` branch below omits `additionalProperties` on purpose, for the
-    # reason stated there.)
+    # `Any` is an empty schema by JSON Schema convention, not a string default.
     if annotation is Any:
         return {}
 
     origin = get_origin(annotation)
-    # Unwrap `Optional[T]` / `T | None` to the inner type so a nullable
-    # rich-typed parameter still emits its `format` / `enum` keywords.
-    #
-    # For a genuine multi-member union the schema follows which branch a
-    # string wire value can reach under Pydantic's smart coercion (verified
-    # against the resolver, not assumed):
-    #   - a member that accepts a string directly (`str` / `bytes`) always
-    #     wins, so the union collapses to `{"type": "string"}`;
-    #   - a Pydantic-model member is NOT reachable from a string in a union -
-    #     the resolver only JSON-decodes a *bare* model annotation, so
-    #     `Tag | int` rejects `?v={"name":"x"}` with 422. Model members are
-    #     dropped from the union schema so it never advertises a 422 branch;
-    #   - the remaining scalar branches (`int | float`, `UUID | int`, ...) are
-    #     each genuinely reachable, so the union emits an `anyOf` over them.
+    # A model member is NOT reachable from a string in a union - the resolver
+    # only JSON-decodes a *bare* model annotation, so `Tag | int` rejects
+    # `?v={"name":"x"}` with 422 - and is dropped rather than advertised.
     if origin is Union or origin is types.UnionType:
         members = get_args(annotation)
         inner = [a for a in members if a is not type(None)]
@@ -173,27 +138,20 @@ def _python_type_to_schema(annotation: Any) -> dict[str, Any]:
             return {"type": "string"}
         reachable = [m for m in inner if not _is_model_type(m)]
         if not reachable:
-            # Every member is a model; none is reachable from a string in a
-            # union (`A | B` 422s on any string value), so document a bare
-            # object rather than a string the resolver would also reject.
+            # Every member is a model: a bare object, not a string it rejects.
             return {"type": "object"}
         if len(reachable) == 1:
             return _python_type_to_schema(reachable[0])
         return {"anyOf": [_python_type_to_schema(m) for m in reachable]}
 
-    # Parametrised `list[T]` / `set[T]` -> an array schema with typed items.
-    # A model item is not reachable: `list[Tag]` 422s on a JSON-array string,
-    # so the item schema falls through to `{"type": "string"}` rather than the
-    # model's fields (the resolver only JSON-decodes a bare model annotation).
+    # A model item is not reachable either: `list[Tag]` 422s on a JSON-array
+    # string, so the item schema falls through to `{"type": "string"}`.
     if origin in _SEQUENCE_ORIGINS:
         args = get_args(annotation)
         positional = _fixed_shape_args(annotation)
         if positional is not None:
-            # A fixed-shape tuple declares a type per position and a length, and
-            # this document is OpenAPI 3.1 - so JSON Schema 2020-12, where
-            # `prefixItems` says exactly that. Published as a homogeneous array
-            # of the first type, the schema described a shape the resolver
-            # refuses, and a client generated from it sent one.
+            # A fixed-shape tuple declares a type per position and a length,
+            # which is exactly what `prefixItems` says in JSON Schema 2020-12.
             fixed: dict[str, Any] = {
                 "type": "array",
                 "minItems": len(positional),
@@ -210,13 +168,9 @@ def _python_type_to_schema(annotation: Any) -> dict[str, Any]:
             # The resolver drops duplicates, so the document has to say it does.
             schema["uniqueItems"] = True
         return schema
-    # Parametrised `dict[K, V]` -> a bare object schema. A non-body dict
-    # parameter is not wire-addressable at all: the resolver only JSON-decodes
-    # a bare model annotation, so `dict[str, int]` (and `dict[str, Tag]`) 422s
-    # on a JSON-object string and there is no repeated-param form for a dict.
-    # Documenting typed `additionalProperties` would therefore advertise a
-    # shape the resolver always rejects, so the value type is intentionally
-    # not emitted.
+    # A non-body dict parameter is not wire-addressable at all, so typed
+    # `additionalProperties` would advertise a shape the resolver always
+    # rejects - the value type is intentionally not emitted.
     if origin is dict:
         return {"type": "object"}
     if origin is Literal:
@@ -230,28 +184,22 @@ def _python_type_to_schema(annotation: Any) -> dict[str, Any]:
     if isinstance(annotation, type) and issubclass(annotation, enum.Enum):
         return _literal_enum_schema([member.value for member in annotation])
 
-    # Pydantic model -> `string`. A non-body parameter / form field arrives
-    # as a raw string; the resolver parses that string as a JSON document
-    # and validates it into the model (`?tag={"name":"x"}`), so the wire
-    # shape is a string. A model carried as a structured JSON body belongs
-    # in `requestBody`, handled by `_pydantic_to_schema`.
+    # A model carried as a structured JSON body belongs in `requestBody`,
+    # which `_pydantic_to_schema` handles instead.
     if is_pydantic_model(annotation):
         return {"type": "string"}
 
     return {"type": "string"}
 
 
-# Placeholder `$ref` prefix written while the document is assembled. Every
-# model reference points at `<PREFIX><token>` until `SchemaRegistry.finalize`
-# assigns the final human-readable component names and rewrites the whole
-# document in one pass. Keeping the prefix unmistakably non-OpenAPI guarantees
-# a leftover placeholder (a builder bug) is easy to spot.
+# Placeholder `$ref` prefix written while the document is assembled, until
+# `SchemaRegistry.finalize` assigns the real component names. Unmistakably
+# non-OpenAPI, so a leftover placeholder is easy to spot.
 _REF_PLACEHOLDER_PREFIX = "#/$veloce-schema/"
 
 
-# Pydantic emits nested-model references as `#/$defs/<Name>`. They are rewritten
-# to point at the per-owner registry entry while the model's `$defs` are folded
-# into the document, so this fragment is matched on the way in.
+# Pydantic emits nested-model references as `#/$defs/<Name>`; they are rewritten
+# at the per-owner registry entry, so this fragment is matched on the way in.
 _PYDANTIC_DEF_PREFIX = "#/$defs/"
 
 
@@ -271,19 +219,16 @@ class SchemaRegistry:
     __slots__ = ("_entries", "_order", "separate_input_output")
 
     def __init__(self, separate_input_output: bool = True) -> None:
-        # Identity key -> _SchemaEntry. The key is `(id(model), mode)`; the
-        # entry retains the class itself so finalize can derive names.
+        # `(id(model), mode)` -> entry, which retains the class for `finalize`.
         self._entries: dict[tuple[int, str], _SchemaEntry] = {}
-        # Insertion order of identity keys, so `components.schemas` is emitted
-        # deterministically in first-seen order rather than dict-hash order.
+        # So `components.schemas` is emitted in first-seen, not dict-hash, order.
         self._order: list[tuple[int, str]] = []
         self.separate_input_output = separate_input_output
 
     def ref(self, model: type[BaseModel], mode: str = "validation") -> dict[str, str]:
         """Register `model` under `mode` and return a placeholder `$ref`."""
-        # Serialization is only requested for response schemas. When the app
-        # opts out of split schemas, fold every request back onto the single
-        # validation variant so the document keeps one schema name per model.
+        # When the app opts out of split schemas, fold every request back onto
+        # the validation variant so the document keeps one name per model.
         if mode == "serialization" and not self.separate_input_output:
             mode = "validation"
         key = (id(model), mode)
@@ -305,9 +250,8 @@ class SchemaRegistry:
         token_to_name: dict[str, str] = {}
         components: dict[str, dict[str, Any]] = {}
 
-        # Group entries by the human-readable base name they want. A serialization
-        # entry is suffixed `-Output` only when it actually diverges from its
-        # validation twin, so the common (non-diverging) case keeps one name.
+        # A serialization entry is suffixed `-Output` only when it diverges
+        # from its validation twin, so the common case keeps one name.
         wanted: dict[str, list[_SchemaEntry]] = {}
         for key in self._order:
             entry = self._entries[key]
@@ -318,24 +262,16 @@ class SchemaRegistry:
                 twin = self._entries.get(val_key)
                 if twin is not None:
                     twin.build()
-                    # Compare the FULL schema - the top-level root (`body`) AND
-                    # every nested `$defs` entry (`defs`). Two models can share an
-                    # identical root while a nested model carries serialization-only
-                    # fields (a `computed_field`, a read-only / serialization alias)
-                    # that only surface in `mode="serialization"`. Folding on the
-                    # root alone would drop that distinct `-Output` schema even with
-                    # `separate_input_output_schemas=True`. Only collapse when the
-                    # entire schema, nested defs included, is byte-identical.
+                    # The FULL schema, nested `$defs` included: two models can
+                    # share a root while a nested one carries a
+                    # serialization-only field that a root-only compare drops.
                     if twin.body == entry.body and twin.defs == entry.defs:
-                        # Output equals input: reuse the validation component
-                        # rather than emit a redundant `-Output` schema.
+                        # Output equals input: reuse the validation component.
                         entry.alias_token = twin.token
                         continue
-                    # A model used for both input and output whose shapes
-                    # diverge keeps the bare name for the request schema and a
-                    # distinct `-Output` name for the response schema. With no
-                    # validation twin (response-only model) the bare name is
-                    # free, so no suffix is needed.
+                    # Diverging shapes keep the bare name for the request schema
+                    # and `-Output` for the response; a response-only model has
+                    # no twin, so the bare name is already free.
                     base = f"{base}-Output"
             wanted.setdefault(base, []).append(entry)
 
@@ -343,10 +279,9 @@ class SchemaRegistry:
             if len(group) == 1:
                 token_to_name[group[0].token] = base
             else:
-                # Same base name from >1 distinct class: qualify each by the
-                # last segment of its defining module (`schemas.User` -> the
-                # `User__schemas` form). Identical qualified names are made
-                # unique with a numeric tail so the bijection always holds.
+                # Same base name from >1 distinct class: qualify each by the last
+                # segment of its module (`schemas.User` -> `User__schemas`), with
+                # a numeric tail if that collides too, so the bijection holds.
                 used: dict[str, int] = {}
                 for entry in group:
                     seg = (entry.model.__module__ or "").rsplit(".", 1)[-1]
@@ -357,34 +292,20 @@ class SchemaRegistry:
                         candidate = f"{candidate}_{seen}"
                     token_to_name[entry.token] = candidate
 
-        # Materialise components, folding each model's own `$defs` (nested
-        # models) into the shared component map. A nested def is emitted under
-        # its bare Pydantic name when free. When a later owner brings a def of
-        # the SAME name but DIFFERENT content - a serialization-mode nested model
-        # that diverges from its validation twin (a nested `computed_field`, a
-        # read-only field) - it must not be dropped onto the first writer, or the
-        # serialization-only nested field disappears from the response schema.
-        # Divergence is transitive: a def whose own body matches the first
-        # writer's but which references (directly or through other defs) a
-        # diverging child still resolves to the WRONG subtree if folded, because
-        # its surviving `#/$defs/<child>` ref points at the validation child. So
-        # every def on a path that reaches a divergence gets its own `-Output`
-        # variant, and the owner's body plus each variant's internal refs are
-        # repointed at the renamed children so the response schema reaches the
-        # serialization subtree end to end.
+        # Each model's own `$defs` folds into the shared component map under its
+        # bare Pydantic name when free. A later owner's def of the same name but
+        # different content must not drop onto the first writer, or its
+        # serialization-only field disappears. Divergence is transitive (see
+        # `_diverging_def_renames`), so every def on a path to one gets its own
+        # `-Output` variant with its internal refs repointed.
         for key in self._order:
             entry = self._entries[key]
             if entry.alias_token is not None:
                 continue
             name = token_to_name[entry.token]
-            # The nested-def half below checks for a committed component of the
-            # same name and different content; this write did not, so a model
-            # reachable two ways - nested inside one route's request body, and as
-            # another route's response model - had whichever came second silently
-            # replace the first. With a `computed_field` on it, the published
-            # request schema then required a read-only field the model does not
-            # accept as input. The first writer stands, matching
-            # `_diverging_def_renames`, and `token_to_name` is updated before the
+            # A model reachable two ways - nested inside one route's request body
+            # and as another route's response model - must not have the second
+            # write replace the first. `token_to_name` is updated before the
             # `$ref` rewrite below so every reference follows the new name.
             committed = components.get(name)
             if committed is not None and committed != entry.body:
@@ -397,20 +318,17 @@ class SchemaRegistry:
             for def_name, def_schema in entry.defs.items():
                 target = local_renames.get(def_name)
                 if target is not None:
-                    # Diverging (directly or transitively): emit under the unique
-                    # name with its own refs repointed at any renamed children.
+                    # Diverging, so emitted under the unique name with its own
+                    # refs repointed at any renamed children.
                     rewritten = _copy_with_local_defs(def_schema, local_renames)
                     components[target] = rewritten
                 elif def_name not in components:
                     components[def_name] = def_schema
-                # An identical, non-diverging re-emission is harmless: the first
-                # writer stands.
+                # An identical re-emission is harmless: the first writer stands.
             if local_renames:
                 _rewrite_local_defs(entry.body, local_renames)
 
-        # Rewrite every placeholder reference in the whole document, plus the
-        # `#/$defs/...` references inside the freshly materialised components.
-        # Resolve aliases through a token -> alias_token map built once, so the
+        # Aliases resolve through a token -> alias_token map built once, so the
         # rewrite is linear rather than O(n^2) over the entries per token.
         alias_by_token: dict[str, str] = {}
         for entry in self._entries.values():
@@ -443,8 +361,7 @@ class SchemaRegistry:
             if existing is not None and existing != def_schema:
                 diverging.add(def_name)
 
-        # Propagate divergence backwards along references until stable: any def
-        # that reaches a diverging def is itself diverging for the output graph.
+        # Until stable: any def that reaches a diverging def is itself diverging.
         changed = True
         while changed:
             changed = False
@@ -467,10 +384,8 @@ class SchemaRegistry:
     def _unique_def_name(components: dict[str, dict[str, Any]], base: str) -> str:
         """Return a component name derived from `base` not already in use.
 
-        The `-Output` suffix mirrors the top-level serialization variant naming
-        so a diverging nested model reads as its owner's output twin; finding a
-        free name from there is `_unique_component_name`'s job, which this used
-        to restate with the arguments in the other order.
+        The `-Output` suffix mirrors the top-level serialization variant naming,
+        so a diverging nested model reads as its owner's output twin.
         """
         return _unique_component_name(f"{base}-Output", components)
 
@@ -483,15 +398,12 @@ def _iter_dicts(node: Any) -> collections.abc.Iterator[dict[str, Any]]:
 
     One walk for the several passes that visit a generated schema: rewriting a
     `binary` format, collecting local `$defs` targets, repointing renamed refs,
-    resolving placeholder refs, and validating that every ref exists. Each was
-    written as its own recursive function differing only in the body applied at
-    each mapping.
+    resolving placeholder refs, and validating that every ref exists.
 
-    Iterative rather than recursive on purpose: a deeply nested schema - a model
-    referring to itself through a long chain - would otherwise be bounded by the
-    interpreter's recursion limit rather than by memory. Callers may reassign
-    values on a yielded mapping (every pass below does), but must not add or
-    remove keys while iterating.
+    Iterative rather than recursive on purpose: a model referring to itself
+    through a long chain would otherwise be bounded by the interpreter's
+    recursion limit rather than by memory. Callers may reassign values on a
+    yielded mapping, but must not add or remove keys while iterating.
     """
     stack: list[Any] = [node]
     while stack:
@@ -509,11 +421,6 @@ def _warn_schema_fallback(subject: str, exc: Exception) -> None:
     Degrading silently to `{type: object}` hides real model bugs, so the failure
     is logged at WARNING and `/docs` still renders - an underspecified schema
     beats a 500.
-
-    One message because there were four, and they had already drifted: the
-    msgspec copy omitted the "inspect the model / attach a debugger" guidance
-    the other three carried, so the operator least likely to guess the cause got
-    the least help.
     """
     _logger.warning(
         "OpenAPI schema generation failed for %s: %s. "
@@ -544,8 +451,7 @@ class _SchemaEntry:
 
     __slots__ = ("alias_token", "body", "defs", "mode", "model", "token")
 
-    # Monotonic token source shared across entries so placeholder strings stay
-    # short and globally unique within a process; only used as an opaque key.
+    # Monotonic, so placeholder strings stay short and process-unique.
     _counter = 0
 
     def __init__(self, model: type[BaseModel], mode: str) -> None:
@@ -569,8 +475,8 @@ class _SchemaEntry:
         try:
             if is_adaptable_model(self.model):
                 # A dataclass / TypedDict has no `model_json_schema`; its shape
-                # comes from the same adapter that validates it, so the document
-                # and the validator cannot describe different fields.
+                # comes from the adapter that validates it, so the document and
+                # the validator cannot describe different fields.
                 schema = adapter_for(self.model).json_schema()
             else:
                 schema = self.model.model_json_schema(mode=self.mode)  # type: ignore[arg-type]
@@ -578,7 +484,6 @@ class _SchemaEntry:
             _warn_schema_fallback(f"{self.model.__name__} ({self.mode} mode)", exc)
             self.body = {"type": "object"}
             return
-        # Realign bytes fields with veloce's base64 JSON encoding (binary -> byte).
         _rewrite_byte_format(schema)
         if "$defs" in schema:
             for def_name, def_schema in schema["$defs"].items():
@@ -604,8 +509,7 @@ class _SchemaEntry:
             self.body = {"type": "object"}
             return
         # msgspec returns the model's own schema inside `components` and a
-        # top-level `$ref` to it; lift that into `body` and keep the rest as
-        # nested `$defs`. A struct with no nested refs may come back inline.
+        # top-level `$ref` to it. A struct with no nested refs comes back inline.
         root = schemas[0]
         if isinstance(root, dict) and set(root) == {"$ref"}:
             name = root["$ref"].rsplit("/", 1)[-1]
@@ -679,11 +583,9 @@ def _register_schema(
         for def_name, def_schema in schema["$defs"].items():
             registry[def_name] = def_schema
         del schema["$defs"]
-    # A recursive model renders as `{"$defs": {Name: <real object>},
-    # "$ref": ".../Name"}`: after extracting `$defs` the leftover top-level
-    # schema is a bare self-`$ref`. Overwriting the registry entry with it
-    # would clobber the real definition pulled from `$defs`, leaving an
-    # unresolvable cycle. Keep the extracted def.
+    # A recursive model leaves a bare self-`$ref` once `$defs` is extracted;
+    # overwriting the registry entry with it would clobber the real definition
+    # and leave an unresolvable cycle.
     if not (list(schema.keys()) == ["$ref"] and name in registry):
         registry[name] = schema
 
@@ -735,10 +637,7 @@ def _pydantic_to_schema(
     return {"$ref": f"#/components/schemas/{name}"}
 
 
-#: Origins that serialise to a JSON array. The docstring below has always
-#: promised "any `Sequence[MyModel]`"; only `list` was handled, so a handler
-#: annotated `-> Sequence[Item]` or `-> tuple[Item, ...]` lost its response
-#: schema entirely.
+#: Origins that serialise to a JSON array.
 _SEQUENCE_ORIGINS = (list, collections.abc.Sequence, tuple, set, frozenset, collections.abc.Set)
 
 
@@ -746,13 +645,9 @@ _SEQUENCE_ORIGINS = (list, collections.abc.Sequence, tuple, set, frozenset, coll
 #: `response_model_exclude`, so two routes filtering a model the same way share
 #: one component rather than emitting two.
 #:
-#: Keyed by the model itself, held weakly, with the filter as the inner key. An
-#: earlier version keyed on `id(model)` and held no reference: CPython recycles
-#: the address of a collected model, so a model built afterwards could land on
-#: the same id and be served the earlier model's derived class - a route
-#: documented as returning fields it has never heard of. The weak key removes
-#: that and the unbounded growth together, since the entry goes when the model
-#: does.
+#: Keyed weakly by the model itself - not by `id(model)`, whose address CPython
+#: recycles for a later model - with the filter as the inner key. The weak key
+#: bounds growth too: the entry goes when the model does.
 _FilterKey = tuple[frozenset[str] | None, frozenset[str] | None]
 _FILTERED_MODELS: weakref.WeakKeyDictionary[Any, dict[_FilterKey, Any]] = (
     weakref.WeakKeyDictionary()
@@ -770,9 +665,8 @@ def _filtered_struct(
 
     Separate because the two backends describe their fields differently -
     `model_fields` against `__struct_fields__` and `__annotations__` - and
-    because a Struct is derived with `msgspec.defstruct` rather than
-    `create_model`. The naming rule is shared, so a filtered component key reads
-    the same whichever backend declared the model.
+    because a Struct is derived with `msgspec.defstruct`. The naming rule is
+    shared, so a filtered component key reads the same either way.
     """
     annotations = _collect_annotations(model)
     surviving = [
@@ -807,10 +701,8 @@ def _filtered_response_model(model: Any, include: set[str] | None, exclude: set[
     """Build a model carrying only the fields a route's include/exclude leaves.
 
     `response_model_include` / `response_model_exclude` filter what the route
-    *sends*, and the lowering knew nothing about them - so a route sending
-    `{"name": ...}` was documented as returning the whole model, with the fields
-    it omits still marked `required`. A client generated from that document
-    expects a field the route never sends.
+    *sends*, so the document must apply them too, or a generated client expects
+    a field the route never sends.
 
     Deriving a model rather than editing a schema dict keeps every downstream
     behaviour - naming, `$defs` hoisting, nested refs, serialization mode - on
@@ -828,10 +720,7 @@ def _filtered_response_model(model: Any, include: set[str] | None, exclude: set[
         if cached is not None:
             return cached
     # `_is_model_type` - the gate that reaches here - admits a `msgspec.Struct`
-    # as well as a Pydantic model, and only the latter has `model_fields`. A
-    # single Struct route carrying a filter raised `AttributeError` here and
-    # took the whole document with it, because `app.openapi()` builds one
-    # document for every route.
+    # as well as a Pydantic model, and only the latter has `model_fields`.
     if not is_pydantic_model(model):
         return _filtered_struct(model, include, exclude, key)
 
@@ -843,13 +732,10 @@ def _filtered_response_model(model: Any, include: set[str] | None, exclude: set[
             continue
         fields[name] = (field.annotation, field)
     if not fields:
-        # Every field filtered out: nothing to derive, and an empty object is a
-        # less useful document than the model itself.
+        # An empty object is a less useful document than the model itself.
         return model
-    # The name reaches the components section, so it has to be stable for a
-    # given filter and distinct between filters. The surviving field names give
-    # both, and read better than an opaque token; a wide model falls back to a
-    # digest rather than emitting an unreadable component key.
+    # The name reaches the components section, so it must be stable per filter
+    # and distinct between filters; a wide model falls back to a digest.
     surviving = sorted(fields)
     suffix = "_".join(surviving)
     if len(suffix) > _FILTERED_NAME_LIMIT:
@@ -881,8 +767,7 @@ def _response_model_to_schema(
     origin = get_origin(response_model)
     if origin in _SEQUENCE_ORIGINS:
         args = get_args(response_model)
-        # `tuple[Item, ...]` carries an Ellipsis in its second slot; every
-        # sequence origin documents its element type from the first.
+        # `tuple[Item, ...]` carries an Ellipsis in its second slot.
         if args and _is_model_type(args[0]):
             element = _filtered_response_model(args[0], include, exclude)
             return {"type": "array", "items": registry.ref(element, mode="serialization")}
@@ -896,8 +781,7 @@ def _response_model_to_schema(
             elif _is_model_type(arg):
                 variants.append(registry.ref(arg, mode="serialization"))
             else:
-                # A member with no schema form makes the whole union
-                # inexpressible; omit rather than document it partially.
+                # One member with no schema form makes the union inexpressible.
                 return None
         if not variants:
             return None
@@ -911,10 +795,8 @@ def _response_model_to_schema(
 
 
 #: Types a default can take and still be written into a JSON document. Built
-#: once: an inline tuple here is not constant-folded, so it was rebuilt - and
-#: `type(None)` called - for every parameter of every document build.
-#: `type(None)` stays in it: the `publish_null` test above returns early only
-#: when null is NOT to be published, so a published `None` reaches this check.
+#: once: an inline tuple is not constant-folded, so it would be rebuilt per
+#: parameter. `type(None)` stays in it, since a published `None` reaches here.
 _JSON_PUBLISHABLE = (str, int, float, bool, type(None), list, dict)
 
 _NO_DEFAULT = object()
@@ -923,41 +805,20 @@ _NO_DEFAULT = object()
 def _publishable_default(value: Any, *, publish_null: bool) -> Any:
     """Return the default to publish for a parameter, or `_NO_DEFAULT`.
 
-    The part both lowerings share, beside the constraint walk they already
-    share: a `default_factory` builds a per-call value with no single value to
-    publish, and a value with no JSON form cannot go in a document. It lived
-    inline in each and they had drifted - the OpenAPI copy filtered to scalars,
-    so `Field(default=(1, 2))` on a `tuple` was published by the agent door and
-    dropped by the HTTP one. A tuple normalises to the list it serialises to.
+    Shared by both lowerings: a `default_factory` builds a per-call value with
+    no single value to publish, and a value with no JSON form cannot go in a
+    document. A factory is read off the value rather than asked about
+    separately, because a marker declaring one has `...` for its default - the
+    two are mutually exclusive - which is already the answer for a parameter
+    with no default at all.
 
-    A factory is read off the value, not asked about separately. A marker
-    declaring one has `...` for its default - the two are mutually exclusive -
-    which is already the answer for a parameter with no default at all. Asking
-    whether `default_factory` is set instead withheld the default of every
-    *mutable* marker default, because the framework installs a copying factory
-    on one of those itself and keeps `self.default` precisely so the schema can
-    still show it.
-
-    `publish_null` is the part that genuinely differs, so each caller states it
-    rather than inheriting a guess, and today both of them withhold it:
-
-    - The OpenAPI lowering passes `False`. `_python_type_to_schema` unwraps
-      `Optional[T]` to T's schema with no null branch, so `default: null` would
-      not validate against the schema carrying it - OpenAPI 3.1 asks that it
-      does, and a typed generator emits an initialiser its own type rejects.
-      `required: false` is what carries the optionality there.
-    - The MCP lowering passes `False` for a bare Python default, whose null is
-      already fully described by the `anyOf` null branch its schema publishes,
-      and `d.is_optional` for a marker's default, where that same branch makes
-      the null valid and worth reading.
-
-    So the two documents differ on exactly one keyword, and because their
-    schemas differ rather than by accident: the agent door publishes
-    `{"default": null, "anyOf": [{...}, {"type": "null"}]}`, where the default
-    validates against the schema beside it, and the HTTP door publishes
-    `{"type": "string"}` with `required: false`, where it would not. Making them
-    identical means either dropping a true statement from the agent schema or
-    adding an invalid one to the document.
+    `publish_null` is the one keyword the two doors differ on, and they differ
+    because their schemas do: the agent door publishes
+    `{"default": null, "anyOf": [{...}, {"type": "null"}]}`, where the null
+    validates against the schema beside it, while the HTTP document publishes
+    `{"type": "string"}` with `required: false`, where it would not - and
+    OpenAPI 3.1 asks that a default validate against its own schema. So each
+    caller states it rather than inheriting a guess.
     """
     if value is ...:
         return _NO_DEFAULT
@@ -977,26 +838,20 @@ def _apply_marker_constraints(param_schema: dict[str, Any], marker: Any) -> None
         param_schema["title"] = marker.title
     if marker.description:
         param_schema["description"] = marker.description
-    # A repeated parameter (`tags: list[str] = Query(...)`) is an array, and an
-    # array's length is `minItems` / `maxItems` - `minLength` / `maxLength`
-    # constrain a string, so emitting them here documented a bound no client
-    # could satisfy. The remaining keywords describe one element, so they go on
-    # the `items` subschema. The resolver enforces the same split.
+    # A repeated parameter (`tags: list[str] = Query(...)`) is an array, whose
+    # length is `minItems` / `maxItems` - `minLength` / `maxLength` constrain a
+    # string. The rest describe one element, so they go on `items`; the resolver
+    # enforces the same split.
     array = param_schema.get("type") == "array"
     # Element keywords are collected first and placed afterwards, because where
-    # they belong depends on the array's shape: a homogeneous array has one
-    # `items` subschema, a fixed-shape tuple has one entry per position and no
-    # `items` at all. Writing `items` unconditionally added an empty subschema
-    # to every tuple schema that said nothing, and would have hung an element
-    # constraint off a keyword the tuple does not use.
+    # they belong depends on the shape: a fixed-shape tuple has no `items`.
     scalar: dict[str, Any] = {} if array else param_schema
 
     if marker.ge is not None:
         scalar["minimum"] = marker.ge
     if marker.le is not None:
         scalar["maximum"] = marker.le
-    # OpenAPI 3.1 / JSON Schema 2020-12: gt/lt map to the
-    # numeric `exclusiveMinimum` / `exclusiveMaximum`.
+    # JSON Schema 2020-12: gt/lt are the numeric `exclusiveMinimum` / `Maximum`.
     if marker.gt is not None:
         scalar["exclusiveMinimum"] = marker.gt
     if marker.lt is not None:
@@ -1012,18 +867,15 @@ def _apply_marker_constraints(param_schema: dict[str, Any], marker: Any) -> None
     if array and scalar:
         prefix = param_schema.get("prefixItems")
         if prefix is not None:
-            # Every position carries them, which is where the resolver applies
-            # them: its per-element check runs over each member.
+            # Every position carries them, matching the resolver's check.
             param_schema["prefixItems"] = [{**dict(entry), **scalar} for entry in prefix]
         else:
-            # A bare `list` annotation's schema is a shallow copy of a shared
-            # table entry, so its `items` dict is shared with every other
-            # caller: replace it rather than writing through it.
+            # A bare `list` schema is a shallow copy of a shared table entry, so
+            # its `items` dict is shared: replace it, never write through it.
             items = param_schema.get("items")
             base = dict(items) if isinstance(items, dict) else {}
             param_schema["items"] = {**base, **scalar}
-    # OpenAPI 3.1 / JSON Schema 2020-12 - `examples` is an array of
-    # sample values on the schema object.
+    # JSON Schema 2020-12: `examples` is an array on the schema object.
     if getattr(marker, "examples", None):
         param_schema["examples"] = list(marker.examples or [])
 
