@@ -1,9 +1,4 @@
-"""`HeaderSet` — ordered mutable set with comma-separated header serialisation.
-
-A datastructure for headers whose value is a list of
-tokens (`Allow`, `Vary`, `Access-Control-Allow-Methods`, ...). Case-insensitive
-on lookup; preserves insertion order on iteration and serialisation.
-"""
+"""`HeaderSet` — ordered mutable set with comma-separated header serialisation."""
 
 from __future__ import annotations
 
@@ -13,13 +8,8 @@ from collections.abc import Iterable, Iterator
 class HeaderSet:
     """Ordered, case-insensitive set of header tokens.
 
-    Used for headers like `Vary` and `Allow` that carry a comma-joined
-    token list:
-
-    - `__contains__` is case-insensitive.
-    - `add` / `discard` / `remove` mutate in place.
-    - `to_header()` round-trips to a comma-separated header value.
-    - Iteration yields items in insertion order.
+    For headers like `Vary` and `Allow` that carry a comma-joined token list.
+    Lookup ignores case; iteration and `to_header()` keep insertion order.
     """
 
     __slots__ = ("_items", "_lower")

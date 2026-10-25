@@ -1,7 +1,5 @@
 """MCP prompt registry — reusable prompt templates an agent can fetch.
 
-A prompt is the Model Context Protocol primitive for a parameterised message
-template a user invokes (the third primitive alongside tools and resources).
 Register one with ``@app.mcp_prompt(...)``: the decorated callable's parameters
 become the prompt's arguments, and its return value - a string, or a list of
 role/content messages - becomes the messages ``prompts/get`` returns. The callable
@@ -29,14 +27,9 @@ from veloce.contrib.mcp.safety import require_mcp_description
 class MCPPrompt(MCPDescriptor):
     """One registered MCP prompt template."""
 
-    # The prompt callable wrapped as an `MCPTool` (no route), so a ``prompts/get``
-    # replays it through the shared pure-tool invocation path - resolving its
-    # `Depends` graph and `MCPContext` exactly as a tool call does.
+    # Wrapped as a route-less `MCPTool` so ``prompts/get`` replays it through the
+    # shared pure-tool invocation path.
     tool: MCPTool
-    # The prompt's declared arguments (name + required + optional description),
-    # derived from the callable's agent-supplied parameters. MCP prompt arguments
-    # are strings, so only the name/required/description are advertised - never a
-    # JSON type.
     arguments: list[dict[str, Any]]
 
 
@@ -68,9 +61,8 @@ class PromptRegistry(Registry[MCPPrompt]):
 def _prompt_arguments(input_schema: dict[str, Any]) -> list[dict[str, Any]]:
     """Derive the MCP prompt argument list from a handler input schema.
 
-    A prompt argument carries only a name, a required flag, and an optional
-    description; MCP prompt arguments are always strings, so the JSON type the
-    input schema records is not advertised.
+    MCP prompt arguments are always strings, so the JSON type the input schema
+    records is not advertised.
     """
     properties = input_schema.get("properties", {})
     required = set(input_schema.get("required", ()))

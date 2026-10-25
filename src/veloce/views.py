@@ -50,9 +50,7 @@ def _accepted_params(func: Callable[..., Any]) -> frozenset[str] | None:
     """Return the keyword names `func` accepts, or None when it takes `**kwargs`.
 
     Computed once at class-definition time so dispatch never inspects a
-    signature. A view may either declare its path parameters as arguments or
-    read them from `request.path_params`; forwarding only what the target
-    accepts is what lets both shapes work.
+    signature.
     """
     try:
         params = inspect.signature(func).parameters
@@ -78,11 +76,9 @@ def _reject_unresolvable_defaults(cls: type[Any], verb: str, method: Any) -> Non
     """Refuse a verb method declaring a parameter marker or `Depends`.
 
     A `MethodView` is one route serving several verbs, so there is one handler
-    plan for the route and none per verb - nothing resolves these. Left alone the
-    default object itself was passed, so `q: str = Query(default="")` handed the
-    method a `Query` instance and the view answered with its repr. Raised at
-    class-definition time, like the `async def` check above, so the mistake
-    surfaces on import rather than as a nonsense response.
+    plan for the route and none per verb - nothing resolves these. Raised at
+    class-definition time so the mistake surfaces on import rather than as a
+    nonsense response carrying the marker's repr.
     """
     try:
         parameters = inspect.signature(method).parameters
@@ -117,16 +113,13 @@ class View:
     """
 
     methods: ClassVar[list[str] | None] = None
-    # Shared mutable default: subclasses that want their own decorator chain
-    # must assign a fresh list (`decorators = [auth]`) rather than mutating
-    # this one in place, or every view class would share the same list.
+    # Shared mutable default: a subclass wanting its own chain must assign a
+    # fresh list (`decorators = [auth]`) rather than mutating this one in place.
     decorators: ClassVar[list[Callable[..., Any]]] = []
     init_every_request: ClassVar[bool] = True
 
     #: The method a subclass must supply, checked at definition rather than left
-    #: to fail at call time - a view that never dispatches serves nothing, and
-    #: the failure would otherwise be a `NotImplementedError` on the first
-    #: request to the route it was registered for.
+    #: to fail as a `NotImplementedError` on the first request to the route.
     _required = ("dispatch_request",)
 
     def __init_subclass__(cls, **kwargs: object) -> None:
@@ -143,13 +136,8 @@ class View:
         for router introspection and `url_for` naming.
         """
         # Path parameters are read off the request rather than accepted as
-        # `**path_params`. The handler plan skips a VAR_KEYWORD parameter - it is
-        # not an injectable query parameter - so a `**kwargs`-shaped view was
-        # called with the request alone, and a verb method declaring a path
-        # parameter raised TypeError and surfaced as a 500. The view now takes
-        # the values from where dispatch has already put them, forwarding only
-        # what the target declares so that a view reading `request.path_params`
-        # itself keeps working.
+        # `**path_params`, which the handler plan skips; forwarding only what the
+        # target declares keeps a view reading `request.path_params` working too.
         accepted = _accepted_params(cls.dispatch_request)
 
         if cls.init_every_request:

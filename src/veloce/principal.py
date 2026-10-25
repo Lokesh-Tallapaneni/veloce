@@ -1,15 +1,7 @@
 """Principal — the authenticated identity for the current request, across doors.
 
-A `Principal` is the identity established by whichever authentication ran for the
-current request: a session/cookie/bearer check on the HTTP door, or the OAuth 2.1
-token validation on the MCP door. Both populate the same request-scoped slot via
-`set_principal`, and all downstream code (a `get_current_user` dependency, a
-permission check, a tenant-scoped DB dependency) reads it through
-`current_principal` - so authorization is written once and runs identically over
-HTTP and MCP.
-
-The identity is held in a `contextvars.ContextVar`, so it is isolated per request /
-per task and never leaks across concurrent calls.
+An HTTP session/bearer check and MCP OAuth 2.1 token validation populate the same
+request-scoped slot, so authorization is written once and runs over both doors.
 """
 
 from __future__ import annotations
@@ -39,9 +31,8 @@ class Principal:
     scopes: frozenset[str] = frozenset()
     # The full set of token / identity claims, for application-specific use.
     claims: dict[str, Any] = field(default_factory=dict)
-    # The raw credential the principal was established from, if the application
-    # needs it (e.g. to call an upstream API as the user). `repr=False` keeps the
-    # secret out of `repr()` / log lines that render the principal.
+    # The raw credential the principal was established from. `repr=False` keeps
+    # the secret out of `repr()` / log lines that render the principal.
     token: str | None = field(default=None, repr=False)
 
     def has_scope(self, scope: str) -> bool:
@@ -53,9 +44,8 @@ class Principal:
         return set(scopes) <= self.scopes
 
 
-# Request-scoped identity. A `ContextVar` (not request state) so the same accessor
-# works on the HTTP path, the MCP transport, and inside a replayed MCP tool call,
-# while staying isolated per request / per task.
+# A `ContextVar` (not request state) so one accessor serves the HTTP path, the MCP
+# transport and a replayed tool call, isolated per request / per task.
 _principal_var: ContextVar[Principal | None] = ContextVar("veloce_principal", default=None)
 
 
@@ -67,9 +57,7 @@ def current_principal() -> Principal | None:
 def set_principal(principal: Principal | None) -> None:
     """Set the authenticated `Principal` for the current request.
 
-    Call this from whatever authenticates a request - an HTTP auth middleware or
-    dependency, or the MCP transport's token verifier - so downstream code reads
-    one identity through `current_principal`, regardless of which door the request
-    arrived on.
+    Call it from whatever authenticates the request, on either door, so downstream
+    code reads one identity through `current_principal`.
     """
     _principal_var.set(principal)

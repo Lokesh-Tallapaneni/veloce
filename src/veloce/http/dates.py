@@ -5,10 +5,8 @@ RFC 9110 mandates the IMF-fixdate form for HTTP date headers
 
     Sun, 06 Nov 1994 08:49:37 GMT
 
-`http_date` renders that form from a variety of inputs; `parse_date`
-accepts the IMF-fixdate form (and the two obsolete forms RFC 9110
-still requires recipients to tolerate) and returns a timezone-aware
-`datetime` in UTC.
+`parse_date` also accepts the two obsolete forms RFC 9110 still requires
+recipients to tolerate.
 """
 
 from __future__ import annotations
@@ -18,10 +16,8 @@ from datetime import date, datetime, timezone
 from email.utils import formatdate, parsedate_to_datetime
 from time import struct_time, time
 
-# `http_date(None)` formats the current time, which changes only once a second;
-# the result is cached keyed by the whole-second bucket so a caller formatting it
-# repeatedly pays once. Veloce emits no `Date:` header of its own on either
-# transport, so nothing on the response path reaches this.
+# `http_date(None)` changes only once a second, so the result is cached keyed by
+# the whole-second bucket and a caller formatting it repeatedly pays once.
 _now_cache: tuple[int, str] = (-1, "")
 
 

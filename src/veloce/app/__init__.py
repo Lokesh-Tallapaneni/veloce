@@ -1,23 +1,16 @@
 """Application package — gateway preserving the `veloce.app` import paths.
 
-The implementation is `veloce.app.core` - the `Veloce` class and its
-construction - plus sixteen focused sibling modules mixed into it: `asgi`,
-`background`, `contexts`, `dispatch`, `errors`, `introspection`, `lifecycle`,
-`mcp`, `middleware`, `mounting`, `openapi`, `plugins`, `serving`, `templating`,
-`testing` and `urls`.
+`Veloce` is `veloce.app.core` plus sixteen focused sibling modules mixed into
+it: `asgi`, `background`, `contexts`, `dispatch`, `errors`, `introspection`,
+`lifecycle`, `mcp`, `middleware`, `mounting`, `openapi`, `plugins`, `serving`,
+`templating`, `testing` and `urls`. All are re-exported here by name, so every
+`from veloce.app import X` path keeps resolving unchanged.
 
-This gateway re-exports the `veloce.app` surface by name, so every
-`from veloce.app import X` path keeps resolving unchanged. The list above names
-every sibling module; keep it complete when one is added.
+No mixin declares `__slots__`: `Veloce` is deliberately unslotted, and most
+mixins write the host's state, which a slotted class refuses.
 
-None of the mixins declares `__slots__`. `Veloce` is deliberately unslotted -
-an application sets its own attributes on it - so a mixin's `__slots__ = ()`
-would have no effect, and most of them could not declare one anyway: they write
-the host's state, which a slotted class refuses.
-
-The private names below are re-exported deliberately: tests and internal
-modules reach them through the module path, so an internal split must not move
-them out from under those callers.
+The private name below is re-exported deliberately - tests and internal modules
+reach it through the module path.
 """
 
 from __future__ import annotations

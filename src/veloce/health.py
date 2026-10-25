@@ -1,21 +1,14 @@
 """Health probes — liveness and readiness endpoints for an orchestrator.
 
-Kubernetes (and ECS, Nomad, and most load balancers) ask two different
-questions, and answering them with one endpoint is the usual cause of a bad
-rollout:
+An orchestrator asks two different questions, and answering both with one
+endpoint is the usual cause of a bad rollout:
 
-- **Liveness** — "is this process wedged?" A failure gets the container
-  *killed and restarted*. It must not depend on a database, or a brief
-  dependency outage restarts every replica at once and turns a degradation
-  into an outage.
-- **Readiness** — "should this replica receive traffic?" A failure only
-  removes the pod from the load-balancer pool. This is where dependency
-  checks belong, and it is what must flip to failing *before* shutdown
-  drains connections, so the orchestrator stops sending new work while
-  in-flight requests finish.
+- **Liveness** — "is this process wedged?" A failure restarts the container, so
+  it must not depend on a database: a brief outage would restart every replica.
+- **Readiness** — "should this replica receive traffic?" A failure only drops the
+  pod from the pool, so dependency checks belong here.
 
-Installed as a plugin, so an application that does not want probe endpoints
-registers no routes and pays nothing::
+Installed as a plugin, so an app that wants no probe endpoints pays nothing::
 
     from veloce import Veloce
     from veloce.health import HealthPlugin
@@ -62,19 +55,12 @@ class HealthPlugin:
         async def cache_ready() -> bool:
             return await redis.ping()
 
-    `/livez` reports whether the process and its event loop are running; it
-    deliberately ignores dependency checks, because restarting a container
-    cannot fix someone else's database.
+    `/livez` reports whether the event loop is running and ignores dependency
+    checks, because restarting a container cannot fix someone else's database.
 
-    `/readyz` reports whether this replica should receive traffic: startup has
-    completed, shutdown has not begun, and every registered check passes. A
-    failing check yields `503` with a per-check body naming what failed, so a
-    probe failure is diagnosable from the response alone rather than only from
-    logs.
-
-    Checks run concurrently and share one `timeout`; a check that hangs is
-    reported as failed rather than holding the probe open until the
-    orchestrator's own timeout fires.
+    `/readyz` requires startup complete, shutdown not begun, and every check
+    passing; a failure yields `503` with a per-check body naming what failed.
+    Checks run concurrently and share one `timeout`.
     """
 
     name = "health"
@@ -122,8 +108,7 @@ class HealthPlugin:
         """Mark the replica as draining so `/readyz` starts failing.
 
         Call this when a shutdown signal arrives, *before* connections are
-        drained: the orchestrator then stops routing new requests here while
-        in-flight ones finish. Veloce's own shutdown calls it automatically.
+        drained. Veloce's own shutdown calls it automatically.
         """
         self._draining = True
 
@@ -148,8 +133,7 @@ class HealthPlugin:
         @app.get(self.liveness_path, include_in_schema=self.include_in_schema)
         async def _livez() -> Any:
             # Reaching a handler proves the loop is scheduling work, which is
-            # the whole question liveness asks. Dependency state is deliberately
-            # not consulted: a restart cannot fix an upstream outage.
+            # the whole question liveness asks.
             return JSONResponse({"status": "alive"})
 
         @app.get(self.readiness_path, include_in_schema=self.include_in_schema)
@@ -193,9 +177,8 @@ class HealthPlugin:
                     result = await result
                 return bool(result)
             except Exception:
-                # A raising check is not-ready. Swallowed deliberately: a probe
-                # that 500s tells the orchestrator nothing it can act on, while
-                # a 503 with the failing check named does.
+                # A raising check is not-ready; a 500 would tell the
+                # orchestrator nothing it can act on, a named 503 does.
                 return False
 
         try:
@@ -204,6 +187,6 @@ class HealthPlugin:
                 timeout=self.timeout,
             )
         except (TimeoutError, asyncio.TimeoutError):
-            # The gather is cancelled; report every check as failed rather than
-            # holding the probe open until the orchestrator gives up on us.
+            # Fail every check rather than hold the probe open to the
+            # orchestrator's own timeout.
             return [False] * len(names)

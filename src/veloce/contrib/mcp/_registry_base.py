@@ -1,15 +1,7 @@
 """MCP registry base — the shared name/URI -> primitive table behind every registry.
 
-A tool, resource, and prompt registry are the same shape: a `dict` keyed by a
-primitive's identifier, a `register()` that rejects a duplicate identifier, and a
-`get()` lookup. `Registry` holds that logic once so each concrete registry only
-supplies what differs — the key it indexes by and the message a duplicate raises.
-
-The base is a plain (non-dataclass) generic so the concrete registries can stay
-`@dataclass(slots=True)` and keep their descriptive field name (`tools`,
-`resources`, `prompts`) as the backing store: a subclass exposes that field
-through `_store`, and the shared `register()`/`get()` operate on it. The abstract
-hooks raise `NotImplementedError` (never `abc.ABC`, per project style).
+A concrete registry supplies only what differs: the key it indexes by and the
+message a duplicate raises, exposing its own backing dict through `_store`.
 """
 
 from __future__ import annotations
@@ -27,15 +19,12 @@ T = TypeVar("T", bound="MCPDescriptor")
 class Registry(Generic[T]):
     """Base name/URI -> primitive table: deduplicating `register()` plus `get()`."""
 
-    # No instance state of its own; concrete registries own the backing dict and
-    # expose it through `_store`. Empty slots keep the base from adding a
-    # `__dict__` to its `@dataclass(slots=True)` subclasses.
+    # Empty slots keep the base from adding a `__dict__` to its
+    # `@dataclass(slots=True)` subclasses.
     __slots__ = ()
 
-    #: What a concrete registry must supply, checked at definition rather than
-    #: left to fail at call time - the failure would otherwise surface when the
-    #: first primitive is registered, which is import-time for a decorated tool
-    #: and so already too late to read as a missing-method error.
+    #: What a concrete registry must supply, checked at definition: the first
+    #: registration is import-time for a decorated tool, already too late.
     _required = ("_store", "_key", "_duplicate_message")
 
     def __init_subclass__(cls, **kwargs: object) -> None:

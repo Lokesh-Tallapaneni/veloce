@@ -19,9 +19,6 @@ from veloce.security._utils import _AUTHORIZATION_KEY, _quote_header_value, _val
 from veloce.security.base import SecurityScheme, _BearerScheme
 from veloce.status import HTTP_401_UNAUTHORIZED
 
-# `_quote_header_value` / `_validate_realm` now live in `_utils` so the
-# API-key schemes can share them without an import cycle; they remain
-# importable from `veloce.security.http` and are used by the schemes below.
 _BASIC_PREFIX = (AUTH_SCHEME_BASIC + " ").lower()
 _BASIC_PREFIX_LEN = len(_BASIC_PREFIX)
 _DIGEST_PREFIX = (AUTH_SCHEME_DIGEST + " ").lower()
@@ -31,9 +28,8 @@ _DIGEST_PREFIX_LEN = len(_DIGEST_PREFIX)
 def _default_nonce() -> str:
     """Generate an opaque nonce for the Digest challenge.
 
-    16 random bytes hex-encoded - well above the 64-bit entropy floor
-    RFC 7616 Sec. 5.3 recommends. Server-side nonce replay tracking is
-    application territory.
+    16 random bytes hex-encoded - well above the 64-bit entropy floor RFC 7616
+    Sec. 5.3 recommends. Nonce replay tracking is application territory.
     """
     return secrets.token_hex(16)
 
@@ -41,11 +37,8 @@ def _default_nonce() -> str:
 def _parse_digest(value: str) -> HTTPDigestCredentials:
     """Split a `key=value, key="quoted value"` Digest field list.
 
-    RFC 7616 Sec. 3.4 - the field set is open-ended, so we collect every
-    pair and assign known names to the credential's slots. Unknown
-    fields are ignored (e.g. `userhash=true` extensions). Quoted
-    values are unwrapped per RFC 5322 quoted-pair semantics; unquoted
-    values pass through verbatim.
+    RFC 7616 Sec. 3.4 leaves the field set open-ended, so unknown fields are
+    ignored. Quoted values are unwrapped per RFC 5322 quoted-pair semantics.
     """
     _, fields = parse_header_params(value, delimiter=",", unescape=True)
     return HTTPDigestCredentials(
@@ -66,22 +59,17 @@ def _parse_digest(value: str) -> HTTPDigestCredentials:
 class HTTPBasicCredentials:
     """HTTP Basic auth credentials.
 
-    `eq=False` keeps the identity equality - and so the hashability - these
-    credentials had before they were a dataclass; a generated `__eq__` sets
-    `__hash__` to `None`, which stops them being usable as a dict key or set
-    member.
+    `eq=False` keeps identity equality, and so hashability: a generated `__eq__`
+    sets `__hash__` to `None` and the credentials stop working as a dict key.
     """
 
     username: str
     password: str
 
     def __repr__(self) -> str:
-        # The password is masked, following `Secret`: a credential object sits in
-        # the frame locals of everything downstream of `Depends(HTTPBasic())`, so
-        # a generated field-rendering repr writes the plaintext into any error
-        # tracker that captures locals and into every `%r`-formatted log line.
-        # The username is kept - a render that identifies nothing is not worth
-        # having.
+        # Masked: this object sits in the frame locals of everything downstream of
+        # `Depends(HTTPBasic())`, so a field-rendering repr would write the
+        # plaintext into any error tracker that captures locals.
         return f"HTTPBasicCredentials(username={self.username!r}, password='***')"
 
 
@@ -105,13 +93,9 @@ class HTTPBasic(SecurityScheme):
         _validate_realm(realm)
         self.auto_error = auto_error
         self.realm = realm
-        # The `WWW-Authenticate: Basic realm="..."` challenge (or `{}` when no
-        # realm is configured) is request-invariant, so build it once at
-        # construction as a template. Each 401 raise copies it via
-        # `_challenge()` so response middleware (CORS/Session/SecurityHeaders)
-        # mutating `response.headers` in place cannot leak request-specific
-        # headers (Vary, Set-Cookie, Access-Control-*) into the shared dict and
-        # carry them onto every subsequent challenge.
+        # The challenge is request-invariant, so build it once as a template that
+        # `_challenge()` copies: middleware mutating `response.headers` in place
+        # would otherwise carry one request's Set-Cookie onto every challenge.
         if realm:
             self._challenge_template = {
                 HEADER_WWW_AUTHENTICATE: f'{AUTH_SCHEME_BASIC} realm="{_quote_header_value(realm)}"'
@@ -135,10 +119,8 @@ class HTTPBasic(SecurityScheme):
                 )
             return None
 
-        # Shared with `Authorization.from_header`. `None` covers both malformed
-        # shapes - base64 that does not decode as UTF-8, and a colon-less value,
-        # which RFC 7617 Sec. 2 forbids because it would otherwise pass as an
-        # empty-password login. Both answer the same 401 here, as before.
+        # `None` covers both malformed shapes: base64 that is not UTF-8, and the
+        # colon-less value RFC 7617 Sec. 2 forbids as an empty-password login.
         decoded_pair = _decode_basic_credentials(auth[_BASIC_PREFIX_LEN:])
         if decoded_pair is None:
             raise HTTPException(
@@ -158,8 +140,7 @@ class HTTPBasic(SecurityScheme):
 class HTTPDigestCredentials:
     """Parsed Digest auth challenge response - RFC 7616 Sec. 3.4.
 
-    `eq=False` for the same reason as `HTTPBasicCredentials`: it keeps the
-    identity equality, and the hashability, these had before the dataclass.
+    `eq=False` keeps identity equality, as on `HTTPBasicCredentials`.
     """
 
     username: str = ""
@@ -175,9 +156,7 @@ class HTTPDigestCredentials:
 
     def __repr__(self) -> str:
         # `response` is the keyed digest that authenticates the request (RFC 7616
-        # Sec. 3.4) - the one field here that is credential material, and replayable
-        # for the nonce's lifetime. The rest describe the exchange and are what
-        # make the render useful, so they are shown.
+        # Sec. 3.4): credential material, replayable for the nonce's lifetime.
         return (
             f"HTTPDigestCredentials(username={self.username!r}, realm={self.realm!r}, "
             f"nonce={self.nonce!r}, uri={self.uri!r}, response='***', qop={self.qop!r}, "
@@ -189,16 +168,11 @@ class HTTPDigestCredentials:
 class HTTPDigest(SecurityScheme):
     """HTTP Digest authentication - RFC 7616.
 
-    Parses the `Authorization: Digest ...` header into the named fields
-    and returns them as `HTTPDigestCredentials`. **This class does NOT
-    validate the response hash** - the application owns the secret
-    (HA1) and must compute the expected digest itself; Digest's whole
-    point is that the secret never crosses the wire. Veloce's job is to
-    parse the challenge response and to emit a 401 + `WWW-Authenticate:
-    Digest ...` header when auth is missing or malformed.
-
-    The scheme's responsibility is the parse + challenge dance;
-    verifying the response is application logic.
+    Parses the `Authorization: Digest ...` header into `HTTPDigestCredentials`
+    and emits a 401 + `WWW-Authenticate: Digest ...` challenge when auth is
+    missing or malformed. **This class does NOT validate the response hash** -
+    the application owns the secret (HA1) and must compute the expected digest
+    itself; Digest's whole point is that the secret never crosses the wire.
     """
 
     # `auto_error` is owned by `SecurityScheme`'s slots.
@@ -242,18 +216,16 @@ class HTTPDigest(SecurityScheme):
         self.algorithm = algorithm
         self.auto_error = auto_error
         self.nonce_factory = nonce_factory or _default_nonce
-        # Only the `nonce` varies between challenges; the quoted realm, qop and
-        # algorithm params are request-invariant, so precompute the constant
-        # prefix and suffix once and splice the per-call nonce in between.
+        # Only the `nonce` varies between challenges, so precompute the constant
+        # prefix and suffix and splice the per-call nonce in between.
         self._challenge_prefix = (
             f'{AUTH_SCHEME_DIGEST} realm="{_quote_header_value(realm)}", qop="{qop}", nonce="'
         )
         self._challenge_suffix = f'", algorithm={algorithm}'
 
     def _challenge_headers(self) -> dict[str, str]:
-        # RFC 7616 Sec. 3.3 - challenge param names case-insensitive but
-        # the quoted-string values must be exact. Build the header
-        # rigorously; clients in the wild reject malformed challenges.
+        # RFC 7616 Sec. 3.3 - param names are case-insensitive but the
+        # quoted-string values must be exact; clients reject malformed challenges.
         nonce = self.nonce_factory()
         return {HEADER_WWW_AUTHENTICATE: self._challenge_prefix + nonce + self._challenge_suffix}
 
@@ -277,9 +249,8 @@ class HTTPDigest(SecurityScheme):
 class HTTPBearer(_BearerScheme):
     """HTTP Bearer token authentication."""
 
-    # `auto_error` and `_bearer_scheme` are owned by the base; `scheme_name`
-    # is the public attribute mirrored into `_bearer_scheme` for the shared
-    # `__call__`.
+    # `auto_error` and `_bearer_scheme` are owned by the base; `scheme_name` is
+    # mirrored into `_bearer_scheme` for the shared `__call__`.
     __slots__ = ("scheme_name", "_bearer_scheme")
 
     def __init__(
@@ -301,9 +272,7 @@ class HTTPBearer(_BearerScheme):
         """HTTP authentication, published with the scheme it advertises.
 
         The scheme is `scheme_name`, which is also what `__call__` matches the
-        `Authorization` header against. Publishing a fixed `"bearer"` meant a
-        custom scheme changed what the server accepts and not what the document
-        told a client to send. Lower-cased because OpenAPI 3.1 names the IANA
-        registry entry, whose entries are lower-case.
+        `Authorization` header against. Lower-cased because OpenAPI 3.1 names the
+        IANA registry entry, whose entries are lower-case.
         """
         return {"type": "http", "scheme": self.scheme_name.lower()}

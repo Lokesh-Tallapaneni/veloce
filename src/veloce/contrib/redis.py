@@ -1,15 +1,13 @@
 """Redis-backed session store, rate-limit backend, and result cache — shared state.
 
-The bundled `InMemorySessionStore`, `RateLimitMiddleware`, and `InMemoryCache`
-keep their state in one process, so a multi-worker deployment (`uvicorn --workers
-N`) gets per-worker sessions, an effective rate limit of roughly ``N x`` the
-configured one, and a per-worker cache. These Redis-backed implementations share
-state across every worker and host.
+The bundled in-memory session store, rate limiter and cache keep their state in
+one process, so a multi-worker deployment gets per-worker sessions, an effective
+rate limit of roughly ``N x`` the configured one, and a per-worker cache. These
+Redis-backed implementations share state across every worker and host.
 
 `redis` is an optional dependency; install it with ``pip install
 veloceframework[redis]``. The application owns the client and its connection
-pool - construct a ``redis.asyncio.Redis`` (or pass a URL to a ``from_url``
-classmethod) and hand it in.
+pool.
 
 Usage::
 

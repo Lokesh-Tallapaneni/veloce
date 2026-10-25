@@ -1,15 +1,13 @@
 """MCP safety policy — what an exposed tool must declare.
 
-Exposure itself is default-closed and explicit: a route becomes a tool only
-when its author passes ``expose_as_mcp_tool=True`` (regardless of HTTP verb),
-and an exposed route keeps its Security / Depends / middleware guards on the
-agent-facing call. There is no auto-exposure, so no per-verb gate is needed.
+Exposure is default-closed and explicit: a route becomes a tool only when its
+author passes ``expose_as_mcp_tool=True``, and an exposed route keeps its
+Security / Depends / middleware guards on the agent-facing call.
 
 This module enforces the one remaining registration-time rule: every
-MCP-exposed handler must carry a non-empty ``mcp_description`` - the LLM-facing
-description, kept separate from the docstring. A missing or blank description
-raises at registry-build time, never on the call path, so the gap is caught
-before the server ever starts.
+MCP-exposed handler must carry a non-empty ``mcp_description``, the LLM-facing
+description kept separate from the docstring. A missing one raises at
+registry-build time, never on the call path.
 """
 
 from __future__ import annotations
@@ -18,11 +16,7 @@ from typing import Any
 
 
 def require_mcp_description(tool_name: str, description: str | None) -> str:
-    """Return a validated non-empty `mcp_description`, or raise.
-
-    Enforced at registry-build time so a tool can never reach an agent
-    without an LLM-facing description.
-    """
+    """Return a validated non-empty `mcp_description`, or raise."""
     if description is None or not description.strip():
         raise ValueError(
             f"MCP tool {tool_name!r} is missing a description. "
@@ -33,10 +27,8 @@ def require_mcp_description(tool_name: str, description: str | None) -> str:
     return description
 
 
-# The behaviour hints the spec defines on a tool. Declaring one is how a tool with
-# no HTTP verb to derive from says what it does; a name outside this set would be
-# silently ignored by every client, so it is refused at registration rather than
-# travelling as wire data nothing reads.
+# The behaviour hints the spec defines on a tool. A name outside this set would
+# be silently ignored by every client, so it is refused at registration.
 TOOL_ANNOTATION_HINTS = frozenset(
     {"readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint", "title"}
 )

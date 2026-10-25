@@ -10,11 +10,9 @@ invalid token yields `401`, and a token lacking the endpoint's required scopes
 yields `403`, each with a `WWW-Authenticate` challenge pointing at the server's
 RFC 9728 protected-resource metadata.
 
-`MCPAuth.bearer` configures the other deployment: a server reached over a trusted
-network that holds one static token and has neither a canonical resource URI nor
-an authorization server. Tokens are still validated and refusals still carry a
-challenge, but no metadata document is served, because there is none a client
-could act on.
+`MCPAuth.bearer` configures the other deployment: a server on a trusted network
+holding one static token, with no canonical resource URI and no authorization
+server, so no metadata document is served.
 
 Token validation logic stays with the application (pass your own `verify`); Veloce
 never implements token parsing or crypto itself, per the MCP security guidance.
@@ -69,8 +67,7 @@ class MCPAuth:
     # Scopes advertised in the metadata as available for this resource.
     scopes_supported: Iterable[str] = field(default_factory=tuple)
     # Static-token mode: no protected-resource metadata is served, and none is
-    # required of the configuration. Set it through `MCPAuth.bearer`, which
-    # carries the documented constraints.
+    # required of the configuration. Set it through `MCPAuth.bearer`.
     bearer_only: bool = False
 
     def __post_init__(self) -> None:
@@ -81,10 +78,8 @@ class MCPAuth:
         if isinstance(self.scopes_supported, (str, bytes)):
             _refuse_string_scopes(self.scopes_supported, "MCPAuth.scopes_supported")
         self.scopes_supported = tuple(self.scopes_supported)
-        # Bearer-only mode serves no metadata document, so it owes neither of the
-        # fields below - but a configuration asking for both modes at once is not
-        # coherent, and would silently drop the OAuth fields it went to the
-        # trouble of supplying rather than serve them.
+        # Bearer-only mode serves no metadata document, so asking for both modes
+        # at once would silently drop the OAuth fields rather than serve them.
         if self.bearer_only:
             if self.resource_server_url or self.authorization_servers:
                 raise ValueError(
@@ -93,11 +88,9 @@ class MCPAuth:
                     "construct MCPAuth(...) directly for an OAuth resource server."
                 )
             return
-        # The MCP authorization spec requires the protected-resource metadata to
-        # carry the canonical resource URI (so a client can audience-bind its token
-        # per RFC 8707) and at least one authorization server (so it can discover
-        # where to obtain a token). Enforce both, rather than serving an incomplete
-        # metadata document a compliant client cannot act on.
+        # The MCP authorization spec requires the metadata to carry the canonical
+        # resource URI (audience binding, RFC 8707) and at least one authorization
+        # server (token discovery, RFC 9728); an incomplete document is useless.
         if not self.resource_server_url:
             raise ValueError(
                 "MCPAuth requires resource_server_url (the canonical MCP server "
@@ -113,15 +106,9 @@ class MCPAuth:
     def bearer(cls, *, verify: TokenVerifier, required_scopes: Iterable[str] = ()) -> MCPAuth:
         """Validate a static bearer token without acting as an OAuth resource server.
 
-        For a server on a trusted network - a local daemon, a sidecar, a service
-        behind an internal gateway - holding one pre-shared token. There is no
-        canonical resource URI to audience-bind against and no authorization
-        server to obtain a token from, so no RFC 9728 protected-resource metadata
-        route is registered and the challenges omit the pointer to it.
-
-        Everything else is unchanged: a missing or rejected token is answered
-        `401` and a token short of `required_scopes` is answered `403`, each with
-        a `WWW-Authenticate` challenge, and `verify` still owns validation.
+        For a server on a trusted network holding one pre-shared token: no RFC 9728
+        protected-resource metadata route is registered and the challenges omit the
+        pointer to it. `401`, `403` and `verify` behave as in OAuth mode.
 
         Use `MCPAuth(...)` instead for anything reachable from an untrusted
         network: a pre-shared token cannot be audience-bound, so a client tricked
@@ -151,9 +138,7 @@ class MCPAuth:
             document["authorization_servers"] = list(self.authorization_servers)
         if self.scopes_supported:
             document["scopes_supported"] = list(self.scopes_supported)
-        # RFC 9728 section 2: how the client is to present its token. The transport
-        # reads the `Authorization` header and nothing else - the MCP authorization
-        # spec forbids carrying an access token in the query string - so a client
-        # reading this document is told exactly what will be accepted.
+        # RFC 9728 Sec. 2: the transport reads the `Authorization` header and
+        # nothing else, the MCP spec forbidding a token in the query string.
         document["bearer_methods_supported"] = ["header"]
         return document

@@ -39,11 +39,9 @@ class ConditionalGetMiddleware(Middleware):
         if request.method not in ("GET", "HEAD"):
             return response
 
-        # Field names are case-insensitive (RFC 9110 Sec. 5.1): a handler that
-        # set `etag`/`Etag` or `cache-control: no-store` in any casing must be
-        # honored, so probe the plain-dict headers case-insensitively. The
-        # `Cache-Control` scan + `.lower()` allocation is evaluated last so the
-        # cheaper and-chain guards short-circuit before it runs.
+        # Field names are case-insensitive (RFC 9110 Sec. 5.1), so probe the
+        # plain-dict headers case-insensitively; the `Cache-Control` scan is
+        # evaluated last so the cheaper guards short-circuit before it.
         existing_etag = header_present(response.headers, HEADER_ETAG)
         if (
             self.auto_etag
@@ -55,13 +53,9 @@ class ConditionalGetMiddleware(Middleware):
         ):
             response.add_etag(weak=True)
 
-        # Streamed responses downgrade too. `make_conditional()` used to clear
-        # `body` but not `_stream`, so a downgrade would have emitted a bodiless
-        # status alongside the original chunks - protocol-invalid per RFC 9110
-        # Sec. 15.4.5 - and this skipped them for that reason. It clears both now,
-        # so skipping here only cost every asset past `FileResponse`'s streaming
-        # threshold its revalidation: a large file re-sent in full on every
-        # request while the small one beside it answered 304.
+        # Streamed responses downgrade too: `make_conditional()` clears `body`
+        # and `_stream` together, so a 304 never ships the original chunks
+        # alongside a bodiless status (RFC 9110 Sec. 15.4.5).
         if header_present(response.headers, HEADER_ETAG) or header_present(
             response.headers, HEADER_LAST_MODIFIED
         ):

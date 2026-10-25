@@ -1,8 +1,7 @@
 """Jinja templating registry — filters, globals, tests, context processors.
 
 Mixed into `Veloce`. The `jinja_env` / `jinja_loader` accessors plus the
-registration-time methods that populate the app's Jinja environment and
-context-processor list, so they sit off the per-request path.
+registration-time methods that populate them, so they sit off the request path.
 """
 
 from __future__ import annotations
@@ -21,13 +20,10 @@ class TemplatingMixin(AppHost):
 
     @property
     def jinja_env(self) -> Any:
-        """The app's shared Jinja2 `Environment`.
+        """The app's shared Jinja2 `Environment`, mutable in place.
 
-        Available once a `template_folder` has been configured (either
-        via the constructor or by binding `Jinja2Templates`). Mutate it
-        directly to register filters/globals or tweak settings:
-        `app.jinja_env.filters["money"] = fmt`. Raises `RuntimeError`
-        when no templating is configured.
+        Available once a `template_folder` has been configured; raises
+        `RuntimeError` when no templating is.
         """
         if self._templates is None:
             raise RuntimeError(
@@ -38,23 +34,13 @@ class TemplatingMixin(AppHost):
 
     @property
     def jinja_loader(self) -> Any:
-        """The app's Jinja template loader.
-
-        The `FileSystemLoader` (or whatever loader the bound
-        `Jinja2Templates` env uses). `None` when no templating is
-        configured - Veloce returns `None` for an app with no template
-        folder rather than raising.
-        """
+        """The app's Jinja template loader, or `None` when no templating is set up."""
         if self._templates is None:
             return None
         return self._templates.env.loader
 
     def context_processor(self, func: T_route) -> T_route:
-        """Register a template context processor.
-
-        The function should return a dict that merges into the template
-        context.
-        """
+        """Register a context processor returning a dict to merge into the context."""
         self._assert_mutable()
         self._context_processors.append(func)
         return func
@@ -69,9 +55,7 @@ class TemplatingMixin(AppHost):
             @app.template_filter("upper")
             def upper(s): return s.upper()
 
-        The filter becomes available in every `Jinja2Templates` render that
-        runs inside this app's request scope. `name` defaults to the
-        function's own `__name__`.
+        `name` defaults to the function's own `__name__`.
         """
 
         def decorator(func: T_route) -> T_route:
@@ -119,10 +103,8 @@ class TemplatingMixin(AppHost):
     def update_template_context(self, context: dict[str, Any]) -> dict[str, Any]:
         """Merge registered context-processor output into `context`.
 
-        Runs every `@app.context_processor` callback and folds the
-        returned dicts into `context` **in place**, without overriding
-        keys the caller already set (the documented semantics - explicit context
-        wins). Returns the same dict for chaining.
+        Folds the returned dicts in **in place** without overriding keys the
+        caller already set - explicit context wins - and returns the same dict.
         """
         for processor in self._context_processors:
             result = processor()

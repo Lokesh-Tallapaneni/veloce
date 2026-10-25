@@ -1,9 +1,8 @@
 """signing — HMAC-signed value serialiser.
 
-A standalone payload-signing helper for cookies, password-reset links,
-email-confirmation tokens, and similar use cases where the server hands
-the client a value, the client returns it later, and the server needs
-to know the value wasn't tampered with.
+For cookies, password-reset links, confirmation tokens: the server hands the
+client a value, the client returns it, and the server needs to know it was not
+tampered with.
 
 Token format: `<base64url(payload)>.<base64url(timestamp)>.<base64url(sig)>`
 
@@ -11,32 +10,13 @@ Token format: `<base64url(payload)>.<base64url(timestamp)>.<base64url(sig)>`
 - The timestamp is a big-endian uint64 of seconds since the epoch.
 - The signature is `HMAC-SHA256(derived_key, payload.timestamp)` where
   `derived_key = HMAC-SHA256(secret, salt)` (nested HMAC, RFC 2104 Sec. 2).
-  The salt is used to derive a per-purpose key, not appended to the
-  secret - sharing one secret across purposes (sessions, CSRF, password
-  reset) yields cryptographically distinct keys.
+  The salt derives a per-purpose key rather than being appended to the secret,
+  so one secret shared across purposes (sessions, CSRF, password reset) yields
+  cryptographically distinct keys that never cross-validate.
 
-Tokens are URL-safe (no `/`, `+`, `=` characters). Comparison is
-constant-time. The implementation is derived from RFC 2104 (HMAC) and
-RFC 4648 Sec. 5 (base64url); the observable token shape matches
-a timestamped signer's `URLSafeTimedSerializer` so swapping is straightforward,
-but no timestamped-signer code is copied.
-
-Why an in-tree signer (rather than depending on `itsdangerous`):
-Veloce keeps this ~150-line signer instead of taking the `itsdangerous`
-dependency - a considered trade-off, not an oversight:
-
-- Signing rests entirely on the standard library (`hmac`, `hashlib`,
-  `base64`, `struct`), so the dependency surface stays minimal and the
-  whole implementation is small enough to audit in one sitting.
-- The security-critical properties are deliberately narrow and covered
-  by `tests/test_signing.py`: HMAC-SHA256, a salt mixed into the MAC key
-  (so tokens for different purposes never cross-validate), constant-time
-  comparison, and - importantly - signature verified *before* the
-  timestamp and payload are decoded, so a malformed token cannot drive
-  the JSON parser ahead of the MAC check.
-- The token shape is wire-compatible with `URLSafeTimedSerializer`, so
-  migrating to `itsdangerous` later (should that ever be wanted) is a
-  low-risk drop-in.
+Tokens are URL-safe (RFC 4648 Sec. 5 base64url, no `/`, `+`, `=`) and
+comparison is constant-time. The token shape is wire-compatible with
+`URLSafeTimedSerializer`, but no timestamped-signer code is copied.
 """
 
 from __future__ import annotations
@@ -70,8 +50,7 @@ class BadData(BadSignature):
 def _derive_key(secret: bytes, salt: bytes) -> bytes:
     """Derive a per-salt MAC key from the secret via nested HMAC (RFC 2104 Sec. 2).
 
-    Mixing the salt into the MAC key means tokens for different purposes
-    (e.g. session vs password-reset) won't validate against each other even
+    Tokens for different purposes then never validate against each other, even
     though they share the secret.
     """
     return hmac.new(secret, salt, hashlib.sha256).digest()
@@ -100,7 +79,7 @@ class Signer:
         if not secret:
             raise ValueError("secret must be non-empty")
         self._key = _derive_key(secret, salt)
-        # Future support for key rotation: extra accepted keys for verify.
+        # Extra keys accepted for verification during secret rotation.
         self._secret_keys: list[bytes] = [self._key]
 
     # ── Key rotation ──────────────────────────────────────
@@ -110,17 +89,13 @@ class Signer:
     ) -> None:
         """Add an additional secret accepted for verification (not signing).
 
-        Used during secret rotation: configure the new secret as primary,
-        keep the old one as a fallback for the rotation window. Tokens
-        signed with the fallback still verify; new tokens use the primary.
+        Tokens signed with the fallback still verify; new tokens use the primary.
         """
         secret = _coerce_secret_bytes(secret)
         salt = _coerce_secret_bytes(salt)
         if not secret:
-            # A fallback is a *verification* key, so an empty one does not
-            # merely sign weakly - it accepts anything MACed with the key
-            # derived from `b""`, which is computable from published source.
-            # `__init__` refuses the same value; this path must too.
+            # A verification key derived from `b""` accepts anything MACed with
+            # a key computable from published source, so refuse it as `__init__` does.
             raise ValueError("fallback secret must be non-empty")
         self._secret_keys.append(_derive_key(secret, salt))
 
@@ -144,15 +119,8 @@ class Signer:
         """
         if not isinstance(token, str):
             raise BadData(f"malformed token: {token!r}")
-        # Single split-with-cap instead of `count(".") != 2` + `split(".")`.
-        # `split(".", 2)` returns at most 3 parts: a well-formed token gives
-        # exactly 3, a truncated token gives fewer. A token with extra dots
-        # beyond the second packs them into `sig_b64`; `urlsafe_b64decode`
-        # tolerates non-alphabet characters (binascii's relaxed mode strips
-        # them), so the segment decodes to nonsense, the HMAC compare fails,
-        # and the caller sees `BadSignature` instead of `BadData`. Both are
-        # caught by `except BadSignature`, so the change of diagnostic does
-        # not affect handlers.
+        # Dots past the second pack into `sig_b64`, which `urlsafe_b64decode`
+        # strips to nonsense, so the HMAC compare fails with `BadSignature`.
         parts = token.split(".", 2)
         if len(parts) != 3:
             raise BadData(f"malformed token: {token!r}")
@@ -162,21 +130,20 @@ class Signer:
         except (ValueError, OSError) as err:
             raise BadData("malformed signature") from err
 
-        # The base64url segments are ASCII; a non-ASCII character means a
-        # malformed token (surfaced as `BadData`), not an `ascii`-codec crash.
+        # A non-ASCII segment is a malformed token, not an `ascii`-codec crash.
         try:
             signing_input = f"{payload_b64}.{ts_b64}".encode("ascii")
         except UnicodeEncodeError as err:
             raise BadData("token segments must be ASCII") from err
-        # Try every accepted secret. Constant-time compare per attempt.
+        # Constant-time compare per accepted secret.
         if not any(
             hmac.compare_digest(sig_bytes, hmac.new(key, signing_input, hashlib.sha256).digest())
             for key in self._secret_keys
         ):
             raise BadSignature("signature does not match")
 
-        # Timestamp + payload decode happens AFTER signature verification so
-        # an attacker can't probe parser behaviour with malformed inputs.
+        # Decoded only AFTER the MAC check, so a malformed token cannot drive
+        # the timestamp or JSON parser as an oracle.
         try:
             ts_bytes = _b64decode(ts_b64)
         except (ValueError, OSError) as err:

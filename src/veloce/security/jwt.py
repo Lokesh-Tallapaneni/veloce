@@ -2,17 +2,14 @@
 
 A dependency-free JSON Web Token implementation covering the HMAC-SHA2
 algorithms (HS256/HS384/HS512) per RFC 7515 (JWS), RFC 7519 (JWT), and
-RFC 7518 (JWA). Signing rests entirely on the standard library
-(``hmac``/``hashlib`` per RFC 2104, base64url per RFC 4648 Sec. 5);
-``orjson`` is reused for the payload to match ``signing.py``.
+RFC 7518 (JWA), on the standard library alone (``hmac``/``hashlib`` per
+RFC 2104, base64url per RFC 4648 Sec. 5).
 
-Scope is deliberately HMAC-only: no RSA/EC algorithms are supported, so
-``RS256``/``ES256`` and friends are out of scope. The signature is always
-verified before the payload JSON is decoded, mirroring the
-``signing.py`` invariant that the JSON parser is never driven with
-unauthenticated bytes. The ``alg`` allow-list is required (no default)
-and ``alg: "none"`` is rejected unconditionally to prevent algorithm
-confusion.
+Scope is deliberately HMAC-only; no RSA/EC algorithms are supported. The
+signature is always verified before the payload JSON is decoded, so the parser
+is never driven with unauthenticated bytes, the ``alg`` allow-list is required
+with no default, and ``alg: "none"`` is rejected unconditionally to prevent
+algorithm confusion.
 
 Usage::
 

@@ -1,17 +1,8 @@
 """Contrib sub-package — optional integrations.
 
-Names are resolved on first attribute access rather than at import, so an
-optional integration is not imported until one of its names is used.
-`from veloce.contrib import X` is unchanged; only the moment the work happens
-moves.
-
-Three of the five modules `_EXPORTS` names are deferred in practice: OpenAPI,
-Redis and the docs UI. Static files and templating are still pulled in by
-`import veloce` itself, because the top-level package imports
-`contrib.templating` for its own re-exports.
-
-The `mcp` sub-package is the sixth integration here. It exports nothing through
-`_EXPORTS`; reach it by importing `veloce.contrib.mcp` directly.
+Names resolve on first attribute access, so an optional integration is not
+imported until one of its names is used. The `mcp` sub-package exports nothing
+through `_EXPORTS`; import `veloce.contrib.mcp` directly to reach it.
 """
 
 from __future__ import annotations
@@ -30,8 +21,7 @@ if TYPE_CHECKING:  # pragma: no cover
         stream_template,
     )
 
-# Each exported name and the module that defines it. Resolved once per name per
-# process by `__getattr__` below - never on a per-request path.
+# Resolved once per name per process, never on a per-request path.
 _EXPORTS: dict[str, str] = {
     "Jinja2Templates": "veloce.contrib.templating",
     "RedisCache": "veloce.contrib.redis",

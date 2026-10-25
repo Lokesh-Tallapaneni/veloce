@@ -1,24 +1,12 @@
 """Cursor pagination for the MCP list methods — opaque cursors over a registry.
 
-A server with many primitives sends its whole catalogue in one response, and
-every byte of it lands in the agent's context window. The spec's answer is an
-optional cursor: a list method accepts `cursor` and answers with `nextCursor`
-while more remain, so a client walks the catalogue a page at a time.
+Pagination is opt-in (`mount_mcp(page_size=...)`): `cursor`/`nextCursor` are
+optional in the spec, so a client may read only the first page, and a server
+that paginated on its own would silently hide the rest of its catalogue.
 
-Pagination is opt-in (`mount_mcp(page_size=...)`). `cursor`/`nextCursor` are
-optional in the spec, so a client is free to ignore `nextCursor` and read only
-the first page - which would silently hide the rest of the catalogue from every
-existing client if a server started paginating on its own. A server that has not
-opted in answers exactly as before, and pays nothing for the option.
-
-The cursor is opaque to the client (the spec requires that clients not parse it)
-and records *both* the position and the key of the last item emitted. Position
-alone is wrong the moment the catalogue changes between pages - registries are
-mutable at runtime, and a tool registered or removed mid-walk shifts every later
-index, so a pure offset silently skips or repeats an unrelated entry. Position
-alone is also the only thing that is O(1). Recording both keeps the fast path:
-the index is checked first and used when the key still sits there, and only a
-catalogue that actually moved pays the scan to find the key again.
+The cursor is opaque - the spec requires clients not parse it - and records both
+the position and the key of the last item emitted, because registries are
+mutable at runtime and a pure offset would skip or repeat an unrelated entry.
 """
 
 from __future__ import annotations
@@ -32,8 +20,8 @@ from veloce.contrib.mcp.errors import InvalidParamsError
 
 T = TypeVar("T")
 
-# The cursor's plaintext is "<index>:<key>". A key may itself contain a colon (a
-# resource URI does), so the split is on the first one only.
+# The plaintext is "<index>:<key>"; a key may itself contain a colon (a resource
+# URI does), so the split is on the first one only.
 _CURSOR_SEPARATOR = ":"
 
 
@@ -41,9 +29,7 @@ def encode_cursor(index: int, key: str) -> str:
     """Return the opaque cursor naming the last item emitted."""
     raw = f"{index}{_CURSOR_SEPARATOR}{key}".encode()
     # Padded on purpose - NOT `_internal._b64encode`, which strips `=` for the
-    # RFC 7515 / RFC 7636 unpadded form. A cursor is an opaque round-trip token
-    # whose only contract is with `decode_cursor` below, and cursors already
-    # issued by a running process must keep decoding across a restart.
+    # RFC 7515 / RFC 7636 unpadded form; cursors must keep decoding after a restart.
     return base64.urlsafe_b64encode(raw).decode("ascii")
 
 
@@ -66,14 +52,12 @@ def _resume_at(entries: Sequence[T], key_of: Callable[[T], str], cursor: str) ->
     # The catalogue usually has not moved, so check the recorded position first.
     if index < len(entries) and key_of(entries[index]) == key:
         return index + 1
-    # It moved. Find the key where it is now, so the walk continues from the same
-    # item rather than from a position that now belongs to something else.
+    # It moved: find the key where it is now, not whatever took its position.
     for position, entry in enumerate(entries):
         if key_of(entry) == key:
             return position + 1
-    # The item itself is gone. Resume from where it was: the spec makes no
-    # promise about entries added or removed mid-walk, and this is the only
-    # position that neither replays the whole catalogue nor skips to its end.
+    # Gone entirely. Resume where it was - the only position that neither
+    # replays the whole catalogue nor skips to its end.
     return min(index, len(entries))
 
 
@@ -90,9 +74,8 @@ def paginate(
     """
     if size is None:
         if cursor is not None:
-            # No cursor was ever issued, so any cursor presented is not one of
-            # ours. Answering the full list anyway would tell the client its
-            # position was honoured.
+            # No cursor was ever issued, so answering the full list anyway
+            # would tell the client its position was honoured.
             raise InvalidParamsError("this server does not paginate its list methods")
         return items, None
 

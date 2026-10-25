@@ -1,11 +1,7 @@
 """OpenAPI setup — schema and docs-page wiring, mixed into Veloce.
 
-Holds the lazy schema build (`openapi`) and the route registration that wires the
-JSON schema endpoint and the Swagger / ReDoc UIs (`_setup_openapi`). A mixin on
-`Veloce`; both run off the request path (schema on first access, routes once at
-first-request setup). The actual schema generation and UI routes live in
-`veloce.contrib.openapi` and are imported lazily so an app that disables OpenAPI
-pays nothing for it.
+Both entry points run off the request path, and import `veloce.contrib.openapi`
+lazily so an app that disables OpenAPI pays nothing for it.
 """
 
 from __future__ import annotations
@@ -27,9 +23,7 @@ class OpenAPIMixin(AppHost):
             # Deferred: `contrib/` is optional.
             from veloce.contrib.docs_ui import setup_openapi_routes
 
-            # Pass the configured URLs through unchanged - `None` means
-            # "do not register that UI", and must not be replaced by a
-            # default path.
+            # A `None` URL means "do not register that UI" - never defaulted.
             setup_openapi_routes(
                 self,
                 openapi_url=self._openapi_url,
@@ -40,14 +34,9 @@ class OpenAPIMixin(AppHost):
     def openapi(self) -> dict[str, Any]:
         """Return the generated OpenAPI schema dict.
 
-        Computes the schema on first call, caches the result in
-        `app.openapi_schema`. Subsequent calls return the cached dict;
-        users can mutate the result in place (e.g. to inject custom
-        `info.x-logo` or `tags` orderings) and the swagger UI / json
-        endpoints will serve the mutated copy.
-
-        To bypass the auto-build entirely, assign a custom dict to
-        `app.openapi_schema` before any request lands.
+        Cached in `app.openapi_schema`; mutating the returned dict in place
+        changes what the UI and JSON endpoints serve. Assign that attribute
+        before any request lands to bypass the auto-build entirely.
         """
         if self.openapi_schema is None:
             # Deferred: `contrib/` is optional.

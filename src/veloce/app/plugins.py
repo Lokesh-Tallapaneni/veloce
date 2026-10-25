@@ -1,9 +1,7 @@
 """Plugin protocol — one-call registration of an app extension, mixed into Veloce.
 
-`app.install(plugin)` runs `plugin.install(app)`, records a named plugin under
-`app.extensions[name]`, and returns the plugin. A plugin is any object exposing
-`install(self, app)`; a `name` attribute is an optional convention that makes the
-plugin reachable via `app.extensions`.
+A plugin is any object exposing `install(self, app)`; an optional `name`
+attribute makes it reachable via `app.extensions`.
 """
 
 from __future__ import annotations
@@ -40,11 +38,8 @@ class PluginsMixin(AppHost):
     def install(self, plugin: Plugin) -> Plugin:
         """Install ``plugin`` and return it.
 
-        Call ``plugin.install(self)``. When ``plugin`` has a truthy ``name``,
-        record it as ``self.extensions[name]`` and raise ``ValueError`` if that
-        name is already taken. Raise ``TypeError`` when ``plugin`` has no callable
-        ``install``. A named plugin is recorded only after its ``install`` returns,
-        so a failed install leaves no partial registry entry.
+        A named plugin is recorded under ``self.extensions[name]`` only after its
+        ``install`` returns, so a failed install leaves no partial registry entry.
         """
         installer = getattr(plugin, "install", None)
         if not callable(installer):

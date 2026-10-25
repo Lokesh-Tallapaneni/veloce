@@ -1,9 +1,7 @@
 """URL maps — read-only view objects for route-table introspection.
 
-`URLRule` is one registered rule (`rule`, `methods`, `endpoint`); `_URLMap`
-wraps the app's route table, yielding `URLRule`s grouped per unique route and
-caching the build until a route mutation drops the instance. Public surface:
-`URLRule` is re-exported from `veloce.app`.
+`URLRule` is one registered rule (`rule`, `methods`, `endpoint`) and is
+re-exported from `veloce.app`; `URLMap` wraps the app's route table.
 """
 
 from __future__ import annotations
@@ -18,10 +16,7 @@ if TYPE_CHECKING:  # pragma: no cover
 class URLRule:
     """A single registered URL rule view object.
 
-    Iterable over its fields as `(rule, methods, endpoint)` so callers that just
-    want tuple-unpack semantics work; the same three are available as attributes
-    for introspection. Slotted, so there are no others - read anything further
-    off the route table itself.
+    Iterable as `(rule, methods, endpoint)`; the same three are also attributes.
     """
 
     __slots__ = ("rule", "methods", "endpoint")
@@ -41,10 +36,9 @@ class URLRule:
 class URLMap:
     """Veloce's read-only `Map`-style route-table wrapper.
 
-    Iterating yields `URLRule` objects in registration order (grouped
-    by `(path, name)` so each unique route is one rule even when
-    several HTTP methods share it). `len()` counts unique rules.
-    Lookup by endpoint name returns the list of matching rules.
+    Iterating yields `URLRule` objects in registration order, grouped by
+    `(path, name)` so several HTTP methods sharing a route give one rule.
+    Subscripting by endpoint name returns the list of matching rules.
     """
 
     __slots__ = ("_app", "_cached", "_by_endpoint")
@@ -52,17 +46,12 @@ class URLMap:
     def __init__(self, app: Veloce) -> None:
         self._app = app
         self._cached: list[URLRule] | None = None
-        # Endpoint-name -> its rules, built alongside `_cached` so subscript is
-        # not a full scan. Lives and dies with this instance (see `_build`).
+        # Built alongside `_cached` so subscript is not a full scan.
         self._by_endpoint: dict[str, list[URLRule]] | None = None
 
     def _build(self) -> list[URLRule]:
-        # Collect every (method, path, info) tuple, then group by
-        # (path, endpoint-name) so a route registered for both GET and
-        # POST shows up as a single rule. Result is cached on the
-        # `_URLMap` instance; the app drops the whole instance via
-        # `_invalidate_route_caches()` on any route mutation, so the
-        # cache cannot go stale.
+        # The app drops this whole instance via `_invalidate_route_caches()` on
+        # any route mutation, so the cache cannot go stale.
         cached = self._cached
         if cached is not None:
             return cached

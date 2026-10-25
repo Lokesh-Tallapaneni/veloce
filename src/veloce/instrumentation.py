@@ -1,11 +1,7 @@
 """Instrumentation — per-request metrics record for observability hooks.
 
-`RequestMetrics` is the per-request record handed to every instrumentation
-hook registered with `Veloce.add_instrumentation`. It carries exactly the
-low-cardinality dimensions an observability backend wants - the route
-*template* (not the concrete path), the method, the status, and the
-wall-clock duration - so a metrics exporter or tracing bridge can record a
-request without re-deriving anything.
+`RequestMetrics` is the record handed to every hook registered with
+`Veloce.add_instrumentation`.
 """
 
 from __future__ import annotations
@@ -19,38 +15,22 @@ from dataclasses import dataclass
 class RequestMetrics:
     """A finished HTTP request, as seen by an instrumentation hook.
 
-    `route` is the matched route's path template (`/items/{id}`), which is
-    safe to use as a metric label; it is `None` whenever no route+method
-    pair matched - both a `404` (no such path) and a `405` (the path
-    exists but the method is not allowed). Group by `(route, status_code)`
-    to keep those apart. `path` is the concrete request path and is
-    high-cardinality - prefer `route` for aggregation.
+    `route` is the matched path template (`/items/{id}`), safe as a metric
+    label; it is `None` for both a `404` and a `405`, so group by
+    `(route, status_code)` to keep those apart. `path` is high-cardinality.
 
-    `streamed` is `True` when the response body is a streaming iterator
-    (`StreamingResponse`, `EventSourceResponse`, a large `FileResponse`).
-    For those, the hook fires *before* the body is emitted on the ASGI send
-    path, so `duration_ms` and `status_code` reflect only the time to
-    produce the response object - not the time to drain the stream, and not
-    a failure that happens mid-stream. A tracing bridge that needs accurate
-    end-of-request timing should skip records with `streamed` set.
+    `streamed` marks a response whose body is a streaming iterator: the hook
+    fires before the body is emitted, so `duration_ms` and `status_code`
+    exclude draining the stream and any mid-stream failure.
 
-    `end_time_ns` is the wall-clock (`time.time_ns()`) instant the request
-    finished, captured the moment dispatch returned - *before* any
-    instrumentation hook or `request_finished` receiver runs. A tracing
-    bridge should anchor its span window to this value (and `duration_ms`)
-    rather than reading the clock when its own hook executes, so a slow
-    earlier hook cannot shift the span past the real request boundary.
+    `end_time_ns` is the `time.time_ns()` instant dispatch returned, captured
+    before any hook runs, so a slow earlier hook cannot shift a span past the
+    real request boundary.
 
-    `error_type` is the low-cardinality class name (`type(exc).__qualname__`)
-    of the exception that produced a `5xx`, set only when an *unhandled*
-    raised exception turned into a server error (the debug traceback page,
-    the generic `500` response, or a propagated exception). It is `None` for
-    every other outcome - a `2xx`/`3xx`/`4xx`, or a `5xx` deliberately
-    returned by a handler/exception handler without a raised exception. A
-    tracing bridge can record it as the OpenTelemetry `error.type` attribute
-    without capturing the full traceback or exception instance, keeping the
-    record allocation-light. The class *name* only is carried, never the
-    message (which may hold attacker-controlled or sensitive text).
+    `error_type` is `type(exc).__qualname__` for an *unhandled* exception that
+    became a `5xx`, and `None` for every other outcome - including a `5xx`
+    returned deliberately without a raised exception. The class name only is
+    carried, never the message, which may hold sensitive text.
     """
 
     method: str
@@ -61,11 +41,8 @@ class RequestMetrics:
     streamed: bool = False
     end_time_ns: int | None = None
     error_type: str | None = None
-    # Inbound distributed-trace headers (a `{"traceparent": ..., maybe
-    # "tracestate": ...}` carrier dict) so a tracing bridge (e.g.
-    # veloce.otel) can extract a parent context and continue the trace.
-    # `None` when the request carried no trace headers. The core never
-    # interprets this value - it stays framework-agnostic.
+    # Inbound trace headers as a carrier dict, for a bridge to extract a parent
+    # context from; `None` when absent. The core never interprets it.
     parent_context: object | None = None
 
     def __repr__(self) -> str:

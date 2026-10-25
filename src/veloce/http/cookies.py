@@ -25,8 +25,7 @@ from veloce._internal import _reject_header_crlf
 from veloce.http.dates import http_date
 
 # RFC 6265 Sec. 4.1.1: cookie-name = token (RFC 7230 Sec. 3.2.6) - the VCHAR set
-# minus CTLs and the separators ()<>@,;:\"/[]?={} plus SP/HT. One-or-more, so an
-# empty name fails. Written from the spec, not from any framework's char table.
+# minus CTLs and the separators ()<>@,;:\"/[]?={} plus SP/HT, one-or-more.
 _COOKIE_NAME_TOKEN = re.compile(r"[!#$%&'*+\-.0-9A-Z^_`a-z|~]+").fullmatch
 
 # Cookie-attribute keywords (lowercased). A cookie name equal to one of these
@@ -48,9 +47,8 @@ def iter_cookies(header: str | None) -> Iterator[tuple[str, str]]:
         return
     seen: set[str] = set()
     for chunk in header.split(";"):
-        # `partition` already reports whether a separator was there, so the
-        # separate membership test - a second scan of every chunk - is not
-        # needed to skip a segment that carries none.
+        # `partition` already reports whether a separator was there, so skipping
+        # a separator-less segment costs no second scan of the chunk.
         name, eq, value = chunk.partition("=")
         if not eq:
             continue
@@ -59,9 +57,8 @@ def iter_cookies(header: str | None) -> Iterator[tuple[str, str]]:
             continue
         seen.add(name)
         value = value.strip()
-        # `dump_cookie` percent-encodes and optionally quotes; a value carrying
-        # neither marker is already what it decodes to. The strip above has to
-        # stay for this branch, since `unquote_value` is what does it otherwise.
+        # A value carrying neither marker is already what it decodes to. The strip
+        # above has to stay for it, since `unquote_value` is what does it here.
         if "%" in value or '"' in value:
             value = unquote(unquote_value(value))
         yield name, value
@@ -70,9 +67,7 @@ def iter_cookies(header: str | None) -> Iterator[tuple[str, str]]:
 def parse_cookie(header: str | None) -> dict[str, str]:
     """Parse a `Cookie:` header into `{name: value}` - RFC 6265 Sec. 5.4.
 
-    Values are percent-decoded (the inverse of `dump_cookie`'s quoting).
-    Segments without an `=` are skipped. When a name repeats, the first
-    occurrence wins (browsers send the most specific cookie first).
+    As `iter_cookies`, collected into a dict.
     """
     return dict(iter_cookies(header))
 
@@ -103,13 +98,11 @@ def dump_cookie(
     - `prefix` adds an RFC 6265bis Sec. 4.1.3 cookie-name prefix and enforces
       its invariants: `"secure"` requires `secure=True` and emits the wire name
       `__Secure-<key>`; `"host"` additionally requires `path="/"` and no
-      `domain`, emitting `__Host-<key>`. The bare `key` is validated; the
-      framework-controlled prefix is prepended to the wire name afterwards.
+      `domain`, emitting `__Host-<key>`.
     """
     if prefix is not None:
-        # RFC 6265bis Sec. 4.1.3 - validate against the BARE key, then derive
-        # the wire name. The `__Host-`/`__Secure-` literal is framework-owned
-        # and already conforms, so it skips the token/reserved-name checks.
+        # RFC 6265bis Sec. 4.1.3 - validate against the BARE key, then derive the
+        # wire name, whose framework-owned prefix already conforms.
         if prefix == "secure":
             if secure is not True:
                 raise ValueError("__Secure- cookie prefix requires secure=True")
@@ -127,9 +120,8 @@ def dump_cookie(
     else:
         wire_key = key
     _reject_header_crlf(key, MSG_LABEL_COOKIE_NAME)
-    # The name must be a valid RFC 6265 token (no spaces/separators/CTLs) and
-    # must not collide with a cookie-attribute keyword - both prevent a
-    # malformed or attribute-injecting Set-Cookie header.
+    # An RFC 6265 token that is not a cookie-attribute keyword; either would let
+    # the name inject an attribute into the header.
     if not _COOKIE_NAME_TOKEN(key):
         raise ValueError(
             f"cookie name {key!r} is not a valid RFC 6265 token "
@@ -138,11 +130,8 @@ def dump_cookie(
     if key.lower() in _RESERVED_COOKIE_NAMES:
         raise ValueError(f"cookie name {key!r} collides with a reserved cookie-attribute keyword")
     _reject_header_crlf(value, MSG_LABEL_COOKIE_VALUE)
-    # `%` must NOT be in the safe set: it is the percent-encoding marker, and
-    # `parse_cookie` percent-decodes the value. Leaving a literal `%` unescaped
-    # makes a value like "100%" decode back to garbage (e.g. "%00" -> NUL), so
-    # the value would not survive a dump -> parse round-trip. Encoding it as
-    # "%25" is the inverse `unquote` restores.
+    # `%` must NOT be in the safe set: `parse_cookie` percent-decodes, so a
+    # literal `%` left unescaped would not survive a dump -> parse round-trip.
     quoted = quote(value, safe="!#$&'()*+/:<=>?@[]^`{|}~")
     parts: list[str] = [f"{wire_key}={quoted}"]
 
@@ -165,14 +154,8 @@ def dump_cookie(
         parts.append("HttpOnly")
     if samesite is not None:
         _reject_header_crlf(samesite, MSG_LABEL_COOKIE_SAMESITE)
-        # The whole rule lives here, in the one function that renders a
-        # `Set-Cookie`, so there is no "on the way in" for callers to disagree
-        # about. Fixing the value up per caller means a value this rejects
-        # reaches it from one caller and not another - one dropping a
-        # whitespace-only value, one capitalising, one passing the raw string
-        # through - and `samesite="  "` then raises on every response through
-        # one session backend while shipping a cookie with no `SameSite` at all
-        # through the next.
+        # The whole rule lives in the one function that renders a `Set-Cookie`,
+        # so no caller can normalise it differently on the way in.
         normalised = samesite.strip().capitalize()
         if not normalised:
             return "; ".join(parts)

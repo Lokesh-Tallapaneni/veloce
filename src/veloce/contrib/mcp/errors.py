@@ -1,16 +1,8 @@
 """MCP error hierarchy — failures that render as JSON-RPC 2.0 error objects.
 
-One base (`MCPError`) carries the JSON-RPC error code and optional `data`; the
-dispatcher catches the base and serialises polymorphically via `to_error`, so a
-new failure mode is a new subclass rather than another `except` clause. A tool /
-resource / prompt handler author may `raise InvalidParamsError(...)` (and the
-other concrete subclasses) to surface a typed JSON-RPC error.
-
-`_InBandError` marks the other channel: those failures surface in-band as an
-`isError` tool result rather than as a JSON-RPC error. `ToolError` is its one
-public member - what a tool author raises to report a failure of the work the
-tool went on to do; the stream-drain and argument-validation members below stay
-private.
+A handler author raises a concrete subclass to surface a typed JSON-RPC error;
+an `_InBandError` subclass surfaces instead as an `isError` tool result, and
+`ToolError` is that branch's one public member.
 
 Codes follow JSON-RPC 2.0 Sec. 5.1 plus the MCP server-defined codes for
 "resource not found" and "forbidden".
@@ -27,25 +19,19 @@ _JSONRPC_METHOD_NOT_FOUND = -32601
 _JSONRPC_INVALID_PARAMS = -32602
 _JSONRPC_INTERNAL_ERROR = -32603
 
-# MCP "Resource not found" code (server-defined, outside the JSON-RPC reserved
-# range), returned when ``resources/read`` names a URI the registry cannot
-# resolve or whose route answers 404.
+# MCP "Resource not found" - server-defined, outside the JSON-RPC reserved range.
 _JSONRPC_RESOURCE_NOT_FOUND = -32002
 
-# Server-defined "forbidden" code, returned when the request principal lacks a
-# tool's / resource's required authorization scopes (the JSON-RPC analogue of an
-# HTTP 403 insufficient_scope).
+# Server-defined "forbidden" - the JSON-RPC analogue of HTTP 403
+# insufficient_scope, for a principal missing a required scope.
 _JSONRPC_FORBIDDEN = -32003
 
-# The 2026-07-28 revision partitions the JSON-RPC server-error range: -32000 to
-# -32019 stays implementation-defined (existing SDK usage is grandfathered) and
-# -32020 to -32099 is reserved for the specification. `UnsupportedProtocolVersion`
-# is allocated -32022 there.
+# The 2026-07-28 revision reserves -32020 to -32099 for the specification and
+# allocates -32022 to `UnsupportedProtocolVersion`.
 _JSONRPC_UNSUPPORTED_PROTOCOL_VERSION = -32022
 
-# Allocated in the same reserved range: a standard request header that is
-# missing, disagrees with the body it labels, or carries characters the header
-# encoding does not permit.
+# Allocated in the same reserved range, for a missing, disagreeing or
+# unencodable standard request header.
 _JSONRPC_HEADER_MISMATCH = -32020
 
 
@@ -61,11 +47,7 @@ def parse_error() -> dict[str, Any]:
     """Build the JSON-RPC error for a body that is not readable as JSON at all.
 
     JSON-RPC keeps two failures apart: -32700 says the text could not be read,
-    -32600 says what was read is not a Request object. Every transport frames
-    its own bytes, but the two answers live here so a transport cannot invent a
-    third. A transport answering both with its own code - -32603, say -
-    would make a client with per-code retry logic behave differently purely by
-    which wire it came in on.
+    -32600 says what was read is not a Request object.
     """
     return _error(None, _JSONRPC_PARSE_ERROR, "Parse error")
 
@@ -82,9 +64,8 @@ def invalid_request_error() -> dict[str, Any]:
 def internal_error(msg_id: Any, message: str) -> dict[str, Any]:
     """Build the JSON-RPC error for a server-owned failure, carrying the id.
 
-    A transport that cannot put a reply on the wire must still answer with
-    something: a dropped reply leaves the client waiting for the lifetime of the
-    process with nothing written anywhere to say why.
+    A transport that cannot put its reply on the wire still answers with this,
+    rather than leaving the client waiting on a dropped reply.
     """
     return _error(msg_id, _JSONRPC_INTERNAL_ERROR, message)
 
@@ -116,31 +97,23 @@ class MCPError(Exception):
 class _InBandError(MCPError):
     """A failure surfaced in-band as an `isError` tool result, not a JSON-RPC error.
 
-    Shares `MCPError` so the type relationship is explicit, but the tool paths
-    report these as a tool result rather than routing them through `to_error`.
-    Only `ToolError` is public; the rest of the subtree is not.
+    The tool paths report these as a tool result rather than through `to_error`.
+    Only `ToolError` is public.
     """
 
 
 class ToolError(_InBandError):
     """A tool failed at the work it was asked to do — reported as an `isError` result.
 
-    The spec keeps two failures apart: a *protocol* error (an unknown tool, a
-    request that does not satisfy the `CallToolRequest` schema, a server fault),
-    which travels as a JSON-RPC error, and a *tool execution* error, which
-    travels on the tool result as `isError`. Only the second is fed back to the
-    language model, so a tool that wants the agent to understand why it could
-    not finish - a locked record, a refused upstream, a precondition the caller
-    can satisfy and retry - raises this rather than any other `MCPError`
-    subclass, whose message would land on the channel the spec reserves for
-    protocol faults and never reach the model.
+    Only a *tool execution* error is fed back to the language model; a protocol
+    error travels as a JSON-RPC error the model never sees. Raise this, not
+    another `MCPError`, when the agent should understand why the work failed.
 
-    The message is surfaced verbatim, unlike an unexpected exception's: the
-    author wrote it for the agent to read, so there is nothing to redact. Write
-    it for the model, naming what failed and what would make a retry succeed.
+    The message is surfaced verbatim, so write it for the model: name what
+    failed and what would make a retry succeed.
 
-    Only the tool path has an in-band channel; raised from a resource read or a
-    prompt the same failure travels as the `-32603` its base carries.
+    Only the tool path has an in-band channel; from a resource read or a prompt
+    the same failure travels as the `-32603` its base carries.
     """
 
 
@@ -163,15 +136,9 @@ class ProtocolVersionError(InvalidRequestError):
 class UnsupportedProtocolVersionError(MCPError):
     """A request declares a protocol version this server does not serve.
 
-    Modern (2026-07-28 and later) clients carry their protocol version on every
-    request rather than negotiating once, so the rejection has to travel per
-    request and has to be recoverable: `data.supported` lets the client pick a
-    mutually supported version and retry.
-
-    This is also the error that identifies the server as modern. A client
-    probing an older server gets an unrecognised error (method-not-found) and
-    falls back to the `initialize` handshake; getting *this* code back tells it
-    the server speaks the modern protocol and only the version was wrong.
+    `data.supported` makes the rejection recoverable, and the code itself
+    identifies the server as modern: an older server answers a probe with
+    method-not-found, which sends the client to the `initialize` handshake.
     """
 
     code = _JSONRPC_UNSUPPORTED_PROTOCOL_VERSION
@@ -187,13 +154,10 @@ class UnsupportedProtocolVersionError(MCPError):
 class HeaderMismatchError(MCPError):
     """A standard request header disagrees with the body it labels.
 
-    A fronting intermediary routes on `Mcp-Method` / `Mcp-Name` while the server
-    executes the JSON-RPC body, so a divergence between the two is a request
-    smuggling primitive rather than a formatting nit: the two ends of the hop
-    would act on different requests. The transport rejects it before dispatch
-    (MCP 2026-07-28 Streamable HTTP, "Server Validation"), which also covers a
-    required header that is absent and a value carrying characters the header
-    encoding does not permit.
+    An intermediary routes on `Mcp-Method` / `Mcp-Name` while the server executes
+    the body, so a divergence is a request-smuggling primitive. MCP 2026-07-28
+    Streamable HTTP "Server Validation" rejects it before dispatch, along with an
+    absent required header and an unencodable value.
     """
 
     code = _JSONRPC_HEADER_MISMATCH
@@ -275,15 +239,10 @@ class AuthorizationError(MCPError):
 class MCPCapabilityError(InvalidRequestError, _InBandError):
     """A server->client request needs a client capability the client did not advertise.
 
-    Raised by `MCPContext.sample` / `elicit` / `roots` (and their sub-capabilities)
-    when the connected client did not advertise the matching capability in
-    ``initialize``, so the request cannot be issued.
-
-    In-band on the tool path: the caller's own request was well formed, and what
-    failed is something the tool tried to do while running it. The model can act
-    on that - carry on without the sampled text, ask its user directly - which it
-    cannot do with a JSON-RPC error. Resources and prompts have no in-band
-    channel, so the same failure travels there as the `-32600` its base carries.
+    Raised by `MCPContext.sample` / `elicit` / `roots` when ``initialize`` did
+    not advertise the matching capability. In-band on the tool path, so the
+    model can carry on; resources and prompts have no in-band channel and get
+    the `-32600` its base carries.
     """
 
     def __init__(self, capability: str) -> None:
@@ -307,18 +266,10 @@ class _ForbiddenError(MCPError):
 class _InvalidArgumentsError(_InBandError):
     """Tool arguments failed validation — reported in-band so the model can retry.
 
-    The spec splits tool failures in two: a *protocol* error (unknown tool, a
-    request that does not satisfy the `CallToolRequest` schema, a server fault)
-    and a *tool execution* error, which explicitly includes input validation.
-    Only the second is fed back to the language model, because only it carries
-    something the model can act on — so reporting a bad argument as
-    `-32602 Invalid params` denies the model the one signal that would let it
-    correct the call and retry.
-
-    The code is still `-32602`, because `isError` is a *tool result* field:
-    resources and prompts have no in-band channel, so the same failure has to
-    travel as a JSON-RPC error there. The tool path catches this type before it
-    reaches `to_error`; the other paths let it through with the right code.
+    The spec counts input validation as a *tool execution* error, and only those
+    reach the language model. The code stays `-32602` for the resource and prompt
+    paths, which have no in-band channel; the tool path catches this type before
+    `to_error`.
     """
 
     code = _JSONRPC_INVALID_PARAMS

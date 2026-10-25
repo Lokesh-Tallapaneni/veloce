@@ -1,17 +1,11 @@
 """Composing one app's MCP surface out of the apps mounted inside it.
 
-`app.mount(prefix, sub, expose_mcp=True)` publishes a sub-application's tools,
-resources and prompts through the parent's MCP server. It is opt-in because
-mounting an app for its HTTP routes should not silently hand an agent everything
-that app can do.
-
-Tools and prompts are renamed under the mount, so `/billing` turns `invoice` into
-`billing_invoice` and two sub-apps may each register a tool of the same name.
-Resources keep their URIs: a URI is the client-facing address of the thing rather
-than a name this server may rewrite, so two sub-apps publishing the same URI is a
-collision the registry reports rather than papers over.
-
-A merged primitive is a copy, so the sub-app's own registry is untouched.
+`app.mount(prefix, sub, expose_mcp=True)` is opt-in: mounting an app for its HTTP
+routes should not silently hand an agent everything that app can do. Tools and
+prompts are renamed under the mount, so two sub-apps may each register a tool of
+the same name; resources keep their URIs, so two sub-apps publishing the same URI
+is a collision the registry reports. A merged primitive is a copy, so the
+sub-app's own registry is untouched.
 """
 
 from __future__ import annotations
@@ -35,9 +29,8 @@ def mount_namespace(prefix: str) -> str:
 def renamed(item: T, namespace: str) -> T:
     """Copy `item` under the mount's namespace.
 
-    The memoised listing entry is not carried over: it is declared `init=False`,
-    so the copy starts without one and rebuilds it under the new name rather than
-    advertising the name the primitive had inside the sub-app.
+    The memoised listing entry is `init=False`, so the copy rebuilds it under the
+    new name rather than advertising the name the primitive had in the sub-app.
     """
     if not namespace:
         return item
