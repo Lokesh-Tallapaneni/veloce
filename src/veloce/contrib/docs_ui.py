@@ -1,13 +1,8 @@
 """The documentation UI - Swagger UI and ReDoc pages, and the routes serving them.
 
-This half of `openapi.py` shares nothing with the schema generator: neither
-calls a single name defined by the other. It is an HTML host - it fetches
-`/openapi.json` from the browser and renders it - so what it needs is escaping
-rules for embedding JSON in a `<script>` block, a CSP nonce, and two page
-templates.
-
-Keeping it in the same file as 1,840 lines of OpenAPI 3.1 lowering meant anyone
-reading either had to skip the other.
+An HTML host: it fetches `/openapi.json` from the browser and renders it, so
+what it needs is escaping rules for embedding JSON in a `<script>` block, a CSP
+nonce, and two page templates.
 """
 
 from __future__ import annotations
@@ -20,24 +15,16 @@ import orjson
 from veloce.http.response import HTMLResponse, JSONResponse
 from veloce.middleware.security import csp_nonce
 
-# Swagger UI / ReDoc bundles are pinned to a specific patch version and
-# loaded with a Subresource Integrity hash. Together with
-# `crossorigin="anonymous"` the browser refuses to execute the script
-# if the CDN ever serves bytes that do not hash to this exact digest,
-# so a CDN compromise cannot inject arbitrary JavaScript onto a
-# `/docs` page. Bump the versions in lock-step with the hashes - the
-# hash will not match if you change one without the other.
+# Pinned patch versions loaded under Subresource Integrity, so a compromised CDN
+# cannot inject JavaScript onto `/docs`. Bump versions and hashes in lock-step.
 _SWAGGER_UI_VERSION = "5.18.2"
 _SWAGGER_UI_CSS_INTEGRITY = "sha512-xRGj65XGEcpPTE7Cn6ujJWokpXVLxqLxdtNZ/n1w52+76XaCRO7UWKZl9yJHvzpk99A0EP6EW+opPcRwPDxwkA=="
 _SWAGGER_UI_JS_INTEGRITY = "sha512-9tBcCofqWq+PelL6USpUB7OJrCaObfefi9ht9nVZuKt1XP7eHDs7NwVljLSLVtSsErax1Tz3pG3O82eeq546Rg=="
 _REDOC_VERSION = "2.1.5"
 _REDOC_JS_INTEGRITY = "sha384-0GrsyTQc9Oqd8h+b2dbc4XdR2T/DYpy0tLNNstyx+LBMUyiBbcWPbEs9aRmUcaxD"
 
-# Byte-level escapes applied to orjson output before it is embedded inline in
-# a <script> block: the close-script breakout (`<`/`>`/`&`) and the U+2028 /
-# U+2029 line separators (valid in JSON, but break JS string literals). The
-# escapes are JSON-valid `\uXXXX` forms, so SwaggerUIBundle / JSON.parse read
-# them identically.
+# Close the `</script>` breakout (`<`/`>`/`&`) and the U+2028 / U+2029 separators
+# that are valid JSON but break a JS string literal, as JSON-valid `\uXXXX`.
 _SCRIPT_ESCAPES = (
     (b"<", b"\\u003c"),
     (b">", b"\\u003e"),
@@ -117,11 +104,8 @@ REDOC_HTML = """<!DOCTYPE html>
 def _nonce_attr(request: Any) -> str:
     """Render the CSP `nonce` attribute for the docs pages, or an empty string.
 
-    `CSPMiddleware` arms a per-request nonce; the docs templates carry it on
-    every script, style, and stylesheet-link tag so a strict policy renders the
-    UI without allow-listing the asset hosts (a nonced element is permitted
-    regardless of its source per CSP Level 3). An app with no CSP nonce armed
-    gets an empty string, leaving the markup byte-identical to before.
+    A nonced element is permitted regardless of its source per CSP Level 3, so a
+    strict policy renders the UI without allow-listing the asset hosts.
     """
     nonce = csp_nonce(request)
     return f' nonce="{html.escape(nonce, quote=True)}"' if nonce else ""
@@ -139,12 +123,8 @@ def setup_openapi_routes(
     respectively - the JSON schema route is still registered, so tooling
     can consume the schema without a public interactive explorer.
     """
-    # Where the schema route actually ends up. `app.get` prepends the router's
-    # `prefix`, so a prefixed app served the schema at `<prefix><openapi_url>`
-    # while both HTML templates interpolated the bare `openapi_url` - each page
-    # loaded and then fetched a 404, rendering empty. `root_path` is added per
-    # request rather than here, because it is a property of how the app is
-    # mounted at runtime, not of how its routes were registered.
+    # `app.get` prepends the router's `prefix`, so the templates must interpolate
+    # the prefixed path. `root_path` is per-request: it is a property of the mount.
     schema_path = html.escape(f"{app.prefix}{openapi_url}" if app.prefix else openapi_url)
 
     def _schema_url(request: Any) -> str:
@@ -153,9 +133,7 @@ def setup_openapi_routes(
         return f"{html.escape(root)}{schema_path}" if root else schema_path
 
     # Excluded from the document they serve: `paths` describes the application's
-    # API, and these three are the server's own documentation endpoints. Listed,
-    # a generated client grew a method for fetching the schema it was generated
-    # from and two for rendering HTML pages.
+    # API, and these three are the server's own documentation endpoints.
     @app.get(openapi_url, tags=["openapi"], name="openapi_schema", include_in_schema=False)
     async def openapi_schema(request: Any) -> JSONResponse:
         # Route through `app.openapi()` so a user override / customised
@@ -163,15 +141,12 @@ def setup_openapi_routes(
         return JSONResponse(app.openapi())
 
     async def swagger_ui(request: Any) -> HTMLResponse:
-        # Render extra SwaggerUIBundle options inline as JSON literals.
-        # `orjson.dumps` returns bytes, so decode for string concatenation
-        # into the HTML template; the surrounding page is utf-8, so
-        # orjson's raw-UTF-8 output (vs json's ensure_ascii) is fine.
+        # Extra SwaggerUIBundle options render inline as JSON literals; the page
+        # is utf-8, so orjson's raw-UTF-8 output needs no ensure_ascii.
         params = app.swagger_ui_parameters or {}
         if params:
-            # Compact `key:value` join - orjson serialises nested values
-            # without spaces, so the outer separator stays spaceless to
-            # keep the rendered literal consistent throughout.
+            # orjson serialises nested values without spaces, so the outer
+            # separator stays spaceless too.
             ui_params = ",".join(
                 f"{_html_safe_orjson(k)}:{_html_safe_orjson(v)}" for k, v in params.items()
             )
@@ -198,9 +173,8 @@ def setup_openapi_routes(
         )
         return HTMLResponse(html_page)
 
-    # Register each interactive UI only when its URL is set - `None` or an empty
-    # string disables that UI while leaving the JSON schema route in place. The
-    # empty string is not a path: registered, it mounted the page at the site root.
+    # `None` or `""` disables that UI, leaving the JSON schema route in place;
+    # `""` is not a path and would mount the page at the site root.
     if docs_url:
         app.get(docs_url, tags=["openapi"], name="swagger_ui", include_in_schema=False)(swagger_ui)
     if redoc_url:

@@ -1,16 +1,15 @@
 """MCP resource registry — read-only routes exposed as Model Context Protocol resources.
 
-A resource is the MCP primitive for data an agent reads by URI (the counterpart
-to a tool, which it calls). Veloce maps a resource onto a read-only (`GET`/`HEAD`)
-route flagged ``expose_as_mcp_resource=True`` with an ``mcp_resource_uri``: a
-static URI for a route with no path parameters, or an RFC 6570 URI template
-(``users://{user_id}``) whose variables bind the route's path parameters.
+A resource is the MCP primitive for data an agent reads by URI, the counterpart
+to a tool it calls. It maps onto a read-only (`GET`/`HEAD`) route flagged
+``expose_as_mcp_resource=True`` with an ``mcp_resource_uri``: a static URI, or an
+RFC 6570 URI template (``users://{user_id}``) whose variables bind the route's
+path parameters.
 
-The registry is assembled once, at ``mount_mcp`` time, by walking the app's
-routes. Each resource wraps the same `MCPTool` a tool exposure would build
-(`registry._tool_from_route`), so a ``resources/read`` replays the full request
-lifecycle through the shared invocation path - the route's `Depends`, `Security`,
-middleware, and `response_model` all run exactly as on the HTTP and tool paths.
+The registry is assembled once, at ``mount_mcp`` time. Each resource wraps the
+same `MCPTool` a tool exposure would build, so a ``resources/read`` replays the
+full request lifecycle - `Depends`, `Security`, middleware and `response_model`
+all run exactly as on the HTTP and tool paths.
 """
 
 from __future__ import annotations
@@ -30,16 +29,11 @@ from veloce.contrib.mcp.registry import MCPTool, _tool_from_route
 if TYPE_CHECKING:  # pragma: no cover
     from re import Pattern
 
-# A resource is read-only data, so only a safe (non-mutating) verb may back one.
-# A route carrying a mutating verb is a tool, never a resource.
+# A resource is read-only data; a route with a mutating verb is a tool.
 _RESOURCE_METHODS = frozenset({HTTP_METHOD_GET, HTTP_METHOD_HEAD})
 
-# An RFC 6570 variable inside a URI template, in either of the two forms the
-# spec's templates use. `{name}` is simple expansion: the value is one URI
-# segment, and a reserved character in it arrives percent-encoded. `{+name}` is
-# reserved expansion: the value may carry reserved characters - `/` above all -
-# literally, so it spans segments. A template variable names one route path
-# parameter, so the name is a Python identifier.
+# RFC 6570 simple expansion (`{name}`, one percent-encoded segment) and reserved
+# expansion (`{+name}`, spanning segments). Each names a route path parameter.
 _URI_TEMPLATE_VAR = re.compile(r"\{(\+?)([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
@@ -52,26 +46,14 @@ class MCPResource(MCPDescriptor):
 
     uri: str
     tool: MCPTool
-    # True when `uri` is a URI template (carries `{var}` placeholders bound to
-    # the route's path parameters); such a resource is advertised through
-    # ``resources/templates/list`` rather than ``resources/list``.
+    # A template is advertised through ``resources/templates/list`` instead.
     is_template: bool
-    # Compiled matcher for a template URI (`None` for a static resource); a
-    # concrete ``resources/read`` URI is matched against it to recover the path
-    # parameter values.
+    # Recovers the path parameter values from a concrete ``resources/read`` URI.
     pattern: Pattern[str] | None
-    # The template variable names, in declaration order (empty for a static
-    # resource). Each names a route path parameter.
     uri_param_names: tuple[str, ...]
-    # How much of the template is literal text rather than variables. Two
-    # templates can match the same URI - a catch-all `docs://{+path}` also matches
-    # what `docs://{+path}/meta` was registered for - and the one spelling out
-    # more of the URI is the one that meant it. Computed at build time so a read
-    # ranks candidates without re-reading their templates.
+    # Literal-text length: a catch-all also matches what a longer template meant.
     specificity: int = 0
-    # Size in bytes a client may show before reading, and the annotations
-    # (audience, priority) saying who the resource is for. Both are declared
-    # rather than measured: a listing must not have to read every resource.
+    # Declared rather than measured: a listing must not read every resource.
     size: int | None = None
     annotations: dict[str, Any] | None = None
 
@@ -82,19 +64,14 @@ class ResourceRegistry(Registry[MCPResource]):
 
     resources: dict[str, MCPResource] = field(default_factory=dict)
     schemas: dict[str, dict[str, Any]] = field(default_factory=dict)
-    # The template resources, most specific first. More than one template can
-    # match a URI - a catch-all matches everything a longer one was registered
-    # for - and the one spelling out more of the URI is the one that meant it.
-    # Ranking here, at registration, lets a read stop at its first match instead
-    # of scanning for a better one, and keeps statics out of that scan entirely.
+    # Most specific first, so a read stops at its first match; statics are excluded.
     _ranked_templates: list[MCPResource] = field(default_factory=list)
 
     @property
     def _store(self) -> dict[str, MCPResource]:
         return self.resources
 
-    # A resource is keyed by its URI, not its name (two resources may share a
-    # tool name yet must expose distinct URIs).
+    # Keyed by URI, not name: two resources may share a tool name.
     def _key(self, item: MCPResource) -> str:
         return item.uri
 
@@ -122,16 +99,12 @@ class ResourceRegistry(Registry[MCPResource]):
     def match(self, uri: str) -> tuple[MCPResource, dict[str, str]] | None:
         """Resolve a concrete URI to its resource and extracted path parameters.
 
-        A static resource matches by exact URI (no parameters); a template
-        resource matches by its compiled pattern, yielding the path-parameter
-        values to invoke the route with. Static resources are tried first so a
-        concrete URI never falls through to a template that would also match it.
+        Static resources are tried first, so a concrete URI never falls through
+        to a template that would also match it.
         """
         static = self.resources.get(uri)
         if static is not None and not static.is_template:
             return static, {}
-        # Ranked most-specific-first at registration, so the first template that
-        # matches is the one that meant it and the scan stops there.
         for resource in self._ranked_templates:
             matched = resource.pattern.fullmatch(uri)  # type: ignore[union-attr]
             if matched is not None:
@@ -150,10 +123,8 @@ def _uri_template_vars(uri: str) -> list[str]:
 def _compile_uri_template(uri: str) -> Pattern[str]:
     """Compile a URI template into a matcher capturing each variable's value.
 
-    Literal spans are escaped; a ``{name}`` becomes a named group matching a
-    single non-slash segment, the granularity a route path parameter occupies,
-    and a ``{+name}`` one matching across segments so a whole path binds to one
-    variable.
+    ``{name}`` becomes a group matching one non-slash segment, the granularity a
+    route path parameter occupies; ``{+name}`` matches across segments.
     """
     parts: list[str] = []
     last = 0
@@ -174,10 +145,8 @@ def _template_specificity(uri: str) -> int:
 def _decode_values(values: dict[str, str]) -> dict[str, str]:
     """Percent-decode a matched template's values.
 
-    A client percent-encodes a value to carry a character the URI syntax reserves,
-    so the handler must receive what was meant - `a%2Fb.py`, not the escape. The
-    `%` test keeps a value that was never encoded off `unquote` entirely, which is
-    the usual case.
+    The handler must receive what was meant - `a/b.py`, not the escape. The `%`
+    test keeps the usual unencoded value off `unquote` entirely.
     """
     return {name: unquote(value) if "%" in value else value for name, value in values.items()}
 
@@ -238,10 +207,9 @@ def _resource_from_route(
 def build_resource_registry(app: Any) -> ResourceRegistry:
     """Assemble the resource registry from routes flagged `expose_as_mcp_resource`.
 
-    Mirrors the tool registry walk: every route is visited (including those
-    hidden from the OpenAPI schema), WebSocket routes are skipped, and a
-    multi-verb route is deduplicated by `RouteInfo` identity so it is exposed
-    once with its full verb set.
+    Mirrors the tool registry walk: hidden routes are visited, WebSocket routes
+    skipped, and a multi-verb route deduplicated by `RouteInfo` identity so it is
+    exposed once with its full verb set.
     """
     registry = ResourceRegistry()
     exposed: dict[int, Any] = {}
@@ -258,9 +226,7 @@ def build_resource_registry(app: Any) -> ResourceRegistry:
     for route_id, info in exposed.items():
         registry.add(_resource_from_route(info, methods_by_route[route_id], registry.schemas))
 
-    # A resource keeps its URI: that is the client-facing address of the thing,
-    # not a name this server may rewrite. Two sub-apps publishing one URI is a
-    # collision `add` reports.
+    # A URI is client-facing, not renamed here, so two sub-apps claiming one collide.
     for _namespace, sub_app in mcp_mounts(app):
         for resource in build_resource_registry(sub_app).resources.values():
             registry.add(resource)

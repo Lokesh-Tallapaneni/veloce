@@ -27,6 +27,36 @@ TESTS = pathlib.Path(__file__).resolve().parent
 #: Adding to this list should mean deciding the new pair is genuinely two
 #: surfaces rather than one test copied.
 KNOWN_SHARED = {
+    # The same Range behaviour is asserted on both file-serving doors, which
+    # are separate surfaces: `FileResponse` and the `StaticFiles` app.
+    "test_a_non_get_method_still_advertises_accept_ranges": {
+        "test_fileresponse_range.py",
+        "test_staticfiles_range.py",
+    },
+    "test_a_range_on_a_non_get_method_is_ignored": {
+        "test_fileresponse_range.py",
+        "test_staticfiles_range.py",
+    },
+    "test_head_ignores_range_and_describes_the_full_representation": {
+        "test_fileresponse_range.py",
+        "test_staticfiles_range.py",
+    },
+    "test_head_with_an_unsatisfiable_range_is_not_refused": {
+        "test_fileresponse_range.py",
+        "test_staticfiles_range.py",
+    },
+    # `test_range_header.py` covers the header parser; the other the response.
+    "test_single_byte_range": {
+        "test_fileresponse_range.py",
+        "test_range_header.py",
+    },
+    # The JSON accessor's own cases, and the same ones under the 415 contract.
+    # The absent-content-type pair is no longer shared: each module now names
+    # the surface it owns, since a refusal reads differently from a parse.
+    "test_empty_body_returns_none": {
+        "test_request_json.py",
+        "test_unsupported_media_type.py",
+    },
     "test_a_body_exactly_at_the_limit_is_served": {
         "test_body_limit_early_reject.py",
         "test_body_limit_refusal_points.py",

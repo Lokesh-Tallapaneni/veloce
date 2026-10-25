@@ -19,52 +19,34 @@ if TYPE_CHECKING:  # pragma: no cover
 
     from veloce.audit import AuditContext, Finding
 
-# The `call_next` argument type, so user dispatch functions can annotate it.
 CallNext = Callable[[Request], Awaitable[Response]]
 
-#: A `dispatch(request, call_next)` coroutine - the shape `BaseHTTPMiddleware`
-#: accepts as `dispatch=`. Named here beside `CallNext` because the constructor
-#: took a bare `Callable` for its documented public argument while `dispatch()`
-#: five lines below already spelled the parameterised form.
+#: The `dispatch(request, call_next)` shape `BaseHTTPMiddleware` takes.
 DispatchFunction = Callable[[Request, CallNext], Awaitable[Response]]
 
 
 class Auditable:
     """What a registered component declares about its own security posture.
 
-    Mixed into every middleware shape rather than owned by one of them: Veloce
-    accepts `Middleware` instances, `BaseHTTPMiddleware` dispatch objects and
-    ASGI middleware classes, and an audit that reaches only one shape reports a
-    middleware in either of the others as absent - it would have no way to say
-    otherwise.
+    Mixed into every middleware shape, so an audit reaches a `Middleware`, a
+    `BaseHTTPMiddleware` dispatch object and an ASGI middleware class alike.
     """
 
     __slots__ = ()
 
-    # Set True by a component that adds hardening headers to every response.
-    # The audit warns when nothing in the stack claims this, and asks the marker
-    # rather than naming a class so a middleware outside this package answers
-    # the question too.
+    # Set True by a component adding hardening headers; the audit warns if none does.
     sets_hardening_headers: ClassVar[bool] = False
 
-    # Set True when `audit` reads the route table. The audit then skips this
-    # component until the table is final, so `veloce check` - which imports the
-    # app without starting it - cannot report a route as missing when it is
-    # merely registered later, during startup.
+    # Set True when `audit` reads the route table, so it is deferred until final.
     audit_needs_routes: ClassVar[bool] = False
 
     def audit(self, ctx: AuditContext) -> Iterable[Finding]:
         """Report what is wrong with this component's own configuration.
 
-        The audit collects these from everything registered, so a check belongs
-        to the thing it is about and an app that registers none never loads the
-        code that checks them. Return nothing when there is nothing to say.
-
         Severity decides what a finding does: an `error` refuses the boot, a
         `warning` fails `veloce check` without stopping anything, and `info`
         fails nothing. Set `audit_needs_routes` when the check reads
-        `ctx.app`'s routes. Runs at audit and startup time only - never on a
-        request path.
+        `ctx.app`'s routes. Runs at audit and startup time only.
         """
         return ()
 
@@ -78,8 +60,6 @@ class Middleware(Auditable):
     two instances of the same class must be addressed independently.
     """
 
-    # Identifier a route references to opt out of this middleware. Defaults
-    # to the class name; a per-instance override is honoured by `__init__`.
     name: str = ""
 
     def __init__(self, *, name: str | None = None) -> None:
@@ -130,8 +110,7 @@ class BaseHTTPMiddleware(Auditable):
     """
 
     def __init__(self, dispatch: DispatchFunction | None = None) -> None:
-        # A supplied callable is invoked with (request, call_next) directly via
-        # `__call__`; bare-function bindings don't receive an automatic `self`.
+        # Called from `__call__`; a bare function binding gets no `self`.
         self._dispatch_override: DispatchFunction | None = dispatch
 
     async def dispatch(self, request: Request, call_next: CallNext) -> Response:

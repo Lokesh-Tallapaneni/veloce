@@ -1,15 +1,13 @@
 """Redis-backed session store, rate-limit backend, and result cache — shared state.
 
-The bundled `InMemorySessionStore`, `RateLimitMiddleware`, and `InMemoryCache`
-keep their state in one process, so a multi-worker deployment (`uvicorn --workers
-N`) gets per-worker sessions, an effective rate limit of roughly ``N x`` the
-configured one, and a per-worker cache. These Redis-backed implementations share
-state across every worker and host.
+The bundled in-memory session store, rate limiter and cache keep their state in
+one process, so a multi-worker deployment gets per-worker sessions, an effective
+rate limit of roughly ``N x`` the configured one, and a per-worker cache. These
+Redis-backed implementations share state across every worker and host.
 
 `redis` is an optional dependency; install it with ``pip install
 veloceframework[redis]``. The application owns the client and its connection
-pool - construct a ``redis.asyncio.Redis`` (or pass a URL to a ``from_url``
-classmethod) and hand it in.
+pool.
 
 Usage::
 
@@ -46,9 +44,8 @@ if TYPE_CHECKING:  # pragma: no cover
 
 _logger = logging.getLogger(__name__)
 
-# Cap the optimistic-lock retries so a single very hot key under heavy
-# multi-connection contention cannot livelock a coroutine; past this the backend
-# degrades to one best-effort non-transactional update.
+# Caps the optimistic-lock retries so a hot key cannot livelock a coroutine;
+# past this the backend degrades to one non-transactional update.
 _MAX_WATCH_RETRIES = 8
 
 
@@ -111,9 +108,8 @@ class RedisSessionStore(SessionStore):
         await self._redis.delete(self._key(session_id))
 
     async def replace(self, session_id: str, data: dict[str, Any], max_age: int) -> bool:
-        # `SET ... XX` writes only if the key still exists, so a session a
-        # concurrent `delete` removed is never resurrected - atomic in Redis,
-        # closing the check-then-write window the default implementation has.
+        # `SET ... XX` writes only if the key still exists, so a session a concurrent
+        # `delete` removed is never resurrected - atomically, unlike a read-then-write.
         result = await self._redis.set(
             self._key(session_id), orjson.dumps(data), ex=max_age, xx=True
         )
@@ -175,9 +171,8 @@ class RedisRateLimitBackend(RateLimitBackend):
     )
 
     def __init__(self, client: Redis, *, prefix: str = "veloce:ratelimit:") -> None:
-        # redis is present whenever this backend is constructed; importing the
-        # exception class here (not per request) keeps the module importable
-        # without redis installed while giving the retry loop a concrete type.
+        # Here, not per request: the module stays importable without redis while
+        # the retry loop still gets a concrete exception type.
         from redis.exceptions import NoScriptError, ResponseError, WatchError
 
         self._redis = client
@@ -205,11 +200,8 @@ class RedisRateLimitBackend(RateLimitBackend):
             except self._response_error as exc:
                 if "unknown command" not in str(exc).lower():
                     raise
-                # A Redis-compatible server without scripting (some managed
-                # proxies disable EVAL). Fall back to the watched path so the
-                # limiter keeps working, and say so once: that path gives up on
-                # atomicity under contention, which is a weaker guarantee than
-                # the one the strategy was written to provide.
+                # A server without scripting (some managed proxies disable EVAL). Said
+                # once, because the watched path gives up atomicity under contention.
                 self._no_scripting = True
                 _logger.warning(
                     "redis server does not support scripting; rate limiting falls back "
@@ -240,11 +232,8 @@ class RedisRateLimitBackend(RateLimitBackend):
         try:
             raw = await self._redis.evalsha(digest, 1, redis_key, *argv)
         except self._no_script_error:
-            # The server forgot the script - a restart, a failover, or a
-            # `SCRIPT FLUSH`. Reload and retry once. Matched on the exception
-            # class rather than the message: redis-py raises `NoScriptError`,
-            # whose text is "No matching script", so a substring test for
-            # "NOSCRIPT" silently never fired.
+            # A restart, a failover or a `SCRIPT FLUSH`. Matched on the exception
+            # class, redis-py's text being "No matching script", not "NOSCRIPT".
             digest = await self._redis.script_load(script)
             self._digests[script] = digest
             raw = await self._redis.evalsha(digest, 1, redis_key, *argv)
@@ -274,10 +263,8 @@ class RedisRateLimitBackend(RateLimitBackend):
                     # A concurrent request changed the key between WATCH and
                     # EXEC; re-read and recompute against the fresh state.
                     continue
-        # Sustained contention on this key exhausted the atomic retries. Fall back
-        # to one non-transactional read-modify-write (last-writer-wins) so the
-        # request is served instead of livelocking; the limit may be exceeded by
-        # the number of racing writers in this rare window.
+        # The atomic retries are exhausted, so one last-writer-wins update serves
+        # the request rather than livelocking; racing writers may exceed the limit.
         _logger.warning("rate-limit WATCH contention on %r; using non-atomic fallback", redis_key)
         raw = await self._redis.get(redis_key)
         state = orjson.loads(raw) if raw is not None else None

@@ -1,13 +1,10 @@
 """HTTP and validation exceptions — plus default exception handlers.
 
-Each named HTTP exception below corresponds to a status code from RFC 9110
-(HTTP Semantics) and RFC 6585 (Additional HTTP Status Codes). The subclass
-identity lets handlers register a single class and catch every subclass via
-the standard Python exception-class hierarchy.
-
-The two default handler functions at the end of this module render
-``HTTPException`` and ``RequestValidationError`` as JSON responses.
-Applications can wrap or delegate to them when registering custom handlers.
+Each named HTTP exception below corresponds to a status code from RFC 9110 (HTTP
+Semantics) and RFC 6585 (Additional HTTP Status Codes), and the subclass identity
+lets a handler registered against one class catch every subclass. The two default
+handler functions at the end render ``HTTPException`` and
+``RequestValidationError`` as JSON responses.
 """
 
 from __future__ import annotations
@@ -52,9 +49,7 @@ if TYPE_CHECKING:  # pragma: no cover
 def _error_handler_key_error(key: Any) -> str:
     """Build the message for a handler key that is neither a status nor a class.
 
-    Lives here rather than beside either registration site so the app-level and
-    blueprint-level checks cannot drift: the blueprint one was missing entirely,
-    and a non-class key sat in an MRO-matched table where it could never fire.
+    Shared so the app-level and blueprint-level checks cannot drift.
     """
     lead = "error handler keys must be an int status code or an exception class"
     if isinstance(key, str):
@@ -67,15 +62,11 @@ def _error_handler_key_error(key: Any) -> str:
 class VeloceError(Exception):
     """Root of every exception Veloce raises.
 
-    Mixed into each exception family the framework defines - HTTP errors,
-    validation failures, WebSocket closes, routing and setup errors, JWT and
-    signature failures - so `except VeloceError` answers "did this come from
-    Veloce?" in one clause. Families that already subclassed a stdlib type
-    keep it: `DuplicateRouteError` is still a `ValueError` and
-    `FilesKeyError` is still a `KeyError`, so every handler that matched
-    before still matches. `VeloceError` is listed first in those bases, so a
-    handler registered against it wins the MRO walk over a broader stdlib
-    handler.
+    Mixed into every exception family the framework defines, so
+    `except VeloceError` answers "did this come from Veloce?" in one clause.
+    Families that also subclass a stdlib type keep it - `DuplicateRouteError` is
+    still a `ValueError` - and `VeloceError` is listed first in those bases, so a
+    handler registered against it wins the MRO walk over a broader stdlib one.
     """
 
 
@@ -86,8 +77,7 @@ class HTTPException(VeloceError):
     or instantiate `HTTPException(status_code, detail, headers)` directly.
     """
 
-    # Default code/description supplied by subclasses. The base class is
-    # spec-agnostic; callers passing `status_code` explicitly always win.
+    # Supplied by subclasses; an explicit `status_code` always wins.
     code: ClassVar[int | None] = None
     description: ClassVar[str] = ""
 
@@ -97,10 +87,8 @@ class HTTPException(VeloceError):
         detail: str = "",
         headers: dict[str, str] | None = None,
     ) -> None:
-        # Subclass-style call shorthand: `NotFound("user gone")` passes a
-        # string in the first position. Treat it as `detail` and fall back
-        # to the subclass's `code`. Keeps the short call form
-        # while preserving the explicit `HTTPException(404, ...)` form.
+        # Subclass-style shorthand: `NotFound("user gone")` passes `detail`
+        # first, alongside the explicit `HTTPException(404, ...)` form.
         if isinstance(status_code, str):
             if detail:
                 raise TypeError(
@@ -110,8 +98,7 @@ class HTTPException(VeloceError):
             detail = status_code
             status_code = None
 
-        # `code` from the subclass acts as the default; explicit
-        # `status_code=` argument overrides.
+        # The subclass `code` is the default an explicit `status_code=` overrides.
         if status_code is None:
             if self.code is None:
                 raise TypeError(
@@ -121,16 +108,8 @@ class HTTPException(VeloceError):
             status_code = self.code
         self.status_code = status_code
         self.detail = detail or self.description
-        # Copy on the way in. This mapping becomes the response's `headers`,
-        # which response middleware (CORS / Session / SecurityHeaders) mutates
-        # in place, so sharing it with the raiser lets one request's `Set-Cookie`
-        # or `Access-Control-Allow-Origin` accumulate on a caller-held dict and
-        # ship on every later raise. A security scheme that caches its
-        # `WWW-Authenticate` challenge once - the sensible thing to do, since it
-        # is request-invariant - is exactly the shape that leaks. Copying here
-        # rather than at each raise site means no scheme, present or future, has
-        # to know the rule. The cost lands only on a request that has already
-        # failed and is about to serialise an error body.
+        # Copied: this becomes the response's `headers`, which middleware mutates
+        # in place, so sharing it would leak one request's `Set-Cookie` onwards.
         self.headers = dict(headers) if headers else {}
         super().__init__(self.detail)
 
@@ -207,10 +186,8 @@ class RequestEntityTooLarge(HTTPException):
     code = HTTP_413_REQUEST_ENTITY_TOO_LARGE
     description = "Content Too Large"
 
-    #: The `MAX_CONTENT_LENGTH` the body exceeded, when the raiser knows it.
-    #: Rendered into the error body so a streamed body's refusal describes
-    #: itself the same way the eager refusal paths do; `None` when a caller
-    #: raises this directly without a limit to report.
+    #: The `MAX_CONTENT_LENGTH` the body exceeded, rendered into the error body;
+    #: `None` when a caller raises this directly without a limit to report.
     limit: int | None = None
 
 
@@ -261,17 +238,12 @@ class InternalServerError(HTTPException):
 
 
 class ServerNotImplemented(HTTPException):
-    # `NotImplemented` is a builtin singleton, so the 501 class cannot carry the
-    # status phrase as its name. `ServerNotImplemented` reads alongside
-    # `InternalServerError` and `ServiceUnavailable` in the 5xx block, and is the
-    # name a traceback shows.
+    # `NotImplemented` is a builtin, so the 501 cannot be named for its phrase.
     code = HTTP_501_NOT_IMPLEMENTED
     description = "Not Implemented"
 
 
-# The spelling this class carried before it was exported. Kept bound to the same
-# object so an existing `from veloce.exceptions import NotImplemented_` and every
-# `except` clause written against it go on working.
+# The older spelling, bound to the same object for `except` clauses using it.
 NotImplemented_ = ServerNotImplemented
 
 
@@ -332,12 +304,8 @@ class WebSocketDisconnect(VeloceError):
     """WebSocket connection closed."""
 
     def __init__(self, code: int = WS_1000_NORMAL_CLOSURE) -> None:
-        # Through `super()`, so the message does not depend on how the caller
-        # spelled the call. `BaseException.__new__` populates `args` from
-        # *positional* arguments only, so without this
-        # `WebSocketDisconnect(1006)` stringified as "1006" while
-        # `WebSocketDisconnect(code=1006)` and the default stringified as "" -
-        # the same close code logging differently depending on the call site.
+        # `BaseException.__new__` populates `args` from positional arguments
+        # only, so without this the keyword call would stringify as "".
         super().__init__(code)
         self.code = code
 
@@ -345,10 +313,8 @@ class WebSocketDisconnect(VeloceError):
 class WebSocketException(VeloceError):
     """Raised inside a WebSocket handler to close the connection cleanly.
 
-    ASGI shape. The dispatch layer catches it and sends a
-    close frame carrying `code` (RFC 6455 Sec. 7.4.1) and the optional
-    `reason` - no traceback is propagated, since this is an
-    application-driven close rather than an internal error.
+    The dispatch layer catches it and sends a close frame carrying `code`
+    (RFC 6455 Sec. 7.4.1) and the optional `reason`, with no traceback.
     """
 
     def __init__(self, code: int, reason: str | None = None) -> None:
@@ -360,11 +326,9 @@ class WebSocketException(VeloceError):
 class WebSocketRequestValidationError(RequestValidationError):
     """A WebSocket dependency failed parameter validation.
 
-    Raised when a `Depends()` resolved during a
-    WebSocket handshake reports a `RequestValidationError`. The
-    dispatch layer closes the connection with code 1008 (policy
-    violation) rather than 1011 (internal error), since the failure is
-    a client-side contract violation, not a server fault.
+    The dispatch layer closes the connection with code 1008 (policy violation)
+    rather than 1011 (internal error): the failure is a client-side contract
+    violation, not a server fault.
     """
 
 
@@ -374,12 +338,9 @@ class WebSocketRequestValidationError(RequestValidationError):
 class FilesKeyError(VeloceError, KeyError):
     """Descriptive miss on ``request.files`` raised in debug mode.
 
-    Subclasses ``KeyError`` so handlers that already catch the bare lookup
-    miss keep working, while the message explains the most common cause:
-    the field was submitted as a plain form value (missing
-    ``enctype="multipart/form-data"``) or the body was JSON rather than a
-    multipart upload. Only raised when ``app.debug`` is set; production
-    keeps the plain ``KeyError`` semantics.
+    Subclasses ``KeyError`` so a handler catching the bare lookup miss keeps
+    working. Only raised when ``app.debug`` is set; production keeps the plain
+    ``KeyError`` semantics.
     """
 
     def __init__(self, message: str) -> None:
@@ -436,11 +397,9 @@ class DuplicateRouteError(VeloceError, ValueError):
 class SetupError(VeloceError, RuntimeError):
     """A registration ran after the application started serving.
 
-    Routes, hooks, blueprints, middleware, and similar setup must be wired
-    before the first request is dispatched. Once serving begins the route
-    table and hook lists are frozen, so a late mutation - which would race
-    in-flight requests under concurrent ASGI dispatch - raises this instead
-    of silently corrupting the live application. The lock is relaxed in
+    Routes, hooks, blueprints and middleware must be wired before the first
+    request: once serving begins the route table and hook lists are frozen, so a
+    late mutation would race in-flight requests. The lock is relaxed in
     `DEBUG`/`TESTING` so hot-reload and test monkeypatching stay ergonomic.
     """
 
@@ -448,10 +407,8 @@ class SetupError(VeloceError, RuntimeError):
 class ConfigurationError(VeloceError, RuntimeError):
     """A handler or route was declared in a way that cannot be resolved.
 
-    Raised at registration time, never per request, so a genuinely ambiguous
-    parameter declaration becomes a startup error instead of a silent
-    mis-binding discovered only at runtime. Carries the offending parameter
-    name so the message points straight at the conflict.
+    Raised at registration time, never per request, so an ambiguous parameter
+    declaration becomes a startup error rather than a silent mis-binding.
     """
 
 
@@ -503,10 +460,7 @@ def http_exception_payload(exc: Any) -> dict[str, Any]:
     """Build the JSON body for an `HTTPException`, in one place.
 
     Used by every path that renders one: the request cycle, the out-of-band
-    `handle_http_exception`, and the public `http_exception_handler`. They were
-    separate copies that disagreed - an exception with an empty detail rendered
-    `{"detail": ""}` through a request and `{"detail": "Error"}` elsewhere, and
-    only one of them carried a body-limit refusal's `limit`.
+    `handle_http_exception`, and the public `http_exception_handler`.
 
     `exc.detail` already falls back to the subclass `description` at
     construction, so no second fallback is applied here. A validation error's
@@ -517,8 +471,7 @@ def http_exception_payload(exc: Any) -> dict[str, Any]:
         "detail": structured if structured is not None else exc.detail,
         "status_code": exc.status_code,
     }
-    # A body-limit refusal carries the limit it tripped, so a streamed body's
-    # 413 describes itself the same way the eager refusal paths do.
+    # A body-limit refusal carries the limit it tripped, on every 413 path.
     limit = getattr(exc, "limit", None)
     if limit is not None:
         payload["limit"] = limit

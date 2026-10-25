@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import TYPE_CHECKING, Any
 
 import orjson
@@ -51,7 +51,8 @@ from veloce._internal import (
     json_body_refused,
 )
 from veloce._protocol_constants import SECURE_URL_SCHEMES, URL_SCHEME_HTTPS
-from veloce.exceptions import BadRequest, RequestEntityTooLarge
+from veloce.exceptions import BadRequest, RequestEntityTooLarge, UnsupportedMediaType
+from veloce.http._body import ASGIBodySource
 from veloce.http.cache_control import CacheControl
 from veloce.http.datastructures import (
     URL,
@@ -81,22 +82,13 @@ if TYPE_CHECKING:  # pragma: no cover
 
 _logger = logging.getLogger(__name__)
 
-# Sentinel for "this conditional-header property has not been read yet"
-# on properties whose legitimate parsed value can be `None` (`if_modified_since`,
-# `if_unmodified_since`). Distinct from `None` so we can tell "absent
-# header" apart from "haven't looked yet".
+# "Not read yet", where the parsed value may itself legitimately be `None`.
 _UNSET: Any = object()
 
-# Sentinel for "the JSON body has not been parsed yet" on the `_json` cache.
-# Distinct from `None` so a body that is legitimately JSON `null` caches as
-# `None` instead of looking unparsed and being re-decoded on every access.
+# "Not parsed yet", so a body that is JSON `null` still caches as `None`.
 _UNPARSED: Any = object()
 
-# Lower-case wire keys for the headers read through `_peek_header_key`, encoded
-# once here rather than on every request. The `Accept-*` family is read by
-# content negotiation on paths that otherwise never touch the header mapping,
-# so building the whole `CIMultiDict` to look at one value was the cost these
-# avoid.
+# Pre-encoded for `_peek_header_key`, which reads one header without the mapping.
 _RAW_ACCEPT = HEADER_ACCEPT.lower().encode("latin-1")
 _RAW_ACCEPT_LANGUAGE = HEADER_ACCEPT_LANGUAGE.lower().encode("latin-1")
 _RAW_ACCEPT_ENCODING = HEADER_ACCEPT_ENCODING.lower().encode("latin-1")
@@ -182,6 +174,7 @@ class Request:
         "_if_range",
         "_range",
         "_auth",
+        "_receive",
     )
 
     def __init__(
@@ -195,16 +188,14 @@ class Request:
         app: Any = None,
         scope: dict[str, Any] | None = None,
         body_source: Any = None,
+        receive: Callable[[], Any] | None = None,
     ) -> None:
-        # ASGI servers and `Veloce.add_route` already feed an uppercase
-        # method; skip the allocation when the caller already complies.
+        # Both ASGI and `add_route` feed uppercase, so skip the allocation.
         self.method = method if method.isupper() else method.upper()
         self.path = path
         self.query_string = query_string
-        # Defer CIMultiDict construction (and the latin-1 decode of every
-        # header tuple) until the handler actually reads `request.headers`.
-        # The hot json-hello / path-param path never touches headers, so
-        # eager construction was pure waste - 2-3 us per request.
+        # Deferred until a handler reads `request.headers`: the hot json-hello
+        # path never touches them, and eager construction cost 2-3 us per request.
         self._headers_raw: list[tuple[bytes, bytes]] | None = None
         if isinstance(headers, Headers):
             self._headers: Headers | None = headers
@@ -219,15 +210,8 @@ class Request:
             self._headers = Headers()
         else:
             self._headers = Headers(headers)  # type: ignore[arg-type]
-        # Body access is async (`await request.body()`). Two shapes:
-        #  - in-memory (TestClient / ASGI): `body` holds the complete bytes
-        #    the caller already buffered, so the first drain resolves
-        #    immediately with no I/O and `_body_drained` starts True.
-        #  - streamed (raw HTTP/1.1): `body_source` is a `RequestBodySource`
-        #    fed by the protocol as bytes arrive; the body is not yet
-        #    buffered, so `_body_drained` starts False and the first drain
-        #    pulls the source to EOF. `_body` caches the assembled bytes once
-        #    drained so sync accessors (`.data`, `get_json`) can serve them.
+        # Either `body` already holds every byte, or `body_source` is fed by the
+        # protocol; `_body` caches the assembled bytes for the sync accessors.
         self._body_source: Any = body_source
         if body_source is None:
             self._body: bytes = body
@@ -235,19 +219,15 @@ class Request:
         else:
             self._body = body
             self._body_drained = False
-        # Set by a transport that has already applied this app's
-        # MAX_CONTENT_LENGTH to both the declared and the received length, so
-        # dispatch does not repeat the work on every request. It stays False for
-        # a request built anywhere else - including the fresh one a mounted
-        # sub-app is dispatched with, which must be checked against that app's
-        # own limit rather than its parent's.
+        # For `is_disconnected()`: a buffered route has no source to read it from.
+        self._receive = receive
+        # Set by a transport that already applied this app's MAX_CONTENT_LENGTH;
+        # False for a mounted sub-app's request, checked against its own limit.
         self._length_enforced = False
         self.transport = transport
         self.app = app
         self.scope = scope or {}
-        # `endpoint` is the matched route's name. Stays `None`
-        # for synthetic requests built outside dispatch; Veloce
-        # writes it inside `_dispatch_request` after `Router.match`.
+        # The matched route's name; `None` outside dispatch.
         self.endpoint: str | None = None
         self._json: Any = _UNPARSED
         self._query_params: QueryParams | None = None
@@ -257,9 +237,7 @@ class Request:
         self._cookies: Cookies | None = None
         self._url: Any = None
         self._background_tasks: Any = None
-        # Lazily-parsed `(mimetype, params)` pair for `Content-Type`.
-        # `None` means "not yet parsed"; the parse happens at most once
-        # per request, on first read of `mimetype` or `mimetype_params`.
+        # Lazily-parsed `(mimetype, params)` for `Content-Type`.
         self._parsed_ct: tuple[str, dict[str, str]] | None = None
         self._subdomain: str | None = None
         self._accept_mimetypes: AcceptHeader | None = None
@@ -267,10 +245,8 @@ class Request:
         self._accept_encodings: AcceptHeader | None = None
         self._accept_charsets: AcceptHeader | None = None
         self._files: FormData | None = None
-        # Conditional-header property caches. `_UNSET` marks "not yet
-        # parsed" for the date-shaped properties whose legitimate
-        # parsed value is `None` (absent or unparseable header). The
-        # tuple-shaped properties use `None` itself as the cache miss.
+        # Conditional-header caches: `_UNSET` is the miss for the date-shaped
+        # properties, `None` for the tuple-shaped ones.
         self._access_control_request_headers: list[str] | None = None
         self._if_modified_since: Any = _UNSET
         self._if_unmodified_since: Any = _UNSET
@@ -325,6 +301,7 @@ class Request:
             app=sub_app,
             scope=scope,
             body_source=body_source,
+            receive=parent._receive,
         )
 
     # ── Method, path and query ────────────────────────────
@@ -368,9 +345,7 @@ class Request:
         """Return the parsed request headers, materializing from raw ASGI tuples on first access."""
         h = self._headers
         if h is None:
-            # Materialise from the raw ASGI tuples on first access. After
-            # this point the cached `Headers` is reused; the raw list is
-            # released so it can be garbage-collected.
+            # Materialised from the raw tuples, which are then released.
             raw = self._headers_raw or ()
             h = Headers([(k.decode("latin-1"), v.decode("latin-1")) for k, v in raw])
             self._headers = h
@@ -409,14 +384,8 @@ class Request:
         if h is not None:
             return h.get(key.decode("latin-1"))
         for name, value in self._headers_raw or ():
-            # `.lower()` costs nothing until the exact comparison fails, and
-            # both transports deliver lowercase - ASGI mandates it, the native
-            # protocol lowercases in `on_header` - so it usually never runs.
-            # It has to be here rather than in a fallback, though: a block
-            # carrying BOTH `Authorization` and `authorization` would otherwise
-            # match the lowercase one while the mapping matches the first,
-            # authenticating one credential while every reader of `.headers`
-            # sees the other. Same shape `content_length` uses for its own name.
+            # Inline, not a fallback: both spellings present, a fallback would
+            # authenticate the one no reader of `.headers` sees.
             if name == key or name.lower() == key:
                 return value.decode("latin-1")
         return None
@@ -505,8 +474,7 @@ class Request:
         mt, semi, rest = ct.partition(";")
         mimetype = mt.strip().lower()
         if not semi:
-            # No parameters to walk: `partition` already said so, and most
-            # content types carry none.
+            # `partition` already said there are none, as most types have.
             return (mimetype, {})
         return (mimetype, dict(parse_media_type_params(rest)))
 
@@ -537,13 +505,8 @@ class Request:
         """Return the Content-Length as an integer, or None."""
         raw = self._headers_raw
         if raw is not None:
-            # The body-size guard reads this on every request, so going through
-            # `self.headers` here would latin-1 decode and index every header
-            # for a request whose handler may never read one - defeating the
-            # deferral `__init__` sets up. Scan the raw tuples instead. The
-            # length test rejects nearly every header before the comparison,
-            # and ASGI servers send lower-cased names (the fallback covers a
-            # transport that does not).
+            # Read per request by the body-size guard, so it scans the raw tuples
+            # rather than defeating `__init__`'s header deferral.
             cl_raw = None
             for k, v in raw:
                 if len(k) == 14 and (k == b"content-length" or k.lower() == b"content-length"):
@@ -781,8 +744,7 @@ class Request:
                 cached = ()
             else:
                 stripped = raw.strip()
-                # `_split_etag_list` keeps weak `W/` prefixes and does not break
-                # on a comma inside an opaque tag's quoted string.
+                # Keeps `W/` and does not break on a comma inside a quoted tag.
                 cached = ("*",) if stripped == "*" else _split_etag_list(stripped)
             self._if_none_match = cached
         return cached
@@ -807,8 +769,7 @@ class Request:
                 cached = ("", None)
             else:
                 stripped = raw.strip()
-                # ETag values are quoted (optionally `W/"..."`). Anything else
-                # is interpreted as an HTTP-date.
+                # An ETag is quoted, optionally `W/`; anything else is a date.
                 if stripped.startswith('"') or stripped.startswith('W/"'):
                     cached = (stripped, None)
                 else:
@@ -850,9 +811,7 @@ class Request:
         repeats (rare but valid per RFC 6265).
         """
         if self._cookies is None:
-            # A client may legitimately send multiple `Cookie` headers
-            # (RFC 6265). Merge them with the `; ` delimiter so every
-            # cookie parses; keep the single-header fast path index-only.
+            # RFC 6265 permits several `Cookie` headers, merged with `; ` here.
             parts = self.headers.getlist(HEADER_COOKIE)
             if not parts:
                 header = ""
@@ -869,23 +828,15 @@ class Request:
         """Full URL object - lazy construction."""
         if self._url is None:
             scope_scheme = self.scope.get("scheme")
-            # The raw transport carries no ASGI scope, so nothing else can
-            # tell this request it arrived over TLS: `app.run(ssl_context=)`
-            # and the gunicorn worker both terminate TLS on the connection
-            # itself. Without this the scheme fell through to plain "http" on a
-            # genuinely encrypted connection, so `url_for(_external=True)`
-            # emitted http:// and any `scheme == "https"` check failed. The live
-            # connection outranks `X-Forwarded-Proto` below: a header cannot be
-            # more authoritative than the socket it arrived on.
+            # The raw transport has no ASGI scope to carry TLS, and outranks the
+            # `X-Forwarded-Proto` below: no header beats the socket it arrived on.
             if (
                 scope_scheme is None
                 and self.transport is not None
                 and self.transport.get_extra_info("ssl_object") is not None
             ):
                 scope_scheme = URL_SCHEME_HTTPS
-            # A trusted ProxyFix hop stashes the public port here when the
-            # forwarded Host carries none (e.g. proxy sends X-Forwarded-Host
-            # without a port plus a separate X-Forwarded-Port: 8443).
+            # A trusted ProxyFix hop stashes the public port here.
             state = self._state
             forwarded_port = state.get("proxy_fix_port") if state else None
             self._url = URL.from_request(
@@ -1005,23 +956,14 @@ class Request:
         cached = self._subdomain
         if cached is not None:
             return cached
-        # Derived inline rather than in a helper: this is on the match path for
-        # every subdomain-routed request, and the extra frame was measurable.
-        #
-        # `_extract_host` is the framework's one host-from-Host-header reader,
-        # and the only one that handles an IPv6 literal: splitting on the first
-        # colon takes `2001` out of `2001:db8::1`, so a bare IPv6 host produced
-        # a nonsense subdomain.
+        # Inline: measurable on every subdomain-routed match. `_extract_host`
+        # handles an IPv6 literal, whose first colon is not a port separator.
         host = _extract_host(self.host or "")
         if not host:
             self._subdomain = ""
             return ""
-        # An IP literal has no subdomain: its dots and colons are address
-        # structure, not name labels. Splitting on them produced `192` for an
-        # IPv4 host and `::ffff:192` for an IPv4-mapped IPv6 one.
-        # The all-digits test allocates, so it runs only behind a one-character
-        # pre-check: a hostname may legally begin with a digit, but almost none
-        # does, and an IPv4 literal always does.
+        # An IP literal has no subdomain: its dots are address structure. The
+        # allocating all-digits test sits behind a cheap first-character check.
         if ":" in host or (host[0].isdigit() and host.replace(".", "").isdigit()):
             self._subdomain = ""
             return ""
@@ -1034,8 +976,7 @@ class Request:
                 return value
             self._subdomain = ""
             return ""
-        # No SERVER_NAME - the leftmost label, but only when the host has more
-        # than one (otherwise it is the apex).
+        # No SERVER_NAME: the leftmost label, unless that is the apex itself.
         if "." not in host:
             self._subdomain = ""
             return ""
@@ -1129,8 +1070,7 @@ class Request:
             return self.app.url_for(name, **path_params)
         scheme = path_params.pop("_scheme", None)
         host = path_params.pop("_host", None)
-        # The app builds the path (with any query string and anchor); the
-        # origin and mount prefix come from the request.
+        # The app builds the path; the origin and mount prefix come from here.
         path = self.app.url_for(name, **path_params)
         url = self.url
         root = self.script_root.rstrip("/")
@@ -1140,8 +1080,7 @@ class Request:
     @property
     def client_host(self) -> str | None:
         """Return the client's IP address, or `None` when the peer is unknown."""
-        # If a ProxyFix-style middleware ran upstream, it stashed the
-        # trusted client IP on `_state`. Prefer that over the raw TCP peer.
+        # A ProxyFix-style middleware stashes the trusted IP on `_state`.
         proxied = self._state.get("proxy_fix_client")
         if proxied:
             return proxied
@@ -1149,10 +1088,7 @@ class Request:
             peername = self.transport.get_extra_info("peername")
             if peername:
                 return peername[0]
-        # ASGI path - the peer lives on the scope, not a transport. Reading it
-        # here (rather than in each caller) is what keeps `remote_addr` and the
-        # rate limiter's client bucket from silently degrading under an ASGI
-        # server, where `transport` is always None.
+        # On ASGI the peer lives on the scope; `transport` is always None there.
         client = self.scope.get("client") if self.scope else None
         return client[0] if client else None
 
@@ -1238,10 +1174,8 @@ class Request:
                 "to enable session storage."
             )
         session = self._state["session"]
-        # Mark the session accessed so the middleware emits `Vary: Cookie`
-        # only when a handler actually touched session contents (read or
-        # write), keeping session-independent responses cacheable. A plain
-        # dict placed here by other code has no `accessed` slot, so guard it.
+        # Marked accessed so `Vary: Cookie` is emitted only when touched; a plain
+        # dict placed here has no `accessed` slot.
         if hasattr(session, "accessed"):
             session.accessed = True
         return session
@@ -1291,18 +1225,26 @@ class Request:
     ) -> Any:
         """Parse the request body as JSON.
 
-        - `force=True` skips the `is_json` content-type check; useful when
-          the client sends JSON without setting `Content-Type` (e.g. some
-          XHR libraries). Default is to honour the content type and return
-          `None` for non-JSON requests.
-        - `silent=True` swallows `orjson.JSONDecodeError` and returns `None`.
-          Default raises so caller code can distinguish malformed JSON
-          from missing JSON.
+        A body whose `Content-Type` is not JSON raises `UnsupportedMediaType`
+        (415) through `on_json_loading_failed` rather than reading as `None`, so
+        a content-type mismatch is reported instead of leaving the caller to
+        infer it from a missing value. An absent header is not JSON either: a
+        cross-origin `fetch` can omit it with no preflight, so a body sent
+        without one is refused like any other non-JSON body. Pass `force=True`
+        to read a body from a client that does not send the header.
+
+        - `force=True` skips the content-type check entirely, parsing whatever
+          the body holds.
+        - `silent=True` returns `None` for both failures - a refused content
+          type and a malformed body - instead of raising. Default raises so
+          caller code can tell the two apart.
         - `cache=False` forces a re-parse on every call. Default caches
           the parsed value (one parse per request); cache invalidation
           is the caller's job when `cache=False`.
 
         Returns `None` for empty bodies regardless of `force` / `silent`.
+        The content-type check runs first, so an empty body under a refused
+        content type still raises.
 
         This is the synchronous accessor: it requires the
         body to already be buffered (the in-memory path), and raises
@@ -1314,8 +1256,10 @@ class Request:
                 "Request body is not yet buffered; use `await request.json()` "
                 "instead of the sync `request.get_json()` accessor"
             )
-        if not force and not self.is_json:
-            return None
+        if not force and json_body_refused(self.mimetype):
+            if silent:
+                return None
+            return self.on_json_loading_failed(None)
         body = self._body
         if not body:
             return None
@@ -1334,8 +1278,14 @@ class Request:
             self._json = parsed
         return parsed
 
-    def on_json_loading_failed(self, error: Exception) -> Any:
-        """Handle a failure to parse the body as JSON on a non-silent request.
+    def on_json_loading_failed(self, error: Exception | None) -> Any:
+        """Handle a failure to read the body as JSON on a non-silent request.
+
+        `error` is the decoder error, or `None` when the request declared a
+        content type that is not JSON. The two failures answer with different
+        status codes so a caller can tell them apart: a refused content type
+        raises `UnsupportedMediaType` (415), a malformed body `BadRequest`
+        (400).
 
         Raises `BadRequest` (400) with a stable, body-independent message so a
         malformed body cannot leak decoder internals (byte offsets derived from
@@ -1345,13 +1295,13 @@ class Request:
         the `JSON_ERRORS_VERBOSE` config flag is set. Override on a `Request`
         subclass to customise.
         """
+        if error is None:
+            # RFC 9110 Sec. 15.5.16: 415 is for a media type the target rejects.
+            raise UnsupportedMediaType(f"Expected a JSON body; got Content-Type {self.mimetype!r}")
         _logger.warning("JSON parse error: %s", error)
         cfg = self._config()
-        # Surface the verbose reason when explicitly enabled OR in debug mode.
-        # An explicit OR (not a dict-default fallback) is required because the
-        # `JSON_ERRORS_VERBOSE` key is seeded into the default config, so it is
-        # never "absent" for the fallback to consult `DEBUG`. `_coerce_bool`
-        # interprets dotenv-style string flags (`DEBUG=false`) correctly.
+        # An explicit OR, since `JSON_ERRORS_VERBOSE` is seeded into the default
+        # config and so never absent for a fallback to consult `DEBUG`.
         verbose = (
             _coerce_bool(cfg.get("JSON_ERRORS_VERBOSE", False))
             or _coerce_bool(cfg.get("DEBUG", False))
@@ -1360,9 +1310,7 @@ class Request:
         )
         detail = f"Invalid JSON body: {error}" if verbose else "Invalid JSON body"
         exc = BadRequest(detail)
-        # Informational only - never read by the error renderer, so it cannot
-        # leak into the response body. `HTTPException` is unslotted, so this
-        # dynamic attribute is set via `setattr` (not a declared field).
+        # Informational only, and never read by the error renderer.
         setattr(exc, "debug_detail", str(error))  # noqa: B010
         raise exc from error
 
@@ -1412,14 +1360,17 @@ class Request:
         with the cached parse. The async signature exists so the
         `await request.json()` idiom does not blow up at runtime.
 
-        A body whose `Content-Type` declares it is not JSON reads as `None`
-        rather than being parsed, which is what stops a cross-origin
-        `text/plain` send from driving a JSON endpoint. An absent header
-        declares nothing and is still parsed.
+        A body whose `Content-Type` is not JSON reads as `None` rather than
+        being parsed, which is what stops a cross-origin `text/plain` send from
+        driving a JSON endpoint. An absent header is not JSON either, and is
+        refused the same way: a `fetch` whose body is a `Blob` typed `""` sends
+        no header at all, with no preflight to stop it.
 
         The synchronous `request.get_json()` accessor is available for callers
-        that prefer a sync API. It is stricter by default: it requires a
-        positive JSON declaration and takes `force=True` to parse regardless.
+        that prefer a sync API. It applies the same rule but reports a refused
+        content type as `UnsupportedMediaType` (415) instead of `None`; this
+        door keeps the `None` so a caller reading the body itself can fall
+        through to another representation.
         """
         if self._json is _UNPARSED:
             if json_body_refused(self.mimetype):
@@ -1468,18 +1419,13 @@ class Request:
             mt = self.mimetype
             if mt == MIME_FORM_URLENCODED:
                 body = await self._drain_body()
-                # Cap the field count so a pathological body cannot exhaust
-                # memory/CPU even when its total size is within
-                # MAX_CONTENT_LENGTH. Shares the MAX_FORM_PARTS knob with the
-                # multipart branch; `None` disables the cap.
+                # Caps the field count within MAX_CONTENT_LENGTH; `None` disables.
                 max_fields = DEFAULT_MAX_MULTIPART_PARTS
                 cfg = self._config()
                 if cfg is not None:
                     max_fields = cfg.get("MAX_FORM_PARTS", max_fields)
-                # Decode outside the field-count guard below: a non-UTF-8 body
-                # is a malformed request (400), not a field-count overflow.
-                # `UnicodeDecodeError` subclasses `ValueError`, so leaving it
-                # inside the `except ValueError` would misreport it as a 413.
+                # Outside the field-count guard, since `UnicodeDecodeError`
+                # subclasses `ValueError` and would be misreported as a 413.
                 try:
                     decoded = body.decode("utf-8")
                 except UnicodeDecodeError as exc:
@@ -1492,8 +1438,7 @@ class Request:
                     ) from exc
                 self._form = FormData(items)
             elif mt == MIME_MULTIPART_FORM_DATA:
-                # Per-app multipart caps come from config when an app is
-                # bound; otherwise the module defaults apply.
+                # From config when an app is bound, else the module defaults.
                 max_parts: int | None = DEFAULT_MAX_MULTIPART_PARTS
                 max_part_size = DEFAULT_MAX_MULTIPART_PART_SIZE
                 mp_max_files: int | None = None
@@ -1503,10 +1448,7 @@ class Request:
                 mp_max_field_memory: int | None = None
                 cfg = self._config()
                 if cfg is not None:
-                    # `None` disables the cap, the same as it does for the
-                    # urlencoded branch above. Reading it as "keep the default"
-                    # meant one config value lifted the limit for one encoding
-                    # and silently kept it for the other.
+                    # `None` disables it here too, so one value covers both.
                     max_parts = cfg.get("MAX_FORM_PARTS", max_parts)
                     cfg_part_size = cfg.get("MAX_FORM_PART_SIZE", max_part_size)
                     if cfg_part_size is not None:
@@ -1550,17 +1492,14 @@ class Request:
                 files.add(key, value)
             else:
                 non_file_keys.add(key)
-        # In debug mode, record what the request actually carried so a
-        # missing-key lookup on `request.files` raises a descriptive
-        # `FilesKeyError` (e.g. "submitted as a plain form field, add
-        # enctype=multipart/form-data") instead of a bare `KeyError`.
-        # Gated on `app.debug` so production lookups keep plain semantics.
+        # Under `app.debug`, so a missing `request.files` key raises a descriptive
+        # `FilesKeyError` rather than a bare `KeyError`.
         if self.app is not None and getattr(self.app, "debug", False):
             files._files_diagnostic = (self.mimetype, frozenset(non_file_keys))
         self._files = files
         return self._files
 
-    async def values(self) -> MultiDict:
+    async def values(self) -> MultiDict[Any]:
         """Merge the query string and form body - the `request.values` shape.
 
         Returns a fresh `MultiDict` with query-string entries first,
@@ -1569,13 +1508,11 @@ class Request:
         both sources. Form parsing is async (multipart may need
         executor reads), so this is an awaitable rather than a property.
         """
-        merged: MultiDict = MultiDict()
+        merged: MultiDict[Any] = MultiDict()
         for k, v in self.query_params.items():
             merged.add(k, v)
-        form = await self.form()
-        if form is not None:
-            for k, v in form.items():
-                merged.add(k, v)
+        for k, v in (await self.form()).items():
+            merged.add(k, v)
         return merged
 
     async def text(self) -> str:
@@ -1596,16 +1533,33 @@ class Request:
         _close_form_uploads(self._form)
 
     async def is_disconnected(self) -> bool:
-        """Whether the client has disconnected.
+        """Whether the client has gone away.
 
-        A non-streaming route has its body drained before the handler runs, so
-        the body is already received and the answer is always `False`. On a
-        `stream=True` route the client can genuinely go away mid-handler, and
-        this reports it once the consumer has seen the disconnect - reading the
-        flag the body source records rather than probing the transport.
+        Answers for a handler that is still streaming its response - the SSE and
+        long-poll case - as well as for a `stream=True` request body. On an ASGI
+        server the receive channel is polled, without blocking and without
+        consuming a message. Once the answer is `True` it stays `True`.
+
+        **On the native transport a streaming handler does not observe this.**
+        `connection_lost` records the drop and then cancels the task serving
+        the request in the same callback, so the handler's next resume raises
+        `CancelledError` at the point it would have polled. The handler does
+        stop producing for a client that is gone - that part works - but
+        through cancellation rather than through this method, so write the
+        cleanup in a `finally` rather than behind an `is_disconnected()` check
+        if the native server is the target.
         """
         source = self._body_source
-        return source is not None and source.disconnected
+        if source is None:
+            receive = self._receive
+            if receive is None:
+                # No channel to ask: a request built outside a transport.
+                return False
+            # The source a buffered route skipped, built on the first poll and
+            # latching its answer; the body accessors already hold their bytes.
+            source = ASGIBodySource(receive, body_complete=True)
+            self._body_source = source
+        return await source.poll_disconnected()
 
     async def stream(self) -> AsyncIterator[bytes]:
         """Async-iterate the request body in chunks - ASGI shape.
@@ -1621,13 +1575,8 @@ class Request:
         rather than a copy the route asked not to keep.
         """
         if self._body_source is not None and not self._body_drained:
-            # Pull live from the source so a streaming handler observes chunks at
-            # the cadence the protocol feeds them, and hold nothing. Accumulating
-            # them to back a later `.body()` gave every `stream=True` route the
-            # memory profile of a buffered one - 33.6 MB retained for a 32 MiB
-            # upload the handler had already consumed - which is the property the
-            # route opted in to avoid. A body source is consume-once, as an ASGI
-            # receive channel is, so the bytes are gone once yielded.
+            # Held nowhere: keeping the chunks to back a later `.body()` retained
+            # 33.6 MB for a 32 MiB upload, the profile this route opted out of.
             async for chunk in self._body_source:
                 yield chunk
             self._body_drained = True

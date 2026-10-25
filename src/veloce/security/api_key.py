@@ -17,20 +17,15 @@ from veloce.security._utils import (
 from veloce.security.base import SecurityScheme
 
 # RFC 9110 Sec. 11.6.1 - the auth-scheme token for the API-key 401 challenge.
-# Not an IANA-registered scheme, but a bare `WWW-Authenticate: APIKey` (or
-# with a quoted `realm`) is a valid challenge and tells clients which scheme
-# the resource expects.
+# Not IANA-registered, but a bare `APIKey` is a valid challenge.
 _APIKEY_SCHEME = "APIKey"
 
 
 class _APIKeyBase(SecurityScheme):
     """Shared logic for `APIKeyHeader`, `APIKeyQuery`, `APIKeyCookie`.
 
-    Each subclass differs only in which `Request` collection it pulls
-    the key from. The `__init__` (store `name` + `auto_error` + `realm`)
-    and the delegation to `_extract_api_key` were three copies of the
-    same lines; centralising prevents the three from drifting apart on a
-    future change to the extraction signature.
+    Each subclass differs only in which `Request` collection it pulls the key
+    from.
     """
 
     _source_attr: str = ""  # subclass overrides - Request attribute name
@@ -43,9 +38,7 @@ class _APIKeyBase(SecurityScheme):
         super().__init_subclass__(**kwargs)
         if not cls._source_attr:
             raise TypeError(f"{cls.__name__} must set _source_attr to a Request attribute name")
-        # Paired with `_source_attr`: a subclass that reads a location OpenAPI
-        # cannot name would publish a scheme object with an empty `in`, which
-        # is what silent under-description looked like before.
+        # Without it the published scheme object would carry an empty `in`.
         if not cls._openapi_in:
             raise TypeError(f"{cls.__name__} must set _openapi_in to an OpenAPI 'in' location")
 
@@ -64,24 +57,20 @@ class _APIKeyBase(SecurityScheme):
             Doc("Realm published in the `WWW-Authenticate` challenge on a 401."),
         ] = "",
     ) -> None:
-        # Keep the user's casing for the OpenAPI spec; header lookup goes
-        # through the case-insensitive `Headers` (CIMultiDict) so the case
-        # doesn't matter at read time.
+        # `name` keeps the user's casing for the OpenAPI spec; lookups are
+        # case-insensitive, so the case does not matter at read time.
         _validate_realm(realm)
         self.name = name
         self.auto_error = auto_error
         self.realm = realm
-        # The challenge is request-invariant, so build it once at
-        # construction and read a single attribute per request.
+        # Request-invariant, so build it once and read one attribute per request.
         self._challenge = self.challenge()
 
     def challenge(self) -> dict[str, str]:
         """Build the `WWW-Authenticate` challenge sent on a 401.
 
-        Returns `{WWW-Authenticate: APIKey realm="..."}` when a realm is
-        configured, else the bare `APIKey` token, which still satisfies
-        RFC 9110 Sec. 11.6.1. Subclasses may override to emit a custom
-        challenge.
+        A bare `APIKey` token when no realm is configured, which still satisfies
+        RFC 9110 Sec. 11.6.1. Subclasses may override it.
         """
         if self.realm:
             value = f'{_APIKEY_SCHEME} realm="{_quote_header_value(self.realm)}"'
@@ -106,12 +95,8 @@ class APIKeyHeader(_APIKeyBase):
     _openapi_in = "header"
 
     def __call__(self, request: Request) -> str | None:
-        # Read through the connection's own single-header accessor rather than
-        # its header collection. On a WebSocket route that collection is a
-        # plain lowercase-keyed dict, so a canonically-cased `name` such as
-        # `X-API-Key` missed it and every key looked absent; the accessor is
-        # case-insensitive on both transports, and on the HTTP one it answers
-        # without building the whole mapping.
+        # Not the header collection: on a WebSocket route that is a plain
+        # lowercase-keyed dict, which a canonically-cased `name` would miss.
         key = request._peek_header(self.name)
         return _refuse_missing_api_key(key, self.auto_error, self._challenge)
 

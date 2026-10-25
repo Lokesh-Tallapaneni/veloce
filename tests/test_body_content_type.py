@@ -9,8 +9,15 @@ a JSON endpoint that accepts a body under `text/plain` can be driven
 cross-origin through a cookie-authenticated victim's browser with nothing to
 preflight against.
 
-A missing header is still accepted: plenty of clients omit it and its absence
-asserts nothing. A `+json` structured suffix (RFC 6839) is JSON.
+A missing header is refused on the same grounds. It was accepted, on the
+grounds that a browser cannot omit it on a cross-origin send - and it can: a
+`fetch` whose body is a `Blob` typed `""` sends no `Content-Type` at all, which
+leaves no header to test against the safelist and so needs no preflight either.
+Driven in Chrome against a cookie-authenticated endpoint the body arrived with
+the header absent and was parsed, which is the one case the rule was documented
+to make impossible. `force=True` reads such a body deliberately, which is where
+a client that genuinely omits the header belongs. A `+json` structured suffix
+(RFC 6839) is JSON.
 
 Malformed JSON is the other half. `Request.on_json_loading_failed` raises
 `BadRequest` under a deliberate policy — a stable message by default, the
@@ -25,7 +32,7 @@ from __future__ import annotations
 import pytest
 from pydantic import BaseModel
 
-from veloce import Veloce
+from veloce import Body, Veloce
 from veloce.testclient import TestClient
 
 _BODY = b'{"name":"x","qty":1}'
@@ -78,12 +85,12 @@ def test_a_json_content_type_is_read(content_type):
     assert _post(_client(), content_type).status_code == 200
 
 
-def test_an_absent_content_type_is_read():
-    """Its absence asserts nothing, and plenty of clients omit it."""
-    assert _post(_client(), None).status_code == 200
-
-
 # ── Refused ──────────────────────────────────────────────────────────
+
+
+def test_an_absent_content_type_is_refused():
+    """The hole the rule was documented to close, and did not."""
+    assert _post(_client(), None).status_code == 422
 
 
 @pytest.mark.parametrize(
@@ -213,9 +220,9 @@ def test_the_manual_door_still_reads_a_json_body(content_type):
     assert _manual(_client(), content_type).json()["seen"] == {"name": "x", "qty": 1}
 
 
-def test_the_manual_door_still_reads_a_body_with_no_declared_type():
-    """Absence asserts nothing, and a browser cannot omit it cross-origin."""
-    assert _manual(_client(), None).json()["seen"] == {"name": "x", "qty": 1}
+def test_the_manual_door_refuses_a_body_with_no_declared_type():
+    """A browser can omit it cross-origin, which is why this is refused."""
+    assert _manual(_client(), None).json()["seen"] is None
 
 
 @pytest.mark.parametrize(
@@ -235,3 +242,58 @@ def test_a_structured_suffix_outside_the_application_tree_is_refused_by_both():
     client = _client()
     assert _post(client, "text/foo+json").status_code == 422
     assert _manual(client, "text/foo+json").json()["seen"] is None
+
+
+# ── The send that proved the absent header is reachable ──────────────
+
+
+def test_the_blob_shaped_cross_origin_send_is_refused():
+    """The exact request Chrome produced, replayed as the server saw it.
+
+    `fetch(url, {method: "POST", mode: "no-cors", credentials: "include",
+    body: new Blob([json], {type: ""})})` arrives with a JSON body, the
+    victim's cookie, an `Origin` from the attacking page and no `Content-Type`
+    at all. No header means nothing for the CORS safelist to reject, so no
+    preflight is made - the body simply arrives.
+    """
+    client = _client()
+    response = client.post(
+        "/body",
+        content=_BODY,
+        headers={"origin": "http://attacker.example", "cookie": "session=victim"},
+    )
+    assert response.status_code == 422
+
+
+def test_force_still_reads_a_body_with_no_declared_type():
+    """The deliberate read, for a client that really does omit the header."""
+    app = Veloce(openapi_url=None)
+
+    @app.post("/forced")
+    async def forced(request) -> dict:
+        return {"seen": request.get_json(force=True)}
+
+    with TestClient(app) as client:
+        response = client.post("/forced", content=_BODY)
+    assert response.json()["seen"] == {"name": "x", "qty": 1}
+
+
+def test_a_scalar_body_names_the_refused_type_rather_than_a_missing_value():
+    """The gate ran for a model body only, so a scalar one reported the wrong thing.
+
+    `await request.json()` answers `None` for a refused type, and the
+    missing-value branch then said "Missing required parameter" - which sends
+    the caller looking for an absent field instead of a wrong header.
+    """
+    app = Veloce(openapi_url=None)
+
+    @app.post("/scalar")
+    async def scalar(value: int = Body()) -> dict:
+        return {"value": value}
+
+    with TestClient(app) as client:
+        response = client.post("/scalar", content=b"5", headers={"content-type": "text/plain"})
+    assert response.status_code == 422
+    detail = response.json()["detail"][0]
+    assert "text/plain" in detail["msg"]
+    assert "Missing" not in detail["msg"]

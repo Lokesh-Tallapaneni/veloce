@@ -1108,6 +1108,42 @@ validation, and `MCPCapabilityError` — the caller's request was well formed, a
 what failed is something the tool tried while running it, which the agent can
 act on.
 
+### Telling the agent the tool itself failed
+
+`ToolError` is the execution failure an author writes. The request was fine and
+reached the tool; what failed is the work the tool went on to do, and the agent
+is the one that can respond to it:
+
+```python
+from veloce import Veloce
+from veloce.contrib.mcp import ToolError
+
+app = Veloce()
+
+
+@app.mcp_tool(description="Archive a record")
+async def archive(record_id: str) -> dict:
+    if is_locked(record_id):
+        raise ToolError("Record is locked by another session; retry shortly.")
+    return {"archived": record_id}
+```
+
+The call arrives as a tool result with `isError: true` carrying that message —
+*not* as a JSON-RPC error, which the spec reserves for protocol faults and which
+is never fed back to the language model. That is the whole reason to raise
+`ToolError` rather than `InternalError`: only this channel reaches the model, so
+only here is a message worth writing.
+
+The message is surfaced **verbatim**, unlike an unexpected exception's — the
+author wrote it for the agent to read, so there is nothing to redact, in debug
+mode or out of it. Write it for the model: name what failed and what would make
+a retry succeed. Conversely, do not put anything in it you would not show the
+caller. `data=` has no place to go on a tool result, so attach nothing to it; the
+message is the whole payload.
+
+Only a tool call has an in-band channel. Raised from a resource read or a prompt,
+the same failure travels as the `-32603` its base carries.
+
 An argument whose JSON type contradicts the tool's published schema is refused
 before the handler runs, with a message naming the argument and both types
 (`Invalid value for city: expected a string, got a number`) — the model wrote the
@@ -1781,6 +1817,50 @@ discovered where to get one.
 For the **stdio** transport there is no OAuth handshake — the process is launched
 locally and trusted — so pass a static identity instead:
 `app.mount_mcp(principal=Principal(subject="local", scopes={"mcp:tools"}))`.
+
+#### A static token on a trusted network
+
+`resource_server_url` and `authorization_servers` are required above because the
+metadata document is only useful if it names both — a client reads it to learn
+which resource to audience-bind its token to and which server to get that token
+from. A local daemon or a sidecar holding one pre-shared token has neither, so
+`MCPAuth.bearer` serves no metadata document at all:
+
+```python
+import os
+import secrets
+
+from veloce import Principal
+from veloce.contrib.mcp import MCPAuth
+
+SHARED_TOKEN = os.environ.get("AGENT_TOKEN", "")
+
+
+def verify(token: str) -> Principal | None:
+    if not secrets.compare_digest(token, SHARED_TOKEN):
+        return None
+    return Principal(subject="daemon", scopes={"mcp:tools"})
+
+
+app.mount_mcp(transport="http", auth=MCPAuth.bearer(
+    verify=verify,
+    required_scopes=["mcp:tools"],
+))
+```
+
+Admission is unchanged: a missing or rejected token is answered `401`, a token
+short of `required_scopes` is answered `403`, each with a `WWW-Authenticate`
+challenge, and the `Principal` is published for the call exactly as above. What
+is gone is the discovery half — `/.well-known/oauth-protected-resource` is not
+registered, and the challenges omit the `resource_metadata` pointer rather than
+naming a route that would `404`.
+
+!!! warning "Trusted networks only"
+    A pre-shared token cannot be audience-bound, so [RFC 8707](https://www.rfc-editor.org/rfc/rfc8707)
+    gives you nothing if a client is tricked into presenting it to another
+    service, and it cannot be rotated or revoked per client. Use it for a local
+    daemon, a sidecar, or a service behind an internal gateway. Anything
+    reachable from an untrusted network wants the full `MCPAuth(...)` above.
 
 ### Issuing the tokens yourself
 
@@ -2527,6 +2607,13 @@ wiring. The `RequestMetrics` record carries:
 - the call's real `status_code` — the shaped response's status for a
   route-backed or short-circuited call, `500` for an unhandled handler error,
   `200` only on genuine success.
+
+An in-band (`isError`) failure is recorded under the status that describes it,
+not as a blanket `500`: `409` for a `ToolError`, `422` for an argument that fails
+validation, `424` for a client capability the connection never advertised. Only
+a genuine fault — an unhandled handler exception, or a streamed result that
+overruns the server's buffer or deadline — records a `5xx`, so a 5xx alert on the
+MCP door means the server is broken rather than that a tool refused some work.
 
 ## Next steps
 

@@ -1,11 +1,9 @@
 """Session container — a dict that tracks mutation and newness.
 
-`SessionMiddleware` stores one of these on every request. `new` reports
-whether the request arrived without a valid session cookie; `modified`
-flips to `True` the first time any mutating operation runs, so callers
-can cheaply tell whether the session needs to be written back.
-`permanent` selects the longer `permanent_lifetime` for
-the session cookie's `Max-Age` instead of the default `max_age`.
+`new` reports that the request arrived without a valid session cookie;
+`modified` flips on the first mutating operation, so a caller can cheaply tell
+whether the session needs writing back; `permanent` selects the longer
+`permanent_lifetime` for the cookie's `Max-Age`.
 
 The session cookie's `Max-Age`/`Expires` semantics follow RFC 6265 Sec. 5.2.
 """
@@ -21,9 +19,7 @@ from veloce._internal import _require_methods
 if TYPE_CHECKING:  # pragma: no cover
     from collections.abc import Iterator
 
-# Probabilistic sweep tuning for `InMemorySessionStore`. The threshold keeps
-# small stores cheap; the probability keeps the amortised cost of a write
-# below one full scan per `1/_SWEEP_PROBABILITY` writes.
+# Sweep tuning: under one full scan per `1/_SWEEP_PROBABILITY` writes.
 _SWEEP_THRESHOLD = 1000
 _SWEEP_PROBABILITY = 1.0 / 32
 
@@ -34,20 +30,14 @@ class Session(dict[str, Any]):
     __slots__ = ("new", "modified", "regenerate", "accessed")
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
-        # dict's C-level init populates without routing through our
-        # `__setitem__`, so the initial load never marks the session
-        # modified.
+        # dict's C-level init bypasses `__setitem__`, so a load is not a change.
         super().__init__(*args, **kwargs)
         self.new = False
         self.modified = False
-        # Set by `regenerate_id()` - asks a server-side session backend to
-        # mint a fresh id for this session on the next response.
+        # Set by `regenerate_id()` - mint a fresh backend id on the next response.
         self.regenerate = False
-        # Flipped True by `Request.session` when a handler reads or writes the
-        # session, so the middleware emits `Vary: Cookie` only on responses
-        # that actually depend on session contents - not merely because an
-        # (even stale) session cookie was present. The initial load does not
-        # set it; only handler-side access does.
+        # Flipped by `Request.session`, so `Vary: Cookie` tracks session use
+        # rather than the mere presence of a (possibly stale) cookie.
         self.accessed = False
 
     @property
@@ -66,19 +56,15 @@ class Session(dict[str, Any]):
     def regenerate_id(self) -> None:
         """Request a fresh server-side session id on the next response.
 
-        Call this at a privilege boundary - login, role change - so a
-        pre-existing (possibly attacker-planted) session id cannot be
-        replayed against the now-elevated session: the session-fixation
-        defence. It marks the session modified so the rotation is written
-        back. Harmless with cookie-only sessions, which carry no
-        server-side id to rotate.
+        Call this at a privilege boundary - login, role change - so an
+        attacker-planted id cannot be replayed against the now-elevated session:
+        the session-fixation defence. Harmless with cookie-only sessions.
         """
         self.regenerate = True
         self.modified = True
 
     # ── Mutation tracking ─────────────────────────────────
-    # Every mutating dict operation is overridden to flip `modified`,
-    # so the cookie middleware can cheaply tell when a re-write is due.
+    # Every mutating dict operation is overridden to flip `modified`.
 
     def clear(self) -> None:
         """Remove every key and mark the session modified."""
@@ -110,12 +96,8 @@ class Session(dict[str, Any]):
     def update(self, *args: Any, **kwargs: Any) -> None:
         """Merge keys into the session, marking it modified unless the input is empty."""
         super().update(*args, **kwargs)
-        # Skip the cookie re-write only for the unambiguously-empty case
-        # (`session.update({})` / `session.update()` with no kwargs).
-        # Non-empty mappings flip `modified`; non-mapping arguments
-        # (iterators of key-value pairs, generators) cannot be checked
-        # for emptiness after the super().update consumed them, so they
-        # conservatively flip `modified` too.
+        # A consumed iterator cannot be tested for emptiness, so it counts as a
+        # change; only an unambiguously empty mapping skips the re-write.
         if kwargs:
             self.modified = True
             return
@@ -135,11 +117,7 @@ class Session(dict[str, Any]):
         self.modified = True
 
     def __ior__(self, other: Any) -> Session:  # type: ignore[override,misc]
-        # PEP 584 `|=` goes through the C-level merge, not `__setitem__`.
-        # Without this override the mutation is invisible to `.modified`
-        # and the cookie middleware would skip the re-sign. The `misc`
-        # ignore is the standard workaround for dict's `__or__` / `__ior__`
-        # signature interaction with subclasses (see python/mypy#3553).
+        # PEP 584 `|=` bypasses `__setitem__`, so `.modified` would miss it.
         super().__ior__(other)
         self.modified = True
         return self
@@ -148,21 +126,15 @@ class Session(dict[str, Any]):
 class SessionStore:
     """Server-side session backend interface.
 
-    A concrete store persists session payloads keyed by an opaque session
-    id; `ServerSessionMiddleware` drives it. The methods are async so a
-    network-backed store (Redis, a database) can implement them without
-    blocking the event loop - the bundled `InMemorySessionStore` satisfies
-    the contract without any real awaiting.
+    A concrete store persists session payloads keyed by an opaque session id;
+    `ServerSessionMiddleware` drives it. The methods are async so a
+    network-backed store can implement them without blocking the event loop.
     """
 
-    # Empty so a slotted concrete store actually stays slotted; without it the
-    # subclasses' own `__slots__` are inert and every instance carries a dict.
+    # Empty so a slotted concrete store actually stays slotted.
     __slots__ = ()
 
-    #: Methods a store must supply. Checked at subclass definition rather than
-    #: left to fail at call time - a store is written once and exercised much
-    #: later, so a forgotten `write` surfaced on a live request instead of on
-    #: `import`.
+    #: Methods a store must supply, checked at definition, not on a live request.
     _required = ("read", "write", "delete")
 
     def __init_subclass__(cls, **kwargs: object) -> None:
@@ -187,14 +159,10 @@ class SessionStore:
     async def replace(self, session_id: str, data: dict[str, Any], max_age: int) -> bool:
         """Write `data` for `session_id` **only if it still exists**.
 
-        Returns `True` on success, `False` when the id is absent - it was
-        revoked or expired. This is the race-safe write the middleware
-        uses for an already-stored session, so a request still in flight
-        cannot resurrect a session a concurrent `delete` removed.
-
-        The default is a non-atomic read-then-write; a store with an
-        atomic conditional write (Redis `SET ... XX`, a DB `UPDATE`)
-        should override this to close the check-then-write window.
+        `False` when the id is absent - revoked or expired. This is the race-safe
+        write, so a request in flight cannot resurrect a session a concurrent
+        `delete` removed. The default is a non-atomic read-then-write; a store
+        with an atomic conditional write should override it.
         """
         if await self.read(session_id) is None:
             return False
@@ -204,14 +172,9 @@ class SessionStore:
     async def touch(self, session_id: str, max_age: int) -> bool:
         """Extend the expiry of an existing entry without rewriting its payload.
 
-        Returns `True` when the id existed and its TTL was refreshed, `False`
-        when it was absent (revoked or expired). This is the sliding-expiry
-        write `ServerSessionMiddleware` uses on a read-only access, so an idle
-        session stays alive without round-tripping its full payload.
-
-        The default reads then rewrites the payload; a store with a native
-        TTL-refresh primitive (Redis `EXPIRE`, a DB `UPDATE ... expires_at`)
-        should override this to avoid moving the payload.
+        `False` when the id was absent (revoked or expired). The default reads
+        then rewrites the payload; a store with a native TTL-refresh primitive
+        should override it.
         """
         data = await self.read(session_id)
         if data is None:
@@ -223,14 +186,11 @@ class SessionStore:
 class InMemorySessionStore(SessionStore):
     """A process-local `SessionStore` - a dict with per-entry expiry.
 
-    Fine for a single-process app and for tests. It does not share state
-    across workers, so a multi-worker deployment needs a shared backend
-    (e.g. Redis) implementing the `SessionStore` interface.
+    It does not share state across workers, so a multi-worker deployment needs a
+    shared backend implementing the `SessionStore` interface.
 
     Sized, iterable and containment-testable, so it is falsy when it holds no
-    live session - as any empty collection is. Test `store is not None` to ask
-    whether a store is configured; `if store:` asks whether it currently holds
-    anything, which at process start it does not.
+    live session. Test `store is not None` to ask whether one is configured.
     """
 
     __slots__ = ("_entries", "_sweep_threshold", "_sweep_probability")
@@ -242,8 +202,6 @@ class InMemorySessionStore(SessionStore):
     ) -> None:
         # session_id -> (payload, unix-timestamp when it expires)
         self._entries: dict[str, tuple[dict[str, Any], float]] = {}
-        # Per-instance sweep tuning; defaults to the module constants so
-        # existing call sites are unaffected.
         self._sweep_threshold = sweep_threshold
         self._sweep_probability = sweep_probability
 
@@ -269,11 +227,8 @@ class InMemorySessionStore(SessionStore):
 
     async def replace(self, session_id: str, data: dict[str, Any], max_age: int) -> bool:
         """Write `data` only when `session_id` still exists and is unexpired."""
-        # Atomic against the event loop: this coroutine does no `await`,
-        # so a concurrent `delete` cannot land between the check and the
-        # write - a revoked session stays revoked. An expired entry that
-        # has not yet been lazily evicted counts as absent (mirrors
-        # `read`), so a stale session is never rewritten back to life.
+        # Atomic against the loop: no `await`, so a concurrent `delete` cannot
+        # land between check and write. A not-yet-evicted entry counts as absent.
         now = time.time()
         entry = self._entries.get(session_id)
         if entry is None or entry[1] <= now:
@@ -285,10 +240,7 @@ class InMemorySessionStore(SessionStore):
 
     async def touch(self, session_id: str, max_age: int) -> bool:
         """Refresh the expiry of an existing, unexpired entry without copying its payload."""
-        # Refresh the expiry in place, reusing the stored payload object - no
-        # copy, since the payload is not changing. Same liveness check as
-        # `replace`: an absent or not-yet-evicted-but-expired entry counts as
-        # gone, so a stale session is never revived by a sliding-expiry touch.
+        # Same liveness check as `replace`: a stale session is never revived.
         now = time.time()
         entry = self._entries.get(session_id)
         if entry is None or entry[1] <= now:
@@ -300,15 +252,11 @@ class InMemorySessionStore(SessionStore):
     def sweep_expired(self) -> int:
         """Drop every expired entry and return how many were removed.
 
-        Callers that want deterministic eviction (e.g. a background task
-        on a known cadence) can call this directly rather than relying on
-        the probabilistic sweep that fires from `write` / `replace`.
+        For deterministic eviction, instead of the probabilistic sweep that
+        fires from `write` / `replace`.
         """
         now = time.time()
-        # The comprehension fully materialises `expired` before any mutation,
-        # so it is its own snapshot - a separate `list(...)` of the items view
-        # would be a redundant copy. Use `pop(..., None)` below so a concurrent
-        # delete of the same id is a no-op.
+        # The comprehension is its own snapshot; `pop(..., None)` tolerates a race.
         expired = [sid for sid, (_, exp) in self._entries.items() if exp <= now]
         removed = 0
         for sid in expired:
@@ -319,10 +267,8 @@ class InMemorySessionStore(SessionStore):
     def clear(self) -> int:
         """Drop every session and return how many were removed.
 
-        The sync counterpart to `delete` for the whole store - what "log
-        everyone out" needs after a key rotation or a breach. Expired entries
-        that no sweep has reached are counted as removed too, since they were
-        occupying the store.
+        The sync counterpart to `delete` for the whole store. Expired entries no
+        sweep has reached count as removed too.
         """
         removed = len(self._entries)
         self._entries.clear()
@@ -333,13 +279,8 @@ class InMemorySessionStore(SessionStore):
     def expires_at(self, session_id: str) -> float | None:
         """Return when `session_id` expires as a Unix timestamp, or `None`.
 
-        `None` means the id is absent or already past its expiry, matching what
-        `read` would say - an entry the lazy sweep has not reached yet is gone
-        as far as every accessor is concerned.
-
-        This is what sliding expiry is observable through: the payload does not
-        change when a TTL is refreshed, so `read` cannot show that `touch` did
-        anything.
+        `None` means absent or already past its expiry, matching what `read`
+        would say. This is what sliding expiry is observable through.
         """
         entry = self._entries.get(session_id)
         if entry is None or entry[1] <= time.time():
@@ -353,8 +294,7 @@ class InMemorySessionStore(SessionStore):
     def __len__(self) -> int:
         """How many unexpired sessions the store holds.
 
-        Expired entries are excluded whether or not a sweep has reached them, so
-        the count is the live one; it does not drop as a side effect of reading.
+        Expired entries are excluded whether or not a sweep has reached them.
         """
         now = time.time()
         return sum(1 for _, expires_at in self._entries.values() if expires_at > now)
@@ -365,9 +305,7 @@ class InMemorySessionStore(SessionStore):
         return iter([sid for sid, (_, exp) in self._entries.items() if exp > now])
 
     def _maybe_sweep(self) -> None:
-        # Amortised eviction: only walk the store when it's grown past
-        # the threshold and the dice come up. Keeps the per-write cost
-        # at one comparison + one `random.random()` in the common case.
+        # Amortised: one comparison plus one `random.random()` per write.
         if (
             len(self._entries) >= self._sweep_threshold
             and random.random() < self._sweep_probability

@@ -1,11 +1,9 @@
 """OAuth2 — authentication schemes.
 
-Some constructor parameters use camelCase (`authorizationUrl`, `tokenUrl`,
-`refreshUrl`, `openIdConnectUrl`) rather than the project's snake_case
-convention. These names mirror the OAuth2/OpenID Connect security-scheme
-field names defined by the OpenAPI specification, so a scheme description
-copied from a standard OpenAPI document maps onto these classes without
-renaming. They are kept as-is deliberately for spec compliance.
+Some constructor parameters are camelCase (`authorizationUrl`, `tokenUrl`,
+`refreshUrl`, `openIdConnectUrl`) to match the OpenAPI specification's
+security-scheme field names, so a scheme copied from a standard OpenAPI
+document maps onto these classes without renaming.
 """
 
 from __future__ import annotations
@@ -25,9 +23,8 @@ from veloce.status import HTTP_422_UNPROCESSABLE_ENTITY
 def _form_value(v: Any) -> Any:
     """Resolve a constructor argument that may still be a `Form` marker.
 
-    Under the dependency resolver each field arrives as the resolved request
-    value; when the form is constructed directly the arguments are still the
-    `Form()` markers, so fall back to their declared defaults.
+    Direct construction leaves the arguments as markers, so fall back to the
+    declared defaults.
     """
     return v.default if isinstance(v, Form) else v
 
@@ -35,11 +32,8 @@ def _form_value(v: Any) -> Any:
 class _OAuth2BearerScheme(_BearerScheme):
     """Shared Bearer-token extraction for the OAuth2/OIDC schemes.
 
-    `OAuth2PasswordBearer`, `OAuth2AuthorizationCodeBearer`, and
-    `OpenIdConnect` pull the same `Authorization: Bearer` token; they
-    differ only in the OpenAPI scheme they advertise. Each keeps its own
-    `__init__` (and distinct fields) and inherits the shared `__call__` from
-    `_BearerScheme` so the extraction lines stay in one place.
+    They pull the same `Authorization: Bearer` token and differ only in the
+    OpenAPI scheme each advertises.
     """
 
     __slots__ = ()
@@ -86,14 +80,8 @@ class OAuth2PasswordBearer(_OAuth2BearerScheme):
 class OAuth2AuthorizationCodeBearer(_OAuth2BearerScheme):
     """OAuth2 Authorization-Code (with PKCE) Bearer flow.
 
-    Extracts a Bearer token from the `Authorization:` header exactly
-    like `OAuth2PasswordBearer`; the difference is the OpenAPI security
-    scheme it advertises (`authorizationUrl` + `tokenUrl` + scopes),
-    which is what an interactive OAuth2 client (Swagger UI's "Authorize"
-    button, an SPA's auth library) uses to start the redirect dance.
-
-    The construction shape is chosen so an OpenAPI snippet generated from a
-    standard OpenAPI document can be replayed against veloce without rewrites:
+    Advertises `authorizationUrl` + `tokenUrl` + scopes, which is what an
+    interactive OAuth2 client uses to start the redirect dance.
 
         oauth2 = OAuth2AuthorizationCodeBearer(
             authorizationUrl="https://auth.example.com/authorize",
@@ -150,10 +138,8 @@ class OAuth2AuthorizationCodeBearer(_OAuth2BearerScheme):
 class OpenIdConnect(_OAuth2BearerScheme):
     """OpenID Connect Bearer authentication.
 
-    Same Bearer extraction logic as the OAuth2 schemes; the OpenAPI
-    scheme advertises a single `openIdConnectUrl` pointing at the
-    provider's `.well-known/openid-configuration` document. Clients
-    auto-discover everything else from there.
+    Advertises a single `openIdConnectUrl` pointing at the provider's
+    `.well-known/openid-configuration`, which clients discover the rest from.
     """
 
     __slots__ = ("openIdConnectUrl",)
@@ -178,9 +164,7 @@ class OpenIdConnect(_OAuth2BearerScheme):
 
 
 #: Bound to the form class so `_from_form` returns the *subclass* it was called
-#: on. `typing.Self` would say this directly but is 3.11+, and this package
-#: supports 3.10 - which is why the strict subclass carried a
-#: `# type: ignore[return-value]` instead of a type.
+#: on. `typing.Self` would say this directly but needs 3.11; this package is 3.10+.
 _FormT = TypeVar("_FormT", bound="OAuth2PasswordRequestForm")
 
 
@@ -200,10 +184,8 @@ class OAuth2PasswordRequestForm:
         client_id: Any = Form(default=None),
         client_secret: Any = Form(default=None),
     ) -> None:
-        # Used as a `Depends()` class dependency: the resolver reads each
-        # field from the request form body via the `Form()` markers and
-        # passes resolved values here. When constructed directly the
-        # params are still `Form` markers - fall back to their defaults.
+        # As a `Depends()` class dependency the resolver passes resolved form
+        # values; direct construction leaves `Form` markers to unwrap.
         self.grant_type = _form_value(grant_type)
         self.username = _form_value(username)
         self.password = _form_value(password)
@@ -232,10 +214,8 @@ class OAuth2PasswordRequestForm:
 class OAuth2PasswordRequestFormStrict(OAuth2PasswordRequestForm):
     """`OAuth2PasswordRequestForm` with a mandatory `grant_type`.
 
-    The non-strict form leaves `grant_type` optional;
-    the strict form *requires* it and constrains the value to the
-    literal `password` (RFC 6749 Sec. 4.3.2). Missing or mismatched values
-    fail validation with 422.
+    RFC 6749 Sec. 4.3.2 requires the literal `password`; a missing or
+    mismatched value fails validation with 422.
     """
 
     __slots__ = ()

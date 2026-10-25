@@ -5,9 +5,6 @@
 `safe_join(directory, *paths)` joins paths and refuses if the result escapes
 the base directory or any component is absolute.
 
-The filesystem helpers are derived from the OWASP guidance and the underlying
-filesystem semantics.
-
 References:
 - OWASP Path Traversal cheat sheet
 - CWE-22 (Improper Limitation of a Pathname to a Restricted Directory)
@@ -24,13 +21,11 @@ import unicodedata
 # Permitted characters in a sanitised filename: ASCII letters, digits,
 # underscore, period, hyphen. Everything else collapses to underscore.
 _VALID_FILENAME_CHAR = re.compile(r"[^A-Za-z0-9_.\-]")
-# Run-of-underscores collapser - kept module-level so the compile cost
-# is paid once instead of every `re.sub` cache lookup.
+# Run-of-underscores collapser; module-level so the compile cost is paid once.
 _UNDERSCORE_RUN = re.compile(r"_+")
 
-# Windows reserved device names - case-insensitive. Even on POSIX, blocking
-# these in `secure_filename` prevents subtle cross-platform breakage in
-# mounted Windows shares. `CONIN$`/`CONOUT$` are the console device aliases.
+# Windows reserved device names - case-insensitive. Blocking these even on POSIX
+# prevents cross-platform breakage on mounted Windows shares.
 _WIN_RESERVED = frozenset(
     {
         "CON",
@@ -44,9 +39,8 @@ _WIN_RESERVED = frozenset(
     }
 )
 
-# `safe_join`'s device-name guard only matters on Windows, where opening a
-# path whose segment names a device (e.g. `static/COM1`) can hang a worker
-# at `os.stat`. Computed once so POSIX deployments pay no per-request cost.
+# `safe_join`'s device-name guard only matters on Windows, where opening a path
+# whose segment names a device (`static/COM1`) can hang a worker at `os.stat`.
 _IS_NT = os.name == "nt"
 
 
@@ -66,13 +60,10 @@ def constant_time_compare(a: str | bytes, b: str | bytes) -> bool:
     """Compare two secrets without leaking their contents through timing.
 
     Wraps ``hmac.compare_digest``; ``str`` inputs are UTF-8 encoded first. Use
-    this when the operands may be ``str`` (or mixed ``str``/``bytes``). Callers
-    that already hold two equal-typed ``bytes`` values - the signing, JWT,
-    reset-token, password, and ``Secret`` verify paths - call ``hmac.compare_digest``
-    directly: routing them through here would add an ``isinstance`` ladder and a
-    redundant encode/copy on a security-hot verify path for no behavioural gain
-    (the False-on-type-mismatch branch is unreachable when both operands are
-    statically ``bytes``).
+    this when the operands may be ``str`` (or mixed ``str``/``bytes``); callers
+    that already hold two equal-typed ``bytes`` values call
+    ``hmac.compare_digest`` directly, avoiding an ``isinstance`` ladder and a
+    redundant encode on a security-hot verify path.
     """
     if isinstance(a, str) and isinstance(b, str):
         return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
@@ -96,14 +87,12 @@ def secure_filename(name: str) -> str:
     if not name:
         return ""
 
-    # Normalise unicode and drop everything that doesn't have an ASCII form.
-    # NFKD splits accented characters; the encode/decode round-trip discards
-    # combining marks and any glyph that can't be represented.
+    # NFKD plus an ASCII round-trip drops combining marks and any glyph that
+    # cannot be represented.
     name = unicodedata.normalize("NFKD", name)
     name = name.encode("ascii", "ignore").decode("ascii")
 
-    # Replace path separators explicitly first so traversal segments visibly
-    # collapse to underscores in the final name.
+    # Separators go first so traversal segments visibly collapse to underscores.
     name = name.replace(os.sep, "_").replace("/", "_").replace("\\", "_")
 
     name = _VALID_FILENAME_CHAR.sub("_", name)
@@ -164,19 +153,16 @@ def safe_join(directory: str, *paths: str) -> str | None:
 
     joined = os.path.abspath(os.path.join(base, *paths))
 
-    # Compare via `normcase` so Windows drive-letter casing and separator
-    # variants don't cause a same-directory descendant to be rejected.
-    # On POSIX `normcase` is the identity, so this is a no-op there.
+    # `normcase` so Windows drive-letter casing and separator variants do not
+    # reject a legitimate descendant; on POSIX it is the identity.
     base_cmp = os.path.normcase(base)
     joined_cmp = os.path.normcase(joined)
 
-    # When `base` is the filesystem root ("/" on POSIX, "C:\\" on Windows)
-    # it already ends with `os.sep`; appending another would produce "//"
-    # / "C:\\\\" and never match a legitimate descendant.
+    # The filesystem root already ends with `os.sep`; appending another would
+    # produce "//" / "C:\\\\" and never match a legitimate descendant.
     prefix = base_cmp if base_cmp.endswith(os.sep) else base_cmp + os.sep
 
-    # `joined` must be exactly `base`, or under it. Using `prefix` instead
-    # of a bare string concat avoids `base="/srv/a"` accepting
+    # `prefix` rather than a bare concat stops `base="/srv/a"` accepting
     # `joined="/srv/abc"` as a child.
     if joined_cmp == base_cmp:
         return joined

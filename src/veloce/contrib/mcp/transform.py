@@ -2,12 +2,11 @@
 
 An internal tool is often nearly the tool you want to publish, differing only in
 what an agent should see: a friendlier argument name, a credential the caller
-must not supply, a limit the caller must not raise. Rewriting the handler to get
-that is duplication, and wrapping it by hand means restating the schema.
+must not supply, a limit the caller must not raise.
 
 `derive_tool` builds a new tool from a registered one, changing only the
-arguments' surface. The original keeps working and keeps its own registration;
-the derived tool calls the same handler with the arguments translated back.
+arguments' surface. The original keeps working; the derived tool calls the same
+handler with the arguments translated back.
 
     public = derive_tool(
         internal, name="search",
@@ -43,9 +42,8 @@ class ArgTransform:
     `name` publishes the argument under a different name; the value is translated
     back before the handler runs. `description` and `schema` reshape what the
     agent is told. `default` supplies a value when the caller omits one. `hide`
-    removes the argument from the schema entirely, in which case `default` is
-    what the handler receives - a hidden argument with no default would leave the
-    handler short of something it requires, so that combination is refused.
+    removes the argument from the schema and passes `default` to the handler, so
+    hiding without a default is refused.
     """
 
     name: str | None = None
@@ -86,10 +84,8 @@ class _Binding:
 def _declared_types(schema: dict[str, Any]) -> frozenset[str]:
     """Return the JSON type names a property schema accepts.
 
-    Reads both shapes the schema builder produces: a plain `type`, and the
-    `anyOf` an optional parameter carries. An empty set means the schema names
-    no type at all - a `$ref`, or a bare constraint - which no reshape check can
-    speak about.
+    An empty set means the schema names no type at all - a `$ref`, or a bare
+    constraint - which no reshape check can speak about.
     """
     names: set[str] = set()
     declared = schema.get("type")
@@ -131,12 +127,9 @@ def _reject_incompatible_schema(
 ) -> None:
     """Refuse a replacement schema the handler behind it would not accept.
 
-    `schema=` reshapes what the agent is told; it does not reshape the handler,
-    whose parameter type the binder still enforces. A replacement naming a type
-    the original does not accept publishes a contract every call following it
-    would be refused for - and the refusal would read as the model's mistake.
-    Narrowing within the same type (an `enum`, a `maximum`, a `pattern`) is what
-    the argument is for and is left alone.
+    `schema=` does not reshape the handler, whose parameter type the binder still
+    enforces, so a replacement naming a type the original rejects would publish a
+    contract every call is refused for. Narrowing within the type is left alone.
     """
     accepted = _declared_types(original)
     offered = _declared_types(replacement)

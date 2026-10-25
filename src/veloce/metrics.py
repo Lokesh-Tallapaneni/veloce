@@ -1,27 +1,17 @@
 """Prometheus metrics exporter — request counters and a duration histogram.
 
-This is an **optional** integration that turns each finished HTTP request into
-Prometheus time series using Veloce's existing instrumentation hook
-(:meth:`Veloce.add_instrumentation`). It does not replace or rebuild that hook
-- it registers exactly one hook that records metrics per request.
+An optional integration registering one :meth:`Veloce.add_instrumentation` hook
+that turns each finished request into Prometheus time series. Series are labelled
+by the matched route *template*, never the concrete path, so an
+attacker-controlled URL can never explode label cardinality; an unmatched
+request collapses to a single constant ``"<unmatched>"`` label.
 
-It builds on :class:`~veloce.instrumentation.RequestMetrics`, the same
-low-cardinality record the OpenTelemetry bridge consumes. Series are labelled
-by the matched route *template* (``metrics.route``, e.g. ``/items/{id}``) rather
-than the concrete path, so an attacker-controlled URL can never explode label
-cardinality; an unmatched request (a ``404`` for an unknown path or a ``405``
-for a disallowed method, where ``metrics.route`` is ``None``) collapses to a
-single constant ``"<unmatched>"`` label.
-
-Only ``prometheus_client`` is required, and it is optional: importing this
-module (or ``import veloce``) never requires it. The import is guarded and
-:func:`instrument_with_prometheus` raises a clear :class:`ImportError` with an
-install hint when it is missing. Install the extra with::
+``prometheus_client`` is required only here; importing this module never requires
+it. Install the extra with::
 
     pip install veloceframework[metrics]
 
-Then wire it up once at startup and expose the metrics yourself (the exporter
-only records series; serving ``/metrics`` is the application's job)::
+Then wire it up once at startup and serve ``/metrics`` yourself::
 
     from veloce import Veloce
     from veloce.metrics import instrument_with_prometheus
@@ -29,50 +19,30 @@ only records series; serving ``/metrics`` is the application's job)::
     app = Veloce()
     instrument_with_prometheus(app)
 
-The exporter is **registry-agnostic**: pass your own
-:class:`~prometheus_client.CollectorRegistry` to isolate apps (or to use a
-multiprocess registry); otherwise the default global registry is used. Because
-the metrics are built per call and bound to the chosen registry, instrumenting
-two apps against two distinct registries does not raise the "Duplicated
-timeseries" error a shared global collector would.
-
-**Scope.** This first cut exports a request **counter** and a request-duration
-**histogram**. It does not expose an in-progress (in-flight concurrency) gauge:
-:class:`RequestMetrics` fires only at request *finish*, so a single finish-only
-hook cannot do the increment-before / decrement-after a live gauge needs. That
-belongs to a paired request-lifecycle hook and is intentionally out of scope
-here.
-``instrument_with_prometheus`` is deliberately not re-exported from the
-top-level ``veloce`` package. Importing this module costs ~72 ms on top of
-``import veloce`` (measured with ``python -X importtime``), which every
-application would otherwise pay whether or not it exports metrics. Import it
-from ``veloce.metrics`` when you want it.
+Pass your own :class:`~prometheus_client.CollectorRegistry` to isolate apps.
+Not re-exported from the top-level ``veloce`` package: importing it costs ~72 ms
+on top of ``import veloce`` (measured with ``python -X importtime``).
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.app import Veloce
     from veloce.instrumentation import RequestMetrics
 
-# prometheus_client is optional. Import it at module load so the factory below
-# can build collectors, but tolerate its absence: a box without the extra must
-# still be able to `import veloce` and `import veloce.metrics`. When unavailable
-# we record the sentinel error and gate the real requirement behind
-# `instrument_with_prometheus`, where a precise ImportError with an install hint
-# is raised.
+# Optional: absence is recorded and gated behind `instrument_with_prometheus`.
 try:
     import prometheus_client as _prom
     from prometheus_client import Counter, Histogram
 
     _PROM_IMPORT_ERROR: ImportError | None = None
 except ImportError as exc:  # pragma: no cover - exercised only without prometheus_client
-    _prom = None  # type: ignore[assignment]
-    Counter = None  # type: ignore[assignment,misc]
-    Histogram = None  # type: ignore[assignment,misc]
+    # `Any` rather than three suppressions: `_PROM_IMPORT_ERROR` gates every use.
+    _prom = cast("Any", None)
+    Counter = Histogram = cast("Any", None)  # type: ignore[misc]
     _PROM_IMPORT_ERROR = exc
 
 
@@ -82,7 +52,6 @@ _INSTALL_HINT = (
 )
 
 # prometheus_client's own conventional default histogram buckets (seconds).
-# Public and stable - used when the caller does not pass custom buckets.
 _DEFAULT_BUCKETS: tuple[float, ...] = (
     0.005,
     0.01,
@@ -100,18 +69,14 @@ _DEFAULT_BUCKETS: tuple[float, ...] = (
     10.0,
 )
 
-# Stable, low-cardinality label used when no route matched (404/405). The
-# concrete request path is attacker-controlled and high-cardinality, so it is
-# never used as a label value.
+# For 404/405: the concrete path is attacker-controlled, so never a label value.
 _UNMATCHED_ROUTE = "<unmatched>"
 
 
 def _rewrite_duplicate(err: ValueError, prefix: str, is_global: bool) -> ValueError:
     """Restate a collector-name collision as something the caller can act on.
 
-    prometheus_client reports a collision as a bare "Duplicated timeseries"
-    naming only the series, which says nothing about which knob fixes it. Any
-    other `ValueError` is returned untouched.
+    Any other `ValueError` is returned untouched.
     """
     if "Duplicated" not in str(err):
         return err
@@ -140,37 +105,22 @@ def instrument_with_prometheus(
 ) -> Callable[[RequestMetrics], None]:
     """Export Prometheus request metrics from a Veloce app's instrumentation.
 
-    Register a single :meth:`Veloce.add_instrumentation` hook that records, for
-    each finished request, a ``{prefix}_requests_total`` counter (labelled by
-    method, route template, and status) and a
-    ``{prefix}_request_duration_seconds`` histogram (labelled by method and
-    route template). The route label is always the matched route *template*; an
-    unmatched request (``404``/``405``) uses the constant ``"<unmatched>"``
-    label, so an attacker-controlled path can never explode cardinality.
+    Register one :meth:`Veloce.add_instrumentation` hook that records, per
+    finished request, a ``{prefix}_requests_total`` counter (method, route
+    template, status) and a ``{prefix}_request_duration_seconds`` histogram
+    (method, route template). An unmatched request uses the constant
+    ``"<unmatched>"`` route label.
 
     Bind the metrics to ``registry`` when given, else to prometheus_client's
-    default registry. Because the collectors are built here and bound to the
-    chosen registry, two apps instrumented against two distinct registries do
-    not collide; instrumenting twice against the *same* registry raises
-    prometheus_client's "Duplicated timeseries" error, so use a fresh registry
-    per app when isolating.
-
-    ``prefix`` names the metrics (``http`` -> ``http_requests_total``);
-    ``buckets`` overrides the histogram's second-valued buckets, defaulting to
-    prometheus_client's conventional set. ``exclude_routes`` (a set of matched
-    route *templates*, e.g. ``{"/health", "/metrics"}``) suppresses these series
-    for noisy routes via Veloce's core instrumentation filter, so health checks
-    and the scrape endpoint itself never inflate request counts.
-    ``group_status`` (default ``True``)
-    collapses the status code into its class bucket - ``200`` -> ``"2xx"``,
-    ``404`` -> ``"4xx"``, ``503`` -> ``"5xx"`` - as the ``status`` label, so the
-    counter holds at most one series per status class; set it ``False`` to keep
-    the concrete code (it is itself bounded, so that stays safe too).
+    default; instrumenting twice against the same registry raises its
+    "Duplicated timeseries" error, so use a fresh registry per app to isolate.
+    ``buckets`` overrides the histogram's second-valued buckets.
+    ``exclude_routes`` is a set of route *templates* whose series are suppressed.
+    ``group_status`` (default ``True``) collapses the status code into its class
+    bucket - ``200`` -> ``"2xx"`` - as the ``status`` label.
 
     Raise :class:`ImportError` with an install hint when ``prometheus_client``
-    is not installed. Return the registered hook (the value
-    :meth:`Veloce.add_instrumentation` returns), so callers can hold a reference
-    to it for tests or introspection.
+    is not installed. Return the registered hook.
     """
     if _PROM_IMPORT_ERROR is not None:
         raise ImportError(_INSTALL_HINT) from _PROM_IMPORT_ERROR
@@ -195,22 +145,14 @@ def instrument_with_prometheus(
             registry=registry,
         )
     except ValueError as err:
-        # The counter registered before the histogram failed. Drop it so the
-        # registry does not keep half of this exporter's series, which would
-        # make a later retry fail on the counter instead of the histogram.
+        # Drop the already-registered counter rather than leave half the series.
         registry.unregister(requests_total)
         raise _rewrite_duplicate(err, prefix, registry is _prom.REGISTRY) from err
 
     def _record(metrics: RequestMetrics) -> None:
-        # Always label by the route template, never the concrete path: an
-        # unmatched request (route is None for both 404 and 405) carries an
-        # attacker-controlled, high-cardinality path. Collapse it to a single
-        # constant so label cardinality stays bounded.
+        # Never the concrete path: an unmatched request's is attacker-controlled.
         route_label = metrics.route if metrics.route is not None else _UNMATCHED_ROUTE
-        # `group_status` collapses the concrete code into its class bucket
-        # (200 -> "2xx", 404 -> "4xx") so a noisy app emits at most five status
-        # series instead of one per distinct code; when False the concrete code
-        # is kept (it is already bounded).
+        # A class bucket caps a noisy app at five status series; the code is bounded.
         if group_status:
             status_label = f"{metrics.status_code // 100}xx"
         else:

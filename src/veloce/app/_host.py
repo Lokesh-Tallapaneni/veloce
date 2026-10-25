@@ -1,24 +1,5 @@
 """The contract every `app/` mixin relies on the host `Veloce` providing.
 
-`Veloce` is assembled from sixteen focused mixins, each of which reads state and
-calls methods that a *sibling* provides. Every mixin used to restate the subset
-it touched inside its own class-level `TYPE_CHECKING` block: 158 stubs across
-thirteen modules for 102 distinct names, 56 of them redundant repeats. `config`
-alone was written out seven times.
-
-Restating a contract is how it drifts, and it had. Ten names carried more than
-one annotation: `debug` was `bool` in `dispatch.py`, `errors.py` and
-`serving.py` but `Any` in `lifecycle.py`; `_mw_version` was `int` in
-`middleware.py` and `Any` in `dispatch.py`; the hook lists were concrete in
-`introspection.py` and `Any` everywhere else. Whichever module a reader opened
-decided what the type appeared to be, and the loosest copy silently won wherever
-it was used.
-
-Worse, the stubs were almost all `Any` or `Callable[..., Any]`, so mypy checked
-nothing that crossed a mixin boundary. `self.match(...)`, `self.log_exception(...)`
-and `self._find_scoped_exception_handler(...)` accepted any argument list on the
-hot path.
-
 The names here carry the type of their real definition rather than `Any`, so the
 cross-mixin calls are checked. Everything is under `TYPE_CHECKING`: at runtime
 this is an empty class, contributing one entry to the MRO and no behaviour. It
@@ -51,6 +32,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from veloce.config import Config
     from veloce.contrib.staticfiles import StaticFiles
     from veloce.contrib.templating import Jinja2Templates
+    from veloce.exceptions import HTTPException
     from veloce.http.request import Request
     from veloce.http.response import Response
     from veloce.middleware import Middleware
@@ -91,14 +73,14 @@ class AppHost:
         _bp_teardown_hooks: dict[str, list[Callable[..., Any]]]
         _bp_url_value_preprocessors: dict[str, list[Callable[..., Any]]]
         _bp_url_default_funcs: dict[str, list[Callable[..., Any]]]
-        _bp_exception_handlers: dict[str, dict[type, Callable[..., Any]]]
+        _bp_exception_handlers: dict[str, dict[type[Any], Callable[..., Any]]]
         _bp_status_handlers: dict[str, dict[int, Callable[..., Any]]]
         _blueprints_map: dict[str, Any]
 
         # ── Exception handling ──
-        _exception_handlers: dict[type, Callable[..., Any]]
+        _exception_handlers: dict[type[Any], Callable[..., Any]]
         _status_handlers: dict[int, Callable[..., Any]]
-        _exc_handler_cache: dict[type, Callable[..., Any] | None]
+        _exc_handler_cache: dict[type[Any], Callable[..., Any] | None]
 
         # ── Middleware and the compiled pipeline ──
         _middlewares: list[Middleware]
@@ -200,8 +182,16 @@ class AppHost:
             self, request: Request, cp: CompiledPipeline | None, max_size: int | None
         ) -> Response: ...
 
+        async def _http_exception_response(
+            self,
+            request: Request,
+            exc: HTTPException,
+            cp: CompiledPipeline | None,
+            excluded: bool = False,
+        ) -> Response: ...
+
         def _find_scoped_exception_handler(
-            self, exc_type: type, request: Request | None
+            self, exc_type: type[Any], request: Request | None
         ) -> Callable[..., Any] | None: ...
 
         def _find_scoped_status_handler(

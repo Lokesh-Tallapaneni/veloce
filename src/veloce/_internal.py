@@ -1,29 +1,15 @@
 """Semi-public internal utilities — shared across subpackages, not public API.
 
-The codebase guardrail in ``.claude/rules/development-guardrails.md`` under
-"Cross-Subpackage Imports" forbids importing underscore-prefixed symbols across
-subpackage boundaries. This module is the documented carve-out: everything
-defined here may be imported from any subpackage - ``app/``, ``http/``,
-``middleware/``, ``security/``, ``serving/``, ``contrib/``, ``routing/`` -
-because it is internal-to-the-framework with a stable contract. The residents
-are not enumerated here; that list went stale the first time one was added.
-
-The leading underscore signals "not for users"; this module's existence and
-docstring signal "stable for internal use across the framework". External users
-must not depend on these symbols - they are not in ``veloce/__init__.py``'s
-``__all__`` and may change in any release.
+``.claude/rules/development-guardrails.md`` forbids importing an
+underscore-prefixed symbol across a subpackage boundary; this module is the
+documented carve-out, importable from any subpackage. Nothing here is in
+``veloce/__init__.py``'s ``__all__``, and all of it may change in any release.
 
 A helper earns a place here by being needed **outside the subpackage that would
-otherwise own it**, and by being small enough that promoting it to the public
-API would be premature. Two or more consumers is the usual case; one is
-accepted when the single consumer is in a different subpackage from the concern
-(``_ws_handshake_rejection`` is written for ``serving/`` but is HTTP framing,
-``_bearer_token_from`` for ``security/`` but is header parsing) - keeping those
-in the consumer would put the definition where the next consumer will not look.
-Anything used only by another resident of this module (``_check_async``,
-``_iscoro_cache``, ``_NETLOC_DEFAULT_PORTS``) is a private detail of the helper
-above it, not a resident in its own right. Otherwise prefer a public utility, or
-keep it inside the owning subpackage.
+otherwise own it** (``_ws_handshake_rejection`` is written for ``serving/`` but
+is HTTP framing), and by being too small to promote to the public API. Anything
+used only by another resident is a private detail of that helper, not a resident
+in its own right.
 """
 
 from __future__ import annotations
@@ -42,7 +28,7 @@ import os
 import weakref
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
 from http import HTTPStatus
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import orjson
 
@@ -72,10 +58,7 @@ MIME_PLAIN = MIME_TEXT_PLAIN_UTF8
 MIME_OCTET = MIME_OCTET_STREAM
 
 
-# Media types pinned to their standard spelling rather than whatever the host
-# registry says. RFC 9239 obsoleted `application/javascript` in favour of
-# `text/javascript`; the rest are here because a Windows registry entry can
-# shadow or omit them entirely.
+# Pinned, not from the host registry: RFC 9239 obsoleted one, Windows hides others.
 _WEB_MEDIA_TYPES: dict[str, str] = {
     ".js": "text/javascript",
     ".mjs": "text/javascript",
@@ -87,6 +70,10 @@ _WEB_MEDIA_TYPES: dict[str, str] = {
     ".wasm": "application/wasm",
 }
 
+#: The function a decorator is handed and returns unchanged, so `@app.get("/x")`
+#: keeps the handler's signature; a bare `Callable` makes Pylance drop it.
+T_route = TypeVar("T_route", bound=Callable[..., Any])
+
 
 @functools.lru_cache(maxsize=512)
 
@@ -94,21 +81,13 @@ _WEB_MEDIA_TYPES: dict[str, str] = {
 def guess_content_type(path: str) -> str:
     """Return the media type a path's extension names, or the octet-stream default.
 
-    `mimetypes.guess_type` walks the registered table on every call, and both
-    callers - the static server and every `FileResponse` - hit the same handful
-    of extensions repeatedly, so the answer is memoized. Bounded, so a client
-    probing arbitrary paths cannot grow it without limit.
+    Memoized, because `mimetypes.guess_type` walks the registered table on every
+    call and both callers hit the same handful of extensions. Bounded, so a client
+    probing arbitrary paths cannot grow it without limit. The cache does not
+    observe a `mimetypes.add_type` made after an extension was first guessed.
 
-    The cache does not observe a `mimetypes.add_type` made after an extension
-    has already been guessed once. Registering media types at import time, as
-    the stdlib intends, is unaffected.
-
-    A handful of web types are answered from `_WEB_MEDIA_TYPES` before the
-    stdlib is consulted, because `mimetypes` reads the platform registry: on
-    Windows `.js` resolves to the obsolete `application/javascript`, and `.json`
-    or `.svg` can be absent or remapped by whatever software last claimed the
-    extension. Serving a script as the wrong type is a real failure - a strict
-    client refuses it - so these do not get to vary by host.
+    `_WEB_MEDIA_TYPES` is consulted first, because `mimetypes` reads the platform
+    registry and serving a script as the wrong type is a real failure.
     """
     extension = os.path.splitext(path)[1].lower()
     fixed = _WEB_MEDIA_TYPES.get(extension)
@@ -117,43 +96,31 @@ def guess_content_type(path: str) -> str:
     return mimetypes.guess_type(path)[0] or MIME_OCTET_STREAM
 
 
-def _require_slots(cls: type) -> None:
+def _require_slots(cls: type[Any]) -> None:
     """Raise unless `cls` declares its own `__slots__`.
 
     A slotted base whose subclass forgets `__slots__` silently regains a
-    per-instance `__dict__`, undoing the memory saving the base established -
-    and failing silently, which is why the guardrails call for a structural
-    check rather than review.
-
-    Called from each slotted base's `__init_subclass__`. One implementation
-    because there were five, carrying **three different messages** for the same
-    condition, so what a user was told depended on which base they subclassed.
+    per-instance `__dict__`, undoing the base's memory saving - silently, which
+    is why the guardrails call for a structural check. Called from each slotted
+    base's `__init_subclass__`.
     """
     if "__slots__" not in cls.__dict__:
         raise TypeError(f"{cls.__name__} must declare __slots__ (use () if it adds no fields)")
 
 
-# `BaseExceptionGroup` is a builtin only from Python 3.11 (PEP 654); on 3.10 the
-# name is absent. Resolved once here so the lifespan-unwind, debug, and
-# dependency-teardown paths share one platform shim: callers group multiple
-# failures on 3.11+ and re-raise the first on 3.10 when grouping is unavailable.
+# A builtin only from 3.11 (PEP 654); callers re-raise the first on 3.10.
 _BaseExceptionGroup: type[BaseException] | None = getattr(builtins, "BaseExceptionGroup", None)
 
-# Reason-phrase lookup - `HTTPStatus(code).phrase` walks the IntEnum on
-# every access. Build the mapping once at import time.
+# Built once: `HTTPStatus(code).phrase` walks the IntEnum on every access.
 _STATUS_PHRASES: dict[int, str] = {s.value: s.phrase for s in HTTPStatus}
 
 
 def is_json_mimetype(mimetype: str) -> bool:
     """True for `application/json` or any `application/*+json` subtype.
 
-    Single source of the JSON content-type predicate consumed by
-    `Request.is_json`, `Response.is_json`, and the MCP tool serialiser.
-    Per RFC 6839 Sec. 3.1 the structured-suffix `+json` (e.g.
-    `application/vnd.api+json`, `application/problem+json`) marks the body
-    as JSON-encoded; a bare `endswith("json")` over-matches unrelated types
-    such as `text/json`, so the suffix test is anchored to the
-    `application/` tree.
+    Per RFC 6839 Sec. 3.1 the structured suffix `+json` marks the body as
+    JSON-encoded. A bare `endswith("json")` over-matches unrelated types such as
+    `text/json`, so the suffix test is anchored to the `application/` tree.
     """
     if mimetype == MIME_JSON:
         return True
@@ -161,34 +128,30 @@ def is_json_mimetype(mimetype: str) -> bool:
 
 
 def json_body_refused(mimetype: str) -> bool:
-    """Whether a declared content type forbids reading the body as JSON.
+    """Whether the declared content type forbids reading the body as JSON.
 
-    An absent header declares nothing and is not a refusal: plenty of clients
-    omit it, and a browser cannot omit it on a cross-origin send. A declared
-    non-JSON type is a refusal, which is what closes the CSRF avenue -
-    `text/plain`, `multipart/form-data` and `application/x-www-form-urlencoded`
-    are the types a cross-origin form or `fetch` may send with no CORS
-    preflight, so an endpoint that parses a body under one of them can be
-    driven through a cookie-authenticated victim's browser.
+    Media-type enforcement first: a caller that asked for JSON and declared
+    something else is told so (415) rather than parsed on a guess. An absent
+    header is a refusal too - absence declares nothing.
 
-    Single source of the rule for every door that reads a request body as
-    JSON, so a new one cannot answer differently.
+    It narrows one CSRF avenue incidentally. `text/plain`, `multipart/form-data`,
+    `application/x-www-form-urlencoded` and an absent header are what a
+    cross-origin form or `fetch` may send with no preflight, so refusing them
+    keeps a JSON endpoint off that path. It does nothing about a same-origin
+    attacker, a CORS-permissive app, or one declaring `application/json` from an
+    allowed origin: `CSRFMiddleware` and `SameSite` cookies are the control.
     """
-    return bool(mimetype) and not is_json_mimetype(mimetype)
+    return not is_json_mimetype(mimetype)
 
 
 # ── Async offload ─────────────────────────────────────────
 def offload(fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> asyncio.Future[Any]:
     """Run a sync callable in the default executor, preserving request context.
 
-    Returns the awaitable (call sites do `await offload(...)`) so it adds no
-    extra coroutine frame on the hot dispatch path - only one function-call
-    frame, which is negligible against the thread-pool hop itself. The callable
-    runs through a `copy_context()` snapshot so request-scoped ContextVars
-    (`request`/`session`/`g`/`current_app` proxies, `flash()`) stay bound in the
-    worker thread; omitting that wrap makes them read "unbound". The snapshot is
-    read-only from the caller's view - a `ContextVar.set(...)` inside the sync
-    callable does not propagate back.
+    Returns the awaitable rather than awaiting it, so it adds no extra coroutine
+    frame on the hot dispatch path. The callable runs through a `copy_context()`
+    snapshot, so request-scoped ContextVars stay bound in the worker thread; the
+    snapshot is read-only, so a `set(...)` inside does not propagate back.
     """
     loop = asyncio.get_running_loop()
     ctx = contextvars.copy_context()
@@ -199,10 +162,9 @@ def offload(fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> asyncio.Fut
 def _coerce_secret_bytes(value: str | bytes | Secret) -> bytes:
     """Unwrap a `Secret` and UTF-8 encode a `str`, returning raw bytes.
 
-    Single source of the secret/salt coercion shared by `veloce.signing` and
-    `veloce.passwords`. Callers that require a non-empty secret check the
-    returned bytes (`if not coerced:`), which is equivalent to checking the
-    pre-encode `str`/`bytes` since `not b""` and `not ""` are both true.
+    Callers that require a non-empty secret check the returned bytes, which is
+    equivalent to checking the pre-encode value since `not b""` and `not ""` are
+    both true.
     """
     if isinstance(value, Secret):
         value = value.reveal()
@@ -243,31 +205,13 @@ def _unpack_response_tuple(value: tuple[Any, ...]) -> tuple[Any, int | None, Any
     Returns `(body, status, headers)` with `None` for whatever the tuple did not
     carry, or `None` when `value` is not a response tuple at all - any length but
     two or three, which every caller then treats as a plain value.
-
-    One table, three callers. `Veloce.make_response`, `veloce.make_response` and
-    dispatch each kept their own copy, and they had drifted: a one-element tuple
-    was the body to two of them and a one-item JSON array to the third, and a
-    four-element tuple lost its status and headers in silence rather than being
-    answered as data. The disagreement was reachable from user code with a
-    docstring asserting it did not exist.
     """
     length = len(value)
     if length == 3:
         return value[0], value[1], value[2]
     if length == 2:
         body, second = value
-        # Headers are a mapping or an iterable of pairs; a status is an int, or
-        # something that names one. Reading a header list as a status raised
-        # `TypeError` on the dispatch path while the two `make_response` entry
-        # points accepted it, so `return "x", [("X", "y")]` from a handler was a
-        # 500 that the same tuple handed to `make_response` answered 200.
-        #
-        # The mapping test is `Mapping`, not `dict`. `Headers` is a `CIMultiDict`
-        # and not a `dict` subclass, so a handler returning the documented
-        # `(body, headers)` with the framework's own header type fell through to
-        # `int(second)` and answered 500 - while the same object passed to
-        # `Response(headers=...)` worked. `str` and `bytes` are iterable but name
-        # a status, so they are excluded rather than read as pairs.
+        # `Mapping`, since `Headers` is no `dict`; `str`/`bytes` name a status.
         if isinstance(second, Mapping) or (
             isinstance(second, Iterable) and not isinstance(second, (str, bytes))
         ):
@@ -284,8 +228,7 @@ def _header_value_has_crlf(value: str) -> bool:
     return "\r" in value or "\n" in value or "\x00" in value
 
 
-#: Appended to a field name when a header value is rejected. Kept as a constant
-#: so the message is built only on the raise.
+#: Appended on rejection, as a constant so the message is built only on a raise.
 _LABEL_HEADER_VALUE_SUFFIX = " header value"
 
 
@@ -296,21 +239,16 @@ def _reject_header_crlf(value: str, what: str, suffix: str = "") -> str:
     splitting / header injection. Raising - rather than silently
     stripping - surfaces the bug at the offending call site.
 
-    `what` and `suffix` are joined only when raising. A caller naming the field
-    it is checking would otherwise build `f"{name} header value"` per header per
-    response for a string almost every call discards.
+    `what` and `suffix` are joined only when raising, so a caller naming the
+    field it checks does not build that string per header per response.
     """
     if _header_value_has_crlf(value):
         raise ValueError(f"{what}{suffix} contains an illegal control character (CR, LF, or NUL)")
     return value
 
 
-# Control characters (the C0 range plus DEL) in a request-derived value would let
-# an attacker forge or split a plain-text log line (CWE-117): a percent-decoded
-# `%0a` in the request target arrives as a real newline that a text formatter
-# writes as a new physical record. `_LOG_SANITIZE` escapes every control
-# character before it reaches a log sink; a normal method / path holds none, so
-# `str.translate` over it is a straight pass.
+# A control character in a request-derived value splits a plain-text log line
+# (CWE-117): a percent-decoded `%0a` in the target arrives as a real newline.
 _LOG_SANITIZE = str.maketrans({**{c: f"\\x{c:02x}" for c in range(0x20)}, 0x7F: "\\x7f"})
 
 
@@ -325,12 +263,10 @@ def _encode_header_value(value: str) -> str:
     token rather than raising (HTTP/1.1) or emitting raw UTF-8 (ASGI).
 
     The caller must have already cleared `_reject_header_crlf`. The token is
-    built here rather than through `email.header.Header`: `maxlinelen` only
-    suppresses *length*-based folding, and `Header.encode()` also folds on any
-    character Python counts as a line break, so a value carrying U+2028 or
-    U+2029 came back as two Q-encoded words joined by a bare LF - re-introducing
-    into the header bytes exactly the newline this function exists to keep out.
-    One base64 encoded-word has nowhere to fold.
+    built here rather than through `email.header.Header`, whose `encode()` folds
+    on any character Python counts as a line break - so a value carrying U+2028
+    comes back as two words joined by a bare LF. One base64 encoded-word has
+    nowhere to fold.
     """
     if value.isascii():
         return value
@@ -351,40 +287,27 @@ def _encode_response_head(
 ) -> list[str]:
     """Build the HTTP/1.1 status line plus header lines for a response.
 
-    Shared by ``Response.encode()``, ``StreamingResponse.encode()`` and
-    ``EventSourceResponse.encode()`` so the raw-transport heads stay in
-    lock-step.
+    Shared by every raw-transport ``encode()`` so the heads stay in lock-step.
 
-    ``keep_alive`` says whether the connection survives this response. It is
-    required rather than defaulted, because the protocol takes the actual
-    decision: a head that hardcodes ``Connection: keep-alive`` answers an
-    HTTP/1.0 request, or one asking for ``Connection: close``, with a closed
-    socket and a header saying otherwise. Required means a response type added
-    later cannot inherit a default that contradicts its transport. ``default_headers`` are framework defaults applied
-    in their given order; each is emitted only when the caller has not
-    supplied a header of the same name (case-insensitive), so a
-    lower-cased ``content-type`` override does not produce a duplicate.
+    ``keep_alive`` is required rather than defaulted, because the protocol takes
+    the decision: a head hardcoding ``Connection: keep-alive`` would answer an
+    HTTP/1.0 request with a closed socket and a header saying otherwise.
 
-    User ``headers`` are then emitted in order, splitting any joined
-    ``Set-Cookie`` blob and rejecting CR/LF/NUL in names and values.
-    Default values are CRLF/NUL-validated too: their names are
-    framework constants but a value such as ``content_type`` is a
-    public, caller-settable constructor argument, so it must clear the
-    same response-splitting check before it reaches the wire.
-    Returns the line list (each ending in CRLF); the caller joins,
-    encodes latin-1, and appends the blank-line terminator and any body.
+    ``default_headers`` are emitted in order, each only when the caller supplied
+    no header of the same name (case-insensitively). User ``headers`` follow,
+    splitting any joined ``Set-Cookie`` blob. Both are CRLF/NUL-validated, since
+    a default value such as ``content_type`` is caller-settable.
+
+    Returns the line list, each ending in CRLF; the caller joins, encodes latin-1
+    and appends the blank-line terminator and any body.
     """
     reason = _STATUS_PHRASES.get(status_code, "")
     parts = [f"HTTP/1.1 {status_code} {reason}".rstrip() + "\r\n"]
 
-    # Lowered once per user header and reused below: the duplicate-slot map
-    # needs the same value, and computing it twice showed up on a path that runs
-    # per header per response.
+    # Lowered once, reused below: twice showed up per header per response.
     lowered = [(key, str(key).lower(), value) for key, value in headers.items()]
     user_keys_lc = {key_lower for _key, key_lower, _value in lowered}
-    # The transport decides whether the connection survives, so the caller
-    # passes that decision in. Stating `keep-alive` regardless would describe a
-    # socket the server is about to close as reusable.
+    # The transport decides: a hardcoded `keep-alive` may describe a dead socket.
     if HEADER_CONNECTION_LC not in user_keys_lc:
         parts.append(
             f"{HEADER_CONNECTION}: "
@@ -395,17 +318,12 @@ def _encode_response_head(
             _reject_header_crlf(value, name, _LABEL_HEADER_VALUE_SUFFIX)
             parts.append(f"{name}: {_encode_header_value(value)}\r\n")
 
-    # HTTP field names are case-insensitive (RFC 9110 Sec. 5.1), so two
-    # spellings of one field must not both reach the wire - a duplicate
-    # `Content-Security-Policy` is intersected by browsers to the most
-    # restrictive, silently narrowing the policy the later writer intended.
-    # The slot map lets a second spelling overwrite the first. `Set-Cookie` is
-    # excluded: it is legitimately multi-valued.
+    # Field names are case-insensitive (RFC 9110 Sec. 5.1), and browsers narrow a
+    # duplicated `Content-Security-Policy`. `Set-Cookie` is legitimately repeated.
     slot_by_name: dict[str, int] = {}
     for key, key_lower, value in lowered:
         if key_lower == "set-cookie":
-            # One `Set-Cookie` dict entry may carry several cookies joined
-            # by the internal separator; emit and CRLF-validate each line.
+            # One entry may join several cookies; validate each line.
             for line in str(value).split(SET_COOKIE_JOINER):
                 _reject_header_crlf(line, MSG_LABEL_SET_COOKIE_VALUE)
                 parts.append(f"Set-Cookie: {_encode_header_value(line)}\r\n")
@@ -430,21 +348,17 @@ async def _write_chunked(
 ) -> None:
     """Write `stream` to `transport` in HTTP/1.1 chunked framing.
 
-    The write-side twin of `_encode_response_head`: every streaming response
-    that frames its own body on the raw transport - `StreamingResponse` in
-    `http/`, `EventSourceResponse` in `veloce/` - goes through here, so a rule
-    discovered on one does not have to be rediscovered on the next.
+    The write-side twin of `_encode_response_head`, used by every streaming
+    response that frames its own body on the raw transport.
 
-    `transport.writelines` (where supported) keeps the size-line, payload, and
-    trailer as separate buffers instead of concatenating them into a fresh
-    bytes object per chunk; transports and test fakes implementing only the
-    basic `WriteTransport` API fall back to one concatenated write.
+    `transport.writelines`, where supported, keeps the size-line, payload and
+    trailer as separate buffers rather than concatenating per chunk; a transport
+    offering only basic `WriteTransport` falls back to one concatenated write.
 
     A zero-length chunk is skipped: its framing is the last-chunk terminator
-    (RFC 9112 Sec. 7.1), so emitting it mid-stream truncates the body and
-    desynchronises keep-alive framing. `drain`, when supplied, is awaited after
-    each chunk, so a producer outrunning a slow client is throttled instead of
-    growing the transport write buffer without bound.
+    (RFC 9112 Sec. 7.1), so emitting it mid-stream truncates the body. `drain`,
+    when supplied, is awaited after each chunk, so a producer outrunning a slow
+    client is throttled instead of growing the write buffer without bound.
     """
     writelines = getattr(transport, "writelines", None)
     async for chunk in stream:
@@ -464,16 +378,14 @@ async def _write_chunked(
 def _file_etag(path: str, size: int, mtime: float) -> str:
     """Weak, opaque-quoted ETag derived from (path, size, mtime).
 
-    RFC 9110 Sec. 8.8.3 - entity-tags must be marked weak (`W/`) when they
-    do not guarantee byte-for-byte identity. mtime-derived tags can
-    collide within the same second across content-altering writes, so
-    a weak validator is the only spec-compliant choice. Weak compare
-    (Sec. 8.8.3.2) still lets `If-None-Match` / `If-Range` work for cache
-    revalidation; strict `If-Match` correctly refuses these tags.
+    RFC 9110 Sec. 8.8.3 requires the weak (`W/`) marker when a tag does not
+    guarantee byte-for-byte identity, and an mtime-derived tag can collide
+    within the same second. Weak compare (Sec. 8.8.3.2) still serves
+    `If-None-Match`; `If-Match` and `If-Range` (Sec. 13.1.5, compared strongly)
+    refuse these tags, so a range resume uses `Last-Modified` instead.
     """
     key = f"{path}:{size}:{mtime}".encode()
-    # `usedforsecurity=False` so the cache validator does not raise on FIPS
-    # builds (the hash is an opaque tag, not a security primitive).
+    # `usedforsecurity=False`: an opaque tag, so it must not raise on FIPS builds.
     return f'W/"{hashlib.md5(key, usedforsecurity=False).hexdigest()}"'
 
 
@@ -499,25 +411,17 @@ def _preconditions_say_unchanged(
 ) -> bool:
     """Whether the read-side preconditions say the client's copy is current.
 
-    RFC 9110 Sec. 13.2 precedence, in one place: `If-None-Match` supersedes
+    RFC 9110 Sec. 13.2 precedence: `If-None-Match` supersedes
     `If-Modified-Since` when both are present, and an explicit non-match ends
     the decision rather than falling through to the date. `*` matches whenever a
     representation exists, wherever it appears in the list (Sec. 13.1.2), and
     the ETag comparison is weak (Sec. 8.8.3.2).
-
-    The rule was written twice - `Response.make_conditional` and
-    `StaticFiles.handle`'s helper - which is how the two came to differ in the
-    fall-through case. Both callers keep their own surroundings, because those
-    genuinely differ: `make_conditional` reads its validators off the response's
-    own headers and mutates the response, where the static path already holds
-    the stat's `etag` and `mtime` as values.
     """
     if if_none_match:
         if "*" in if_none_match:
             return True
         return any(_etag_matches_weak(etag, token) for token in if_none_match)
-    # HTTP-dates have second resolution, so an mtime of 1.5 must not read as
-    # newer than an `If-Modified-Since` of 1.
+    # HTTP-dates have second resolution, so mtime 1.5 is not newer than 1.
     return (
         if_modified_since is not None and mtime is not None and int(mtime) <= int(if_modified_since)
     )
@@ -551,8 +455,7 @@ def _b64decode(data: str) -> bytes:
     return base64.urlsafe_b64decode(data + pad)
 
 
-# Memoised `inspect.iscoroutinefunction` results keyed by the callable.
-# WeakKeyDictionary so GC of a hook auto-evicts its entry.
+# Keyed by callable, weakly so collecting a hook evicts its entry.
 _iscoro_cache: weakref.WeakKeyDictionary[Callable[..., Any], bool] = weakref.WeakKeyDictionary()
 
 
@@ -578,19 +481,13 @@ def _is_async_callable(fn: Callable[..., Any]) -> bool:
 def _check_async(fn: Callable[..., Any]) -> bool:
     if inspect.iscoroutinefunction(fn):
         return True
-    # Inspect the bound `__call__` directly - `callable()` would tell us
-    # whether `fn` is callable, not whether its `__call__` is `async def`.
+    # The bound `__call__`: `callable()` says nothing about `async def`.
     call = getattr(fn, "__call__", None)  # noqa: B004
     return call is not None and inspect.iscoroutinefunction(call)
 
 
-# The default transport port for each URL scheme (RFC 6454 Sec. 4 -
-# origin equivalence treats `https://host` and `https://host:443` as the
-# same origin). CSRF origin matching canonicalises ws/wss origins too, so
-# its strip form spans all four schemes. The URL build form (`URL.netloc`)
-# deliberately does NOT: it only suppresses an explicit http/https default
-# port and emits a ws/wss `:80`/`:443` verbatim, preserving the absolute-URL
-# strings Veloce produced before the strip/build helpers were unified.
+# Default port per scheme; RFC 6454 Sec. 4 treats `https://host` and
+# `https://host:443` as one origin. `URL.netloc` strips only an http/https one.
 _NETLOC_DEFAULT_PORTS: dict[str, int] = {"http": 80, "https": 443}
 DEFAULT_PORTS: dict[str, int] = {"http": 80, "https": 443, "ws": 80, "wss": 443}
 
@@ -639,18 +536,13 @@ def _ws_handshake_rejection(middlewares: Iterable[object], host: str, origin: st
     """Report whether a WebSocket handshake is refused by the host/Origin allow-lists.
 
     A `websocket` scope never reaches an HTTP middleware's `process_request`, so
-    the handshake gate consults the same public predicates the middleware would
-    apply: `is_host_allowed(host)` and `is_websocket_origin_allowed(origin)`.
-    The two transports (native raw-socket and ASGI) share this single policy
-    decision so the predicate set and evaluation order stay in lock-step; each
-    caller maps the refusal onto its own wire form (an HTTP 403 on the native
-    path, a 1008 close on the ASGI path). Returns `True` when the handshake is
-    refused, `False` when it is allowed.
+    the gate consults the same public predicates the middleware would apply:
+    `is_host_allowed(host)` and `is_websocket_origin_allowed(origin)`. Both
+    transports share this decision; each maps the refusal onto its own wire form
+    (HTTP 403 native, a 1008 close on ASGI).
 
-    The scan walks the live middleware list once per handshake. Handshakes are a
-    cold path over a short list (typically 1-7 middlewares), so per-connection
-    iteration here is intentional - it is not a per-request, per-frame, or
-    per-message path.
+    The scan walks the live middleware list once per handshake - a cold path over
+    a short list, not a per-request or per-frame one.
     """
     for mw in middlewares:
         host_check = getattr(mw, "is_host_allowed", None)
@@ -662,45 +554,36 @@ def _ws_handshake_rejection(middlewares: Iterable[object], host: str, origin: st
     return False
 
 
-# The active app and request for the current task. They live here rather than in
-# `helpers` because four subpackages (`app`, `contrib`, `middleware`) read them
-# directly, and a public module is the wrong place to reach into for a private
-# name. `helpers` re-exports them for the `current_app` / `request` proxies.
+# The current task's app and request; `helpers` re-exports them as proxies.
 _current_app_var: contextvars.ContextVar[Any] = contextvars.ContextVar(
     "veloce_current_app", default=None
 )
 _current_request_var: contextvars.ContextVar[Any] = contextvars.ContextVar(
     "veloce_current_request", default=None
 )
+# True inside an exception handler, where the send helpers skip range
+# negotiation: RFC 9110 Sec. 14.2 scopes a `Range` to the target's own body.
+_serving_error_page_var: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "veloce_serving_error_page", default=False
+)
 
-# Distinguishes "the handler-JSON serialiser has not been resolved yet" from a
-# resolved `None`, which means "take the direct path". Lives here because the
-# app's core resolves it and the dispatch mixin reads it, and those two cannot
-# import each other.
+# "Not resolved yet", as against a resolved `None` meaning the direct path.
 _UNRESOLVED_JSON_DUMPS: Any = object()
 
 
 def dumps_for(app: Any, payload: Any) -> bytes:
     """Serialise `payload` through `app`'s provider, or directly without one.
 
-    The one place a JSON payload bound for a client is encoded. Every surface
-    that sends one - a response body, a websocket frame, a server-sent event -
-    goes through here, so an application's dialect cannot reach some of them and
-    miss others. `app` is `None` outside a request, where there is no provider
-    to ask and the direct encoder applies.
+    The one place a JSON payload bound for a client is encoded, so an
+    application's dialect cannot reach some surfaces and miss others. `app` is
+    `None` outside a request, where the direct encoder applies.
 
-    Lives here rather than in `json_provider` because `http.response` is the
-    lower layer and must be able to call it: the provider knows about responses,
-    not the other way round. `json_provider` re-exports it under its documented
-    name.
+    Here rather than in `json_provider` because `http.response` is the lower
+    layer and must be able to call it; `json_provider` re-exports it.
     """
     if app is None:
         return orjson.dumps(payload, default=orjson_default)
-    # The app resolves its provider once and caches `None` when the stock one
-    # with nothing configured is active, because that emits exactly what the
-    # direct call does. Reading the cache rather than going through
-    # `app.json.dumps` unconditionally keeps an application that configured no
-    # dialect on the same direct path it was on before.
+    # `None` means the stock provider, which emits what the direct call does.
     dumps = app._handler_json_dumps
     if dumps is _UNRESOLVED_JSON_DUMPS:
         dumps = app._handler_json_dumps = app._resolve_handler_json_dumps()
@@ -715,23 +598,19 @@ def dumps_current(payload: Any) -> bytes:
     return dumps_for(_current_app_var.get(), payload)
 
 
-def _require_methods(cls: type, base: type, names: tuple[str, ...]) -> None:
+def _require_methods(cls: type[Any], base: type[Any], names: tuple[str, ...]) -> None:
     """Refuse `cls` unless it supplies a real implementation of every name.
 
-    Abstractness in this codebase is a `NotImplementedError` body rather than
-    `abc.ABC`, so "supplied" means the attribute resolves to something other
-    than the one `base` defines. A subclass of a *concrete* backend therefore
-    passes on inherited implementations, which is how a deployment usually
-    specialises one.
+    Abstractness here is a `NotImplementedError` body rather than `abc.ABC`, so
+    "supplied" means the attribute resolves to something other than the one
+    `base` defines, and a subclass of a *concrete* backend passes on inherited
+    implementations.
 
-    Raised at subclass definition, so a forgotten method is an `import`-time
-    `TypeError` naming what is missing rather than a `NotImplementedError` on a
-    live request. Runs once per subclass; nothing per request consults it.
+    Raised at subclass definition, so a forgotten method is an import-time
+    `TypeError` naming it rather than a `NotImplementedError` on a live request.
 
-    An intermediate class that deliberately leaves a method to its own subclasses
-    marks it `@abc.abstractmethod`: `__abstractmethods__` is exempt above, and
-    the refusal message says so, because a reader who hits it is otherwise told
-    only what is missing and not that the pattern is supported.
+    An intermediate class that deliberately leaves a method to its own
+    subclasses marks it `@abc.abstractmethod`, which is exempt.
     """
     missing = [
         name
@@ -753,11 +632,6 @@ def _quote_header_value(value: str) -> str:
     RFC 9110 Sec. 5.6.4: a backslash begins a quoted-pair, so both the
     backslash and the double-quote must be escaped - and the backslash first,
     or the backslash written to escape a quote would itself be doubled.
-
-    Shared by every quoted-string producer in the package (header parameters,
-    `Content-Disposition` filenames, `WWW-Authenticate` params and the test
-    client's multipart headers), which previously each wrote the transform out
-    and did not all get it right.
     """
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
@@ -765,9 +639,8 @@ def _quote_header_value(value: str) -> str:
 def _close_form_uploads(form: Any) -> None:
     """Close the spool files a multipart parse opened.
 
-    Takes the form rather than the request so a caller that only needs the
-    files does not have to retain the whole `Request` to reach them - see the
-    background-task release callback in `app/dispatch.py`.
+    Takes the form rather than the request, so a caller that only needs the
+    files does not retain the whole `Request` to reach them.
     """
     if form is None:
         return
@@ -781,29 +654,16 @@ def _close_form_uploads(form: Any) -> None:
 def _decode_basic_credentials(payload: str) -> tuple[str, str] | None:
     """Decode an RFC 7617 `Basic` payload into `(userid, password)`, or `None`.
 
-    `None` means malformed, which covers both ways the payload can be: base64
-    that does not decode (or does not decode as UTF-8), and a decoded value with
-    no colon. RFC 7617 Sec. 2 makes the colon mandatory - `userid ":" password` -
-    so a colon-less payload is not "a username with an empty password", it is not
-    credentials at all. Reporting it as a username handed one to code reading
-    `request.authorization` for a header the security scheme refuses with a 401.
+    `None` means malformed: base64 that does not decode as UTF-8, or a decoded
+    value with no colon. RFC 7617 Sec. 2 makes the colon mandatory -
+    `userid ":" password` - so a colon-less payload is not credentials at all.
 
-    Surrounding whitespace is trimmed here. RFC 9110 Sec. 11.6.1 allows more
-    than one SP between the auth-scheme and the token68, and field values carry
-    optional whitespace, so it is not part of the credential - and a caller
-    that skips the trim reports credentials the other refuses with a 401.
-
-    Shared by `Authorization.from_header` and `HTTPBasic` so the two cannot
-    disagree about what a valid payload is. Held as two copies they differ on
-    exactly the edges that are easy to miss: the colon-less case, and this
-    whitespace.
+    Surrounding whitespace is trimmed, because RFC 9110 Sec. 11.6.1 allows more
+    than one SP between the auth-scheme and the token68 and field values carry
+    optional whitespace, so it is not part of the credential.
     """
     stripped = payload.strip()
-    # RFC 4648 Sec. 4 pads to a multiple of four, so any other length is not
-    # base64. Checked here rather than left to `validate=True`, which only began
-    # rejecting excess padding in CPython 3.12: without this, `YTpi=` decodes to
-    # `a:b` on 3.11 and raises on 3.12, so one interpreter reports credentials
-    # for a header the other refuses with a 401.
+    # RFC 4648 Sec. 4 pads to four; `validate=True` only catches it on 3.12+.
     if len(stripped) % 4:
         return None
     try:
@@ -825,13 +685,8 @@ def _bearer_token_from(auth: str, scheme: str = AUTH_SCHEME_BEARER) -> str | Non
     """Return the bearer token in an `Authorization` value, or `None`.
 
     Pure extraction: no exception, no challenge. `security/_utils` wraps it with
-    the `auto_error` behaviour a security scheme needs, and the MCP HTTP
-    transport - which always passes `auto_error=False` because it owes the caller
-    a challenge response rather than a raise - calls this directly.
-
-    Here rather than in `security/` because it is needed from two subpackages,
-    and importing an underscore-prefixed name across a subpackage boundary is
-    what this module exists to avoid.
+    the `auto_error` behaviour a security scheme needs; the MCP HTTP transport,
+    which owes the caller a challenge response rather than a raise, calls it here.
 
     RFC 6750 Sec. 2.1 + RFC 7235: only SP/HTAB are permitted between the scheme
     and the token, so other Unicode whitespace (NBSP, newline) is not trimmed.
@@ -848,15 +703,7 @@ def _bearer_token_from(auth: str, scheme: str = AUTH_SCHEME_BEARER) -> str | Non
     return auth[prefix_len:].strip(" 	") or None
 
 
-# The JSON-Schema fragment this framework publishes for each scalar kind it can
-# describe. One home because two layers emit them into the *same* document:
-# `routing.converters` describes a path parameter (keyed by converter name) and
-# `contrib.openapi` an annotated one (keyed by Python type). Kept as two tables
-# they agreed only by hand, and a one-sided edit would have documented the same
-# type two ways inside one OpenAPI document.
-#
-# Every fragment is flat, so the shallow `dict(...)` copy both consumers already
-# take before mutating is enough to keep this table immutable in practice.
+# One home: `routing.converters` and `contrib.openapi` share the one document.
 _SCALAR_JSON_SCHEMAS: dict[str, dict[str, Any]] = {
     "integer": {"type": "integer"},
     "number": {"type": "number"},
@@ -864,10 +711,7 @@ _SCALAR_JSON_SCHEMAS: dict[str, dict[str, Any]] = {
     "date": {"type": "string", "format": "date"},
     "date-time": {"type": "string", "format": "date-time"},
     "time": {"type": "string", "format": "time"},
-    # A filesystem path arrives as a string. `path` is not a registered JSON
-    # Schema format, but the keyword is an open annotation, so naming it tells a
-    # client what the string means rather than leaving it indistinguishable from
-    # free text.
+    # `path` is unregistered, but `format` is open, so it still tells a client.
     "path": {"type": "string", "format": "path"},
 }
 
@@ -877,16 +721,10 @@ def _readd_route(
 ) -> None:
     """Re-register `info` onto `target` under `full_path`/`endpoint`.
 
-    Single source of truth for the `RouteInfo`-to-`add_route` field mapping
-    shared by blueprint splicing (`Veloce.register_blueprint`) and nested
-    blueprint composition (`Blueprint.register_blueprint`). Keeping the kwarg
-    block in one place means a new `RouteInfo` field is forwarded on every
-    re-registration path, not silently dropped on one of them.
-
-    Here rather than in `routing/router.py` because both callers - `app/core.py`
-    and `blueprints.py` - sit outside `routing/`, and importing an
-    underscore-prefixed name across a subpackage boundary is what this module
-    exists to avoid.
+    The `RouteInfo`-to-`add_route` field mapping, in one place so a new
+    `RouteInfo` field is forwarded on every re-registration path. Shared by
+    blueprint splicing and nested blueprint composition, both of which sit
+    outside `routing/`.
     """
     target.add_route(
         path=full_path,
@@ -935,3 +773,20 @@ def _readd_route(
             else None
         ),
     )
+
+
+def resolve_hint_target(obj: Any) -> Any:
+    """Return the object whose annotations describe `obj`'s call signature.
+
+    `inspect.signature` transparently follows `functools.partial` to its `func`,
+    a class to `__init__` and a callable instance to `type(obj).__call__`;
+    `get_type_hints` follows none of them and would read the class body instead.
+    """
+    real = obj
+    while isinstance(real, functools.partial):
+        real = real.func
+    if inspect.isclass(real):
+        return real.__init__
+    if not inspect.isfunction(real) and not inspect.ismethod(real) and callable(real):
+        return type(real).__call__
+    return real

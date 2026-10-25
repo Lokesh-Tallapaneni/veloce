@@ -78,6 +78,7 @@ MCP_ALL = {
     "TaskRegistry",
     "TasksCapability",
     "TextContent",
+    "ToolError",
     "ToolFilter",
     "ToolRegistry",
     "ToolsCapability",

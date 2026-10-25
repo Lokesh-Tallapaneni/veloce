@@ -11,7 +11,8 @@ status that may carry no payload (RFC 9110 Sec. 15.3.5 / 15.3.6 / 15.4.5) and
 emit the body besides.
 
 **No current caller reaches it.** Every path into `_emit_response` today - the
-413, `_emit_error`, `_emit_400` - uses a body-permitting status, so this was
+413 and `_refuse_bad_request` via `_http_exception_response` - uses a
+body-permitting status, so this was
 latent rather than live, and these tests say so rather than implying a bug that
 could be observed. What makes it worth closing is that this is the general
 "emit an already-built `Response`" helper: the next caller should not have to
@@ -27,6 +28,8 @@ import pytest
 
 from veloce import Response, Veloce
 from veloce import status as status_mod
+from veloce.app.asgi import _emit_stream
+from veloce.http.response import StreamingResponse
 from veloce.testclient import TestClient
 
 BODILESS = [204, 205, 304, 100, 102]
@@ -153,13 +156,238 @@ def test_an_over_limit_body_is_still_refused_with_a_body():
     assert "content-type" in {k.lower() for k in resp.headers}
 
 
-def test_a_malformed_query_string_is_still_a_400_with_a_body():
+async def test_a_malformed_query_string_is_still_a_400_with_a_body():
+    """The refusal this helper's live caller actually emits.
+
+    Driven against the ASGI app directly: the query string has to carry raw
+    non-ASCII bytes to reach `_refuse_bad_request`, and the test client builds
+    a well-formed one. This test used to send an ordinary request and assert
+    `200`, so it exercised nothing its name describes.
+    """
     app = Veloce(openapi_url=None)
 
     @app.get("/q")
     async def q():
         return {"ok": True}
 
+    await app._run_lifecycle("startup")
+    sent: list[dict] = []
+
+    async def receive() -> dict:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message: dict) -> None:
+        sent.append(message)
+
+    await app(
+        {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "GET",
+            "path": "/q",
+            # Raw non-ASCII bytes, built explicitly so the source stays ASCII.
+            "query_string": bytes([0xFF, 0xFE]) + b"=1",
+            "headers": [],
+            "scheme": "http",
+            "server": ("t", 80),
+            "client": ("c", 1),
+            "root_path": "",
+        },
+        receive,
+        send,
+    )
+    start = next(m for m in sent if m["type"] == "http.response.start")
+    body = b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
+    assert start["status"] == 400
+    assert body, "a 400 permits a body, so the refusal must carry one"
+
+
+# ── a streamed response survives the cold emit path ──────────────────
+
+
+async def _drive_stream(status_code: int = 400, *, method: str | None = None):
+    """Run `_emit_response` on a streaming response and collect the messages."""
+    app = Veloce(openapi_url=None)
+
+    async def chunks():
+        yield b"CHUNK-ONE"
+        yield b"CHUNK-TWO"
+
+    response = StreamingResponse(chunks(), status_code=status_code)
+    sent: list[dict] = []
+
+    async def send(message: dict) -> None:
+        sent.append(message)
+
+    await app._emit_response(send, response, method)
+    start = next(m for m in sent if m["type"] == "http.response.start")
+    body = b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
+    return {k.decode(): v.decode() for k, v in start["headers"]}, body
+
+
+async def test_a_streamed_response_is_emitted_not_dropped():
+    """A refusal runs the app's error handlers, which may return a stream.
+
+    The cold path sent only `response.body`, so a handler returning a
+    `StreamingResponse` reached the client as an empty body - and a
+    `FileResponse` as its real `Content-Length` with no bytes behind it, which
+    desynchronises a keep-alive connection.
+    """
+    headers, body = await _drive_stream()
+    assert body == b"CHUNK-ONECHUNK-TWO"
+    assert headers.get("content-length") is None
+
+
+async def test_a_streamed_response_to_head_sends_headers_only():
+    _headers, body = await _drive_stream(method="HEAD")
+    assert body == b""
+
+
+@pytest.mark.parametrize("status_code", BODILESS)
+async def test_a_streamed_bodiless_status_sends_no_chunks(status_code):
+    """The rule the hot path applies: a bodiless status ships no payload."""
+    headers, body = await _drive_stream(status_code)
+    assert body == b""
+    assert "content-type" not in headers
+
+
+# ── one writer for both streaming paths ───────────────────────────────
+
+
+def test_a_streamed_response_keeps_its_own_content_type():
+    """The hot path discarded `has_ct` and appended the framework default too.
+
+    Two `Content-Type` headers reached the client and most take the second, so
+    a `text/csv` download arrived as `application/octet-stream`. The cold path
+    already read the flag; this is what the two copies diverging looked like.
+    """
+    app = Veloce(openapi_url=None)
+
+    @app.get("/csv")
+    async def csv() -> Response:
+        async def chunks():
+            yield b"a,b\n"
+
+        return StreamingResponse(chunks(), headers={"Content-Type": "text/csv"})
+
     client = TestClient(app)
-    resp = client.get("/q")
-    assert resp.status_code == 200
+    resp = client.get("/csv")
+    assert resp.headers["content-type"] == "text/csv"
+
+
+@pytest.mark.parametrize("status_code", BODILESS)
+def test_a_streamed_bodiless_status_ships_no_chunks_through_dispatch(status_code):
+    """The rule the hot copy once got wrong, now pinned on the dispatch path.
+
+    A streamed `204` shipped its chunks, and a client on a keep-alive
+    connection read them as the start of the next response.
+    """
+    app = Veloce(openapi_url=None)
+
+    @app.get("/s")
+    async def s() -> Response:
+        async def chunks():
+            yield b"NOPE"
+
+        return StreamingResponse(chunks(), status_code=status_code)
+
+    resp = TestClient(app).get("/s")
+    assert resp.status_code == status_code
+    assert resp.text == ""
+
+
+def test_a_streamed_head_response_sends_headers_only_through_dispatch():
+    """The hot path reads `scope["method"]`, the cold one a parameter.
+
+    One writer has to get the same answer from both, so a refused `HEAD` and a
+    dispatched `HEAD` agree.
+    """
+    app = Veloce(openapi_url=None)
+
+    @app.get("/s")
+    async def s() -> Response:
+        async def chunks():
+            yield b"BODY"
+
+        return StreamingResponse(chunks())
+
+    client = TestClient(app)
+    assert client.get("/s").text == "BODY"
+    assert client.head("/s").text == ""
+
+
+def test_a_streamed_response_keeps_a_content_length_it_set():
+    """A file's length is known from its stat, so it stays length-delimited.
+
+    Dropping it would silently turn a sized download into a chunked one.
+    """
+    app = Veloce(openapi_url=None)
+
+    @app.get("/s")
+    async def s() -> Response:
+        async def chunks():
+            yield b"0123456789"
+
+        return StreamingResponse(chunks(), headers={"Content-Length": "10"})
+
+    resp = TestClient(app).get("/s")
+    assert resp.headers["content-length"] == "10"
+
+
+@pytest.mark.parametrize(
+    "status_code,method",
+    [
+        (200, "GET"),
+        (204, "GET"),
+        (304, "GET"),
+        (102, "GET"),
+        (200, "HEAD"),
+        (204, "HEAD"),
+        (200, None),
+    ],
+    ids=["200-get", "204", "304", "102", "200-head", "204-head", "no-method"],
+)
+async def test_every_streamed_path_sends_exactly_one_terminal_frame(status_code, method):
+    """An ASGI server that never receives `more_body: False` hangs the connection.
+
+    The chunk loop is skipped on a bodiless status and on `HEAD`, so the
+    terminal frame has to sit outside it - which is easy to get wrong when the
+    early returns are written out per call site, as they were.
+    """
+
+    async def chunks():
+        yield b"CHUNK"
+
+    sent: list[dict] = []
+
+    async def send(message: dict) -> None:
+        sent.append(message)
+
+    await _emit_stream(send, StreamingResponse(chunks(), status_code=status_code), method)
+    bodies = [m for m in sent if m["type"] == "http.response.body"]
+    assert len([m for m in bodies if not m.get("more_body", False)]) == 1
+
+
+async def test_an_empty_stream_sends_only_the_terminal_frame():
+    """A generator that yields nothing is a valid empty body, not a hang.
+
+    The chunk loop runs zero times, so the terminal `more_body: False` frame is
+    the only body message - which is what tells the server the response is
+    complete.
+    """
+
+    async def chunks():
+        return
+        yield b""  # unreachable; makes this an async generator
+
+    sent: list[dict] = []
+
+    async def send(message: dict) -> None:
+        sent.append(message)
+
+    await _emit_stream(send, StreamingResponse(chunks()), "GET")
+    bodies = [m for m in sent if m["type"] == "http.response.body"]
+    assert len(bodies) == 1
+    assert bodies[0].get("more_body", False) is False
+    assert bodies[0].get("body", b"") == b""

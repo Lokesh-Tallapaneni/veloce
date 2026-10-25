@@ -1,24 +1,7 @@
 """MCP content blocks — the polymorphic family behind every result content entry.
 
-A tool result, a prompt message, and a typed binary return all carry MCP
-*content blocks*: tagged objects (`{"type": "text" | "image" | ..., ...}`) the
-client renders. `ContentBlock` is the base every block shares; `TextContent`,
-`ImageContent`, `AudioContent`, `ResourceLink` (a reference to a resource the
-client reads by URI), and `EmbeddedResource` (a resource's contents inlined in
-the result) are the concrete kinds the server emits. Each subclass renders itself
-through `to_payload()`, so a result builder shapes a block by calling the base
-method and the subclass decides the wire form — a new block kind is added by
-subclassing, not by hand-writing another inline dict.
-
-The base owns the optional `annotations` field (audience / priority /
-lastModified per the MCP spec) and merges it into every block's payload, so the
-metadata is added in one place rather than re-threaded through each call site.
-`annotations` defaults to `None` and is omitted from the payload when unset, so a
-block built without annotations serialises to exactly the bare tagged dict the
-wire format calls for - the family adds a field, never a wrapper.
-
-Each block is slotted with an `__init_subclass__` guard so a subclass that
-forgets `__slots__` fails loudly instead of silently regaining a `__dict__`.
+A new block kind is added by subclassing and implementing `_body()`. The base
+owns the spec's optional `annotations` field and merges it into every payload.
 """
 
 from __future__ import annotations
@@ -102,10 +85,8 @@ class AudioContent(ContentBlock):
 class ResourceLink(ContentBlock):
     """A `resource_link` block referencing a resource by URI rather than inlining it.
 
-    A tool whose result points an agent at a server resource emits this in place
-    of the bytes: the client follows the `uri` with a `resources/read`. The
-    `name` is required by the spec; `title`, `description`, and `mime_type` are
-    optional hints and are omitted when unset.
+    The client follows the `uri` with a `resources/read`. `name` is required by
+    the spec; the remaining hints are omitted when unset.
     """
 
     __slots__ = ("uri", "name", "title", "description", "mime_type")
@@ -141,9 +122,8 @@ class ResourceLink(ContentBlock):
 class EmbeddedResource(ContentBlock):
     """A `resource` block inlining a resource's contents directly in the result.
 
-    Carries the resource-contents entry (the `uri`/`mimeType` plus a `text` or
-    base64 `blob` value) the client would otherwise fetch, so an agent reads the
-    data without a follow-up `resources/read`.
+    Carries the resource-contents entry (`uri`/`mimeType` plus `text` or base64
+    `blob`) so an agent reads the data without a follow-up `resources/read`.
     """
 
     __slots__ = ("resource",)

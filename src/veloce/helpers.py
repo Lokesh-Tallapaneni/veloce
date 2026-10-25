@@ -26,6 +26,7 @@ from veloce._internal import (
     MIME_HTML,
     _current_app_var,
     _current_request_var,
+    _serving_error_page_var,
     _unpack_response_tuple,
 )
 from veloce.exceptions import exception_for_status
@@ -35,25 +36,15 @@ from veloce.safe import safe_join
 from veloce.signals import message_flashed
 from veloce.status import HTTP_200_OK, HTTP_302_FOUND, HTTP_403_FORBIDDEN
 
-# ── Context vars ──────────────────────────────────────────
-
-# `current_app` and `request` are proxies over these vars: each attribute
-# access resolves against the active task, so `current_app.config["DEBUG"]`
-# works from any coroutine spawned during request handling, and
-# `_current_request_var` additionally backs `app.test_request_context()`.
-
-
 # ── Proxy classes ─────────────────────────────────────────
 
 
 class _ContextProxy:
     """Shared base for ContextVar-backed proxies.
 
-    Subclasses set `_var` (the ContextVar) and `_subject` (a short name
-    used in the unbound error message). The default `_resolve` returns
-    whatever the var carries; override it when the bound value is not
-    the final target (see `_SessionProxy`, which resolves to
-    `request.session`).
+    Subclasses set `_var` (the ContextVar) and `_subject` (the name used in the
+    unbound error message), and override `_resolve` when the bound value is not
+    the final target.
     """
 
     __slots__ = ()
@@ -89,9 +80,7 @@ class _ContextProxy:
 class _CurrentAppProxy(_ContextProxy):
     """Context-local proxy to the currently-handling Veloce app.
 
-    Resolves to the app set by `Veloce.handle_request` for the duration
-    of the request. Accessing any attribute outside that scope raises
-    `RuntimeError`.
+    Accessing any attribute outside a request raises `RuntimeError`.
     """
 
     __slots__ = ()
@@ -103,9 +92,8 @@ class _CurrentAppProxy(_ContextProxy):
 class _CurrentRequestProxy(_ContextProxy):
     """Context-local proxy to the request being handled.
 
-    Resolves to the `Request` bound by the dispatcher (or by
-    `app.test_request_context()`) for the duration of the request.
-    Accessing any attribute outside that scope raises `RuntimeError`.
+    Resolves to the `Request` bound by the dispatcher, or by
+    `app.test_request_context()`; outside one, raises `RuntimeError`.
     """
 
     __slots__ = ()
@@ -116,10 +104,8 @@ class _CurrentRequestProxy(_ContextProxy):
 class _SessionProxy(_ContextProxy):
     """Context-local proxy to the current request's session.
 
-    Resolves to `request.session` (the dict `SessionMiddleware`
-    maintains). Accessing it outside a request context, or without
-    `SessionMiddleware` installed, raises `RuntimeError` - the same
-    failure modes as `request` and `Request.session`.
+    Resolves to `request.session`. Outside a request context, or without
+    `SessionMiddleware` installed, raises `RuntimeError`.
     """
 
     __slots__ = ()
@@ -136,10 +122,8 @@ class _SessionProxy(_ContextProxy):
         return req.session
 
     def __setattr__(self, name: str, value: Any) -> None:
-        # Reads forward through `_ContextProxy.__getattr__`; writes must forward
-        # too, or a public attribute the `Session` supports (notably the
-        # `permanent` property) raises `AttributeError` on this slotted proxy.
-        # Underscore names address the proxy itself.
+        # Writes forward like reads, or a `Session` property such as `permanent`
+        # raises `AttributeError` on this slotted proxy. Underscore names are ours.
         if name.startswith("_"):
             object.__setattr__(self, name, value)
         else:
@@ -222,14 +206,9 @@ class _RequestGlobals:
     def _reset(self) -> None:
         """Bind a fresh store for a new request.
 
-        Eagerly, not on first access. A sync handler runs in a copied context
-        (`copy_context().run`), so a `set()` performed inside it lands in the
-        copy and is discarded when the thread returns - and lazy binding put
-        that `set()` inside the handler. `g.x = 1` from a `def` handler was
-        therefore dropped, unless something earlier in the request happened to
-        touch `g` and bind the store in the request's own context first.
-        Binding here costs one empty dict per request and makes every write a
-        mutation of an object both contexts share.
+        Eagerly, not on first access: a sync handler runs in a copied context,
+        so a lazy `set()` inside it would land in the copy and be discarded.
+        Binding here makes every write a mutation of a shared object.
         """
         self._ctx_var.set({})
 
@@ -256,16 +235,14 @@ def _default_detail(code: int) -> str:
 class Aborter:
     """A callable that turns a status code into an HTTPException.
 
-    Used as `app.aborter(404)` or `app.aborter(403, "Forbidden")`.
-    Subclasses can override `mapping` to register custom exception
-    classes for specific status codes; the base class leaves it empty
-    so the default `exception_for_status` lookup applies.
+    Used as `app.aborter(404)` or `app.aborter(403, "Forbidden")`. Subclasses
+    override `mapping` to register custom exception classes per status code.
     """
 
-    mapping: dict[int, type] = {}
+    mapping: dict[int, type[Any]] = {}
 
-    def __init__(self, extra_mapping: dict[int, type] | None = None) -> None:
-        self._mapping: dict[int, type] = {}
+    def __init__(self, extra_mapping: dict[int, type[Any]] | None = None) -> None:
+        self._mapping: dict[int, type[Any]] = {}
         if extra_mapping:
             self._mapping.update(extra_mapping)
 
@@ -287,9 +264,8 @@ class Aborter:
 def has_app_context() -> bool:
     """True iff `current_app` resolves to a real app.
 
-    Use this to gate code that reads `current_app`/`app.config` so it
-    can also run outside a request (e.g. helper modules imported at
-    module-import time, before any app is bound to the contextvar).
+    Use it to gate code that reads `current_app` / `app.config` so it can also
+    run outside a request.
     """
     return _current_app_var.get() is not None
 
@@ -316,14 +292,10 @@ _default_aborter = Aborter()
 def abort(status_code: int, detail: str = "", headers: dict[str, str] | None = None) -> NoReturn:
     """Raise an HTTPException - a concise shorthand.
 
-    Raises the typed subclass for known status codes (e.g. `NotFound` for 404,
-    `Forbidden` for 403) so error handlers registered against a specific
-    subclass match. Unknown codes fall back to the bare `HTTPException`.
-
-    Inside an application context the call goes through `app.aborter`, so an
-    app that registered a custom code-to-exception mapping raises its own class
-    here too - `abort(404)` and `app.aborter(404)` are the same call. Outside
-    one, the default lookup applies.
+    Raises the typed subclass for known status codes so a handler registered
+    against that subclass matches; unknown codes fall back to `HTTPException`.
+    Inside an application context the call goes through `app.aborter`, so a
+    custom code-to-exception mapping applies here too.
 
     Usage::
 
@@ -341,18 +313,14 @@ def abort(status_code: int, detail: str = "", headers: dict[str, str] | None = N
 def after_this_request(func: Any) -> Any:
     """Register a one-shot after-request callback.
 
-    Fires after the global `@app.after_request` hooks have run for the
-    current request only - future requests are unaffected. Useful for
-    work that depends on data computed inside the handler (e.g. setting
-    a cookie whose value the handler decided).
-
-    Returns the callback unchanged so it can be used as a decorator.
-    Raises `RuntimeError` when called outside an active request.
+    Fires after the global `@app.after_request` hooks, for the current request
+    only. Returns the callback unchanged so it can be used as a decorator, and
+    raises `RuntimeError` outside an active request.
     """
     request = _current_request_var.get()
     if request is None:
         raise RuntimeError("after_this_request() requires an active request context.")
-    # List, not set: order matters - dispatcher drains in registration order.
+    # List, not set: the dispatcher drains in registration order.
     cbs = request._state.setdefault("_after_this_request", [])
     cbs.append(func)
     return func
@@ -362,11 +330,7 @@ def after_this_request(func: Any) -> Any:
 
 
 def _attachment_name(resolved: str, as_attachment: bool, download_name: str | None) -> str | None:
-    """Resolve the `Content-Disposition` filename for a file response.
-
-    Returns `None` for inline responses; otherwise the explicit
-    `download_name` or the basename of the resolved path.
-    """
+    """Resolve the `Content-Disposition` filename for a file response."""
     if not as_attachment:
         return None
     return download_name or os.path.basename(resolved)
@@ -380,11 +344,7 @@ def _build_send_file_args(
     etag: bool | str,
     max_age: int | None,
 ) -> tuple[str, str | None, dict[str, str], bool]:
-    """Compute the path, attachment name, headers, and strip-ETag flag.
-
-    Shared by `send_file` and `async_send_file` so the conditional-GET header
-    assembly and `etag=False` handling live in one place.
-    """
+    """Compute the path, attachment name, headers, and strip-ETag flag."""
     headers: dict[str, str] = {}
     if last_modified is not None:
         if isinstance(last_modified, str):
@@ -396,9 +356,8 @@ def _build_send_file_args(
         headers[HEADER_ETAG] = etag
 
     if max_age is None:
-        # `SEND_FILE_MAX_AGE_DEFAULT` supplies the app-wide default when the
-        # caller does not pass `max_age=`. Resolved through the context var so
-        # the helper keeps working (with no Cache-Control) outside a request.
+        # Through the context var, so the helper still works (with no
+        # Cache-Control) outside a request.
         app = _current_app_var.get()
         if app is not None:
             max_age = app.config.get("SEND_FILE_MAX_AGE_DEFAULT")
@@ -416,6 +375,18 @@ def _finish_send_file(resp: Response, strip_etag: bool) -> Response:
         resp.headers.pop(HEADER_ETAG, None)
         resp._encoded = None
     return resp
+
+
+def _range_negotiable_request() -> Any:
+    """Return the request a file helper may negotiate a `Range` against, if any.
+
+    `None` while an exception handler runs: a `Range` applies only to the target
+    resource's own representation (RFC 9110 Sec. 14.2), and an error page is a
+    stand-in for one the request did not get.
+    """
+    if _serving_error_page_var.get():
+        return None
+    return _current_request_var.get()
 
 
 def send_file(
@@ -451,6 +422,9 @@ def send_file(
         filename=attachment_name,
         content_type=mimetype,
         headers=headers,
+        # This helper serves the file the current request asked for, so it opts
+        # into `Range` handling; a hand-built `FileResponse` does not.
+        request=_range_negotiable_request(),
     )
     return _finish_send_file(resp, strip_etag)
 
@@ -466,10 +440,8 @@ async def async_send_file(
 ) -> Response:
     """Serve a file - async variant of `send_file`.
 
-    Identical to `send_file` but reads the file in an executor via
-    `FileResponse.from_path`, so it never blocks the event loop. Prefer
-    this from async handlers; the sync `send_file` emits a
-    `DeprecationWarning` when called on a running loop.
+    Reads the file in an executor, so it never blocks the event loop. Prefer it
+    from async handlers; the sync `send_file` warns when called on a running loop.
     """
     path, attachment_name, headers, strip_etag = _build_send_file_args(
         path_or_file, as_attachment, download_name, last_modified, etag, max_age
@@ -479,6 +451,7 @@ async def async_send_file(
         filename=attachment_name,
         content_type=mimetype,
         headers=headers,
+        request=_range_negotiable_request(),
     )
     return _finish_send_file(resp, strip_etag)
 
@@ -493,12 +466,9 @@ def redirect(
 ) -> Response:
     """Build a redirect response helper.
 
-    Default `code=302` matches the long-standing convention. RFC 9110 Sec. 15.4
-    catalogue: 301 (permanent, method may change), 302 (found, method
-    may change), 303 (see other, method becomes GET), 307 (temporary,
-    method preserved), 308 (permanent, method preserved). Pick the one
-    that matches your semantics - the helper is a thin wrapper, not a
-    policy. Accepts extra headers (e.g. `Vary`).
+    RFC 9110 Sec. 15.4 catalogue: 301 (permanent, method may change), 302
+    (found, method may change), 303 (see other, method becomes GET), 307
+    (temporary, method preserved), 308 (permanent, method preserved).
     """
     return RedirectResponse(location, status_code=code, headers=headers)
 
@@ -509,15 +479,9 @@ def redirect(
 def url_for(endpoint: str, /, **path_params: Any) -> str:
     """Build the URL for a named route on the active app.
 
-    The module-level form of `current_app.url_for`, for code that is already
-    inside a request and does not hold the app. Templates receive `url_for`
-    automatically, so this is for handlers and helpers.
-
-    The endpoint is positional-only, so a route may have a `{endpoint}` or
-    `{name}` segment and still be reversed.
-
-    Raises `RuntimeError` outside an application context, where there is no app
-    whose routing table could answer.
+    The module-level form of `current_app.url_for`. The endpoint is
+    positional-only, so a route may have an `{endpoint}` or `{name}` segment and
+    still be reversed. Raises `RuntimeError` outside an application context.
     """
     app = _current_app_var.get()
     if app is None:
@@ -534,12 +498,9 @@ def url_for(endpoint: str, /, **path_params: Any) -> str:
 def jsonify(*args: Any, **kwargs: Any) -> JSONResponse:
     """Create a JSON response - a concise shorthand.
 
-    Honours two app-config flags when called inside a request:
-    - `JSON_SORT_KEYS` (default False) - sort dict keys alphabetically.
-    - `JSONIFY_PRETTYPRINT_REGULAR` (default False) - indent the output
-      with 2 spaces for readability. Often enabled under DEBUG.
-
-    Both reach every JSON response, not only this helper.
+    Honours two app-config flags, which reach every JSON response and not only
+    this helper: `JSON_SORT_KEYS` sorts dict keys, and
+    `JSONIFY_PRETTYPRINT_REGULAR` indents the output with 2 spaces.
 
     Usage::
 
@@ -551,10 +512,8 @@ def jsonify(*args: Any, **kwargs: Any) -> JSONResponse:
         raise TypeError("jsonify() takes either positional or keyword args, not both")
     data = (args[0] if len(args) == 1 else list(args)) if args else kwargs
 
-    # Inside a request, serialise through the app's JSON provider so jsonify
-    # and `app.json.dumps()` share one source of truth (the provider caches
-    # the config bitmask on first access). Outside a request context there is
-    # no app, so fall back to the plain JSONResponse defaults.
+    # Inside a request, serialise through the app's JSON provider so this and
+    # `app.json.dumps()` share one source of truth.
     app = _current_app_var.get()
     if app is not None:
         return app.json.response(data)
@@ -569,10 +528,8 @@ def _apply_to_response(
 ) -> Response:
     """Overlay an explicit status and headers onto an existing response.
 
-    Shared by the two spellings that reach `make_response` carrying a `Response`
-    - `make_response(resp, 403)` and `make_response((resp, 403))` - which
-    otherwise applied the overlay on one path and not the other, so the same
-    intent answered 403 or 200 depending on how it was written.
+    Shared by the two spellings that reach `make_response` carrying a
+    `Response`: `make_response(resp, 403)` and `make_response((resp, 403))`.
     """
     if status_code is not None:
         response.status_code = status_code
@@ -591,17 +548,10 @@ def make_response(
     """Create a Response - a convenience wrapper.
 
     A tuple body is unpacked as `(body, status)` / `(body, status, headers)` /
-    `(body, headers)`, the same shapes a handler may return. A tuple of any other
-    length is not a response tuple and is answered as a plain value. The table is
-    `_unpack_response_tuple`, shared with `Veloce.make_response` and dispatch, so
-    one value cannot answer differently depending on which entry point a caller
-    reached for.
-
-    An omitted `status_code` means 200 for a plain body, and leaves an existing
-    `Response`'s own status alone - `make_response(resp)` is a pass-through, while
-    `make_response(resp, 403)` sets 403. That is why the default is `None` rather
-    than `200`: the two cases are distinguishable only if "unsupplied" has its own
-    value.
+    `(body, headers)`, the same shapes a handler may return; any other length is
+    answered as a plain value. An omitted `status_code` means 200 for a plain
+    body and leaves an existing `Response`'s own status alone, which is why the
+    default is `None` rather than `200`.
 
     Usage::
 
@@ -618,15 +568,12 @@ def make_response(
                 status_code = code
             if tuple_headers is not None:
                 headers = tuple_headers
-            # A `Response` inside the tuple takes the tuple's status and headers,
-            # the way dispatch applies them to a handler's `return resp, 404`.
+            # As dispatch applies them to a handler's `return resp, 404`.
             if isinstance(inner, Response):
                 return _apply_to_response(inner, status_code, headers)
             return make_response(inner, status_code, headers, content_type)
     # A `Response` is returned as itself, carrying any status and headers passed
-    # beside it. Without this branch it fell to the JSON one below and was encoded
-    # via its `__str__`, so the body became the object's repr -
-    # `b'"<veloce.http.response.Response object at 0x...>"'`.
+    # beside it; without this branch it would be JSON-encoded via its `__str__`.
     if isinstance(body, Response):
         return _apply_to_response(body, status_code, headers)
     if status_code is None:
@@ -635,10 +582,6 @@ def make_response(
         return JSONResponse(body, status_code=status_code, headers=headers)
     if isinstance(body, (str, bytes)):
         # `text/html` for both, matching `Veloce.make_response` and dispatch.
-        # Answering `application/octet-stream` for bytes here would give the
-        # same value a different type depending on which entry point a caller
-        # reached for - the disagreement `Veloce.make_response`'s docstring
-        # says does not exist.
         ct = content_type or MIME_HTML
         return Response(
             status_code=status_code,
@@ -646,10 +589,10 @@ def make_response(
             content_type=ct,
             headers=headers,
         )
-    # Duck-typed rather than `isinstance(..., BaseModel)` so this module
-    # needs no pydantic import.
-    if hasattr(body, "model_dump"):
-        return JSONResponse(body.model_dump(), status_code=status_code, headers=headers)
+    # Duck-typed, so this module needs no pydantic import.
+    model_dump = getattr(body, "model_dump", None)
+    if model_dump is not None:
+        return JSONResponse(model_dump(), status_code=status_code, headers=headers)
     return JSONResponse(body, status_code=status_code, headers=headers)
 
 
@@ -678,6 +621,7 @@ def send_from_directory(
         path=resolved,
         filename=attachment_name,
         content_type=mimetype,
+        request=_range_negotiable_request(),
     )
 
 
@@ -702,6 +646,7 @@ async def send_from_directory_async(
         path=resolved,
         filename=attachment_name,
         content_type=mimetype,
+        request=_range_negotiable_request(),
     )
 
 
@@ -711,13 +656,8 @@ async def send_from_directory_async(
 def _flash_store() -> Any:
     """Resolve the session dict the flash queue lives in.
 
-    A previous implementation wrote to `g` (a per-request `contextvars`
-    namespace), which made `flash()` silently lose the message across
-    the POST/redirect/GET round-trip that flashes are designed for -
-    the redirected GET sees a fresh `g` with no `_flashes` key. Now
-    we route through the active session so the signed-cookie /
-    server-side session carries the queue across requests, matching
-    the round-trip contract the docstring promises.
+    The session, not `g`: a flash has to survive the POST/redirect/GET
+    round-trip, and the redirected GET sees a fresh `g`.
     """
     req = _current_request_var.get()
     if req is None or "session" not in req._state:
@@ -740,14 +680,10 @@ def flash(message: str, category: str = "message") -> None:
     store = _flash_store()
     flashes = store.setdefault("_flashes", [])
     flashes.append((category, message))
-    # `Session.setdefault` of an unseen key flips `.modified`, but the
-    # subsequent `flashes.append(...)` mutates an existing list - that
-    # mutation is invisible to the Session container, so the cookie
-    # would not be re-signed if `setdefault` short-circuited (key
-    # already present). Mark explicitly to cover both paths.
+    # `flashes.append(...)` mutates an existing list, which the Session cannot
+    # see, so the cookie would not be re-signed on a key already present.
     with contextlib.suppress(AttributeError):
         store.modified = True
-    # `message_flashed` signal - fires for every flash() call.
     message_flashed.send(_current_app_var.get(), message=message, category=category)
 
 
@@ -762,15 +698,11 @@ def get_flashed_messages(
         messages = get_flashed_messages(with_categories=True)
     """
     req = _current_request_var.get()
-    # Reading without an active request returns an empty list - calling
-    # this from a template render outside a request shouldn't crash.
+    # Empty rather than raising, so a template render outside a request works.
     if req is None or "session" not in req._state:
         return []
     store = req._state["session"]
-    # `Session.pop` already flips `.modified` when the key existed -
-    # no need to set it again here. Non-Session dict subclasses that
-    # don't override `pop` won't carry the flag, but their callers
-    # aren't using the cookie middleware anyway.
+    # `Session.pop` already flips `.modified` when the key existed.
     flashes = store.pop("_flashes", [])
     if category_filter:
         allowed = set(category_filter)
@@ -786,16 +718,12 @@ def get_flashed_messages(
 def stream_with_context(generator: Any) -> Any:
     """Keep the request context alive while a streaming generator runs.
 
-    A streaming response body is consumed by the ASGI
-    emit layer *after* the handler has returned, by which point the
-    request context has been torn down - so a generator that touches
-    `request`, `g`, or `current_app` would fail. Wrap it::
+    A streaming body is consumed *after* the handler returns, by which point the
+    request context has been torn down. The current request / app / `g` snapshot
+    is captured now and re-established for the wrapped iteration, which may be
+    an async or a synchronous generator::
 
         return StreamingResponse(stream_with_context(generate()))
-
-    The current request / app / `g` snapshot is captured now and
-    re-established for the lifetime of the wrapped iteration. Accepts
-    either an async or a synchronous generator/iterable.
     """
     captured_app = _current_app_var.get()
     captured_req = _current_request_var.get()

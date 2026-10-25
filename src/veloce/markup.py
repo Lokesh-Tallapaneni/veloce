@@ -1,14 +1,8 @@
 """HTML-safe string utilities — `Markup` and `escape`.
 
-`Markup` is a `str` subclass that signals "already-escaped". Templating
-engines (Jinja2) check `__html__()` to decide whether to re-escape:
-plain strings get HTML-escaped on output, `Markup` instances pass
-through verbatim.
-
-`escape(value)` HTML-escapes its argument and returns a `Markup`. If
-the value already implements `__html__` (e.g. a `Markup` instance or
-any object claiming pre-escaped output), the result of that method is
-wrapped instead.
+`Markup` is a `str` subclass that signals "already-escaped": templating engines
+(Jinja2) check `__html__()` to decide whether to re-escape, so plain strings get
+HTML-escaped on output while `Markup` instances pass through verbatim.
 
 Spec: WHATWG HTML Sec. 13 - the five HTML-significant characters
 (`& < > " '`) become their named or numeric character references.
@@ -30,9 +24,8 @@ def _arg_to_safe(arg: Any) -> Any:
 class Markup(str):
     """A string flagged as already HTML-safe.
 
-    Equivalent to `markupsafe.Markup` for the subset Veloce's templating
-    rely on. Concatenation with a non-`Markup` string escapes the
-    other operand first so an injection cannot sneak in via `+`.
+    Concatenation with a non-`Markup` string escapes the other operand first, so
+    an injection cannot sneak in via `+`.
     """
 
     __slots__ = ()
@@ -56,8 +49,7 @@ class Markup(str):
         return NotImplemented
 
     def __mod__(self, args: Any) -> Markup:
-        # `%` formatting escapes every interpolated value that doesn't
-        # already advertise itself as safe.
+        # `%` escapes every interpolated value that is not already safe.
         if isinstance(args, tuple):
             escaped: tuple[Any, ...] = tuple(_arg_to_safe(a) for a in args)
             return self.__class__(str.__mod__(self, escaped))
@@ -67,7 +59,6 @@ class Markup(str):
         return f"Markup({str.__repr__(self)})"
 
 
-# Pre-compute the translation table once.
 _HTML_ESCAPE_TABLE = str.maketrans(
     {
         "&": "&amp;",
@@ -82,10 +73,8 @@ _HTML_ESCAPE_TABLE = str.maketrans(
 def escape(value: Any) -> Markup:
     """HTML-escape `value` and wrap in `Markup`.
 
-    Objects that implement `__html__()` are trusted: their return is
-    wrapped as-is. Otherwise the value is `str()`-coerced and the five
-    HTML-significant characters are replaced with their named or numeric
-    character references (per WHATWG HTML Sec. 13).
+    Objects that implement `__html__()` are trusted: their return is wrapped
+    as-is.
     """
     if hasattr(value, "__html__"):
         return Markup(value.__html__())

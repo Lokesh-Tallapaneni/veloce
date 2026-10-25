@@ -1,18 +1,10 @@
 """Admission control and protocol framing shared by the MCP HTTP transports.
 
-Both remote transports — Streamable HTTP (`http.py`) and the 2024-11-05
-HTTP+SSE pair (`sse.py`) — front a JSON-RPC endpoint with the same door: reject
-a browser `Origin` outside the allowlist, verify the bearer token, and answer a
-refusal with the RFC 6750 challenge that names the RFC 9728 metadata route. They
-also frame every protocol document the same way, which is not the same thing as
-framing application data (see `encode_envelope`).
-
-`sse.py` used to import all of this from `http.py`. That made a sibling
-transport's private surface load-bearing in a way invisible from `http.py`'s
-side, so neither module could rename one of these without breaking the other,
-and the half `sse.py` did not import it copied instead — a copy that had already
-drifted into answering a different JSON-RPC error code. One owner, imported by
-both, is what stops that recurring.
+Streamable HTTP (`http.py`) and the 2024-11-05 HTTP+SSE pair (`sse.py`) share
+one door: reject a browser `Origin` outside the allowlist, verify the bearer
+token, and refuse with the RFC 6750 challenge naming the RFC 9728 metadata
+route. Protocol documents are framed as protocol, not as application data (see
+`encode_envelope`).
 """
 
 from __future__ import annotations
@@ -36,22 +28,14 @@ if TYPE_CHECKING:  # pragma: no cover
 
 _logger = logging.getLogger(__name__)
 
-# The `Authorization` header, pre-encoded for `_peek_header_key`, which reads one
-# header without building the whole mapping.
+# Pre-encoded for `_peek_header_key`, which reads one header without the mapping.
 _RAW_AUTHORIZATION = b"authorization"
 
-# Reconnect hint (milliseconds) emitted as the SSE `retry` field before a stream
-# closes, so a disconnected client knows how long to wait before reconnecting
-# (MCP 2025-11-25 transport: "send an SSE event with a standard retry field
-# before closing").
+# MCP 2025-11-25 requires "an SSE event with a standard retry field" on close.
 _SSE_RETRY_MS = 3000
 
-# Bytes of entropy in a session id. `secrets.token_urlsafe` yields URL-safe
-# base64 (characters within the MCP-mandated visible-ASCII range 0x21-0x7E), so
-# the id is globally unique and cryptographically secure per the transport spec.
-# It also appears in the endpoint URL the 2024-11-05 transport tells a client to
-# POST to, and is the only thing tying a POST to the stream that will answer it,
-# so it must be unguessable rather than sequential.
+# Session-id entropy, inside the MCP-mandated visible-ASCII range. It must be
+# unguessable: the id alone ties a 2024-11-05 POST to the stream answering it.
 _SESSION_ID_ENTROPY_BYTES = 24
 
 
@@ -86,7 +70,10 @@ def _validate_origin(request: Request, allowed_origins: frozenset[str] | None) -
 
 def _challenge(auth: MCPAuth, status_code: int, error: str) -> Response:
     """Build a `401`/`403` response with the RFC 6750 `WWW-Authenticate` challenge."""
-    parts = [f'Bearer error="{error}"', f'resource_metadata="{PROTECTED_RESOURCE_METADATA_PATH}"']
+    parts = [f'Bearer error="{error}"']
+    # RFC 9728 Sec. 5.1 makes `resource_metadata` a MAY; bearer-only has no route.
+    if not auth.bearer_only:
+        parts.append(f'resource_metadata="{PROTECTED_RESOURCE_METADATA_PATH}"')
     if error == "insufficient_scope" and auth.required_scopes:
         parts.append(f'scope="{" ".join(sorted(auth.required_scopes))}"')
     body = {"error": error}
@@ -103,11 +90,7 @@ async def _authenticate(
     A missing or invalid token yields a `401` challenge; a valid token missing the
     endpoint's required scopes yields a `403`. On success the challenge is `None`.
     """
-    # The framework's own extractor, not a second parse: RFC 6750 Sec. 2.1 and
-    # RFC 7235 permit only SP/HTAB between scheme and token, and a bare `.strip()`
-    # also trimmed newlines and NBSP - so a token this door accepted was one the
-    # HTTP door rejected. The pure extraction rather than `security/`'s wrapper,
-    # which raises where this path owes the caller a challenge response.
+    # RFC 6750 Sec. 2.1 + RFC 7235 permit only SP/HTAB between scheme and token.
     token = _bearer_token_from(request._peek_header_key(_RAW_AUTHORIZATION) or "")
     if not token:
         return None, _challenge(auth, 401, "invalid_token")
@@ -133,15 +116,13 @@ def register_metadata_route(
 ) -> None:
     """Serve the RFC 9728 protected-resource metadata `_challenge` points at.
 
-    Every `401` either transport emits names this path in its `WWW-Authenticate`
-    header, so a client that follows the challenge - which is the whole point of
-    the header - must find something there. Registered by the HTTP transport
-    alone, an SSE mount answered its own challenge with a 404.
-
-    The path is fixed by the RFC, so two mounts on one app would collide; the
-    second is a no-op, since both would serve the same document.
+    The path is fixed by the RFC, so a second mount on one app is a no-op; both
+    would serve the same document. A bearer-only mount has none, and names none.
     """
-    if auth is None or app.match("GET", PROTECTED_RESOURCE_METADATA_PATH) is not None:
+    # The flag `_challenge` reads, so header and routing table cannot disagree.
+    if auth is None or auth.bearer_only:
+        return
+    if app.match("GET", PROTECTED_RESOURCE_METADATA_PATH) is not None:
         return
 
     async def mcp_metadata(request: Request) -> Response:

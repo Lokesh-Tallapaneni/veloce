@@ -1,15 +1,12 @@
 """Result caching — opt-in memoisation that never touches the dispatch path.
 
 `cached` wraps an async function and stores its JSON-serialisable return in a
-`Cache` backend, keyed by the call arguments. It is a self-contained decorator:
-a handler that is not decorated pays nothing, and the request pipeline imports
-none of this, so adding the feature cannot slow an app that does not use it.
+`Cache` backend, keyed by the call arguments. The request pipeline imports none
+of this, so an app that does not use it pays nothing.
 
-The bundled `InMemoryCache` is process-local and size-bounded;
-`veloce.contrib.redis.RedisCache` shares entries across workers and hosts. Both
-satisfy the same bytes-in/bytes-out `Cache` contract, so swapping backends never
-changes behaviour - a cache hit always returns a freshly decoded value, never a
-shared mutable object.
+A cache hit always returns a freshly decoded value, never a shared mutable
+object, so swapping the process-local `InMemoryCache` for the shared
+`veloce.contrib.redis.RedisCache` never changes behaviour.
 
 Usage::
 
@@ -36,16 +33,13 @@ import orjson
 
 from veloce._internal import _is_async_callable, _require_methods
 
-# Stable digest input: sort dict keys so equal mappings hash identically
-# regardless of construction order.
+# Sort dict keys so equal mappings hash identically regardless of order.
 _KEY_OPTIONS = orjson.OPT_SORT_KEYS
 
 
 def _ignore_unserialisable(_value: Any) -> None:
-    # An argument the key cannot serialise (a Request, an injected Response, a
-    # Depends result) collapses to null, so a handler is keyed only by its
-    # scalar inputs and the injected request never makes two equivalent calls
-    # miss each other.
+    # An unserialisable argument (a Request, an injected Response, a Depends
+    # result) collapses to null, so a handler is keyed by its scalar inputs.
     return None
 
 
@@ -75,10 +69,8 @@ class Cache:
 
     __slots__ = ()
 
-    #: Methods a backend must supply. Checked at subclass definition rather than
-    #: left to fail at call time - a cache is usually written once and exercised
-    #: much later, so a forgotten `set` surfaced on a live write path instead of
-    #: on `import`.
+    #: Methods a backend must supply, checked at subclass definition rather than
+    #: left to surface on a live write path much later.
     _required = ("get", "set", "delete")
 
     def __init_subclass__(cls, **kwargs: object) -> None:
@@ -145,9 +137,8 @@ class InMemoryCache(Cache):
         self._entries.pop(key, None)
 
     def _evict(self) -> None:
-        # Drop expired entries first; if still at capacity, drop the oldest by
-        # insertion order (dicts preserve it). This bounds memory without the
-        # per-`get` bookkeeping a true LRU would add to the hot read path.
+        # Expired entries first, then the oldest by insertion order - bounding
+        # memory without the per-`get` bookkeeping a true LRU would add.
         now = time.monotonic()
         expired = [k for k, (_, expires_at) in self._entries.items() if expires_at <= now]
         for k in expired:

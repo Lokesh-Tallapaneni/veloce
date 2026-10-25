@@ -9,23 +9,18 @@ A handler that never reads the body must not strand unparsed bytes that would
 corrupt the next pipelined request, so the source also supports a `drain()`
 that discards anything unread once EOF is known.
 
-Backpressure is applied across socket reads: when the number of unconsumed
-chunks reaches a high-water mark the source asks the protocol to pause socket
-reading, and once a consumer drains back below the low-water mark it asks the
-protocol to resume. This bounds how many *future* reads pile up in front of a
-slow handler. It does not bound a single read: `pause_reading` only stops the
-event loop scheduling further `data_received` calls, so all the chunked frames
-already present in one TCP segment are delivered (and buffered) in one parser
-pass before the handler runs. The hard memory cap on a single segment is the OS
-socket receive buffer; the hard cap on the whole body is `max_content_length`.
-Pause/resume are wired to the transport's flow control; on the in-memory
-ASGI/TestClient path no callbacks are installed, so backpressure is a no-op
-there.
+Backpressure bounds how many *future* socket reads pile up in front of a slow
+handler, not a single read: `pause_reading` only stops the loop scheduling
+further `data_received` calls, so every chunked frame already in one TCP
+segment is buffered in one parser pass. The hard cap on the whole body is
+`max_content_length`. On the in-memory ASGI/TestClient path no pause/resume
+callbacks are installed, so backpressure is a no-op there.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import deque
 from collections.abc import Callable
 from typing import Any
@@ -39,9 +34,10 @@ from veloce._protocol_constants import (
 from veloce.exceptions import RequestEntityTooLarge
 from veloce.status import HTTP_413_CONTENT_TOO_LARGE
 
-# Bound on unconsumed body chunks. Reaching the high-water mark pauses socket
-# reading; draining back to the low-water mark resumes it. The gap (hysteresis)
-# avoids thrashing pause/resume on every single chunk around the boundary.
+_logger = logging.getLogger(__name__)
+
+# Bound on unconsumed body chunks. The gap is hysteresis: it avoids thrashing
+# pause/resume on every single chunk around the boundary.
 DEFAULT_HIGH_WATER_CHUNKS = 16
 DEFAULT_LOW_WATER_CHUNKS = 4
 
@@ -50,11 +46,7 @@ def body_too_large(limit: int | None) -> RequestEntityTooLarge:
     """Build the refusal a body source raises, carrying the limit it tripped.
 
     The limit rides on the exception so the rendered body matches the one the
-    eager refusal paths emit through `too_large_payload`. Without it a streamed
-    body's 413 answered `{detail, status_code}` while the declared-length and
-    buffered refusals answered `{detail, status_code, limit}` - the same refusal
-    described two ways, which is exactly what `too_large_payload` exists to
-    prevent.
+    eager refusal paths emit through `too_large_payload`.
     """
     exc = RequestEntityTooLarge(MSG_REQUEST_BODY_EXCEEDS_MAX)
     exc.limit = limit
@@ -65,10 +57,6 @@ def too_large_payload(limit: int | None) -> dict[str, Any]:
     """Build the body both transports answer a `MAX_CONTENT_LENGTH` refusal with.
 
     Built here so the two paths cannot describe the same refusal differently.
-    The ASGI path answered `{detail, status_code, limit}` as JSON while the
-    native server wrote the plain bytes `Content Too Large` with no content
-    type, so a client parsing the documented error shape got text from
-    `app.run()` and JSON from uvicorn - for the same request against the same app.
     """
     return {
         "detail": MSG_REQUEST_BODY_EXCEEDS_MAX,
@@ -81,23 +69,20 @@ class BodySource:
     """The consumer interface a request body source presents, on any transport.
 
     `Request` is transport-agnostic: it holds whichever source built it and
-    consumes through this interface alone. The two implementations arrive at it
-    from opposite directions - the native one is push-fed by the HTTP/1.1 parser,
-    the ASGI one pulls from a `receive` channel - so what they have in common is
-    stated here rather than left for a consumer to probe for.
+    consumes through this interface alone, though the two implementations arrive
+    at it from opposite directions - the native one push-fed by the HTTP/1.1
+    parser, the ASGI one pulling from a `receive` channel.
 
-    `disconnected` is the part that is easy to leave half-implemented: it is
-    `False` for a body that completed and `True` for one cut short by the peer
-    going away, and a source that cannot tell them apart makes
-    `request.is_disconnected()` answer `False` for a client that is gone.
+    `poll_disconnected` is the one a consumer calls, and it is a coroutine
+    because a channel that has to be *asked* about the drop needs the call to go
+    and ask. `disconnected` is the same latch read without asking anything.
     """
 
     __slots__ = ()
 
-    #: What a source must supply. Checked at definition rather than left to
-    #: fail on the first streamed request: a source missing one of these works
-    #: until a handler reaches for it, and then fails mid-body.
-    _required = ("__aiter__", "__anext__", "read", "disconnected")
+    #: What a source must supply, checked at definition: one missing a member
+    #: works until a handler reaches for it, and then fails mid-body.
+    _required = ("__aiter__", "__anext__", "read", "poll_disconnected")
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
@@ -120,30 +105,25 @@ class BodySource:
         """`True` when the stream ended because the peer went away."""
         raise NotImplementedError
 
+    async def poll_disconnected(self) -> bool:
+        """`True` when the peer has gone, asking the transport if it must."""
+        raise NotImplementedError
+
 
 class RequestBodySource(BodySource):
     """Async producer/consumer queue for one request's body bytes.
 
     The protocol calls `feed(chunk)` from `on_body` and `feed_eof()` from
-    `on_message_complete`. The handler consumes via `__aiter__` (chunk at a
-    time) or `read()` (everything to EOF). A single waiter is supported - one
-    handler consumes one request's body - which matches the per-connection
-    FIFO server loop (one in-flight request at a time).
+    `on_message_complete`; the handler consumes via `__aiter__` or `read()`. A
+    single waiter is supported, matching the per-connection FIFO server loop.
 
     `max_content_length` caps the running total: feeding past it flips an
-    overflow latch, and the next read raises `RequestEntityTooLarge` so the
-    dispatch layer renders a 413 mid-stream instead of buffering an unbounded
-    body. The protocol additionally rejects on the declared Content-Length
-    header before any body byte is read.
+    overflow latch and the next read raises `RequestEntityTooLarge`, so a 413 is
+    rendered mid-stream rather than an unbounded body buffered.
 
-    Backpressure bounds unconsumed chunks *across socket reads*: when `feed`
-    pushes the count to `high_water` the `pause` callback fires (the protocol
-    pauses socket reading); when a consumer drains the count back to
-    `low_water` the `resume` callback fires. Pausing does not cap a single
-    read - every chunked frame in one delivered segment is fed in one pass
-    before the handler runs - so the true memory cap is `max_content_length`,
-    not the chunk count. Both callbacks default to no-ops, so the in-memory
-    ASGI/TestClient path (which pre-fills the body) is unaffected.
+    `feed` fires `pause` at `high_water` and a draining consumer fires `resume`
+    at `low_water`. Both default to no-ops, so the in-memory ASGI/TestClient
+    path is unaffected.
     """
 
     __slots__ = (
@@ -171,33 +151,27 @@ class RequestBodySource(BodySource):
     ) -> None:
         self._chunks: deque[bytes] = deque()
         self._eof = False
-        # Set whenever a chunk arrives or EOF is signalled, so a consumer
-        # blocked in `__anext__` wakes promptly. Cleared once drained.
+        # Set on a chunk or EOF, so a consumer blocked in `__anext__` wakes.
         self._event = asyncio.Event()
         self._size = 0
         self._max = max_content_length
         self._overflow = False
         self._high_water = high_water
         self._low_water = low_water
-        # Flow-control hooks the protocol installs via `set_flow_control`.
-        # No-ops by default so the pre-filled ASGI/TestClient path never pauses.
+        # No-ops by default, so the pre-filled ASGI path never pauses.
         self._pause: Callable[[], None] | None = None
         self._resume: Callable[[], None] | None = None
         self._paused = False
-        # Set while `drain()` is discarding an unread body. The connection is
-        # being torn down, so it must stay unpaused for the whole drain: `feed`
-        # never re-pauses while this is set, otherwise a re-pause mid-drain
-        # would stop the remaining body (and EOF) from ever arriving.
+        # Set while `drain()` is discarding an unread body, which must stay
+        # unpaused throughout or the remaining body and EOF never arrive.
         self._draining = False
-        # Set only by `feed_eof(disconnected=True)`; see that method.
         self._disconnected = False
 
     def set_flow_control(self, pause: Callable[[], None], resume: Callable[[], None]) -> None:
         """Wire pause/resume callbacks (the transport's flow control).
 
         Called once by the protocol when it attaches the source to a live
-        connection. The in-memory path never calls this, leaving backpressure
-        a no-op.
+        connection; the in-memory path never calls it.
         """
         self._pause = pause
         self._resume = resume
@@ -216,32 +190,29 @@ class RequestBodySource(BodySource):
     def overflowed(self) -> bool:
         """Whether the running byte total has passed max_content_length.
 
-        The single source of truth for the streamed body size cap: `feed`
-        latches this the moment the total crosses the limit, so the protocol
-        does not keep an independent byte counter that could drift from it.
+        The single source of truth for the streamed body size cap, so the
+        protocol keeps no independent byte counter that could drift from it.
         """
         return self._overflow
 
     def feed(self, chunk: bytes) -> None:
         """Append a body chunk; flip the overflow latch if the cap is passed.
 
-        When the buffered chunk count reaches the high-water mark, pause socket
-        reading so a fast producer cannot outrun a slow consumer without bound.
+        At the high-water mark socket reading pauses, so a fast producer cannot
+        outrun a slow consumer without bound.
         """
         if not chunk:
             return
         if self._draining:
-            # Teardown is discarding the body. Drop the bytes immediately and
-            # wake the parked drain; never pause, so the remaining body and its
-            # terminating EOF keep flowing to completion.
+            # Dropped and the parked drain woken; never paused, so the remaining
+            # body and its terminating EOF keep flowing.
             self._size = 0
             self._event.set()
             return
         self._size += len(chunk)
         if self._max is not None and self._size > self._max:
-            # Drop the over-limit bytes - we will refuse with 413 on read and
-            # the connection is going to be torn down, so retaining them is
-            # pure memory pressure.
+            # Dropped: the read refuses with 413 and the connection is torn
+            # down, so retaining them is pure memory pressure.
             self._overflow = True
             self._event.set()
             return
@@ -255,18 +226,29 @@ class RequestBodySource(BodySource):
         """Signal that no more body bytes will arrive.
 
         `disconnected=True` says the peer went away rather than the body
-        completing. Both end the stream for a consumer, but only the second is
-        an ordinary end - `request.is_disconnected()` is the difference, and
-        without the distinction it answers `False` for a client that is gone.
+        completing. Both end the stream, but without the distinction
+        `request.is_disconnected()` answers `False` for a client that is gone.
         """
         self._eof = True
         if disconnected:
             self._disconnected = True
         self._event.set()
 
+    def mark_disconnected(self) -> None:
+        """Record that the peer went away, leaving the body's EOF state alone.
+
+        A handler streaming its *response* has a body that already completed, so
+        there is no stream left to end - only the fact to record.
+        """
+        self._disconnected = True
+
     @property
     def disconnected(self) -> bool:
         """`True` when the stream ended because the peer went away."""
+        return self._disconnected
+
+    async def poll_disconnected(self) -> bool:
+        """`True` when the peer has gone - the protocol pushes it, so just read it."""
         return self._disconnected
 
     def _maybe_resume(self) -> None:
@@ -306,17 +288,10 @@ class RequestBodySource(BodySource):
     async def drain(self) -> None:
         """Discard any unread body, waiting for EOF if the body is still arriving.
 
-        Called on request teardown so a body-ignoring handler cannot leave
-        unconsumed bytes that the protocol would otherwise misread as the
-        start of the next pipelined request. Overflow is swallowed here - the
-        connection that overflowed is already being closed.
-
-        If the source paused reading on the producer side, this resumes it and
-        latches `_draining` so `feed` never re-pauses for the rest of the
-        drain: a paused connection delivers no further bytes and never reaches
-        EOF, so any re-pause mid-drain (as the resumed socket delivers more
-        body past the high-water mark) would deadlock - the body and its
-        terminating EOF would never arrive.
+        Called on request teardown, so a body-ignoring handler cannot leave
+        bytes the protocol would misread as the next pipelined request.
+        `_draining` latches so `feed` never re-pauses: a paused connection
+        delivers nothing further and never reaches EOF, which would deadlock.
         """
         self._draining = True
         if self._paused:
@@ -332,39 +307,89 @@ class RequestBodySource(BodySource):
         self._chunks.clear()
 
 
+def _discard_outcome(task: asyncio.Future[Any]) -> None:
+    """Read an abandoned task's outcome so asyncio does not log it."""
+    if not task.cancelled():
+        task.exception()
+
+
 class ASGIBodySource(BodySource):
     """Pull-based body source over an ASGI `receive` channel.
 
-    The native `RequestBodySource` is push-fed by the HTTP/1.1 parser; under an
-    ASGI server the body instead arrives as `http.request` messages a consumer
-    pulls with `await receive()`. This presents the SAME consumer interface
-    (`__aiter__` / `__anext__` / `read`) so a `Request` built on either transport
-    streams identically - the dispatch layer and `Request.stream()` are unaware
-    of which one is underneath.
+    Presents the same consumer interface as the push-fed `RequestBodySource`, so
+    a `Request` built on either transport streams identically and the dispatch
+    layer is unaware of which is underneath.
 
-    `max_content_length` caps the running total: a chunk that pushes the total
-    past the limit raises `RequestEntityTooLarge`, so an over-large streamed body
-    is refused mid-read rather than buffered whole - matching the native source's
-    413 behaviour. A `http.disconnect` ends the stream (the consumer sees the
-    body truncated at the bytes received so far).
+    `max_content_length` caps the running total: a chunk past the limit raises
+    `RequestEntityTooLarge`, so an over-large streamed body is refused mid-read.
+    A `http.disconnect` ends the stream, truncated at the bytes received.
+
+    `body_complete=True` builds one over a channel whose body is already in
+    hand, so the source exists only to poll for the drop.
     """
 
     __slots__ = ("_receive", "_max", "_size", "_done", "_disconnected")
 
-    def __init__(self, receive: Callable[[], Any], max_content_length: int | None = None) -> None:
+    def __init__(
+        self,
+        receive: Callable[[], Any],
+        max_content_length: int | None = None,
+        *,
+        body_complete: bool = False,
+    ) -> None:
         self._receive = receive
         self._max = max_content_length
         self._size = 0
-        self._done = False
-        # `_done` covers both "body complete" and "peer vanished"; this keeps
-        # the second apart so `Request.is_disconnected()` can answer truthfully
-        # for a streaming route, where the client really can go away mid-handler.
+        self._done = body_complete
+        # `_done` covers both "body complete" and "peer vanished"; this keeps the
+        # second apart so `Request.is_disconnected()` can answer truthfully.
         self._disconnected = False
 
     @property
     def disconnected(self) -> bool:
         """`True` when the stream ended because the peer went away."""
         return self._disconnected
+
+    async def poll_disconnected(self) -> bool:
+        """`True` when the peer has gone, asked of the channel without blocking.
+
+        An ASGI server reports the drop as an `http.disconnect` and nowhere
+        else, so a handler streaming a response can only learn it by asking.
+        `receive()` runs as a task for exactly one loop turn: a message already
+        waiting is seen, while a channel with nothing to say is cancelled
+        unconsumed. The answer latches, because a server hands it out once.
+
+        `False` while the body is still arriving: the handler consuming it owns
+        the channel, and that consumer sees the drop through `disconnected`.
+        """
+        if self._disconnected:
+            return True
+        if not self._done:
+            return False
+        task = asyncio.ensure_future(self._receive())
+        await asyncio.sleep(0)
+        if not task.done():
+            task.cancel()
+            # The task is abandoned, and an unretrieved exception would log
+            # once per poll of a streaming handler.
+            task.add_done_callback(_discard_outcome)
+            return False
+        if task.cancelled() or task.exception() is not None:
+            # No answer is not an answer: reporting a live client as gone would
+            # abort the stream it is still reading.
+            return False
+        message = task.result()
+        if message.get("type") == ASGI_EVENT_HTTP_DISCONNECT:
+            self._disconnected = True
+            return True
+        # Nothing can be handed this, since `_done` is the precondition for
+        # polling. Logged, or a body goes missing with nothing to point at.
+        _logger.warning(
+            "Disconnect poll consumed a %s message that no reader can take; "
+            "the receive channel is shared with another consumer",
+            message.get("type"),
+        )
+        return False
 
     def __aiter__(self) -> ASGIBodySource:
         return self
@@ -396,11 +421,9 @@ class ASGIBodySource(BodySource):
     async def read(self) -> bytes:
         """Pull the body to EOF and return the joined bytes.
 
-        Fast-paths the common case where the whole body (or an empty body)
-        arrives in a single `http.request` message: one `receive()`, no
-        async-iterator step and no list/join - matching the tight inline reader
-        this replaced, so a buffered (non-streaming) route pays no extra cost.
-        Only a genuinely multi-chunk body falls back to accumulation.
+        Fast-paths a whole (or empty) body arriving in one `http.request`
+        message: a single `receive()`, no iterator step and no list/join, so a
+        buffered route pays nothing extra. Only a multi-chunk body accumulates.
         """
         if self._done:
             return b""

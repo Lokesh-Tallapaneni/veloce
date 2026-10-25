@@ -12,12 +12,16 @@ is safe, and it is pinned here.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import socket
+import struct
+import subprocess
 import sys
 
 import pytest
 
 from veloce import Veloce
-from veloce.testclient import TestClient, _new_loop
+from veloce.testclient import TestClient, _abort_self_pipe_on_close, _new_loop
 
 
 def _app() -> Veloce:
@@ -120,3 +124,68 @@ def test_a_proactor_loop_can_be_supplied_for_a_handler_that_spawns_a_subprocess(
         assert client.get("/spawn").json() == {"out": "hi"}
     finally:
         loop.close()
+
+
+# ── What the selector loop costs, and does not ───────────────────────
+
+
+def _ports_in_time_wait() -> set[int]:
+    out = subprocess.run(["netstat", "-an"], capture_output=True, text=True).stdout
+    ports = set()
+    for line in out.splitlines():
+        if "TIME_WAIT" in line:
+            parts = line.split()
+            if len(parts) > 1 and ":" in parts[1]:
+                with contextlib.suppress(ValueError):
+                    ports.add(int(parts[1].rsplit(":", 1)[1]))
+    return ports
+
+
+def _self_pipe_ports(loop: asyncio.AbstractEventLoop) -> set[int]:
+    return {
+        getattr(loop, name).getsockname()[1]
+        for name in ("_ssock", "_csock")
+        if getattr(loop, name, None) is not None
+    }
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the self-pipe is a socketpair on Windows only")
+def test_the_self_pipe_is_set_to_close_abortively():
+    loop = _new_loop()
+    try:
+        for name in ("_ssock", "_csock"):
+            # Windows reports `linger` as two `u_short`, four bytes in all.
+            raw = getattr(loop, name).getsockopt(socket.SOL_SOCKET, socket.SO_LINGER, 16)
+            onoff, linger = struct.unpack("HH", raw[:4])
+            assert onoff == 1
+            assert linger == 0
+    finally:
+        loop.close()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the self-pipe is a socketpair on Windows only")
+def test_the_self_pipe_releases_its_ports_on_close():
+    """The regression this exists for: one held port per client exhausted the
+    16384-port dynamic range mid-suite, after which clients failed to construct.
+
+    Asserted on the pipe's OWN port numbers rather than a global `TIME_WAIT`
+    count, so another process on the machine cannot move the result - and it
+    costs two ports instead of one per measured client, which a count-based
+    version of this test would itself leak.
+    """
+    fixed = _new_loop()
+    fixed_ports = _self_pipe_ports(fixed)
+    fixed.close()
+
+    unfixed = asyncio.SelectorEventLoop()
+    unfixed_ports = _self_pipe_ports(unfixed)
+    unfixed.close()
+
+    held = _ports_in_time_wait()
+    assert unfixed_ports & held, "the comparison arm must show the leak this test is about"
+    assert not (fixed_ports & held)
+
+
+def test_a_loop_without_a_self_pipe_is_left_alone():
+    """`_ssock` / `_csock` are CPython internals; a rename must not raise."""
+    _abort_self_pipe_on_close(object())  # type: ignore[arg-type]

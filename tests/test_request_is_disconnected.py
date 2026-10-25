@@ -9,7 +9,9 @@ and the method reported otherwise.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
+import logging
 
 from tests.conftest import make_request
 from veloce import Request
@@ -95,3 +97,36 @@ async def test_a_disconnect_seen_by_read_is_reported_too():
     )
     await source.read()
     assert await request.is_disconnected() is True
+
+
+async def test_a_poll_that_eats_a_body_frame_says_so(caplog):
+    """A shared receive channel can hand the poll a message no reader can take.
+
+    `__anext__` and `read` both short-circuit on `_done`, which is the
+    precondition for polling, so a non-disconnect message the peek consumes
+    cannot be handed back. It used to be dropped in silence; it is now logged,
+    because the only way to find it otherwise was a body that went missing.
+    """
+    queue = asyncio.Queue()
+    queue.put_nowait({"type": "http.request", "body": b"PAYLOAD", "more_body": False})
+
+    async def receive():
+        return await queue.get()
+
+    source = ASGIBodySource(receive, body_complete=True)
+    with caplog.at_level(logging.WARNING, logger="veloce.http._body"):
+        assert await source.poll_disconnected() is False
+    assert any("http.request" in r.getMessage() for r in caplog.records)
+
+
+async def test_a_poll_against_a_quiet_channel_logs_nothing(caplog):
+    """The negative: the normal case must stay silent."""
+
+    async def receive():
+        await asyncio.Event().wait()  # never answers
+        raise AssertionError("unreachable")
+
+    source = ASGIBodySource(receive, body_complete=True)
+    with caplog.at_level(logging.WARNING, logger="veloce.http._body"):
+        assert await source.poll_disconnected() is False
+    assert [r for r in caplog.records if "consumed" in r.getMessage()] == []

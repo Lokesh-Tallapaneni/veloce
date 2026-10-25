@@ -1,21 +1,13 @@
 """MCP argument completion — suggest values for a prompt or resource argument.
 
 The Model Context Protocol's ``completion/complete`` lets a client ask the server
-to suggest values for one argument of a prompt or a resource template as the user
-types. Completion is opt-in per argument: a handler author registers a completer
-with ``@app.mcp_completer(prompt=..., argument=...)`` (or ``resource=...``), and
-the callable is invoked with the partial value the user has typed plus the values
-of the sibling arguments already resolved. A prompt or resource argument with no
-registered completer answers with an empty completion - never an error - so a
+to suggest values for one argument as the user types. Completion is opt-in per
+argument, via ``@app.mcp_completer(prompt=..., argument=...)``. An argument with
+no registered completer answers with an empty completion - never an error - so a
 client may always probe and a server that registers none stays inert.
 
-The completers live on the existing `MCPPrompt` / `MCPResource` descriptors (their
-shared `completers` mapping), so completion reuses the prompt and resource
-registries rather than maintaining a parallel argument model. `CompletionsCapability`
-advertises the ``completions`` capability only when at least one completer is
-registered, and answers ``completion/complete`` by resolving the reference,
-looking up the argument's completer, and shaping its return into the spec's
-``{values, total, hasMore}`` result.
+Completers live on the existing `MCPPrompt` / `MCPResource` descriptors, so this
+reuses those registries rather than keeping a parallel argument model.
 """
 
 from __future__ import annotations
@@ -34,22 +26,16 @@ if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.resources import ResourceRegistry
     from veloce.contrib.mcp.server import MethodHandler
 
-# The MCP completion utility caps a single response at 100 values; a completer
-# returning more is truncated to the cap and the overflow is reported via `total`
-# and `hasMore` so the client knows further matches exist.
+# The MCP completion utility caps one response at 100 values; the overflow is
+# reported via `total` and `hasMore` so the client knows more matches exist.
 _MAX_COMPLETION_VALUES = 100
 
-# Upper bound on the number of sibling argument values ingested from a client's
-# `context.arguments`. The mapping is attacker-supplied and otherwise unbounded, so
-# a request carrying more is rejected (an invalid-params error, the same contract
-# the module uses for every other malformed completion input) rather than
-# materializing an arbitrarily large dict.
+# `context.arguments` is attacker-supplied and otherwise unbounded, so an
+# oversized one is rejected rather than materialized as an arbitrarily large dict.
 _MAX_CONTEXT_ARGS = 1000
 
-# The signature every registered completer satisfies: the partial value the user
-# has typed, plus the sibling argument values already resolved. The return is
-# `Any` because a completer may be sync or async and may answer with either a
-# `CompletionResult` or a bare sequence of strings; `_shape_completion` narrows it.
+# The partial value typed, plus the siblings already resolved. The return is `Any`
+# because a completer may be sync or async and may answer a bare string sequence.
 _Completer = Callable[[str, dict[str, str]], Any]
 
 
@@ -208,15 +194,10 @@ class CompletionsCapability(_ServerCapability):
         if completer is None:
             return _empty_completion()
         if _principal_lacks_scopes(required_scopes):
-            # Every other invocation path gates on the owning primitive's
-            # scopes; this one ran the completer for anyone. A completer exists
-            # to enumerate the legal values of an argument - customer ids,
-            # tenant names, file paths - so an under-scoped caller could
-            # enumerate the key space of a primitive it may not touch, and
-            # narrow it by prefix. Answered as an empty completion rather than
-            # an error, matching this module's "a client may always probe"
-            # contract: it neither confirms the primitive exists nor names the
-            # scopes required.
+            # A completer enumerates an argument's legal values - customer ids,
+            # tenant names - so without this gate an under-scoped caller could
+            # enumerate the key space of a primitive it may not touch. Empty
+            # rather than an error: it does not confirm the primitive exists.
             return _empty_completion()
         if _is_async_callable(completer):
             result = await completer(value, context)
@@ -271,9 +252,8 @@ class CompletionsCapability(_ServerCapability):
             uri = ref.get("uri")
             if not isinstance(uri, str):
                 raise InvalidParamsError("ref/resource requires a string 'uri'")
-            # A completion reference carries the template URI verbatim (the value
-            # `resources/templates/list` advertised), so an exact registry lookup
-            # is tried first; a concrete URI then falls back to the pattern match.
+            # A reference carries the template URI verbatim as
+            # `resources/templates/list` advertised it, so try an exact lookup first.
             resources = self._server.resources
             resource = resources.get(uri)
             if resource is not None:
@@ -290,9 +270,7 @@ class CompletionsCapability(_ServerCapability):
     def _context_arguments(params: dict[str, Any]) -> dict[str, str]:
         """Extract the already-resolved sibling argument values from the request.
 
-        The optional ``context.arguments`` mapping carries the values the client
-        has already filled for other arguments, so a completer can narrow its
-        suggestions; an absent or malformed context yields an empty mapping.
+        An absent or malformed ``context`` yields an empty mapping.
         """
         context = params.get("context")
         if not isinstance(context, dict):
@@ -300,8 +278,7 @@ class CompletionsCapability(_ServerCapability):
         arguments = context.get("arguments")
         if not isinstance(arguments, dict):
             return {}
-        # The client-supplied mapping is otherwise unbounded; reject an oversized
-        # one outright rather than materializing every entry.
+        # Unbounded otherwise; reject rather than materialize every entry.
         if len(arguments) > _MAX_CONTEXT_ARGS:
             raise InvalidParamsError(
                 f"completion/complete 'context.arguments' exceeds {_MAX_CONTEXT_ARGS} entries"

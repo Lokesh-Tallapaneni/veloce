@@ -1,8 +1,7 @@
 """Proxy fix — trust reverse-proxy `X-Forwarded-*` / `Forwarded` headers.
 
-When veloce sits behind a reverse proxy (nginx, Caddy, ALB, Cloudflare,
-...), the immediate TCP peer is the proxy - not the original client. The
-proxy injects headers describing the original request:
+Behind a reverse proxy the immediate TCP peer is the proxy, and the headers
+describing the original request are:
 
 - `X-Forwarded-For: client, proxy1, proxy2`  (chain of upstream IPs)
 - `X-Forwarded-Proto: https`                  (original scheme)
@@ -10,14 +9,12 @@ proxy injects headers describing the original request:
 - `X-Forwarded-Port: 443`                     (original port)
 - `X-Forwarded-Prefix: /api`                  (path prefix mounted)
 
-RFC 7239 standardised these into a single `Forwarded` header
-(`Forwarded: for=client; proto=https; host=example.com`). Both forms
-are recognised here; `Forwarded` wins when present.
+RFC 7239 standardised these into a single `Forwarded` header. Both forms are
+recognised here; `Forwarded` wins when present.
 
-**Security:** trust only N hops upstream. A malicious client can spoof
-these headers; only the proxies you control are trustworthy. The
-`x_for=N` setting picks the Nth-from-the-right value, so if you have
-two trusted proxies in front you set `x_for=2`.
+**Security:** a malicious client can spoof all of them, so only the proxies you
+control are trustworthy. `x_for=N` picks the Nth-from-the-right value, so two
+trusted proxies in front means `x_for=2`.
 """
 
 from __future__ import annotations
@@ -48,20 +45,17 @@ if TYPE_CHECKING:  # pragma: no cover
 def _hop_header(headers: Headers, name: str) -> str | None:
     """Return every occurrence of `name`, comma-joined in received order.
 
-    A proxy that appends its own line rather than rewriting the existing one
-    leaves two field lines, and single-value access returns the *first* - the
-    untrusted end of the chain. RFC 9110 Sec. 5.3 defines a repeatable field as
-    the comma-joined list in order, which is exactly what the right-to-left hop
-    math already expects.
+    Single-value access would return the *first* field line, the untrusted end
+    of the chain. RFC 9110 Sec. 5.3 defines a repeatable field as the
+    comma-joined list in order, which the right-to-left hop math expects.
     """
-    # `getall` with a default, not `getlist`: the latter reaches its empty
-    # result by catching `KeyError`, and raising one per absent header on every
-    # request measured a third of this middleware's cost.
+    # `getall` with a default, not `getlist`: the latter raises `KeyError` per
+    # absent header, which measured a third of this middleware's cost.
     values = headers.getall(name, ())
     if not values:
         return None
     if len(values) == 1:
-        # The overwhelmingly common shape: no join, no allocation.
+        # The common shape: no join, no allocation.
         first: str = values[0]
         return first
     return ", ".join(values)
@@ -70,22 +64,17 @@ def _hop_header(headers: Headers, name: str) -> str | None:
 class ProxyFix(Middleware):
     """Reverse-proxy header trust middleware.
 
-    Trusts N hops for each ``X-Forwarded-*`` header (right-to-left).
-    Setting any field to ``0`` disables it. Negative values raise at
-    construction.
+    Trusts N hops for each ``X-Forwarded-*`` header (right-to-left). ``0``
+    disables a field; a negative value raises at construction.
 
-    ``x_port`` trusts ``X-Forwarded-Port``: the resolved port fills in the
-    public port for ``request.url`` / redirects when the forwarded Host
-    carries none, so a proxy on a non-default port (e.g. 8443) is preserved.
-    An explicit port in the Host / ``X-Forwarded-Host`` always wins.
+    ``x_port`` fills the public port for ``request.url`` / redirects when the
+    forwarded Host carries none; an explicit port in the Host always wins.
 
-    ``trust_forwarded`` opts into RFC 7239 ``Forwarded``, which supersedes the
-    ``X-Forwarded-*`` set and is then the sole authority for every directive it
-    carries. Enable it only where every trusted proxy sets or sanitizes
-    ``Forwarded`` itself: nginx, ALB and most CDNs emit ``X-Forwarded-*`` and
-    leave ``Forwarded`` untouched, so a client-supplied header would otherwise
-    decide the client address, scheme and host - and silence the header the
-    proxy does control.
+    ``trust_forwarded`` opts into RFC 7239 ``Forwarded``, which then supersedes
+    the ``X-Forwarded-*`` set entirely. Enable it only where every trusted proxy
+    sets or sanitizes ``Forwarded`` itself: nginx, ALB and most CDNs leave it
+    untouched, so a client-supplied header would otherwise decide the client
+    address, scheme and host.
 
     Usage::
 
@@ -103,9 +92,7 @@ class ProxyFix(Middleware):
         trust_forwarded: bool = False,
         name: str | None = None,
     ) -> None:
-        # Forward the optional per-instance exclusion name to the base so
-        # `add_middleware(ProxyFix, name="edge")` and route-level
-        # `exclude_middleware=["edge"]` can target this instance.
+        # The per-instance name lets `exclude_middleware=[...]` target it.
         super().__init__(name=name)
         for field, val in (
             ("x_for", x_for),
@@ -133,24 +120,16 @@ class ProxyFix(Middleware):
         )
 
         # RFC 7239 Sec. 4 supersedes the `X-Forwarded-*` set, so a trusted
-        # `Forwarded` is the SOLE authority - a directive it does not carry
-        # stays unset rather than falling through to the legacy header.
-        # Mixing the two per directive was exploitable: a `Forwarded` chain
-        # shorter than the configured trust depth correctly yields nothing, and
-        # the fallback then handed that directive to whatever the client wrote
-        # in `X-Forwarded-For`, which is precisely the value trust depth had
-        # just refused. Failing closed here costs a deployment nothing, because
-        # a proxy emitting `Forwarded` carries every directive in it.
+        # `Forwarded` is the SOLE authority: mixing per directive means a chain
+        # shorter than the trust depth falls through to the legacy header,
+        # handing the attacker back the hop trust depth just refused.
         if forwarded:
             client = fwd.get("for")
             proto = fwd.get("proto")
             host = fwd.get("host")
         else:
-            # Each lookup is gated on its own trust depth. `_pick_hop` returns
-            # `None` for a depth of 0, so an ungated call still pays the header
-            # lookup to reach a foregone answer - and `x_host`, `x_port` and
-            # `x_prefix` are 0 by default, which is three lookups a stock
-            # configuration cannot use.
+            # Gated on trust depth: `x_host`, `x_port` and `x_prefix` are 0 by
+            # default, so an ungated call is three header lookups for nothing.
             client = (
                 self._pick_hop(_hop_header(request.headers, HEADER_X_FORWARDED_FOR), self.x_for)
                 if self.x_for
@@ -166,15 +145,9 @@ class ProxyFix(Middleware):
                 if self.x_host
                 else None
             )
-        # Port and prefix keep their fallback, because RFC 7239 Sec. 4 defines
-        # no directive for either: a `Forwarded` hop carries the public port
-        # inside `host="example.com:8443"` (so it survives the Host splice
-        # below via URL.from_request's own parse), and a path prefix has no
-        # RFC spelling at all. `X-Forwarded-Port` / `X-Forwarded-Prefix` are
-        # therefore the only channel a proxy has for them, and refusing those
-        # would break real deployments to close nothing - unlike `for`,
-        # `proto` and `host` above, where the RFC does define a directive and
-        # the fallback let a refused hop through.
+        # RFC 7239 Sec. 4 defines no directive for port or prefix (a hop carries
+        # the port inside `host="example.com:8443"`), so the legacy headers are
+        # the only channel for them and keep their fallback.
         port = (
             self._pick_hop(_hop_header(request.headers, HEADER_X_FORWARDED_PORT), self.x_port)
             if self.x_port
@@ -186,13 +159,9 @@ class ProxyFix(Middleware):
             else None
         )
 
-        # Reject CR / LF / NUL in any trusted proxy value before it lands on
-        # the request. These values flow into response headers (Location,
-        # Set-Cookie, OpenAPI server URLs) via request.host / scheme /
-        # script_root and would otherwise enable header injection. Written out
-        # per header rather than looped over a `(value, header)` sequence: this
-        # middleware runs on every request through it, and building that
-        # sequence would allocate a tuple per request to save five lines.
+        # These values reach response headers (Location, Set-Cookie, OpenAPI
+        # server URLs), so CR / LF / NUL in one is header injection. Unrolled
+        # rather than looped, to avoid a per-request tuple.
         if client:
             _reject_header_crlf(client, HEADER_X_FORWARDED_FOR)
         if proto:
@@ -205,18 +174,14 @@ class ProxyFix(Middleware):
             _reject_header_crlf(prefix, HEADER_X_FORWARDED_PREFIX)
 
         if client:
-            # Strip the port suffix, preserving IPv6 literals. `lower=False`
-            # keeps the client IP in its original casing - this is a stored
-            # address, not a host compared case-insensitively.
+            # `lower=False`: a stored address, not a case-insensitive host.
             request._state["proxy_fix_client"] = _extract_host(client, lower=False)
         if host:
             # Rewrite Host so URL.from_request picks up the original host.
             request.headers["host"] = host
         if port:
-            # Stash the trusted public port as an int. URL.from_request uses
-            # it only when the (possibly rewritten) Host header carries no
-            # port of its own, so an explicit `host:port` always wins. A
-            # non-numeric or out-of-range value is dropped rather than trusted.
+            # Consulted only when the Host header carries no port of its own.
+            # A non-numeric or out-of-range value is dropped, not trusted.
             try:
                 port_num = int(port)
             except ValueError:
@@ -224,37 +189,22 @@ class ProxyFix(Middleware):
             if 0 < port_num <= 65535:
                 request._state["proxy_fix_port"] = port_num
         if proto:
-            # Override scheme - `URL.from_request` now prefers `scope.scheme`
-            # over `X-Forwarded-Proto`, so mutate both: the header for
-            # downstream code that introspects it, and the scope so the
-            # URL accessor agrees. This is the whole point of ProxyFix:
-            # ASGI scope says "http" (TLS terminated upstream) but the
-            # trusted hop tells us the original scheme was "https".
+            # `URL.from_request` prefers `scope.scheme`, so mutate both: the
+            # header for code that introspects it, the scope for the accessor.
             request.headers[HEADER_X_FORWARDED_PROTO] = proto
-            # Normalise on the way in. RFC 7239 Sec. 4 makes the `proto`
-            # directive case-insensitive and RFC 3986 Sec. 3.1 says the same of
-            # a URI scheme, so a proxy spelling `HTTPS` names the same scheme -
-            # but written verbatim it reached every consumer that compares the
-            # raw scope value, and an uppercase hop made a guard read an
-            # encrypted connection as cleartext.
+            # RFC 7239 Sec. 4 and RFC 3986 Sec. 3.1 both make the scheme
+            # case-insensitive, so `HTTPS` verbatim would read as cleartext to
+            # every consumer comparing the raw scope value.
             proto = proto.lower()
-            # `Request.scope` is a framework-owned field always set in __init__
-            # (to `scope or {}`), so access it directly; only the dict shape is
-            # checked before mutating the scheme key.
             if isinstance(request.scope, dict):
                 request.scope["scheme"] = proto
         if prefix:
             request._state["proxy_fix_prefix"] = prefix
-        # Mark that trust depth has been applied to this request. `URL.from_request`
-        # consults `X-Forwarded-Proto` directly when nothing else supplies a
-        # scheme, which is a reasonable default with no ProxyFix installed - but
-        # once ProxyFix HAS run, that fallback would hand the scheme to a hop
-        # ProxyFix just refused. Setting this stands the fallback down, so only
-        # the value written into the scope above counts.
+        # Stands down the `X-Forwarded-Proto` fallback in `URL.from_request`,
+        # which would otherwise hand the scheme to a hop trust depth refused.
         request._state["proxy_fix_applied"] = True
 
-        # Invalidate the URL cache so subsequent accesses re-derive from
-        # the now-corrected headers.
+        # Re-derive the URL from the corrected headers.
         request._url = None
         return None
 
@@ -263,21 +213,17 @@ class ProxyFix(Middleware):
     ) -> dict[str, str]:
         """Select trusted directives from a `Forwarded:` header (RFC 7239 Sec. 4).
 
-        Each comma-separated element represents one hop. Attacker-controlled
-        hops are on the LEFT; trusted proxies append on the RIGHT. For each
-        directive (for, proto, host, prefix), select the element at
-        position ``len(elements) - hop_count`` -- the same logic as
-        ``_pick_hop``.
+        Each comma-separated element is one hop. Attacker-controlled hops are on
+        the LEFT and trusted proxies append on the RIGHT, so every directive is
+        read at ``len(elements) - hop_count``, as in ``_pick_hop``.
         """
         # Split on commas OUTSIDE quoted strings so a quoted comma in a
         # directive value (e.g. `host="a,b"`) does not fake an extra hop.
         raw, unterminated = split_outside_quotes_checked(value, ",")
         if unterminated:
-            # A quoted comma is only legal inside a properly closed
-            # quoted-string (RFC 7239 Sec. 4, RFC 9110 Sec. 5.6.4). Honouring an
-            # unbalanced `"` would let the sender put every comma its trusted
-            # proxies later append inside one quoted region, collapsing the hop
-            # count to whatever element it chose. Trust nothing from it.
+            # RFC 7239 Sec. 4 / RFC 9110 Sec. 5.6.4 allow a quoted comma only
+            # in a closed quoted-string: an unbalanced `"` would swallow the
+            # commas trusted proxies append, collapsing the hop count.
             return {}
         elements = [e for e in raw if e.strip()]
         parsed = [self._parse_forwarded_element(e) for e in elements]
@@ -300,12 +246,10 @@ class ProxyFix(Middleware):
     def _parse_forwarded_element(element: str) -> dict[str, str]:
         """Parse a single element of a `Forwarded:` header (RFC 7239 Sec. 4).
 
-        Returns the lowercase key -> value mapping with quotes stripped. For
-        the `for` / `by` node identifiers the bracketed-IPv6 wrapper is removed
-        to expose the bare address (RFC 7239 Sec. 6); the `host` directive is
-        an authority (`host[:port]`, RFC 7239 Sec. 5.3) and is kept verbatim so
-        a bracketed IPv6 host with a port survives intact when spliced into the
-        Host header.
+        Returns the lowercase key -> value mapping with quotes stripped. `for` /
+        `by` are node identifiers, so the bracketed-IPv6 wrapper is stripped
+        (RFC 7239 Sec. 6); `host` is an authority (RFC 7239 Sec. 5.3) and stays
+        verbatim so a bracketed IPv6 host with a port survives.
         """
         result: dict[str, str] = {}
         for pair in split_outside_quotes(element, ";"):
@@ -326,14 +270,10 @@ class ProxyFix(Middleware):
 
         Counting from the right is what makes the choice safe: the rightmost
         entry is the one the closest proxy appended, and everything to its left
-        may have been supplied by the client.
-
-        `X-Forwarded-For: client, proxy1, proxy2` returns "proxy2" with hops=1,
-        "proxy1" with hops=2 and "client" with hops=3 - so `hops` is the number
-        of proxies in front of the application, and the value returned is the
-        address the outermost trusted one saw. Returns None if `hops <= 0` or
-        the list is shorter than `hops`, because there is then no entry that
-        trust reaches.
+        may have been supplied by the client. `X-Forwarded-For: client, proxy1,
+        proxy2` returns "proxy2" with hops=1 and "client" with hops=3. None when
+        `hops <= 0` or the list is shorter than `hops`, because trust then
+        reaches no entry.
         """
         if not header_value or hops <= 0:
             return None

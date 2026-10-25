@@ -46,11 +46,8 @@ _logger = logging.getLogger(__name__)
 def _argument_error_text(errors: Any) -> str:
     """Render binding errors as text a language model can act on.
 
-    Not `str()` of the error list: that is a Python repr, with single quotes
-    and a `loc` path that reads as framework internals, and a model receiving it
-    has to guess which argument it got wrong. Naming the argument and the
-    expectation is the difference between a retry that can succeed and one that
-    cannot.
+    Not `str()` of the error list: a model receiving that repr has to guess
+    which argument it got wrong, so the name and the expectation are spelled out.
     """
     if not isinstance(errors, list) or not errors:
         return "Invalid arguments"
@@ -60,9 +57,7 @@ def _argument_error_text(errors: Any) -> str:
             lines.append(str(err))
             continue
         loc = err.get("loc") or ()
-        # Drop the source segment (`body` / `query` / `path`): over MCP every
-        # value arrives as a tool argument, so only the argument name is
-        # meaningful to the caller.
+        # Over MCP every value is a tool argument, so the source segment is not.
         parts = [str(p) for p in loc if p not in ("body", "query", "path", "header", "cookie")]
         name = ".".join(parts) if parts else "arguments"
         lines.append(f"{name}: {err.get('msg', 'invalid value')}")
@@ -73,11 +68,9 @@ def _argument_error_text(errors: Any) -> str:
 def _resolve_log_level(session: Any) -> str | None:
     """Resolve the level this call's notifications are filtered against.
 
-    Precedence is per-request first, then per-connection. A modern request names
-    its level in `_meta` and the dispatcher puts that in the ContextVar, so it
-    wins for the request that carried it. `logging/setLevel` records the
-    connection's choice on the session, which is what carries between requests -
-    the ContextVar could not, because it dies with the context that set it.
+    Per-request first, then per-connection: a modern request names its level in
+    `_meta`, while `logging/setLevel` records the connection's choice on the
+    session, which is what carries between requests.
     """
     level = _log_level_var.get()
     if level is not None:
@@ -88,8 +81,7 @@ def _resolve_log_level(session: Any) -> str | None:
 class InvocationMixin:
     """Handler dispatch, lifecycle replay, and instrumentation for `MCPServer`."""
 
-    # `MCPServer` is slotted; a mixin must declare `__slots__` too or its
-    # instances regain a `__dict__` (see the __slots__ discipline rule).
+    # `MCPServer` is slotted, so a mixin without this regains a `__dict__`.
     __slots__ = ()
 
     if TYPE_CHECKING:  # pragma: no cover
@@ -108,32 +100,26 @@ class InvocationMixin:
     ) -> Any:
         """Invoke a tool, applying the optional per-call timeout.
 
-        With no `MCP_CALL_TIMEOUT` configured the handler runs unbounded (the
-        common case, zero overhead); otherwise it is cancelled past the budget and
-        the `asyncio.TimeoutError` is surfaced by the caller (in-band for a tool
-        call, a JSON-RPC error for a resource read or prompt render).
+        With no `MCP_CALL_TIMEOUT` configured the handler runs unbounded; otherwise
+        it is cancelled past the budget and the `asyncio.TimeoutError` is surfaced
+        by the caller.
 
         The call's binding of `request` / `g` / `current_app` is undone once it
-        ends. The Streamable HTTP transport awaits `handle_message` from inside a
-        live HTTP request, so a binding that outlived the call would leave the rest
-        of that handler, and every hook after it, reading the call's synthetic
-        request instead of the real one.
+        ends: the Streamable HTTP transport awaits `handle_message` from inside a
+        live HTTP request, which must go on reading its own request.
         """
-        # A derived tool publishes a different argument surface from the one its
-        # handler takes; translate before anything reads the arguments, so hooks,
-        # binding and the handler all see one consistent mapping.
+        # A derived tool publishes a different argument surface; translate first.
         if tool.derived_from is not None:
             arguments = tool.derived_from.translate(arguments)
 
-        # Run before building the call: a hook that answers instead of the handler
-        # must not leave an un-awaited coroutine behind.
+        # Before the call is built: a hook that answers it must not leave a
+        # coroutine un-awaited.
         before = self.app._mcp_before_call
         if before:
             short_circuit = await self._run_before_call(tool.name, arguments, before)
             if short_circuit is not None:
                 return short_circuit
 
-        # Built here so the restore wraps one await, not a duplicated pair.
         call = (
             self._invoke(tool, arguments, progress_token, request_meta)
             if self._call_timeout is None
@@ -152,10 +138,7 @@ class InvocationMixin:
                 result = await self._run_after_call(tool.name, result, after)
             return result
         except GeneratorExit:
-            # Closed mid-await: an abandoned call being finalized, which the
-            # collector may run in any context. There is no awaiter to hand a
-            # context back to, and restoring here would write the outer binding
-            # into whichever context happens to be current.
+            # An abandoned call has no awaiter to hand the outer binding back to.
             unbind = False
             raise
         finally:
@@ -197,29 +180,16 @@ class InvocationMixin:
         """Resolve DI and call the handler, draining teardowns afterwards.
 
         The handler runs inside the same request-context binding the HTTP path
-        uses: `current_app` and `request` are bound onto their contextvars and
-        `g` is reset, so a handler or dependency that reads `current_app` / `g`
-        works.
+        uses, so a handler or dependency reading `current_app` / `g` works.
 
-        For a route-derived tool the full request lifecycle is replayed so the
-        tool result matches the HTTP response: the matched path parameters are
-        copied onto `request.path_params`, the app's `before_request` chain runs
-        first (a hook returning a `Response` short-circuits the call), the
-        handler return is shaped through the route's `_build_response`, the
-        `after_request` chain runs and may rewrite that response, and the
-        `teardown_request` / `teardown_appcontext` hooks fire in the `finally`.
-        A handler exception is routed through the app's exception handlers (the
-        same lookup the HTTP path uses) and the resulting response becomes the
-        tool result. A pure `@app.mcp_tool` (no route) has no such lifecycle and
-        its return value is passed back unchanged.
+        For a route-derived tool the full request lifecycle is replayed - path
+        params, `before_request`, `_build_response`, `after_request`, teardowns,
+        and the app's exception handlers - so the tool result matches the HTTP
+        response. A pure `@app.mcp_tool` has no such lifecycle and its return
+        value is passed back unchanged.
         """
-        # The client capabilities gating `ctx.sample` / `elicit` / `roots` come
-        # from the dispatching connection's session (recorded at `initialize`);
-        # empty off a stateful transport, which leaves those methods to reject.
+        # The capabilities gating `ctx.sample` are recorded at `initialize`.
         session = _session_var.get()
-        # The session and the server are passed as references, not unpacked: the
-        # context exposes what they hold through properties, so a call that never
-        # asks for them pays only these two assignments.
         context = MCPContext(
             tool.name,
             arguments,
@@ -228,15 +198,12 @@ class InvocationMixin:
             log_level=_resolve_log_level(session),
             requester=_requester_var.get(),
             session=session,
-            # `self` is the `MCPServer` this mixin is mixed into; only the
-            # subclass declares that, so the cast restores it for the checker.
+            # Only the subclass declares that `self` is the `MCPServer`.
             server=cast("MCPServer", self),
             request_meta=request_meta,
             request_id=_request_id_var.get(),
         )
-        # Expose this context on its in-flight registration so a
-        # `notifications/cancelled` flips `ctx.cancelled` (cooperative stop) as
-        # well as cancelling the task. `None` off-dispatch or for an untracked call.
+        # So a `notifications/cancelled` also flips `ctx.cancelled`.
         inflight = _inflight_var.get()
         if inflight is not None:
             inflight.context = context
@@ -245,12 +212,7 @@ class InvocationMixin:
         resolver._override_subplans = self.app._override_subplans
 
         route_info = tool.route_info
-        # Seed the synthetic request's value sources with the call arguments so
-        # a sub-dependency `Query` / `Body` / `Header` / `Cookie` / `Form`
-        # marker resolves from them, the same way a top-level tool parameter
-        # does (see `_build_request`). A route-backed tool also adopts the
-        # wrapped route's real HTTP method and rule path so anything branching
-        # on `request.method` / `request.path` matches the HTTP path.
+        # Seeded with the call arguments and the route's real method and path.
         if route_info is not None:
             request = _build_request(
                 tool.name,
@@ -261,15 +223,10 @@ class InvocationMixin:
         else:
             request = _build_request(tool.name, arguments)
         request.app = self.app
-        # Mark the synthetic request so auth middleware can recognise a replayed
-        # MCP call (`request.is_mcp`) and defer to the transport's authentication
-        # rather than re-checking a browser credential the agent never sends.
+        # So auth middleware reads `request.is_mcp` and defers to the transport.
         request._state["_mcp"] = True
 
-        # Bind the request context exactly as `handle_request` does: the
-        # `current_app` / `request` contextvars plus a fresh `g`. `_run_invoke`
-        # unbinds them once the call ends, so a caller that awaited this from
-        # inside its own request keeps reading its own.
+        # Bound as `handle_request` does; `_run_invoke` unbinds them afterwards.
         _current_app_var.set(self.app)
         _current_request_var.set(request)
         g._reset()
@@ -277,9 +234,6 @@ class InvocationMixin:
         exc: BaseException | None = None
         bp_name: str | None = None
 
-        # For a pure `@app.mcp_tool` there is no route lifecycle to replay - run
-        # the handler with its DI graph and return the raw value, draining only
-        # the yield-dependency teardowns. The exception path stays in-band.
         if route_info is None:
             try:
                 return await self._invoke_pure(tool, arguments, context, resolver, request)
@@ -289,34 +243,14 @@ class InvocationMixin:
             finally:
                 await resolver.run_teardowns(exc)
 
-        # Route-derived tool: replay the matched-route state the HTTP path sets
-        # before dispatch. `request.endpoint` and `url_rule` let a hook gate on
-        # the route name and the blueprint bucket resolve; `path_params` carries
-        # the tool arguments that name a route path parameter so a hook /
-        # dependency / handler reading `request.path_params` sees them, exactly
-        # as on the HTTP path.
+        # The matched-route state the HTTP path sets before dispatch.
         request.endpoint = route_info.name
         request._state["url_rule"] = route_info.path_template
         request.path_params = _route_path_params(route_info, arguments)
 
         try:
-            # Request-phase middleware runs first, exactly as `_dispatch_request`
-            # runs it before `before_request`, so a route depending on
-            # middleware-populated state (a session loaded by `SessionMiddleware`,
-            # a header set by a custom middleware) sees it over MCP too. A
-            # middleware that short-circuits by returning a `Response` is treated
-            # like a `before_request` short-circuit: shaped into the tool result
-            # and run through the same teardown `finally`. Returned from *inside*
-            # this `try` so DI + `teardown_request` / `teardown_appcontext` still
-            # fire. The response middleware phase is intentionally not replayed:
-            # the tool result is derived from the response body, not a wire
-            # response, so a response-mutating middleware (compression, headers)
-            # has nothing to act on.
-            # A route declaring `exclude_middleware` must skip the excluded
-            # middleware here too, so the MCP path matches HTTP dispatch (which
-            # runs the route's filtered chain). `_route_middleware_chains`
-            # returns `None` when the route excludes nothing - the common,
-            # zero-cost case - in which case the full app chain runs.
+            # Request-phase middleware first, as `_dispatch_request` runs it. The
+            # response phase is not replayed: the result comes from the body.
             filtered = (
                 self.app._route_middleware_chains(route_info)
                 if route_info.excluded_middleware is not None
@@ -327,40 +261,19 @@ class InvocationMixin:
             if early is not None:
                 return _ShortCircuit(early)
 
-            # `before_request` (app-level then matched blueprint). A
-            # short-circuit response is the tool result; `bp_name` is recorded
-            # so the matched blueprint's `after_request` / teardown hooks fire
-            # even on short-circuit. The short-circuit returns from *inside* this
-            # `try` so the `finally` still drains DI teardowns and runs
-            # `teardown_request` / `teardown_appcontext` - the HTTP dispatch runs
-            # its teardown even when `before_request` returns early, and a tool
-            # that relies on `teardown_request` cleanup on a rejected call (an
-            # auth 401 short-circuit) must get the same.
+            # Returned inside this `try`, so a short-circuit still tears down.
             early, bp_name = await self.app._run_before_hooks(request)
             if early is not None:
                 return _ShortCircuit(early)
 
-            # URL value preprocessors run after `before_request` and after
-            # `path_params` is populated, exactly as the HTTP path runs them in
-            # `_resolve_route`, so a processor that rewrites a path param or
-            # seeds `g` (locale / tenant extraction) is observed by the
-            # dependencies and the handler.
+            # After `path_params`, as `_resolve_route` runs them.
             self.app._run_url_value_preprocessors(route_info.name, request.path_params)
 
             result = await self._bind_and_call(tool, arguments, context, resolver, request)
 
-            # `_build_response` runs the route `response_model` filter only over a
-            # non-`Response` handler return; a handler that returned its own
-            # `Response` keeps that body unfiltered. Record which case this is so
-            # the server only advertises a filtered body as schema-conformant
-            # `structuredContent`.
+            # `_build_response` filters only a non-`Response` return.
             model_filtered = not isinstance(result, Response)
 
-            # Shape the handler return into the final `Response` exactly as the
-            # HTTP path does (`_build_response` runs the route `response_model`
-            # filtering + coercion + injected-response merge), then run the
-            # `after_request` chain so a hook can rewrite the response before the
-            # tool result is derived from it - mirroring HTTP dispatch order.
             match = RouteMatch(route_info, request.path_params)
             response = self.app._build_response(request, match, result)
             response = await self.app._run_after_hooks(request, response, bp_name)
@@ -368,31 +281,17 @@ class InvocationMixin:
             await self._run_background(request, response)
             return _RouteResponse(response, model_filtered)
         except MCPError:
-            # Not a handled application failure: an error the author raised to
-            # say something about the protocol, so it goes to the caller as the
-            # code and message they wrote rather than through the app's exception
-            # handlers, which would render it as an HTTP body. A malformed
-            # argument (the `_InBandError` subtree) is shaped in-band by
-            # `_tools_call` instead, so the model can retry. Both still flow
-            # through the `finally` so teardowns run.
+            # Raised about the protocol, so it is not rendered as an HTTP body.
             raise
         except BaseException as err:  # noqa: BLE001 - re-raised / routed after teardown
             exc = err
-            # Route the handler exception through the app's exception handlers
-            # (the same status-code + class lookup the HTTP path uses) so a
-            # route relying on `@app.exception_handler(...)` - or the default
-            # `HTTPException` JSON body - yields the right MCP payload. A
-            # `BaseException` that is not an `Exception` (e.g. cancellation)
-            # has no handler path and is re-raised after teardown.
+            # Through the app's exception handlers, as the HTTP path does.
             if isinstance(err, Exception):
                 response = await self.app.handle_user_exception(err, request=request)
                 return _RouteResponse(response)
             raise
         finally:
-            # Yield-dependency teardowns first (the resource was acquired before
-            # the handler ran and must be released regardless of outcome), then
-            # the `teardown_request` / `teardown_appcontext` hooks - both receive
-            # the exception (or None), mirroring the HTTP dispatch `finally`.
+            # In the order of the HTTP dispatch `finally`, with the exception.
             await resolver.run_teardowns(exc)
             await self.app._run_request_teardown(exc, bp_name)
 
@@ -424,20 +323,13 @@ class InvocationMixin:
     ) -> Any:
         """Bind the handler kwargs from `arguments` and call the handler.
 
-        The argument-binding boundary maps a malformed argument to an in-band
-        tool-execution error: a missing argument (TypeError), a failed coercion
-        (RequestValidationError) or a failed model validation (ValueError). The
-        spec classes input validation as a tool execution error rather than a
-        protocol error, because it is the class of failure a model can act on -
-        clients feed execution errors back to the model to self-correct, and
-        protocol errors generally not at all. The handler call lives outside that
-        guard so a genuine TypeError / ValueError raised in the handler body
-        propagates unchanged - surfaced in-band for a pure tool, routed through
-        the app's exception handlers for a route-backed one.
+        The spec classes input validation as a tool execution error rather than a
+        protocol error, because clients feed execution errors back to the model to
+        self-correct, so the binding boundary maps a missing argument, a failed
+        coercion or a failed model validation to one. The handler call lives
+        outside that guard, so a `TypeError` from the handler body propagates.
         """
-        # Route rule `defaults=` fill handler kwargs the call did not supply,
-        # matching HTTP precedence (explicit argument > route default > Python
-        # default). A pure `@app.mcp_tool` has no route, hence no defaults.
+        # HTTP precedence: explicit argument > route default > Python default.
         route_info = tool.route_info
         route_defaults = route_info.defaults if route_info is not None else None
         try:
@@ -459,18 +351,14 @@ class InvocationMixin:
         handler = tool.handler
         if _is_async_callable(handler):
             return await handler(**kwargs)
-        # A sync handler runs in the thread pool so it cannot block the event
-        # loop - the same offload the HTTP path applies; `offload` preserves
-        # request-scoped ContextVars.
+        # The same offload the HTTP path applies, preserving request ContextVars.
         return await offload(handler, **kwargs)
 
     async def _run_background(self, request: Any, result: Any) -> None:
         """Run everything this call scheduled: the injected queue, then the response's.
 
-        Both invocation paths reach here - the route path with its `Response`,
-        the pure-tool path with the handler's raw return. Awaited inline (the
-        stdio path has no response to flush first); a task error is logged,
-        never allowed to fail the produced tool result.
+        Awaited inline, since the stdio path has no response to flush first; a
+        task error is logged, never allowed to fail the produced tool result.
         """
         tasks = request._background_tasks
         if tasks is not None:
@@ -484,8 +372,6 @@ class InvocationMixin:
     async def _run_response_background(result: Any) -> None:
         """Run a returned `Response`'s `background` task, mirroring the HTTP path.
 
-        The HTTP path schedules `response.background` (a `BackgroundTask` or a
-        `BackgroundTasks` collection) in addition to the DI-injected queue.
         A task error is logged, never allowed to fail the produced tool result.
         """
         if not isinstance(result, Response):
@@ -499,9 +385,7 @@ class InvocationMixin:
             elif hasattr(background, "run"):
                 await background.run()
             else:
-                # Assigned after construction, so it never passed
-                # `coerce_background`. Dropping it silently is what made the
-                # same defect on the HTTP path invisible.
+                # Assigned after construction, so never `coerce_background`-ed.
                 _logger.warning(
                     "MCP response background %r has no run()/run_all() and was not run",
                     type(background).__name__,
@@ -512,13 +396,10 @@ class InvocationMixin:
     async def _instrument(self, tool: MCPTool, started: float, status_code: int) -> None:
         """Fire the app instrumentation hooks for a finished tool call.
 
-        Reuses the same `RequestMetrics`/`add_instrumentation` contract the
-        HTTP path uses: `method` is the JSON-RPC method, `route` is the tool
-        name (a low-cardinality label), `path` the tool name too. `status_code`
-        is the call's real outcome - the shaped `Response`'s status for a
-        route-backed / short-circuited call, 500 for an unhandled handler error
-        or a stream that overran the buffer limit, 200 only on genuine success -
-        so a 4xx/5xx is never misreported as 200.
+        Reuses the same `RequestMetrics`/`add_instrumentation` contract the HTTP
+        path uses: `method` is the JSON-RPC method and `route` and `path` are both
+        the tool name, a low-cardinality label. `status_code` is the call's real
+        outcome, so a 4xx/5xx is never misreported as 200.
         """
         hooks = self.app._instrumentation
         if not hooks:

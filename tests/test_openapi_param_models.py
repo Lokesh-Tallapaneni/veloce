@@ -204,6 +204,8 @@ def test_set_of_model_emits_array_of_string() -> None:
     assert _python_type_to_schema(set[_Tag]) == {
         "type": "array",
         "items": {"type": "string"},
+        # The resolver drops duplicates for a `set`, so the document says so.
+        "uniqueItems": True,
     }
 
 

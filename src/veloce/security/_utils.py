@@ -15,17 +15,14 @@ from veloce.status import HTTP_401_UNAUTHORIZED
 def _validate_realm(realm: str) -> None:
     """Reject control characters in a realm at construction (fail fast).
 
-    CR / LF / NUL and other control characters cannot appear in an HTTP
-    quoted-string and would corrupt the WWW-Authenticate header, so an
-    invalid realm is a configuration error, surfaced when the scheme is
-    built rather than on every 401.
+    CR / LF / NUL cannot appear in an HTTP quoted-string and would corrupt the
+    WWW-Authenticate header, so an invalid realm is a configuration error.
     """
     if any(ord(c) < 0x20 or ord(c) == 0x7F for c in realm):
         raise ValueError("realm must not contain control characters")
 
 
-# The lowercase wire key, encoded once. `Request._peek_header_key` compares
-# it against the raw header tuples, so re-encoding it per request would give
+# The lowercase wire key, encoded once: re-encoding it per request would give
 # back ~200 ns of the ~2.6 us the single-header read saves.
 _AUTHORIZATION_KEY = HEADER_AUTHORIZATION.lower().encode("latin-1")
 
@@ -34,10 +31,8 @@ def _extract_bearer_token(
     request: Any, scheme: str = AUTH_SCHEME_BEARER, auto_error: bool = True
 ) -> str | None:
     """Extract a bearer token from the Authorization header."""
-    # The extraction itself lives in `_internal`, because the MCP HTTP transport
-    # needs it too and reaching across a subpackage boundary for an
-    # underscore-prefixed name is what that module exists to avoid. What stays
-    # here is the part only a security scheme wants: the challenge.
+    # The extraction lives in `_internal` because the MCP HTTP transport needs it
+    # too; what stays here is the part only a security scheme wants, the challenge.
     token = _bearer_token_from(request._peek_header_key(_AUTHORIZATION_KEY) or "", scheme)
     if token is None and auto_error:
         raise HTTPException(
@@ -56,9 +51,8 @@ def _extract_api_key(
 ) -> str | None:
     """Extract an API key from a dict-like source (headers, query, cookies).
 
-    `challenge` is the precomputed WWW-Authenticate header dict (or `None`
-    for no header); passing it straight through to `HTTPException` keeps
-    the missing-key path a single branch with no per-request header build.
+    `challenge` is the precomputed WWW-Authenticate header dict, or `None` for
+    no header, passed straight through to `HTTPException`.
     """
     return _refuse_missing_api_key(source.get(name), auto_error, challenge)
 
@@ -70,13 +64,11 @@ def _refuse_missing_api_key(
 ) -> str | None:
     """Return an extracted API key, or refuse an absent or blank one.
 
-    Split from the lookup so a caller that already holds the value - one
-    reading a single header off the connection rather than indexing a
-    collection - applies the same rule instead of a second copy of it.
+    Split from the lookup so a caller already holding the value applies the
+    same rule rather than a second copy of it.
     """
-    # `isspace()` tests for an all-whitespace key without allocating the
-    # stripped copy `.strip()` would build on every (success-path) request;
-    # `not key` already covers the empty/None case.
+    # `isspace()` rejects an all-whitespace key without allocating the stripped
+    # copy `.strip()` would build on every success-path request.
     if not key or key.isspace():
         if auto_error:
             raise HTTPException(HTTP_401_UNAUTHORIZED, MSG_NOT_AUTHENTICATED, headers=challenge)

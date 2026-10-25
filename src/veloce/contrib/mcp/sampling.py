@@ -2,19 +2,16 @@
 
 `MCPContext.sample` is one round trip: a prompt goes out, a completion comes
 back. The modern revision lets that request carry tools the model may call, and
-answer with a `tool_use` block instead of a completion — which leaves the
-handler holding a request it must execute, append and send back, round after
-round, before it has an answer.
+answer with a `tool_use` block instead — which leaves the handler holding a
+request it must execute, append and send back, round after round.
 
-`MCPContext.sample_with_tools` runs that loop. It declares tools this server
-already has, executes the ones the model asks for through the same path
-`tools/call` serves - scope checks, hooks, timeouts and error shaping included -
-and feeds each result back as the next message. It returns a `SamplingRun`: the
-answer, the transcript that produced it, and every tool call made along the way.
+`MCPContext.sample_with_tools` runs that loop. It executes the tools the model
+asks for through the same path `tools/call` serves - scope checks, hooks,
+timeouts and error shaping included - feeds each result back as the next
+message, and returns a `SamplingRun`.
 
-The model may only reach the tools the handler named. One it asks for outside
-that set comes back as an error result rather than being executed, so declaring
-a narrow set is a real restriction and not a hint.
+The model may only reach the tools the handler named; one outside that set comes
+back as an error result rather than being executed.
 """
 
 from __future__ import annotations
@@ -22,9 +19,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-# What the model is told on the last allowed round: answer, do not ask for
-# another tool. Without it a run that keeps requesting tools ends with an
-# unanswered request instead of an answer.
+# Told on the last allowed round, or a run that keeps requesting tools ends
+# with an unanswered request instead of an answer.
 _NO_MORE_TOOLS = {"mode": "none"}
 
 
@@ -43,10 +39,9 @@ class SampledToolCall:
 class SamplingRun:
     """The outcome of a `sample_with_tools` loop.
 
-    `content` is the final assistant content, `messages` the whole transcript
-    including that answer as its closing turn - so extending it for another run
-    carries the reply along - and `tool_calls` every tool the model drove, in the
-    order it drove them.
+    `messages` is the whole transcript including the answer as its closing turn,
+    so extending it for another run carries the reply along; `tool_calls` lists
+    every tool the model drove, in order.
     """
 
     content: tuple[dict[str, Any], ...]
@@ -65,8 +60,7 @@ class SamplingRun:
 def content_blocks(result: dict[str, Any]) -> list[dict[str, Any]]:
     """Return a sampling result's content as a list, however it was sent.
 
-    The spec's content field is one block or a list of them; a caller reading
-    the run should not have to care which the client chose.
+    The spec's content field is one block or a list of them.
     """
     content = result.get("content")
     if isinstance(content, list):

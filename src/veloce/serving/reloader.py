@@ -1,17 +1,10 @@
 """Auto-reloader — restart the built-in server when source files change.
 
-A development convenience for `Veloce.run(reload=True)` (and `veloce run
---reload` without uvicorn). The launched process becomes a *supervisor* that
-spawns the real server in a child subprocess and watches the project's `.py`
-files; on a change it terminates and re-spawns the child, so edited code is
-picked up without a manual restart. This mirrors the supervisor/child pattern
-Werkzeug and uvicorn use, written from scratch for Veloce.
-
-It runs only when reload is explicitly requested, and the file-watching happens
-in the supervisor process, never in the child that serves requests - so a served
-app pays nothing for it. The default watcher is a stdlib `os.stat` mtime poller
-(no dependency, works on every platform); when `watchfiles` is installed it is
-used instead for OS-level change events.
+For `Veloce.run(reload=True)`: the launched process becomes a supervisor that
+spawns the real server in a child and re-spawns it when a watched `.py` file
+changes. The watching runs only in the supervisor, so a served app pays nothing.
+The default watcher is a stdlib `os.stat` mtime poller; `watchfiles`, when
+installed, is used instead for OS-level change events.
 """
 
 from __future__ import annotations
@@ -23,25 +16,24 @@ import signal
 import subprocess
 import sys
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
+
+try:
+    import watchfiles
+except ImportError:  # pragma: no cover - exercised only without the extra
+    # Probed once here rather than per change; `None` selects the stat poller.
+    watchfiles = cast("Any", None)
 
 if TYPE_CHECKING:  # pragma: no cover
     from collections.abc import Iterable, Iterator
 
-# The logger name is the one users filter reload output on, so it stays a
-# literal rather than `__name__` (which would resolve to
-# "veloce.serving.reloader"). Supervisor events go through `_announce`, which
-# writes both the console line a developer reads and the record that name
-# filters on, from one string.
+# "veloce.reloader" is the documented name users filter on, hence the literal.
 _logger = logging.getLogger("veloce.reloader")
 
-# Set by the supervisor in the child's environment so the child serves directly
-# instead of recursing into another supervisor. Its presence is the one signal
-# that distinguishes "I am the worker" from "I am the watcher".
+# Set in the child's environment so it serves instead of supervising in turn.
 _CHILD_ENV = "VELOCE_RUN_RELOADER"
 
-# Directory names never worth walking - build artifacts, VCS metadata, and
-# virtualenvs dominate a stat poll otherwise and never carry app source.
+# Build artifacts, VCS metadata and virtualenvs dominate a stat poll otherwise.
 _SKIP_DIRS = frozenset(
     {
         "__pycache__",
@@ -59,8 +51,6 @@ _SKIP_DIRS = frozenset(
     }
 )
 
-# Poll cadence for the stdlib watcher. Fast enough to feel instant, slow enough
-# that walking the tree is negligible on the supervisor process.
 _POLL_INTERVAL = 1.0
 
 
@@ -72,12 +62,9 @@ def is_reloader_child() -> bool:
 def _restart_command() -> list[str]:
     """Rebuild the command that launched this process, for re-spawning.
 
-    Covers the three reloadable launch modes: a plain script (`python app.py`),
-    a console-script / executable launcher (`veloce run ...`, where ``argv[0]``
-    is the launcher itself - a ``.exe`` on Windows), and a module (`python -m
-    pkg`, where CPython rewrites ``argv[0]`` to the module's file). An executable
-    launcher must be run directly, not handed back to ``python``. Interactive
-    (`-c` / REPL) launches are not reloadable.
+    Covers a plain script, a console-script / executable launcher (which must be
+    run directly, not handed back to ``python``), and `python -m pkg`.
+    Interactive (`-c` / REPL) launches are not reloadable.
     """
     main = sys.modules["__main__"]
     script = sys.argv[0]
@@ -85,9 +72,7 @@ def _restart_command() -> list[str]:
     package = getattr(main, "__package__", None)
     on_windows = os.name == "nt"
 
-    # No package context means a file or console-script launch (not `-m`). On
-    # Windows a console script's argv[0] can be the extension-less name sitting
-    # beside the real `.exe` launcher.
+    # On Windows argv[0] can be the extension-less name beside the `.exe`.
     launched_as_file = package is None or (
         on_windows
         and package == ""
@@ -103,8 +88,7 @@ def _restart_command() -> list[str]:
             return [path, *rest]
         return [sys.executable, path, *rest]
 
-    # `python -m pkg`: argv[0] was rewritten to the module's file, so rebuild the
-    # `-m <module>` form from the package and the file's stem.
+    # `python -m pkg` rewrote argv[0] to the module's file; rebuild the `-m` form.
     if os.path.isfile(script):
         module = package or ""
         stem = os.path.splitext(os.path.basename(script))[0]
@@ -133,8 +117,7 @@ def _snapshot(dirs: Iterable[str]) -> dict[str, float]:
         try:
             snap[path] = os.stat(path).st_mtime
         except OSError:
-            # A file deleted mid-walk simply drops out of the snapshot; its
-            # absence is itself a change the next comparison will catch.
+            # Its absence is itself a change the next comparison will catch.
             continue
     return snap
 
@@ -164,22 +147,17 @@ def _wait_for_change_stat(dirs: list[str], interval: float) -> str:
 
 def _wait_for_change_watchfiles(dirs: list[str]) -> str:
     """Block until a `.py` file changes, returning its path (watchfiles)."""
-    import watchfiles
-
     for batch in watchfiles.watch(*dirs):
         for _change, path in batch:
             if path.endswith(".py"):
                 return path
-    # watch() only stops if its internal stop event fires, which we never set;
-    # this is unreachable but keeps the return type honest.
+    # Unreachable - watch() stops only on a stop event we never set.
     return ""  # pragma: no cover
 
 
 def _wait_for_change(dirs: list[str], interval: float) -> str:
     """Block until a watched source file changes; pick the best backend."""
-    try:
-        import watchfiles  # noqa: F401
-    except ImportError:
+    if watchfiles is None:
         return _wait_for_change_stat(dirs, interval)
     return _wait_for_change_watchfiles(dirs)
 
@@ -187,9 +165,7 @@ def _wait_for_change(dirs: list[str], interval: float) -> str:
 def _announce(message: str) -> None:
     """Emit one supervisor event to the console and the `veloce.reloader` logger.
 
-    The console line is what a developer running with `--reload` sees and the
-    logger is what a process manager filters, so the event goes to both - from
-    the same string, so the two accounts of it cannot drift apart.
+    From one string, so the two accounts of the event cannot drift apart.
     """
     _logger.info(message)
     print(f"  {message}\n")
@@ -225,15 +201,11 @@ def run_with_reloader(
 
     _announce(f"Reloader active - watching {dirs[0]} for changes")
 
-    # Route a graceful kill (SIGTERM, e.g. from a process manager) through the
-    # same cleanup path as Ctrl+C so the serving child is never orphaned.
-    # Best-effort: signal handlers only install on the main thread, and a
-    # Windows hard kill is not catchable - Ctrl+C still cleans up there.
+    # Routes SIGTERM into the Ctrl+C path so the serving child is never orphaned.
     def _request_stop(_signum: int, _frame: object) -> None:
         raise KeyboardInterrupt
 
-    # `installed` (not the handler value) gates restoration: signal.signal()
-    # legitimately returns None when the prior handler was C-installed, so a
+    # signal.signal() returns None for a C-installed prior handler, so a
     # `previous_term is not None` guard would skip a real restore.
     installed = False
     previous_term: Any = None

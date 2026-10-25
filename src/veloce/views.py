@@ -46,13 +46,11 @@ from veloce.exceptions import MethodNotAllowed
 _HTTP_METHODS = ("get", "post", "put", "patch", "delete", "head", "options")
 
 
-def _accepted_params(func: Callable) -> frozenset[str] | None:
+def _accepted_params(func: Callable[..., Any]) -> frozenset[str] | None:
     """Return the keyword names `func` accepts, or None when it takes `**kwargs`.
 
     Computed once at class-definition time so dispatch never inspects a
-    signature. A view may either declare its path parameters as arguments or
-    read them from `request.path_params`; forwarding only what the target
-    accepts is what lets both shapes work.
+    signature.
     """
     try:
         params = inspect.signature(func).parameters
@@ -74,15 +72,13 @@ def _forward(params: dict[str, Any], accepted: frozenset[str] | None) -> dict[st
     return {name: value for name, value in params.items() if name in accepted}
 
 
-def _reject_unresolvable_defaults(cls: type, verb: str, method: Any) -> None:
+def _reject_unresolvable_defaults(cls: type[Any], verb: str, method: Any) -> None:
     """Refuse a verb method declaring a parameter marker or `Depends`.
 
     A `MethodView` is one route serving several verbs, so there is one handler
-    plan for the route and none per verb - nothing resolves these. Left alone the
-    default object itself was passed, so `q: str = Query(default="")` handed the
-    method a `Query` instance and the view answered with its repr. Raised at
-    class-definition time, like the `async def` check above, so the mistake
-    surfaces on import rather than as a nonsense response.
+    plan for the route and none per verb - nothing resolves these. Raised at
+    class-definition time so the mistake surfaces on import rather than as a
+    nonsense response carrying the marker's repr.
     """
     try:
         parameters = inspect.signature(method).parameters
@@ -117,16 +113,13 @@ class View:
     """
 
     methods: ClassVar[list[str] | None] = None
-    # Shared mutable default: subclasses that want their own decorator chain
-    # must assign a fresh list (`decorators = [auth]`) rather than mutating
-    # this one in place, or every view class would share the same list.
-    decorators: ClassVar[list[Callable]] = []
+    # Shared mutable default: a subclass wanting its own chain must assign a
+    # fresh list (`decorators = [auth]`) rather than mutating this one in place.
+    decorators: ClassVar[list[Callable[..., Any]]] = []
     init_every_request: ClassVar[bool] = True
 
     #: The method a subclass must supply, checked at definition rather than left
-    #: to fail at call time - a view that never dispatches serves nothing, and
-    #: the failure would otherwise be a `NotImplementedError` on the first
-    #: request to the route it was registered for.
+    #: to fail as a `NotImplementedError` on the first request to the route.
     _required = ("dispatch_request",)
 
     def __init_subclass__(cls, **kwargs: object) -> None:
@@ -134,7 +127,7 @@ class View:
         _require_methods(cls, View, View._required)
 
     @classmethod
-    def as_view(cls, name: str, *class_args: Any, **class_kwargs: Any) -> Callable:
+    def as_view(cls, name: str, *class_args: Any, **class_kwargs: Any) -> Callable[..., Any]:
         """Build a view function bound to this class.
 
         Honours `init_every_request` (fresh instance per request vs a
@@ -142,14 +135,8 @@ class View:
         callable carries `view_class`, `methods`, and `__name__ = name`
         for router introspection and `url_for` naming.
         """
-        # Path parameters are read off the request rather than accepted as
-        # `**path_params`. The handler plan skips a VAR_KEYWORD parameter - it is
-        # not an injectable query parameter - so a `**kwargs`-shaped view was
-        # called with the request alone, and a verb method declaring a path
-        # parameter raised TypeError and surfaced as a 500. The view now takes
-        # the values from where dispatch has already put them, forwarding only
-        # what the target declares so that a view reading `request.path_params`
-        # itself keeps working.
+        # Read off the request, not accepted as `**path_params` which the handler
+        # plan skips; forwarding only what the target declares serves both shapes.
         accepted = _accepted_params(cls.dispatch_request)
 
         if cls.init_every_request:

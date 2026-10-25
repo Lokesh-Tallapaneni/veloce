@@ -715,17 +715,19 @@ def test_signal_disconnect_targets_the_correct_subscription():
 
 
 def test_signal_result_is_alias_for_list_of_tuples() -> None:
-    # `SignalResult = list[tuple[Callable, Any]]` resolves to a
+    # `SignalResult = list[tuple[Callable[..., Any], Any]]` resolves to a
     # `types.GenericAlias` at runtime — inspect the origin / args.
     origin = getattr(SignalResult, "__origin__", None)
     assert origin is list
     (inner,) = SignalResult.__args__
     assert getattr(inner, "__origin__", None) is tuple
     callable_arg, any_arg = inner.__args__
-    # `Callable` from collections.abc is what the type alias resolves to.
+    # The receiver slot is parameterised, not a bare `Callable`: a bare one
+    # reads as `(...) -> Unknown` and erases the alias for a type checker.
     from collections.abc import Callable
 
-    assert callable_arg is Callable
+    assert getattr(callable_arg, "__origin__", None) is Callable
+    assert callable_arg.__args__ == (Ellipsis, Any)
     assert any_arg is Any
 
 

@@ -570,6 +570,7 @@ PRIVATE_RETURNS: dict[str, str] = {
     "TestClient.cookies": "a mapping the caller indexes, never annotates",
     "AsyncTestClient.cookies": "a mapping the caller indexes, never annotates",
     "TestClient.websocket_connect": "entered with `with`, never named by a caller",
+    "LiveServer.connect": "entered with `async with`, never named by a caller",
 }
 
 

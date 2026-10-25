@@ -3,11 +3,9 @@
 Each capability wraps the server handlers for its spec area and contributes
 both its dispatch-map entries (`handlers`) and its `initialize` advertisement
 (`advertise`). Resources and prompts advertise only when the app exposes at
-least one, so the client does not probe an empty primitive. Tools are always
-advertised, because every server serves tools. Logging is advertised in the
-`initialize` handshake for the same reason - any tool may emit a log message the
-client gates with ``logging/setLevel`` - but not on the modern discovery
-document, where the revision dropped it.
+least one, so the client does not probe an empty primitive; tools always do.
+Logging is advertised in the `initialize` handshake but not on the modern
+discovery document, where the revision dropped it.
 """
 
 from __future__ import annotations
@@ -26,9 +24,7 @@ class ToolsCapability(_ServerCapability):
     __slots__ = ()
 
     def advertise(self, *, modern: bool = False) -> dict[str, Any]:
-        # The registry is fixed once the server is built, but what a connection is
-        # *listed* is not: a handler may narrow this connection's view with
-        # `MCPContext.hide`, and the client is told so it fetches the list again.
+        # The registry is fixed, but `MCPContext.hide` narrows a connection's view.
         return {"tools": {"listChanged": self._connection_can_be_told()}}
 
     def handlers(self) -> dict[str, MethodHandler]:
@@ -44,19 +40,12 @@ class ResourcesCapability(_ServerCapability):
     __slots__ = ()
 
     def advertise(self, *, modern: bool = False) -> dict[str, Any] | None:
-        # The `subscribe`/`listChanged` sub-capabilities are advertised only when
-        # the app opts into resource subscriptions AND the connection answering
-        # `initialize` is stateful. Subscriptions are per-connection state delivered
-        # over the connection's outbound stream, so a stateless request (no session)
-        # cannot serve them; advertising `true` there would invite a client to probe
-        # a primitive that errors. A stateful connection (the stdio loop, or an HTTP
-        # `Mcp-Session-Id` session) advertises and serves them.
+        # Subscriptions are per-connection state on the outbound stream, so a
+        # stateless request cannot serve them and must not advertise them.
         if not self._server.resources.resources:
             return None
         stateful = self._connection_can_be_told()
-        # `subscribe` additionally needs the subscription machinery; `listChanged`
-        # needs only the channel, because `MCPContext.hide` can narrow a
-        # connection's resource listing whether or not subscriptions are on.
+        # `listChanged` needs only the channel, since `hide` works regardless.
         return {
             "resources": {
                 "subscribe": self._server._subscriptions_enabled and stateful,
@@ -92,10 +81,8 @@ class PromptsCapability(_ServerCapability):
 class LoggingCapability(_ServerCapability):
     """The ``logging/setLevel`` method, advertised on the revisions that have it.
 
-    Any tool may emit a log message through `MCPContext.log`, and a handshake-era
-    client may raise the minimum level once per connection. The modern revision
-    removed the method - a client sets its level per request in `_meta` - so the
-    capability is withheld there rather than advertised and then refused.
+    The modern revision removed the method - a client sets its level per request
+    in `_meta` - so the capability is withheld there rather than refused later.
     """
 
     __slots__ = ()

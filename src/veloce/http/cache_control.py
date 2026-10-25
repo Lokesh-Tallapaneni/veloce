@@ -1,14 +1,9 @@
 """CacheControl — parsed view of a `Cache-Control` header.
 
-RFC 9111 Sec. 5.2 defines the `Cache-Control` directives. Each directive
-is either a bare token (`no-cache`, `must-revalidate`) or a
-`key=value` pair (`max-age=3600`). Values may be quoted strings or
-bare tokens; numeric directives are integer seconds.
-
-`CacheControl(header)` parses the header into a dict-like object;
-boolean directives become attributes that return True/False, and
-numeric ones become integer-or-None attributes. The string round-trip
-preserves source order of directives observed in the input.
+RFC 9111 Sec. 5.2 defines the directives: a bare token (`no-cache`) or a
+`key=value` pair (`max-age=3600`), where numeric values are integer seconds.
+Boolean directives read back as True/False attributes and numeric ones as
+integer-or-None; the string round-trip preserves source order.
 """
 
 from __future__ import annotations
@@ -59,8 +54,7 @@ class CacheControl:
     __slots__ = ("_directives",)
 
     def __init__(self, header: str | None = "") -> None:
-        # Insertion-ordered dict: attr_name -> value (True for bare flags,
-        # int for numeric directives, str for unknown directives).
+        # True for bare flags, int for numeric directives, str for unknown.
         self._directives: dict[str, Any] = {}
         if not header:
             return
@@ -73,10 +67,8 @@ class CacheControl:
                 k = _to_attr(k.strip().lower())
                 v = unquote_value(v)
                 if k in _INT_DIRECTIVES:
-                    # RFC 9111 Sec. 5.2 delta-seconds is `1*DIGIT`; numeric
-                    # directives are documented as int-or-None, so a malformed
-                    # value (`max-age=abc`) is dropped rather than stored as a
-                    # str on an int attribute.
+                    # RFC 9111 Sec. 5.2 delta-seconds is `1*DIGIT`, so a
+                    # malformed value is dropped, not stored on an int attribute.
                     if v.isdigit():
                         self._directives[k] = int(v)
                 else:
@@ -87,9 +79,7 @@ class CacheControl:
     def to_header(self) -> str:
         """Serialise back to a `Cache-Control` header value.
 
-        Bool-True directives emit just the directive name; numeric and
-        string directives emit `name=value`. Preserves source-observed
-        order; user-set directives append in set order.
+        Preserves source-observed order; user-set directives append in set order.
         """
         parts: list[str] = []
         for k, v in self._directives.items():

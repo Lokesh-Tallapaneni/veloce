@@ -10,9 +10,12 @@ from __future__ import annotations
 
 import urllib.parse
 
+import msgspec
 from pydantic import BaseModel, Field
 
 from veloce import Cookie, Header, Query, Veloce
+from veloce._handler_plan import build_plan
+from veloce.contrib.mcp.plan_bridge import build_input_schema
 from veloce.testclient import TestClient
 
 
@@ -138,3 +141,47 @@ def test_a_bare_model_marker_still_parses_one_json_string_key():
 
     qs = "f=" + urllib.parse.quote('{"token":"abc","limit":7}')
     assert TestClient(app).get(f"/q?{qs}").json() == {"token": "abc", "limit": 7}
+
+
+# ── a group model's requiredness reaches both doors ──────────────────
+#
+# `slot.has_default` was set from `has_default or marker.has_default`, where the
+# left operand is already `True` by then: the marker-in-default-position
+# spelling fills the signature slot, and the `Annotated` spelling sets it
+# explicitly. So every group model read as defaulted. Pydantic groups flatten
+# into their fields and escape it; a msgspec group does not.
+
+
+class _MsgspecFilters(msgspec.Struct):
+    q: str
+
+
+def test_a_required_group_model_is_required_in_the_tool_schema():
+    async def handler(f: _MsgspecFilters = Query(group=True)) -> dict:
+        return {}
+
+    schema = build_input_schema(build_plan(handler), {})
+    assert schema["required"] == ["f"]
+
+
+def test_an_optional_group_model_is_not_required_in_the_tool_schema():
+    """The negative: a declared default still reads as optional."""
+
+    async def handler(f: _MsgspecFilters | None = Query(group=True, default=None)) -> dict:
+        return {}
+
+    schema = build_input_schema(build_plan(handler), {})
+    assert "required" not in schema or "f" not in schema["required"]
+
+
+def test_a_required_group_model_is_still_required_over_http():
+    """The HTTP door flattens a group, so its field carries the requirement."""
+    app = Veloce()
+
+    @app.get("/f")
+    async def read(f: _MsgspecFilters = Query(group=True)) -> dict:
+        return {"q": f.q}
+
+    with TestClient(app) as client:
+        assert client.get("/f").status_code == 422
+        assert client.get("/f?q=hi").json() == {"q": "hi"}

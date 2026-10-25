@@ -1,34 +1,29 @@
 """OAuth 2.1 authorization server — issue the tokens an MCP client comes for.
 
-`MCPAuth` makes an MCP endpoint a *resource server*: it validates a bearer token
+`MCPAuth` makes an MCP endpoint a *resource server*, validating a bearer token
 someone else issued. This module is the other half, for a deployment with no
-identity provider to delegate to: it issues those tokens itself, and publishes the
-discovery documents an MCP client walks to find it.
+identity provider to delegate to: it issues those tokens itself and publishes
+the discovery documents an MCP client walks to find it.
 
 What it implements, and what it deliberately does not:
 
 - **Opaque tokens, not signed ones.** A token is 32 bytes of `secrets` entropy,
-  stored as a SHA-256 digest and answered by lookup. There is no signing key to
-  manage or rotate, no algorithm to confuse, and a stolen database yields digests
-  rather than usable credentials. The cost is that validation is a store lookup
-  rather than an offline signature check - the right trade for a server that is
-  already answering the request.
-- **Authenticating the user is the application's job.** An authorization server
-  must know *who* is approving access, and only the application knows how its
-  users log in. `authenticate` is called with the authorization request and
-  returns the `Principal` to issue for - or a `Response` (a redirect to a login
-  page, a consent screen) that is returned to the browser instead.
+  stored as a SHA-256 digest and answered by lookup, so there is no signing key
+  to rotate, no algorithm to confuse, and a stolen database yields digests
+  rather than usable credentials. The cost is a store lookup per validation.
+- **Authenticating the user is the application's job.** `authenticate` is called
+  with the authorization request and returns the `Principal` to issue for, or a
+  `Response` (a login page, a consent screen) returned to the browser instead.
 - **PKCE is required, S256 only** (OAuth 2.1). A request without a challenge, or
   asking for `plain`, is refused: this server issues to public clients, where a
   code intercepted on the redirect is the whole attack.
 - **Audience binding.** The `resource` parameter (RFC 8707) is recorded on the
-  token, and `verifier(resource=...)` checks it, so a token minted for one MCP
+  token and checked by `verifier(resource=...)`, so a token minted for one MCP
   server cannot be replayed against another. Building the verifier without
   `resource=` leaves the check off and warns.
 
 Storage is behind `AuthorizationStore`; the bundled `InMemoryAuthorizationStore`
-is for a single process and is lost on restart. Anything durable is the
-application's to supply.
+is single-process and lost on restart.
 """
 
 from __future__ import annotations
@@ -61,21 +56,17 @@ _logger = logging.getLogger(__name__)
 # RFC 8414 well-known path for authorization server metadata.
 AUTHORIZATION_SERVER_METADATA_PATH = "/.well-known/oauth-authorization-server"
 
-# Bytes of entropy per issued credential. 32 bytes is 256 bits, which is what a
-# bearer token that is the whole credential needs.
+# 256 bits, which is what a token that is the whole credential needs.
 _CREDENTIAL_ENTROPY_BYTES = 32
 
-# How long an authorization code may be redeemed for. The code makes one hop from
-# the browser to the client, so the window is the round trip and nothing more
-# (OAuth 2.1 recommends at most ten minutes; a minute is ample and much tighter).
+# One hop, browser to client, so the window is that round trip. OAuth 2.1
+# allows ten minutes.
 _CODE_TTL_SECONDS = 60.0
 
-# The only PKCE method this server accepts. `plain` puts the verifier on the wire
-# in the authorization request, which defeats the point of the exchange.
+# `plain` would put the verifier on the wire, defeating the exchange.
 _PKCE_S256 = "S256"
 
-# Loopback hosts a native client may redirect to over plain http. Everything else
-# must be https - OAuth 2.1 forbids a cleartext redirect back to the internet.
+# OAuth 2.1 forbids a cleartext redirect anywhere but the loopback interface.
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
 
@@ -94,8 +85,7 @@ class OAuthClient:
 
     client_id: str
     redirect_uris: tuple[str, ...]
-    # SHA-256 of the issued secret for a confidential client; `None` for a public
-    # client, which proves itself with PKCE alone.
+    # `None` for a public client, which proves itself with PKCE alone.
     client_secret_digest: str | None = None
     client_name: str | None = None
     scopes: frozenset[str] = frozenset()
@@ -131,15 +121,12 @@ class AccessToken:
     resource: str | None
     expires_at: float
     claims: dict[str, Any] = field(default_factory=dict)
-    # Digest of the refresh token that may replace this one, when refresh was
-    # granted. Rotation issues a new pair and drops the old.
+    # Set when refresh was granted; rotation issues a new pair and drops the old.
     refresh_digest: str | None = None
-    # Identifies the chain this token descends from: every rotation inherits it.
-    # A refresh token presented twice means the first holder's copy leaked, and
-    # OAuth 2.1 Sec. 4.14.2 wants the whole chain revoked rather than only the
-    # replay refused - otherwise the thief simply keeps using the pair they
-    # already rotated. Defaults to a fresh value so a token minted without one
-    # is still a family of its own.
+    # The chain this token descends from, inherited by every rotation. A refresh
+    # token presented twice means a copy leaked, and OAuth 2.1 Sec. 4.14.2 wants
+    # the whole chain revoked - refusing only the replay leaves the thief the
+    # pair they already rotated.
     family_id: str = field(default_factory=lambda: secrets.token_urlsafe(9))
 
 
@@ -147,9 +134,9 @@ class AccessToken:
 class AuthorizationStore(Protocol):
     """Where issued clients, codes and tokens live.
 
-    Codes and tokens are keyed by digest, never by the credential, so a store that
-    leaks yields nothing usable. `take_code` is single-use by contract: it must
-    return a code at most once, so a replayed code finds nothing.
+    Keyed by digest, never by the credential, so a leaked store yields nothing
+    usable. `take_code` is single-use by contract: it must return a code at most
+    once, so a replayed code finds nothing.
     """
 
     async def save_client(self, client: OAuthClient) -> None:
@@ -188,8 +175,8 @@ class AuthorizationStore(Protocol):
 class InMemoryAuthorizationStore:
     """A single-process store, for development and for tests.
 
-    Everything is lost on restart, and nothing is shared between workers. A
-    deployment that survives either needs its own `AuthorizationStore`.
+    Nothing survives a restart or is shared between workers; a deployment that
+    needs either supplies its own `AuthorizationStore`.
     """
 
     __slots__ = ("_clients", "_codes", "_tokens", "_refresh", "_spent")
@@ -199,9 +186,7 @@ class InMemoryAuthorizationStore:
         self._codes: dict[str, AuthorizationCode] = {}
         self._tokens: dict[str, AccessToken] = {}
         self._refresh: dict[str, str] = {}
-        # Spent refresh-token digests mapped to the family they belonged to.
-        # Only what reuse detection needs is kept - the digest, never the token -
-        # and an entry is dropped when its family is revoked.
+        # Spent digests mapped to their family, never the token itself.
         self._spent: dict[str, str] = {}
 
     async def save_client(self, client: OAuthClient) -> None:
@@ -236,9 +221,7 @@ class InMemoryAuthorizationStore:
         token = self._tokens.pop(token_digest, None)
         if token is None:
             return None
-        # Remember that this refresh token was spent, and which chain it belonged
-        # to. A second presentation is then distinguishable from a token that was
-        # never issued here, which is what makes reuse detection possible.
+        # Makes a second presentation distinguishable from a token never issued.
         self._spent[refresh_digest] = token.family_id
         return token_digest, token
 
@@ -259,9 +242,7 @@ class InMemoryAuthorizationStore:
         return len(doomed)
 
 
-# The `authenticate` callback: given the authorization request, return the
-# principal to issue for, `None` to refuse, or a `Response` to send instead (a
-# redirect to a login page, a consent screen).
+# Returns the principal to issue for, `None` to refuse, or a `Response` to send.
 Authenticator = Callable[
     ["Request"], "Principal | Response | None | Awaitable[Principal | Response | None]"
 ]
@@ -297,21 +278,17 @@ class MCPAuthorizationServer:
         ))
     """
 
-    # The issuer identifier, and the base every endpoint is advertised under. It
-    # must be the https origin clients reach this server on.
+    # The base every endpoint is advertised under: the https origin clients reach.
     issuer: str
     # Establishes who is approving access. See `Authenticator`.
     authenticate: Authenticator
-    # Scopes this server will issue, advertised in its metadata. A request for
-    # anything outside this set is refused.
+    # Advertised in the metadata; a request outside this set is refused.
     scopes_supported: Iterable[str] = ()
     # Where clients, codes and tokens live.
     store: AuthorizationStore = field(default_factory=InMemoryAuthorizationStore)
     # Lifetime of an issued access token.
     access_token_ttl: float = 3600.0
-    # Whether `POST /register` issues client credentials to anyone who asks
-    # (RFC 7591). An MCP client with no pre-arranged registration needs this;
-    # a deployment with known clients should leave it off.
+    # Whether `POST /register` issues credentials to anyone (RFC 7591).
     allow_dynamic_registration: bool = True
 
     def __post_init__(self) -> None:
@@ -320,9 +297,7 @@ class MCPAuthorizationServer:
         self.scopes_supported = tuple(self.scopes_supported)
         if not self.issuer:
             raise ValueError("MCPAuthorizationServer requires an issuer URL")
-        # The issuer is what a client trusts and what tokens are minted under, so
-        # a cleartext one outside the loopback interface would put every token on
-        # the wire in the clear.
+        # Tokens are minted under the issuer, so a cleartext one leaks them all.
         parsed = urlparse(self.issuer)
         if parsed.scheme != "https" and parsed.hostname not in _LOOPBACK_HOSTS:
             raise ValueError(
@@ -342,8 +317,7 @@ class MCPAuthorizationServer:
             "token_endpoint": f"{self.issuer.rstrip('/')}/token",
             "response_types_supported": ["code"],
             "grant_types_supported": ["authorization_code", "refresh_token"],
-            # S256 only, and advertised as such: a client that reads this knows
-            # not to offer `plain`.
+            # Advertised, so a client reading this knows not to offer `plain`.
             "code_challenge_methods_supported": [_PKCE_S256],
             "token_endpoint_auth_methods_supported": ["none", "client_secret_post"],
         }
@@ -363,15 +337,13 @@ class MCPAuthorizationServer:
         Resolves an opaque token to its `Principal`, refusing one that has expired
         or that was minted for a different resource.
 
-        `resource` is this server's canonical URI - the same value passed as
-        `MCPAuth(resource_server_url=...)`. Give it, and a token whose RFC 8707
-        `resource` names a different server is refused: that is the audience
+        `resource` is this server's canonical URI, the same value passed as
+        `MCPAuth(resource_server_url=...)`. Given it, a token whose RFC 8707
+        `resource` names a different server is refused - that is the audience
         binding, and it is what stops a token obtained for one MCP server being
-        replayed against another sharing the authorization server.
-
-        Omitting it leaves audience binding off, and says so: the check cannot be
-        performed without knowing which server this is, and silently accepting
-        another server's token is the failure the parameter exists to prevent.
+        replayed against another sharing the authorization server. Omitting it
+        leaves the check off and warns, since it cannot be performed without
+        knowing which server this is.
         """
         if resource is None:
             warnings.warn(
@@ -389,13 +361,9 @@ class MCPAuthorizationServer:
             if record.expires_at <= _now():
                 await self.store.delete_token(_digest(token))
                 return None
-            # An audience-bound token names the server it was minted for; one that
-            # names a different server is not ours to accept. Neither is one that
-            # names nothing: `resource` is optional at `/authorize` (RFC 8707
-            # Sec. 2), so exempting an unbound token let a client reach every
-            # server sharing this authorization server by asking for less than
-            # the binding requires. A verifier built without `resource=` enforces
-            # no audience at all and warns about it above.
+            # `resource` is optional at `/authorize` (RFC 8707 Sec. 2), so an
+            # unbound token is refused too: exempting it would let a client reach
+            # every server sharing this authorization server by asking for less.
             if resource is not None and record.resource != resource:
                 return None
             return Principal(
@@ -419,7 +387,7 @@ class MCPAuthorizationServer:
         """Mint an access/refresh pair and return the RFC 6749 token response.
 
         `family_id` carries the chain forward on a rotation, so a later replay of
-        any refresh token in it can revoke the whole chain. Omitted for a first
+        any refresh token in it revokes the whole chain. Omitted for a first
         issuance, which starts a family of its own.
         """
         access = secrets.token_urlsafe(_CREDENTIAL_ENTROPY_BYTES)
@@ -477,28 +445,22 @@ def _redirect_uri_is_allowed(uri: str) -> bool:
         return True
     if parsed.scheme == "http" and parsed.hostname in _LOOPBACK_HOSTS:
         return True
-    # A private-use scheme (`com.example.app:/callback`) is how a mobile client
-    # receives its callback; it never travels a network.
+    # A private-use scheme (`com.example.app:/callback`) never travels a network.
     return bool(parsed.scheme) and parsed.scheme not in {"http", "https"}
 
 
 def _verify_pkce(verifier: str, challenge: str) -> bool:
     """Whether `verifier` hashes to `challenge` under S256."""
-    # RFC 7636 Sec. 4.1 confines a verifier to unreserved ASCII, so a non-ASCII
-    # one cannot match any challenge - but it arrives unauthenticated at the
-    # token endpoint, and letting `encode("ascii")` raise turned it into a 500
-    # rather than a refusal.
+    # RFC 7636 Sec. 4.1 confines a verifier to unreserved ASCII, and it arrives
+    # unauthenticated, so a non-ASCII one must refuse rather than raise.
     try:
         verifier_bytes = verifier.encode("ascii")
     except UnicodeEncodeError:
         return False
     digest = hashlib.sha256(verifier_bytes).digest()
-    # RFC 7636 Sec. 4.2 specifies BASE64URL-ENCODE(SHA256(verifier)) - the
-    # RFC 4648 Sec. 5 alphabet with padding stripped, which is exactly what
-    # `_b64encode` produces for JWS (RFC 7515 Sec. 2) elsewhere in the tree.
+    # RFC 7636 Sec. 4.2: BASE64URL-ENCODE(SHA256(verifier)), padding stripped.
     computed = _b64encode(digest)
-    # `challenge` is caller-supplied too, and `hmac.compare_digest` raises on a
-    # `str` holding non-ASCII; `constant_time_compare` encodes first.
+    # `hmac.compare_digest` raises on a non-ASCII `str`; this encodes first.
     return constant_time_compare(computed, challenge)
 
 
@@ -511,9 +473,8 @@ def register_authorization_server(
     """Mount `server`'s OAuth endpoints on `app`.
 
     Registers the RFC 8414 metadata document, `/authorize`, `/token`, and - when
-    dynamic registration is on - `/register`. `prefix` mounts them under a path
-    segment; the metadata document advertises whatever the issuer says, so the
-    prefix and the issuer must agree.
+    dynamic registration is on - `/register`. The metadata advertises whatever
+    the issuer says, so `prefix` and the issuer must agree.
     """
     base = prefix.rstrip("/")
 
@@ -576,8 +537,7 @@ async def _handle_authorize(server: MCPAuthorizationServer, request: Request) ->
     client = await server.store.get_client(client_id)
     if client is None:
         return _error_response("invalid_client", "unknown client_id")
-    # Exact match against what the client registered. A prefix or wildcard match
-    # is what lets an attacker redirect the code to a path it controls.
+    # Exact: a prefix or wildcard match lets an attacker redirect the code.
     if redirect_uri not in client.redirect_uris:
         return _error_response("invalid_request", "redirect_uri is not registered for this client")
 
@@ -610,12 +570,10 @@ async def _handle_authorize(server: MCPAuthorizationServer, request: Request) ->
             state,
         )
 
-    outcome = server.authenticate(request)
-    if hasattr(outcome, "__await__"):
-        outcome = await outcome  # type: ignore[misc]
+    answer = server.authenticate(request)
+    outcome = await answer if isinstance(answer, Awaitable) else answer
     if isinstance(outcome, Response):
-        # The application is taking the browser somewhere first - a login form, a
-        # consent screen - and will drive this endpoint again afterwards.
+        # A login form or consent screen; it drives this endpoint again after.
         return outcome
     if outcome is None:
         return _redirect_error(redirect_uri, "access_denied", "the request was not approved", state)
@@ -671,17 +629,14 @@ async def _authenticate_client(
     return client, None
 
 
-#: The grant types this token endpoint implements. A registration naming
-#: anything else is refused rather than silently narrowed to these.
+#: A registration naming anything else is refused, not silently narrowed.
 SUPPORTED_GRANT_TYPES = ("authorization_code", "refresh_token")
 
 
 def _refuse_unregistered_grant(client: OAuthClient, grant_type: str) -> Response | None:
     """Refuse a grant the client is not registered for, per RFC 6749 Sec. 5.2.
 
-    `grant_types` was recorded and never read, so a client registered for
-    `authorization_code` alone could still refresh. The registration is the
-    contract; this is where it binds.
+    The registration is the contract, and this is where it binds.
     """
     if grant_type in client.grant_types:
         return None
@@ -728,11 +683,9 @@ async def _grant_authorization_code(server: MCPAuthorizationServer, form: Any) -
 async def _spent_family(store: Any, refresh_digest: str) -> str | None:
     """Ask the store which family an already-spent refresh token belonged to.
 
-    Optional on the `AuthorizationStore` protocol: a store written before reuse
-    detection existed simply cannot answer, and a replay then falls back to the
-    plain `invalid_grant` it always produced. Adding it as a required method
-    would break every custom store on upgrade for a capability they can adopt
-    when ready.
+    Optional on the `AuthorizationStore` protocol: a store that cannot answer
+    leaves a replay with the plain `invalid_grant`, so requiring the method
+    would break every custom store on upgrade.
     """
     query = getattr(store, "family_of_spent_refresh", None)
     if query is None:
@@ -764,11 +717,9 @@ async def _grant_refresh_token(server: MCPAuthorizationServer, form: Any) -> Res
     presented = _digest(refresh)
     taken = await server.store.take_refresh(presented)
     if taken is None:
-        # A refresh token that was already spent is not merely stale: the holder
-        # who spent it kept a copy, or someone else did. OAuth 2.1 Sec. 4.14.2
-        # treats that as compromise of the whole chain, so revoke every token
-        # descended from the same authorization rather than refusing this one
-        # request and leaving the rotated pair usable.
+        # An already-spent token means the spender kept a copy, or someone else
+        # did. OAuth 2.1 Sec. 4.14.2 treats that as compromise of the whole
+        # chain, so refusing only this request would leave the pair usable.
         family = await _spent_family(server.store, presented)
         if family is not None:
             await _revoke_family(server.store, family)
@@ -784,8 +735,7 @@ async def _grant_refresh_token(server: MCPAuthorizationServer, form: Any) -> Res
         return _error_response("invalid_grant", "the refresh token is unknown or has been used")
     _old_digest, record = taken
     if record.client_id != client.client_id:
-        # Presented by someone other than the client it was issued to - the same
-        # compromise signal, and the chain goes with it.
+        # Presented by another client: the same compromise signal.
         await _revoke_family(server.store, record.family_id)
         return _error_response("invalid_grant", "the token was issued to another client")
 
@@ -819,9 +769,8 @@ async def _handle_register(server: MCPAuthorizationServer, request: Request) -> 
                 f"{uri!r} must be https, a loopback http address, or a private-use scheme",
             )
 
-    # RFC 7591 Sec. 2. Omitted keeps the historical default rather than the
-    # spec's narrower `["authorization_code"]`: narrowing silently would stop
-    # refresh working for every client already registered without the key.
+    # RFC 7591 Sec. 2. Omitted keeps the historical default: the spec's narrower
+    # `["authorization_code"]` would silently stop refresh for existing clients.
     grants = body.get("grant_types", list(SUPPORTED_GRANT_TYPES))
     if not isinstance(grants, list) or not all(isinstance(g, str) for g in grants):
         return _error_response("invalid_client_metadata", "grant_types must be a list of strings")
@@ -846,8 +795,7 @@ async def _handle_register(server: MCPAuthorizationServer, request: Request) -> 
         )
 
     client_id = secrets.token_urlsafe(_CREDENTIAL_ENTROPY_BYTES)
-    # A client that cannot keep a secret must not be given one to leak; PKCE is
-    # what proves it. `token_endpoint_auth_method: "none"` is how it says so.
+    # A client that cannot keep a secret is given none; PKCE proves it instead.
     wants_secret = body.get("token_endpoint_auth_method", "none") != "none"
     secret = secrets.token_urlsafe(_CREDENTIAL_ENTROPY_BYTES) if wants_secret else None
     stored = OAuthClient(
@@ -863,13 +811,11 @@ async def _handle_register(server: MCPAuthorizationServer, request: Request) -> 
         "client_id": client_id,
         "redirect_uris": list(uris),
         "token_endpoint_auth_method": "client_secret_post" if secret else "none",
-        # What was stored, not a fixed pair: a client told it holds a grant it
-        # does not have cannot tell a refusal from a bug.
+        # What was stored: a client told it holds a grant it lacks sees only a bug.
         "grant_types": list(grants),
         "response_types": ["code"],
     }
-    # From the stored client, like `grant_types` above: the registration response
-    # describes the registration, not the request that asked for it.
+    # The response describes the registration, not the request that asked.
     if stored.client_name:
         registered["client_name"] = stored.client_name
     if secret is not None:

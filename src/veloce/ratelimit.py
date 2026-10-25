@@ -5,8 +5,7 @@ expressed as a pure state transition: given the prior per-client state and the
 current time it returns a decision, the next state, and how long that state stays
 relevant. A *backend* is where that state lives - in this process
 (`InMemoryRateLimitBackend`) or shared across workers
-(`veloce.contrib.redis.RedisRateLimitBackend`). Because the algorithm is pure,
-each one is written once and runs identically on either backend.
+(`veloce.contrib.redis.RedisRateLimitBackend`).
 
 Select an algorithm by passing a strategy to `RateLimitMiddleware`::
 
@@ -24,13 +23,11 @@ from typing import TypeVar
 
 from veloce._internal import _require_slots
 
-# Per-client algorithm state persisted between requests. It round-trips through
-# the backend as JSON, so its values are plain numbers (ints widen to float).
+# Round-trips through the backend as JSON, so the values are plain numbers.
 RateLimitState = dict[str, float]
 
-# Attribute `rate_limit` stamps on a handler so `RateLimitMiddleware` can
-# discover its per-route strategy. functools.wraps copies a function's __dict__,
-# so the tag survives well-behaved decorators applied above it.
+# Stamped on a handler for `RateLimitMiddleware`; `functools.wraps` copies
+# `__dict__`, so the tag survives a decorator applied above it.
 RATE_LIMIT_ATTR = "_veloce_rate_limit"
 
 T_handler = TypeVar("T_handler", bound=Callable[..., object])
@@ -52,9 +49,8 @@ class RateLimitStrategy:
 
     `evaluate` takes the client's prior state (`None` on the first request or
     after expiry) and the current wall-clock time, and returns the decision, the
-    next state to persist, and a TTL in seconds after which that state can be
-    dropped. It performs no I/O, so a backend can run it under its own atomicity
-    (a dict mutation in-process, a watched transaction on Redis).
+    next state to persist, and a TTL in seconds. It performs no I/O, so a backend
+    can run it under its own atomicity.
 
     Subclasses must declare ``__slots__`` (even ``__slots__ = ()``).
     """
@@ -71,20 +67,8 @@ class RateLimitStrategy:
         """Decide on this request, returning `(result, next state, TTL seconds)`."""
         raise NotImplementedError
 
-    #: An optional Lua implementation of `evaluate`, run server-side by a backend
-    #: that supports it. `None` - the default, and the only option for a strategy
-    #: defined outside Veloce - means the backend falls back to whatever
-    #: atomicity it can arrange around the Python `evaluate` above.
-    #:
-    #: Opt-in rather than required precisely because this class is public: a
-    #: strategy someone else wrote cannot be expressed in Lua, and must keep
-    #: working. The two implementations of a built-in strategy are held together
-    #: by `test_ratelimit_lua_parity`, which runs both over the same inputs.
-    #:
-    #: The script receives the state key as `KEYS[1]` and `lua_argv(now)` as
-    #: `ARGV`, and returns a flat array:
-    #: ``{allowed, limit, remaining, retry_after, reset}`` - integers, `allowed`
-    #: as 0 or 1. It is responsible for writing the new state and its TTL.
+    #: Optional server-side Lua `evaluate` over `KEYS[1]` and `lua_argv(now)`; it
+    #: writes the state with its TTL and returns five integers, `allowed` first.
     lua_script: str | None = None
 
     def lua_argv(self, now: float) -> list[str]:
@@ -92,8 +76,7 @@ class RateLimitStrategy:
         raise NotImplementedError
 
 
-#: Shared preamble: read the stored state, or `nil`. Kept in one place so the
-#: three scripts cannot drift on how state is loaded.
+#: Shared preamble, so the three scripts cannot drift on how state is loaded.
 _LUA_LOAD_STATE = """
 local raw = redis.call('GET', KEYS[1])
 local state = nil
@@ -345,8 +328,8 @@ class InMemoryRateLimitBackend(RateLimitBackend):
 
     async def evaluate(self, key: str, strategy: RateLimitStrategy, now: float) -> RateLimitResult:
         """Load, run `strategy.evaluate` and persist for `key` in this process."""
-        # No `await` between read and write, so single-loop asyncio makes this an
-        # atomic read-modify-write - two concurrent requests cannot interleave.
+        # No `await` between read and write, so single-loop asyncio makes this
+        # atomic and two concurrent requests cannot interleave.
         entry = self._states.get(key)
         state = entry[0] if entry is not None and entry[1] > now else None
         result, new_state, ttl = strategy.evaluate(state, now)
@@ -356,8 +339,7 @@ class InMemoryRateLimitBackend(RateLimitBackend):
         return result
 
     def _evict(self, now: float) -> None:
-        # Drop expired keys first; if still full, drop the oldest by insertion
-        # order - a memory bound without per-request LRU bookkeeping.
+        # Expired first, then oldest-inserted: bounded without LRU bookkeeping.
         expired = [k for k, (_, expires_at) in self._states.items() if expires_at <= now]
         for k in expired:
             del self._states[k]
@@ -369,10 +351,8 @@ def rate_limit(strategy: RateLimitStrategy) -> Callable[[T_handler], T_handler]:
     """Attach a per-route rate-limit `strategy` to a handler.
 
     A decorated handler is limited by `strategy` with its own per-client counter,
-    overriding the `RateLimitMiddleware` default; undecorated handlers keep the
-    default. Because the limit lives on the handler, there is no route string to
-    mistype. Place it below the route decorator so the route registers the tagged
-    handler.
+    overriding the `RateLimitMiddleware` default. Place it below the route
+    decorator so the route registers the tagged handler.
 
     Usage::
 

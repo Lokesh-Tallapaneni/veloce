@@ -292,3 +292,67 @@ async def test_if_range_agrees_with_if_match_on_the_same_validators(strong_stati
         )
     )
     assert not_resumed.status_code == 200
+
+
+# ── Methods other than GET (RFC 9110 Sec. 14.2) ───────────────────────
+
+
+@pytest.mark.parametrize("method", ["POST", "PUT", "PATCH"])
+@pytest.mark.parametrize("value", ["bytes=0-9", "bytes=500-600"])
+async def test_a_range_on_a_non_get_method_is_ignored(static, method, value):
+    """`GET` is the only method range handling is defined for.
+
+    Both a satisfiable and an unsatisfiable range are covered: the 416 is the
+    damaging half, since it answers a write with an empty body.
+    """
+    sf, _ = static
+    resp = await sf.handle(
+        make_request(method=method, path="/static/blob.bin", headers={"Range": value})
+    )
+    assert resp.status_code == 200
+    assert resp.status_code not in (206, 416)
+    assert resp.body == _CONTENT
+    assert "Content-Range" not in resp.headers
+
+
+async def test_a_non_get_method_still_advertises_accept_ranges(static):
+    """The advertisement describes the resource, not the request that fetched it."""
+    sf, _ = static
+    resp = await sf.handle(make_request(method="POST", path="/static/blob.bin"))
+    assert resp.headers["Accept-Ranges"] == "bytes"
+
+
+async def test_head_ignores_range_and_describes_the_full_representation(static):
+    """A 416 here would withhold the `Content-Length` the `HEAD` was issued for.
+
+    `StaticFiles` returns the full body and the transport drops it for a `HEAD`,
+    so what this pins is the status and the headers a client reads.
+    """
+    sf, _ = static
+    resp = await sf.handle(
+        make_request(method="HEAD", path="/static/blob.bin", headers={"Range": "bytes=0-9"})
+    )
+    assert resp.status_code == 200
+    assert resp.status_code != 206
+    assert "Content-Range" not in resp.headers
+    assert len(resp.body) == _SIZE
+    assert resp.headers["Accept-Ranges"] == "bytes"
+
+
+async def test_head_with_an_unsatisfiable_range_is_not_refused(static):
+    sf, _ = static
+    resp = await sf.handle(
+        make_request(method="HEAD", path="/static/blob.bin", headers={"Range": "bytes=500-600"})
+    )
+    assert resp.status_code == 200
+    assert resp.status_code != 416
+    assert "Content-Range" not in resp.headers
+
+
+async def test_get_still_honours_the_range_alongside_the_method_gate(static):
+    """The gate narrows the method, it does not disable range handling."""
+    sf, _ = static
+    resp = await sf.handle(make_request(path="/static/blob.bin", headers={"Range": "bytes=0-9"}))
+    assert resp.status_code == 206
+    assert resp.body == _CONTENT[:10]
+    assert resp.headers["Content-Range"] == "bytes 0-9/100"

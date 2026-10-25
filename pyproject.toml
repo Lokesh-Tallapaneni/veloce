@@ -80,7 +80,7 @@ dependencies = [
     "uvloop>=0.19.0; sys_platform != 'win32'",
     "orjson>=3.11.5",
     "pydantic>=2.4.0",
-    "multidict>=6.0.0",
+    "multidict>=6.9.1",
     "python-multipart>=0.0.22",
     "httptools>=0.6.0",
     "jinja2>=3.1.6",
@@ -95,7 +95,7 @@ dependencies = [
 # Install with `pip install veloceframework[standard]`.
 standard = [
     "uvicorn[standard]>=0.23",
-    "brotli>=1.0",
+    "brotli>=1.2.1",
     "msgspec>=0.16",
 ]
 # uvicorn is the recommended production ASGI server and what `veloce run` hands
@@ -150,7 +150,7 @@ cli = ["click>=8.1"]
 # around the quality the middleware defaults to. Without this extra the
 # middleware simply does not offer `br`. Install with
 # `pip install veloceframework[brotli]`.
-brotli = ["brotli>=1.0"]
+brotli = ["brotli>=1.2.1"]
 # Zstandard for `CompressionMiddleware`. Faster than both gzip and brotli at a
 # similar ratio, and increasingly sent by browsers as `zstd`. Without this extra
 # the middleware does not offer `zstd`. Install with
@@ -171,7 +171,7 @@ all = [
     "msgspec>=0.16",
     "redis>=4.2",
     "click>=8.1",
-    "brotli>=1.0",
+    "brotli>=1.2.1",
     "zstandard>=0.21",
     "ciso8601>=2.3",
 ]
@@ -242,7 +242,7 @@ dev = [
     # instrumentation tests began skipping - the same shape as the otel gap
     # above. Named here so the dev environment is reproducible.
     "prometheus_client>=0.17",
-    "brotli>=1.2.0",
+    "brotli>=1.2.1",
     "zstandard>=0.25.0",
     "ciso8601>=2.3.3",
 ]
@@ -325,6 +325,7 @@ select = [
     "UP",   # pyupgrade
     "SIM",  # flake8-simplify
     "ASYNC",
+    "TID251",  # banned APIs, named under `flake8-tidy-imports.banned-api`
     # PEP 257 docstring rules. The style guide names ruff as the write-time gate
     # for its PEP 257 clause; before this, `select` carried no `D` family at all,
     # so that clause was prose nothing executed. The subset below is every `D`
@@ -363,6 +364,18 @@ ignore = [
     "D213",  # incompatible with D212, which is the convention here
 ]
 
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+# The event-loop policy API is deprecated as of Python 3.14 and scheduled for
+# removal in 3.16, and 3.14 is in the CI matrix. `Veloce.run()` selects a loop
+# factory instead, which still prefers uvloop where it is installed.
+"asyncio.set_event_loop_policy".msg = "deprecated in 3.14; pass a loop factory as app/serving.py does"
+"asyncio.get_event_loop_policy".msg = "deprecated in 3.14; pass a loop factory as app/serving.py does"
+"asyncio.AbstractEventLoopPolicy".msg = "deprecated in 3.14; pass a loop factory as app/serving.py does"
+"asyncio.DefaultEventLoopPolicy".msg = "deprecated in 3.14; pass a loop factory as app/serving.py does"
+"asyncio.WindowsSelectorEventLoopPolicy".msg = "deprecated in 3.14; pass a loop factory as app/serving.py does"
+"asyncio.WindowsProactorEventLoopPolicy".msg = "deprecated in 3.14; pass a loop factory as app/serving.py does"
+"uvloop.EventLoopPolicy".msg = "deprecated in 3.14; pass `uvloop.new_event_loop` as the loop factory"
+
 [tool.ruff.lint.per-file-ignores]
 # The style guide's PEP 257 clause is about `src/veloce/**`. Test functions,
 # benchmark scripts and the demo app carry their explanation in the module
@@ -373,6 +386,25 @@ ignore = [
 "example_app.py" = ["D"]
 "bench/**" = ["D"]
 "mkdocs_hooks.py" = ["D"]  # a build hook, not shipped API
+
+[tool.pyright]
+include = ["src/veloce"]
+pythonVersion = "3.10"
+# Pylance reads this, so a contributor sees the same diagnostics CI would.
+# `standard` rather than `strict`: strict's bulk is the private-leaf-module
+# convention below plus `Any` arriving from untyped third-party surfaces, and
+# `mypy --strict` already covers what is enforceable here.
+typeCheckingMode = "standard"
+# `_handler_plan`, `_params` and `_internal` are underscore modules that import
+# each other's underscore names - the same convention `no_implicit_reexport`
+# is relaxed for below.
+reportPrivateUsage = false
+# uvloop, brotli and brotlicffi are optional extras imported conditionally.
+reportMissingModuleSource = false
+# An optional dependency's absence is recorded in an UPPERCASE module constant
+# assigned in both the `try` and the `except`, which the uppercase-means-Final
+# heuristic reads as a redefinition.
+reportConstantRedefinition = false
 
 [tool.mypy]
 python_version = "3.10"
@@ -409,10 +441,13 @@ module = [
 ]
 ignore_missing_imports = true
 
-# Incremental strict burn-down: these modules still use bare generics
-# (`Callable`/`dict`/`list` without type parameters), return `Any`, or carry an
+# Incremental strict burn-down: these modules still return `Any` or carry an
 # untyped def. strict applies to every other module and all new code; remove a
 # module from this list once it type-checks clean under the strict defaults.
+# `disallow_any_generics` is deliberately NOT relaxed here: a generic without
+# its parameters reads as `Unknown`, and on a decorator that makes an editor
+# drop the decorator and lose the handler's own type, so the whole tree is held
+# to it and this is the check that enforces it in CI.
 [[tool.mypy.overrides]]
 module = [
     "veloce._handler_plan",
@@ -456,7 +491,6 @@ module = [
     "veloce.websocket",
     "veloce.workers",
 ]
-disallow_any_generics = false
 warn_return_any = false
 disallow_untyped_defs = false
 disallow_incomplete_defs = false

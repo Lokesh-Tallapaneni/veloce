@@ -9,8 +9,7 @@ tools once and registers each as a local tool that forwards when called.
 that performs one JSON-RPC request against the upstream and returns its result.
 Veloce does the discovery, the registration and the forwarding; the application
 owns the client, and with it the retry policy, the credentials, the connection
-pool and the timeouts — the parts that differ per deployment and that a framework
-guessing at would get wrong.
+pool and the timeouts.
 
 Discovery is I/O, so it is awaited at setup rather than hidden behind a
 decorator, and it runs before `mount_mcp` builds the registry::
@@ -40,8 +39,7 @@ from veloce.contrib.mcp.registry import VERSION_META_KEY, MCPTool
 if TYPE_CHECKING:  # pragma: no cover
     from collections.abc import Awaitable, Callable, Sequence
 
-# How many `tools/list` pages to walk before giving up. An upstream that keeps
-# handing out a cursor would otherwise spin here forever.
+# An upstream that keeps handing out a cursor would otherwise spin forever.
 _MAX_DISCOVERY_PAGES = 1000
 
 
@@ -116,19 +114,15 @@ def _proxy_tool(
     async def forward(ctx: MCPContext) -> Any:
         """Call the upstream tool and hand back what it answered.
 
-        The arguments are read off the context rather than bound as parameters:
-        the upstream's schema is published verbatim, so there is no Python
-        signature here for the binder to map them onto.
+        The arguments are read off the context: the upstream's schema is
+        published verbatim, so there is no signature to map them onto.
         """
         params: dict[str, Any] = {
             "name": upstream_name,
             "arguments": dict(ctx.arguments),
         }
-        # The caller's own `_meta` travels with the call: it is where a progress
-        # token and any extension block live, and an upstream that never sees it
-        # cannot report progress or carry a trace through. Relaying what the
-        # upstream then sends back is the application's part, since it owns the
-        # client this forwards through.
+        # The caller's own `_meta` travels with the call: an upstream that never
+        # sees the progress token cannot report progress or carry a trace.
         meta = ctx.request_meta
         if meta:
             params["_meta"] = dict(meta)
@@ -141,9 +135,7 @@ def _proxy_tool(
         title=entry.get("title"),
         handler=forward,
         plan=build_plan(forward),
-        # Published verbatim: this is the contract the upstream will validate
-        # against, so a schema rebuilt from the forwarder's signature could only
-        # disagree with it.
+        # Published verbatim: it is the contract the upstream validates against.
         input_schema=entry.get("inputSchema") or {"type": "object", "properties": {}},
         output_schema=entry.get("outputSchema"),
         annotations=entry.get("annotations"),
@@ -157,10 +149,8 @@ def _proxy_tool(
 def _relayed_meta(meta: Any) -> dict[str, Any] | None:
     """Return the upstream's `_meta` minus what this server cannot honour.
 
-    An upstream that versions a tool publishes the versions it can serve. This
-    server forwards a call by name and has no way to name a version upstream, so
-    republishing that list would advertise versions only the upstream can answer
-    and this gateway would refuse.
+    This server forwards a call by name and cannot name a version upstream, so
+    republishing an upstream's version list would advertise what it must refuse.
     """
     if not isinstance(meta, dict) or VERSION_META_KEY not in meta:
         return meta if isinstance(meta, dict) else None

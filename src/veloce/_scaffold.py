@@ -58,9 +58,8 @@ build/
 *.egg-info/
 """
 
-# `[tool.uv] package = false` marks this an application (not a library), so
-# `uv run`/`uv sync` manage the environment without trying to build a wheel from
-# the flat `app.py` layout - the project runs with `uv run` or plain `pip`.
+# `[tool.uv] package = false` marks this an application, so `uv run`/`uv sync`
+# manage the environment without building a wheel from the flat `app.py` layout.
 _PYPROJECT_TEMPLATE = """
 [project]
 name = "__SNAKE__"
@@ -379,9 +378,8 @@ Then open http://127.0.0.1:8000.
 
 # ── Project template registry ────────────────────────────────────────
 
-# Each template maps a destination relative path to its source content. The
-# common files (.gitignore, tests package) are shared; the pyproject carries
-# per-template dependencies, and the app code, tests, and README differ.
+# Each template maps a destination relative path to its source content; the
+# pyproject, app code, tests and README differ while `_COMMON` is shared.
 _COMMON = {
     ".gitignore": _GITIGNORE,
     "tests/__init__.py": _TESTS_INIT,

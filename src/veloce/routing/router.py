@@ -19,6 +19,7 @@ from veloce._handler_plan import (
     build_plan,
     build_route_dep_plans,
 )
+from veloce._internal import T_route
 from veloce._model_backend import resolve_response_contract
 from veloce._protocol_constants import (
     HTTP_METHOD_DELETE,
@@ -37,8 +38,7 @@ from veloce._ws_listener import build_listener_handler
 from veloce.exceptions import DuplicateRouteError
 from veloce.middleware.base import Middleware
 
-# Re-exported so `veloce.routing.router.X` keeps resolving for the names
-# that moved into the sibling modules below.
+# Re-exported so `veloce.routing.router.X` keeps resolving.
 from veloce.routing._node import RadixNode, _converter_sort_key
 from veloce.routing._regex import RegexRoute
 from veloce.routing.converters import (
@@ -62,25 +62,18 @@ from veloce.status import HTTP_200_OK
 
 _logger = logging.getLogger(__name__)
 
-# Default for `response_model=`, distinguishing "not supplied" (derive the model
-# from the handler's return annotation) from an explicit `response_model=None`
-# (declare no response contract, even when the handler is annotated). Without the
-# sentinel a route could not keep a model return annotation for its type checker
-# while opting out of filtering and the OpenAPI response schema.
+# Distinguishes "not supplied" - derive the model from the handler's return
+# annotation - from an explicit `response_model=None`, which declares none.
 _INFER_RESPONSE_MODEL: Any = object()
 
 # ── Module constants and helpers ───────────────────────────
 
 
-# Valid `on_duplicate` policies for a router. `"error"` raises, `"warn"` logs
-# and replaces, `"override"` replaces silently.
+# `"error"` raises, `"warn"` logs and replaces, `"override"` is silent.
 _DUPLICATE_POLICIES = frozenset({"error", "warn", "override"})
 
-# Parameter documentation `add_route` and `route` both publish. These reach a
-# user through IDE tooltips and the generated reference, so whichever entry
-# point their editor resolves decides what they read - and four of these had
-# already drifted, losing a caveat on one side only. Shared objects instead of
-# parallel copies, so a change reaches both signatures at once.
+# Shared by `add_route` and `route` rather than copied, so a change reaches both
+# signatures at once and neither tooltip can drift from the other.
 _DOC_MCP_RESOURCE_URI = Doc(
     "Resource URI for the route's MCP resource: a static URI, or a URI "
     "template (`users://{user_id}`) binding its path parameters."
@@ -117,8 +110,8 @@ _DOC_EXCLUDE_MIDDLEWARE = Doc(
 
 
 def _split_exclusions(
-    entries: Sequence[str | type] | None,
-) -> tuple[frozenset[str], tuple[type, ...]] | None:
+    entries: Sequence[str | type[Any]] | None,
+) -> tuple[frozenset[str], tuple[type[Any], ...]] | None:
     """Split `exclude_middleware` into its name set and its type tuple.
 
     `None` when the route excludes nothing, which the dispatch path tests for
@@ -129,7 +122,7 @@ def _split_exclusions(
     if not entries:
         return None
     names: set[str] = set()
-    types: list[type] = []
+    types: list[type[Any]] = []
     for entry in entries:
         if isinstance(entry, str):
             names.add(entry)
@@ -143,15 +136,12 @@ def _split_exclusions(
     return frozenset(names), tuple(types)
 
 
-# Normalize an OpenAPI-style path to its parameter-name-agnostic shape:
-# `/items/{slug}` and `/items/{id}` both become `/items/{}`. Used to detect
-# when a tree route and a regex fallback route map to the same effective path.
+# `/items/{slug}` and `/items/{id}` both become `/items/{}`, so a tree route and
+# a regex fallback mapping to one effective path can be detected.
 _PARAM_SHAPE_RE = re.compile(r"\{[^{}]*\}")
 
-#: Characters `quote(value, safe=":@")` would leave untouched - the unreserved
-#: set (RFC 3986 Sec. 2.3) plus the two `pchar` extras. A value made only of
-#: these is its own encoding, so `url_for` can skip the call entirely; that is
-#: the overwhelmingly common shape (an id, a slug, a username).
+#: The unreserved set (RFC 3986 Sec. 2.3) plus the two `pchar` extras. A value
+#: made only of these is its own encoding, so `url_for` skips `quote` entirely.
 _NEEDS_QUOTE_IN_SEGMENT = re.compile(r"[^A-Za-z0-9_.~:@-]")
 #: The same, plus `/` for a greedy `path` converter.
 _NEEDS_QUOTE_IN_PATH = re.compile(r"[^A-Za-z0-9_.~:@/-]")
@@ -296,50 +286,34 @@ class Router:
         ] = "error",
     ) -> None:
         self.prefix = prefix.rstrip("/")
-        # Policy for a second handler registered on the same path+method:
-        # `"error"` (default) raises `DuplicateRouteError`, `"warn"` logs and
-        # replaces, `"override"` replaces silently. Catches accidental route
-        # shadowing at startup instead of a wrong handler firing in production.
+        # Catches accidental route shadowing at startup rather than letting a
+        # wrong handler fire in production.
         if on_duplicate not in _DUPLICATE_POLICIES:
             raise ValueError(
                 f"on_duplicate must be one of {sorted(_DUPLICATE_POLICIES)}, got {on_duplicate!r}"
             )
         self.on_duplicate = on_duplicate
-        # Copied, not aliased: `router.tags` is appended to as routes register,
-        # which would otherwise mutate the list the caller still holds.
+        # Copied: appended to as routes register, so aliasing mutates the caller's.
         self.tags = list(tags or [])
-        # The Response subclass used when a registered route does not pick
-        # its own `response_class=`. Routes still override per-call. Once set it is the class every return value goes to - a text
-        # class given a `dict` raises rather than falling back to JSON, since a
-        # route declaring HTML and returning a mapping has stated two things that
-        # cannot both hold. Unset, dict/list returns take `JSONResponse`.
+        # Once set it is the class every return value goes to, so a text class
+        # given a `dict` raises rather than falling back to `JSONResponse`.
         self.default_response_class = default_response_class
-        # Router-level dependencies - applied to every route
-        # registered on this router. Per-route `dependencies=` is
-        # *appended* to (not replaced by) the router-level list, so
-        # both fire and the route-specific ones run last.
+        # Per-route `dependencies=` is *appended* to this list, not replacing it,
+        # so both fire and the route-specific ones run last.
         self.router_dependencies = list(dependencies or [])
-        # Router-level `responses=` dict. Each route's
-        # `responses=` overlays on top - per-route status codes win on
-        # collision; router-level supplies the rest (typically the
-        # 404/403/422 shape every route shares).
+        # Each route's `responses=` overlays on top, per-route status codes
+        # winning on collision.
         self.router_responses: dict[int, dict[str, Any]] = dict(responses or {})
         self._root = RadixNode()
-        # (method, exact-path) -> RouteInfo for literal, strict paths, so a
-        # literal path resolves in one hash lookup instead of a radix walk.
-        # Built lazily on first match and dropped to None on any registration;
-        # every non-literal shape falls through to the tree (see match()).
+        # (method, exact-path) -> RouteInfo, so a literal path resolves in one
+        # hash lookup; built lazily and dropped to None on any registration.
         self._static_routes: dict[tuple[str, str], RouteInfo] | None = None
         # Route name -> (path_template, param_names), for url_for reverse lookup.
         self._named_routes: dict[str, tuple[str, list[str]]] = {}
-        # Route name -> {param_name: converter}, derived from the template on the
-        # first url_for call and cached. Lets url_for validate each substituted
-        # value through the same converter the matcher applies, so a reversed URL
-        # is guaranteed to resolve. A param with no typed converter (bare
-        # `{name}` or a raw-regex segment) is omitted and skips validation.
+        # Route name -> {param_name: converter}, so `url_for` validates each value
+        # through the converter the matcher applies and the URL is sure to match.
         self._reverse_converters: dict[str, dict[str, Converter]] = {}
-        # Regex fallback routes, in registration order. Empty for the common
-        # case; `match()` guards on `if self._regex_routes:` so the radix
+        # Empty for the common case, and `match()` guards on it, so the radix
         # fast path pays nothing when no regex route is registered.
         self._regex_routes: list[RegexRoute] = []
         # Template -> RegexRoute, so a second method on the same regex path
@@ -366,8 +340,7 @@ class Router:
         accept or reject the same shapes (notably the greedy `:path`
         converter must be the final segment).
         """
-        # Any tree mutation invalidates the literal-path fast map; it rebuilds
-        # lazily on the next match() against the final node state.
+        # Any tree mutation invalidates the fast map; `match()` rebuilds it.
         self._static_routes = None
         param_names: list[str] = []
         total = len(segments)
@@ -381,12 +354,8 @@ class Router:
                 converter = parse_converter(conv_spec) if conv_spec else StringConverter()
                 param_names.append(param_name)
 
-                # Reuse an existing param child with the same name AND matching
-                # converter type; otherwise add a new one. Different converters
-                # for the same name on the same slot would be ambiguous. A
-                # parametrized converter (`int(min=1)` vs `int(min=5)`) keeps
-                # its constraint text in the key so distinct bounds get their
-                # own node instead of silently reusing the first registered one.
+                # Reused only on the same name AND converter, whose constraint
+                # text is in the key so distinct bounds get their own node.
                 constraint = (
                     conv_spec if "(" in conv_spec and not conv_spec.startswith("any(") else None
                 )
@@ -411,8 +380,7 @@ class Router:
                         )
                     break
             elif seg == "*":
-                # Wildcard (legacy `*` syntax). Reuse the slot so two routes
-                # registering `*` at the same node share one node.
+                # Legacy `*` syntax; the slot is reused so both routes share it.
                 child = node.wildcard_child
                 if child is None:
                     child = RadixNode(seg)
@@ -438,15 +406,8 @@ class Router:
             return repr(handler)
         return f"{module}.{qualname}" if module else qualname
 
-    # Every RouteInfo slot that defines routing/dispatch behavior or shapes the
-    # generated OpenAPI document. The idempotent-remount exemption requires ALL
-    # of these to match: any difference is a genuine second registration that
-    # must obey the `on_duplicate` policy. Listed explicitly (rather than diffed
-    # against a hand-picked subset) so adding a route-defining slot to RouteInfo
-    # forces a conscious decision here. Excluded are only purely-derived/cached
-    # slots - `handler_plan`, `route_dep_plans`, `is_trivial_plan`,
-    # `is_request_only_plan`, `_mw_chain_cache` - which `add_route` rebuilds
-    # deterministically from the compared fields.
+    # The idempotent-remount exemption requires ALL of these to match. Listed
+    # rather than diffed, so a new route-defining slot forces a decision here.
     _ROUTE_IDENTITY_SLOTS: tuple[str, ...] = (
         "param_names",
         "dependencies",
@@ -649,10 +610,8 @@ class Router:
                 else {**self.router_responses, **(info.responses or {})}
             ),
             operation_id=info.operation_id,
-            # Carry constraints from the source RouteInfo - without these,
-            # sub-routers merged via include_router would silently lose their
-            # subdomain / host / openapi_extra / defaults / callbacks
-            # declarations.
+            # Carried from the source, or a sub-router merged via
+            # `include_router` loses its subdomain / host / defaults.
             openapi_extra=info.openapi_extra,
             defaults=info.defaults,
             callbacks=info.callbacks,
@@ -671,9 +630,8 @@ class Router:
             mcp_task_support=info.mcp_task_support,
             excluded_middleware=info.excluded_middleware,
         )
-        # `stream` is a slot assigned after construction rather than an
-        # `__init__` argument, so it has to be carried across explicitly; a
-        # field added that way is the kind this copy silently drops.
+        # `stream` is assigned after construction rather than in `__init__`, so
+        # it has to be carried across explicitly.
         merged.stream = info.stream
         merged.strict_slashes = info.strict_slashes
         return merged
@@ -720,8 +678,7 @@ class Router:
 
         Registration-time only; nothing here runs per request.
         """
-        # Most routes declare no path parameter; reuse the shared empty set
-        # rather than allocating one per registration.
+        # The shared empty set, rather than one allocation per registration.
         path_params = (
             frozenset(route_info.param_names) if route_info.param_names else _NO_PATH_PARAMS
         )
@@ -734,26 +691,22 @@ class Router:
         route_info.route_dep_plans = build_route_dep_plans(
             route_info.dependencies, websocket=is_ws, path_params=path_params
         )
-        # Derived from the handler, like the plan above: the listener wrapper
-        # carries its message contract, so every registration path picks it up
-        # here rather than each copy forwarding a field it could forget.
+        # Derived from the handler, like the plan above, so every registration
+        # path picks up the listener's message contract here.
         route_info.ws_messages = (
             getattr(route_info.handler, "_ws_message_contract", None) if is_ws else None
         )
         slots = route_info.handler_plan.slots
         has_deps = bool(route_info.route_dep_plans)
         route_info.is_trivial_plan = not slots and not has_deps
-        # The fast path skips DependencyResolver entirely and binds
-        # kwargs = {"request": request} directly.
+        # The fast path binds `{"request": request}` with no resolver.
         route_info.is_request_only_plan = (
             len(slots) == 1 and slots[0].kind == K_REQUEST and not has_deps
         )
         if route_info.is_request_only_plan:
             route_info.request_param_name = slots[0].name
-        # Straight-line dispatch eligibility: an async handler with a trivial or
-        # request-only plan and none of the per-route features the fast path
-        # cannot honour. WebSocket routes never enter HTTP dispatch, so they are
-        # excluded outright.
+        # An async handler with a trivial or request-only plan and none of the
+        # features the fast path cannot honour; a WebSocket route never applies.
         route_info.is_fast_eligible = (
             not is_ws
             and route_info.handler_plan.is_coro
@@ -936,7 +889,7 @@ class Router:
             _DOC_MCP_TASK_SUPPORT,
         ] = False,
         exclude_middleware: Annotated[
-            Sequence[str | type] | None,
+            Sequence[str | type[Any]] | None,
             _DOC_EXCLUDE_MIDDLEWARE,
         ] = None,
         stream: Annotated[
@@ -957,24 +910,17 @@ class Router:
         handler.
         """
         full_path = self.prefix + path
-        # Reject a duplicate path parameter before building any tree node or
-        # regex, so both the radix and regex branches get one clear error.
+        # Before any node or regex is built, so both branches share one error.
         _check_duplicate_params(full_path)
         node, regex_route, param_names = self._classify_route_path(full_path, strict_slashes)
 
         route_name = name or handler.__name__
-        # Merge router-level dependencies (registered at Router.__init__)
-        # with the route-specific list. Router-level dependencies run
-        # first (matches the documented semantics - outer scope before inner).
+        # Router-level dependencies run first: outer scope before inner.
         combined_deps = list(self.router_dependencies)
         if dependencies:
             combined_deps.extend(dependencies)
-        # A handler that declares its response type in the return annotation gets
-        # that model as its contract, so the annotation is enforced rather than
-        # merely advisory: it filters the handler's return and documents the
-        # response. An explicit `response_model=` always wins, and an explicit
-        # `None` opts out. An annotation naming no model (a `Response` subclass,
-        # `Any`, a bare `dict`) resolves to `None` and declares no contract.
+        # A return annotation naming a model becomes the enforced contract; an
+        # explicit `response_model=` wins, and an explicit `None` opts out.
         if response_model is _INFER_RESPONSE_MODEL:
             response_model = resolve_response_contract(handler)
 
@@ -1026,10 +972,8 @@ class Router:
         route_info.stream = stream
         route_info.strict_slashes = strict_slashes
 
-        # Pre-compute the handler resolution plan once, here at registration.
-        # A WebSocket route's plan is built in websocket mode so the
-        # `WebSocket` connection is bound by annotation / name and its
-        # dependency graph runs through the shared resolver.
+        # A WebSocket route's plan is built in websocket mode, so the connection
+        # binds by annotation or name through the shared resolver.
         is_ws = any(m.upper() == ROUTE_METHOD_WEBSOCKET for m in methods)
         self._finalize_plans(route_info, is_ws=is_ws)
 
@@ -1040,17 +984,8 @@ class Router:
             handler_table = node.handlers
         self._commit_route_methods(methods, handler_table, full_path, route_info, route_name)
 
-        # Register the named route for url_for only once the route is committed
-        # to the handler table above. The reverse entry reflects the route that
-        # actually wins on the override/warn replace paths, and is never written
-        # if the duplicate policy raised. Drop any stale reverse-converter cache
-        # so a re-registered name re-derives from its new template.
-        # A name taken by a *different* path is a collision: the earlier route
-        # keeps serving but becomes unreachable by name, so `url_for` starts
-        # resolving to somewhere else and a template renders the wrong link.
-        # `on_duplicate` governs method+path and never saw this. Re-registering
-        # the *same* path is the override path, where the name legitimately
-        # moves with the route it names, so that stays silent.
+        # A name taken by a *different* path is a collision `on_duplicate` never
+        # saw: `url_for` would start resolving somewhere else.
         previous = self._named_routes.get(route_name)
         if previous is not None and previous[0] != full_path:
             _logger.warning(
@@ -1098,9 +1033,8 @@ class Router:
 
         segments = self._split_path(full_path)
         node, param_names = self._insert_path_into_tree(self._root, segments, full_path)
-        # `/foo` and `/foo/` share this node. Record which form was registered
-        # without clearing the other, so registering one variant never flips the
-        # already-registered variant's slash strictness.
+        # `/foo` and `/foo/` share this node, so one form is recorded without
+        # clearing the other's slash strictness.
         if has_trailing_slash:
             node.trailing_slash = True
         else:
@@ -1133,15 +1067,12 @@ class Router:
             mkey = method.upper()
             existing = handler_table.get(mkey)
             if existing is not None and not self._allow_duplicate(existing, route_info):
-                # Nothing has been mutated yet, so a raise here leaves the router
-                # unchanged.
+                # Nothing is mutated yet, so a raise leaves the router unchanged.
                 self._on_duplicate_route(full_path, mkey, existing, route_info)
-                # `warn` and `override` allow the replace, so remember the
-                # displaced route: pass 2 drops its reverse entry after the check.
+                # Pass 2 drops the displaced route's reverse entry after the check.
                 replaceable.append((mkey, existing))
         for mkey, existing in replaceable:
-            # Drop the displaced route's reverse entry when it had a different
-            # name, so url_for(old_name) stops resolving to a dead route.
+            # So `url_for(old_name)` stops resolving to a dead route.
             self._drop_replaced_route_name(existing, route_name, handler_table, mkey)
         for method in methods:
             handler_table[method.upper()] = route_info
@@ -1212,8 +1143,7 @@ class Router:
                 continue
             params = self._coerce_regex_params(route, m)
             if params is None:
-                # A built-in converter rejected its matched group (e.g. an
-                # over-long `:int`). Treat it as a miss and try the next route.
+                # A converter rejecting its matched group is a miss, not an error.
                 continue
             return RouteMatch(route_info=info, path_params=params)
         return None
@@ -1240,11 +1170,8 @@ class Router:
                 path = prefix or "/"
                 for method, info in node.handlers.items():
                     smap[(method, path)] = info
-                # RFC 9110 Sec. 9.3.2: HEAD falls back to GET. The body strip
-                # is transport-level (the ASGI/native emit checks the request
-                # method), so aliasing HEAD to the GET RouteInfo here is
-                # behaviorally identical to the tree's per-request fallback and
-                # spares HEAD requests the split + tree walk.
+                # RFC 9110 Sec. 9.3.2: HEAD falls back to GET, and the body
+                # strip is transport-level, so aliasing it here is equivalent.
                 if HTTP_METHOD_HEAD not in node.handlers:
                     get_info = node.handlers.get(HTTP_METHOD_GET)
                     if get_info is not None:
@@ -1270,8 +1197,7 @@ class Router:
         match = self._match_tree(method, path)
         if match is not None:
             return match
-        # Zero cost when no regex route is registered: the guard short-circuits
-        # before touching the (empty) list.
+        # Zero cost when no regex route is registered: the guard comes first.
         if self._regex_routes:
             return self._match_regex(method, path)
         return None
@@ -1285,19 +1211,13 @@ class Router:
         if result is None:
             return None
 
-        # Trailing slash strictness: a route registered with slash only matches
-        # slashed requests, and vice versa. `tolerant_slash` (per-route
-        # `strict_slashes=False`) skips this gate. When both the slashed and
-        # unslashed forms were registered, the node serves both shapes, so
-        # neither gate fires.
+        # A route registered with a slash matches only slashed requests, and
+        # vice versa; `tolerant_slash` skips the gate, as does registering both.
         if _slash_mismatch(result, request_has_slash):
             return None
 
-        # Handlers are stored uppercase - RFC-conforming clients send the
-        # method already uppercased, so try the raw form first and only
-        # uppercase on miss. `.isupper()` is the right guard: CPython does
-        # not promise identity for `str.upper()` even when the input is
-        # already uppercase, so an `is`-based shortcut would be a lie.
+        # Conforming clients send uppercase, so try the raw form first.
+        # `.isupper()`, since CPython promises no identity for `str.upper()`.
         handler_info = result.handlers.get(method)
         if handler_info is None:
             if method.isupper():
@@ -1305,8 +1225,7 @@ class Router:
             else:
                 method_upper = method.upper()
                 handler_info = result.handlers.get(method_upper)
-            # RFC 9110 Sec. 9.3.2: HEAD falls back to GET; the dispatcher
-            # strips the body on the way out.
+            # RFC 9110 Sec. 9.3.2: HEAD falls back to GET, body stripped later.
             if handler_info is None and method_upper == HTTP_METHOD_HEAD:
                 handler_info = result.handlers.get(HTTP_METHOD_GET)
             if handler_info is None:
@@ -1322,9 +1241,8 @@ class Router:
         params: dict[str, Any],
     ) -> RadixNode | None:
         """Recursive radix tree traversal with per-converter validation."""
-        # Flatten static-only descent - when the current node has no
-        # alternative branches to backtrack into, recursing per static
-        # segment burns one Python frame per hop for no gain.
+        # With no alternative branch to backtrack into, recursing per static
+        # segment would burn one Python frame per hop for no gain.
         seg_count = len(segments)
         while idx < seg_count and not node.param_children and node.wildcard_child is None:
             static_child = node.static_children.get(segments[idx])
@@ -1338,29 +1256,21 @@ class Router:
 
         seg = segments[idx]
 
-        # Try static match first (fastest path) - O(1) dict lookup. We can
-        # still get here when alternative param/wildcard branches exist on
-        # this node, so the recursion preserves backtracking semantics.
+        # Static first, an O(1) dict lookup; the recursion is still needed, since
+        # this node may carry alternative param or wildcard branches.
         static_child = node.static_children.get(seg)
         if static_child is not None:
             result = self._match_node(static_child, segments, idx + 1, params)
             if result is not None:
                 return result
 
-        # Try param match - each candidate validates the segment via its
-        # converter. Greedy converters (path) consume the remainder in one go.
-        # When this node has exactly one param child, a failed inner match
-        # has no alternative to back off to, so the rollback `del` is moot.
-        # Invariant: `params` is owned by the top-level `match()` call and
-        # discarded when traversal returns None, so any leaked key is
-        # confined to that throwaway dict. Sharing `params` across sibling
-        # subtrees in a future refactor would break this assumption.
+        # Invariant: `params` is owned by the top-level `match()` and discarded
+        # on None, so a key leaked by a failed branch stays in that dict.
         param_children = node.param_children
         single_param = len(param_children) == 1
         for child in param_children:
             converter = child.converter
-            # Bind the param name once so the assignment branch and the gated
-            # rollback below share a single attribute load.
+            # Bound once, so the assignment and the rollback share one load.
             pname = child.param_name
             if converter.greedy:
                 rest = "/".join(segments[idx:])
@@ -1400,8 +1310,8 @@ class Router:
         # Ordered set: tree methods first, then regex, deduped.
         methods: dict[str, None] = {}
         node = self._match_node(self._root, segments, 0, params)
-        # Respect trailing-slash strictness through the same predicate the match
-        # path uses, so `Allow` cannot advertise a method that would not match.
+        # The same predicate the match path uses, so `Allow` cannot advertise a
+        # method that would not match.
         if node is not None and node.handlers and not _slash_mismatch(node, request_has_slash):
             methods.update(dict.fromkeys(node.handlers))
         if self._regex_routes:
@@ -1409,8 +1319,7 @@ class Router:
                 m = self._regex_route_match(route, path)
                 if m is None:
                     continue
-                # A converter rejection (e.g. an over-long `:int`) is a full
-                # miss, not a method mismatch - keep it a 404, never a 405.
+                # A converter rejection is a full miss: a 404, never a 405.
                 if self._coerce_regex_params(route, m) is None:
                     continue
                 methods.update(dict.fromkeys(route.handlers))
@@ -1583,14 +1492,14 @@ class Router:
             _DOC_MCP_TASK_SUPPORT,
         ] = False,
         exclude_middleware: Annotated[
-            Sequence[str | type] | None,
+            Sequence[str | type[Any]] | None,
             _DOC_EXCLUDE_MIDDLEWARE,
         ] = None,
         stream: Annotated[
             bool,
             _DOC_STREAM,
         ] = False,
-    ) -> Callable:
+    ) -> Callable[[T_route], T_route]:
         """Register a route for any set of HTTP methods.
 
         `exclude_middleware=["CSRFMiddleware"]` opts this route out of the
@@ -1600,7 +1509,7 @@ class Router:
         pay no extra per-request cost.
         """
 
-        def decorator(func: RouteHandler) -> RouteHandler:
+        def decorator(func: T_route) -> T_route:
             """Register `func` for the route and return it unchanged."""
             self.add_route(
                 path=path,
@@ -1649,39 +1558,39 @@ class Router:
 
         return decorator
 
-    def get(self, path: str, **kwargs: Any) -> Callable:
+    def get(self, path: str, **kwargs: Any) -> Callable[[T_route], T_route]:
         """`GET` route decorator. Safe and idempotent - RFC 9110 Sec. 9.3.1."""
         return self.route(path, methods=[HTTP_METHOD_GET], **kwargs)
 
-    def post(self, path: str, **kwargs: Any) -> Callable:
+    def post(self, path: str, **kwargs: Any) -> Callable[[T_route], T_route]:
         """`POST` route decorator - RFC 9110 Sec. 9.3.3."""
         return self.route(path, methods=[HTTP_METHOD_POST], **kwargs)
 
-    def put(self, path: str, **kwargs: Any) -> Callable:
+    def put(self, path: str, **kwargs: Any) -> Callable[[T_route], T_route]:
         """`PUT` route decorator. Idempotent - RFC 9110 Sec. 9.3.4."""
         return self.route(path, methods=[HTTP_METHOD_PUT], **kwargs)
 
-    def patch(self, path: str, **kwargs: Any) -> Callable:
+    def patch(self, path: str, **kwargs: Any) -> Callable[[T_route], T_route]:
         """`PATCH` route decorator - RFC 5789."""
         return self.route(path, methods=[HTTP_METHOD_PATCH], **kwargs)
 
-    def delete(self, path: str, **kwargs: Any) -> Callable:
+    def delete(self, path: str, **kwargs: Any) -> Callable[[T_route], T_route]:
         """`DELETE` route decorator. Idempotent - RFC 9110 Sec. 9.3.5."""
         return self.route(path, methods=[HTTP_METHOD_DELETE], **kwargs)
 
-    def head(self, path: str, **kwargs: Any) -> Callable:
+    def head(self, path: str, **kwargs: Any) -> Callable[[T_route], T_route]:
         """`HEAD` route decorator. Like `GET` with no body - RFC 9110 Sec. 9.3.2."""
         return self.route(path, methods=[HTTP_METHOD_HEAD], **kwargs)
 
-    def options(self, path: str, **kwargs: Any) -> Callable:
+    def options(self, path: str, **kwargs: Any) -> Callable[[T_route], T_route]:
         """`OPTIONS` route decorator - RFC 9110 Sec. 9.3.7."""
         return self.route(path, methods=[HTTP_METHOD_OPTIONS], **kwargs)
 
-    def trace(self, path: str, **kwargs: Any) -> Callable:
+    def trace(self, path: str, **kwargs: Any) -> Callable[[T_route], T_route]:
         """`TRACE` route decorator - RFC 9110 Sec. 9.3.8."""
         return self.route(path, methods=[HTTP_METHOD_TRACE], **kwargs)
 
-    def query(self, path: str, **kwargs: Any) -> Callable:
+    def query(self, path: str, **kwargs: Any) -> Callable[[T_route], T_route]:
         """`QUERY` route decorator - RFC 10008.
 
         QUERY is safe and idempotent like GET but carries a request body like
@@ -1697,7 +1606,7 @@ class Router:
             str,
             Doc("URL path template for the WebSocket route, including `{param}` placeholders."),
         ],
-    ) -> Callable:
+    ) -> Callable[[RouteHandler], RouteHandler]:
         """Register a WebSocket route via decorator."""
 
         def decorator(func: RouteHandler) -> RouteHandler:
@@ -1716,7 +1625,7 @@ class Router:
         send: str = "json",
         on_connect: RouteHandler | Callable[..., Any] | None = None,
         on_disconnect: RouteHandler | Callable[..., Any] | None = None,
-    ) -> Callable:
+    ) -> Callable[[RouteHandler | Callable[..., Any]], RouteHandler | Callable[..., Any]]:
         """Register a WebSocket route wrapping a per-message callback.
 
         The decorated callback handles one message at a time; the framework
@@ -1826,8 +1735,7 @@ class Router:
         if name not in self._named_routes:
             raise ValueError(f"No route named {name!r}")
 
-        # Popped before the walk below: anything still in `path_params` after it
-        # is emitted as a query parameter.
+        # Popped first, so what remains in `path_params` becomes query string.
         external = path_params.pop("_external", False)
         scheme = path_params.pop("_scheme", None)
         host = path_params.pop("_host", None)
@@ -1840,10 +1748,8 @@ class Router:
                 raise ValueError(f"Missing path parameter {pname!r} for route {name!r}")
             consumed.add(pname)
 
-        # Validate each typed param through its converter so a reversed URL is
-        # guaranteed to resolve. `url_for('item', id='abc')` on `/items/{id:int}`
-        # raises here instead of emitting a dead `/items/abc`. Bare `{name}` and
-        # raw-regex params have no validating converter and are skipped.
+        # So `url_for('item', id='abc')` on `/items/{id:int}` raises rather than
+        # emitting a dead URL; a bare `{name}` has no converter and is skipped.
         converters = self._reverse_converters.get(name)
         if converters is None:
             converters = _reverse_converters_for(template)
@@ -1851,15 +1757,8 @@ class Router:
         for pname, converter in converters.items():
             value = path_params[pname]
             text = str(value)
-            # A segment-bounded converter never sees a `/` when matching - the
-            # path splitter has already cut on it - so its `match` has no reason
-            # to test for one, and `StringConverter` does not. Reversing did
-            # test with `match` alone, so `url_for(..., name="a/b")` returned
-            # `/b/a/b`, a URL this router cannot match. The slash test belongs
-            # here, on the reverse path, and not in `match`: adding it there
-            # would put a scan on every parameterised match to fix a URL-
-            # building bug. `greedy` is the existing flag for the one converter
-            # that legitimately crosses segments.
+            # A segment-bounded converter's `match` never tests for `/`, and the
+            # test belongs here, not on every matched parameter.
             ok, _ = converter.match(text)
             if ok and not converter.greedy and "/" in text:
                 ok = False
@@ -1868,33 +1767,19 @@ class Router:
                     f"Value {value!r} for path parameter {pname!r} is invalid for route {name!r}"
                 )
 
-        # Single-pass substitution built from template segments prevents
-        # injection: a parameter value containing `{other_param}` cannot
-        # corrupt later placeholders. Balance-aware so a spec with its own
-        # braces (`{id:[0-9]{2}}`) is replaced whole.
+        # Single-pass, so a value holding `{other_param}` corrupts nothing.
         out: list[str] = []
         pos = 0
         for ph in _iter_placeholders(template):
             out.append(template[pos : ph.start])
             if ph.name in path_params:
-                # Percent-encode the substituted value. Without this a value the
-                # application treats as opaque - a username, slug, filename -
-                # could emit `?`, `#` or (for a bare `{name}`) `/`, so
-                # `url_for('profile', username=...)` injected query parameters,
-                # truncated the URL at a fragment, or added path segments. Only
-                # a greedy `path` converter is allowed to emit `/`; every other
-                # placeholder is bounded by its segment.
-                # `:` and `@` are `pchar` (RFC 3986 Sec. 3.3) and need no
-                # encoding - keeping them literal leaves a `timedelta`'s
-                # `1:00:00` readable. Only a greedy `path` converter may also
-                # emit `/`.
+                # Unencoded, an opaque value could inject a query parameter or a
+                # path segment; `:` and `@` are `pchar` (RFC 3986 Sec. 3.3).
                 placeholder_converter = converters.get(ph.name)
                 greedy = placeholder_converter is not None and placeholder_converter.greedy
                 text = str(path_params[ph.name])
-                # `isalnum()` first: every alphanumeric is unreserved, so the
-                # usual id / slug / username needs neither the pattern scan nor
-                # the encode. Measured 62 ns against 173 ns for the scan and
-                # 521 ns for `quote` itself.
+                # Every alphanumeric is unreserved, so the usual id or slug needs
+                # neither. Measured 62 ns against 173 ns and 521 ns for `quote`.
                 if not text.isalnum():
                     unsafe = _NEEDS_QUOTE_IN_PATH if greedy else _NEEDS_QUOTE_IN_SEGMENT
                     if unsafe.search(text):
@@ -1906,8 +1791,7 @@ class Router:
         out.append(template[pos:])
         path = "".join(out)
 
-        # Anything left in path_params is a query-string parameter (the
-        # behaviour). Order matches caller's kwarg order via dict insertion.
+        # Anything left is a query parameter, in the caller's kwarg order.
         extras = {k: v for k, v in path_params.items() if k not in consumed}
         if extras:
             path = f"{path}?{urlencode(extras, doseq=True)}"
@@ -1916,9 +1800,8 @@ class Router:
             path = f"{path}#{anchor}"
 
         if external or scheme or host:
-            # SERVER_NAME is "host[:port]"; without it, default to
-            # localhost - the absolute-URL request was made outside a request
-            # context where we'd otherwise know the host.
+            # SERVER_NAME is "host[:port]"; without it the absolute-URL request
+            # was made outside a request context, so localhost is the fallback.
             cfg_host, cfg_scheme = self._absolute_url_defaults()
             netloc = host or cfg_host or "localhost"
             url_scheme = scheme or cfg_scheme
@@ -1941,9 +1824,7 @@ class Router:
         """
         return None, URL_SCHEME_HTTP
 
-    # Veloce exposes this exact reverse-URL builder as `url_path_for`.
-    # `url_for` is the canonical method; this is a thin
-    # alias so calling code reads cleanly.
+    # `url_for` is the canonical method; `url_path_for` is a thin alias.
     url_path_for = url_for
 
     # ── Introspection and merge ───────────────────────────
@@ -1980,33 +1861,18 @@ class Router:
         """
         routes: list[tuple[str, str, RouteInfo]] = []
         self._walk_tree(self._root, [], routes, include_hidden)
-        # Tree routes are the runtime winners (match() consults the tree first).
-        # Track the (method, path-shape) pairs they own so a regex route mapping
-        # to the same effective path+method does not shadow them in the schema -
-        # compared by SHAPE (each `{param}` normalized to `{}`) so a tree
-        # `/items/{slug}` still shadows a regex `/items/{id}` despite the
-        # different parameter name. Skipped under include_hidden, where every
-        # route must still be surfaced for blueprint re-registration.
-        # Limitation: shape comparison treats any same-shape tree route as a
-        # shadow; a tree route with a constraining converter (e.g. `{id:int}`)
-        # does not in fact match every input, so a complementary regex route
-        # (e.g. letters-only) is dropped from the schema here even though it is
-        # reachable. Acceptable: schema omission of a rare overlapping route,
-        # never a dispatch change.
+        # `match()` consults the tree first, so a tree route owns its (method,
+        # path-shape) pair and a same-shape regex route is not surfaced beside it.
         tree_owned: set[tuple[str, str]] = (
             set() if include_hidden else {(method, _path_shape(path)) for method, path, _ in routes}
         )
-        # Regex fallback routes are not in the tree; surface them here so
-        # OpenAPI, blueprint re-registration, and url-map building see them.
-        # The exposed path is the OpenAPI-style form built from the template.
+        # Not in the tree, so they are surfaced here in OpenAPI path form.
         for route in self._regex_routes:
             path = route.openapi_path
             for method, info in route.handlers.items():
                 if include_hidden or (method != ROUTE_METHOD_WEBSOCKET and info.include_in_schema):
                     if not include_hidden and (method, _path_shape(path)) in tree_owned:
-                        # A tree route already owns this path-shape+method and
-                        # wins at dispatch; do not let the regex handler shadow
-                        # it in the schema.
+                        # A tree route owns this shape+method and wins at dispatch.
                         continue
                     routes.append((method, path, info))
         return routes
@@ -2035,9 +1901,8 @@ class Router:
         """Include another router (a sub-router with its own prefix, tags, and hooks)."""
         extra_prefix = prefix.rstrip("/")
         self._merge_node(router._root, extra_prefix, [])
-        # Tree merge above only walks the radix structure; the child's regex
-        # fallback routes live outside it, so merge them explicitly under the
-        # same prefix (no-op when the child registered none).
+        # The child's regex fallback routes live outside the radix structure the
+        # merge above walks, so they are merged explicitly under the prefix.
         if router._regex_routes:
             self._merge_regex_routes(router, extra_prefix)
 
@@ -2051,16 +1916,14 @@ class Router:
         for src in router._regex_routes:
             full_path = prefix + src.template if prefix else src.template
             target, param_names = self._get_or_create_regex_route(full_path)
-            # Carry slash-tolerance from the source so a child route declared
-            # with `strict_slashes=False` keeps it after merge.
+            # So a child route declared `strict_slashes=False` keeps it.
             if src.tolerant_slash:
                 target.tolerant_slash = True
 
             for method, info in src.handlers.items():
                 route_info = self._build_merged_route_info(info, param_names, full_path)
-                # Reuse the parent's pre-computed handler plan; route_dep_plans
-                # are rebuilt from the combined dependencies since this router's
-                # router_dependencies may have been prepended above.
+                # `route_dep_plans` are rebuilt, since this router's
+                # `router_dependencies` may have been prepended above.
                 is_ws = method.upper() == ROUTE_METHOD_WEBSOCKET
                 self._finalize_plans(route_info, is_ws=is_ws, reuse_handler_plan=info.handler_plan)
                 self._commit_merged_method(
@@ -2077,18 +1940,12 @@ class Router:
                 cur, param_names = self._insert_path_into_tree(self._root, segments, full_path)
 
                 route_info = self._build_merged_route_info(info, param_names, full_path)
-                # Reuse the parent's pre-computed handler plan; route_dep_plans
-                # are rebuilt from the combined dependencies since this router's
-                # router_dependencies may have been prepended above.
+                # `route_dep_plans` are rebuilt, as in `_merge_regex_routes`.
                 is_ws = method.upper() == ROUTE_METHOD_WEBSOCKET
                 self._finalize_plans(route_info, is_ws=is_ws, reuse_handler_plan=info.handler_plan)
 
-                # Propagate slash-handling flags from the source node so a
-                # router declared with `strict_slashes=False` keeps that
-                # behaviour after merge, and `add_route` calls that set
-                # `trailing_slash` on the source see the flag reflected
-                # on the merged node. Node flags are independent of the
-                # handler-table commit below, so order does not matter.
+                # So a router declared `strict_slashes=False` keeps it after the
+                # merge, and a source `trailing_slash` is reflected too.
                 if node.trailing_slash:
                     cur.trailing_slash = True
                 if node.unslashed_variant:

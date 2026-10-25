@@ -1,22 +1,14 @@
 """Shared string-literal constants — one canonical spelling per duplicated value.
 
-Centralises the MIME types, Title-Case HTTP header names, verbatim
-error/log message strings, the handful of message *templates* whose wording
-is shared but whose subject is interpolated at the raise site, and
-``request._state`` keys that appear in two or more places across the
-framework so that casing and spelling cannot drift between call sites.
+Centralises the MIME types, Title-Case HTTP header names, verbatim error/log
+strings, shared message templates and ``request._state`` keys that appear in two
+or more places, so casing and spelling cannot drift between call sites. These
+names are internal and unexported, and may change in any release.
 
-These names are internal (leading-underscore module): they are not part
-of the public API, are not exported from ``veloce/__init__.py``'s
-``__all__``, and may change in any release. Import them inside the
-framework as ``from veloce._constants import MIME_JSON``.
-
-Casing is load-bearing. The user-facing ``Response.headers`` dict keys
-are Title-Case, while the ASGI emit path uses lower-case ``bytes`` - the
-``HEADER_*`` constants below hold the Title-Case ``str`` spellings ONLY
-and must never be substituted where the lower-case bytes form is used.
-Charset variants are distinct values and therefore distinct constants
-(``MIME_TEXT_PLAIN`` is not ``MIME_TEXT_PLAIN_UTF8``).
+Casing is load-bearing. The user-facing ``Response.headers`` keys are Title-Case
+while the ASGI emit path uses lower-case ``bytes``, so the ``HEADER_*`` constants
+hold the Title-Case ``str`` spellings ONLY. Charset variants are distinct
+constants (``MIME_TEXT_PLAIN`` is not ``MIME_TEXT_PLAIN_UTF8``).
 """
 
 from __future__ import annotations
@@ -129,19 +121,14 @@ MSG_ERROR_RESPONSE_EMISSION = "Error during response emission"
 MSG_FIELD_REQUIRED = "field required"
 MSG_INTERNAL_SERVER_ERROR = "Internal Server Error"
 MSG_INVALID_QUERY_STRING = "Invalid query string encoding"
-MSG_METHOD_NOT_ALLOWED = "Method Not Allowed"
 MSG_NOT_AUTHENTICATED = "Not authenticated"
-MSG_NOT_FOUND = "Not Found"
 MSG_RECEIVER_RAISED = "Receiver %r for signal %r raised %s"
 MSG_REQUEST_BODY_EXCEEDS_MAX = "Request body exceeds MAX_CONTENT_LENGTH"
 MSG_SUCCESSFUL_RESPONSE = "Successful Response"
 
 # ── Duplicated message templates ──────────────────────────
-# Formatted at the raise site rather than emitted verbatim. Both are reported
-# by the interpreted resolver (`dependency.py`) and by the generated one
-# (`_resolver_codegen.py`), which additionally embeds the formatted result in
-# the source it compiles - so the two resolvers cannot answer one route with
-# differently-worded errors.
+# Formatted at the raise site, so the interpreted and the generated resolver
+# cannot answer one route with differently-worded errors.
 MSG_MISSING_PARAMETER = "Missing required parameter: {name}"
 MSG_YIELD_NO_VALUE = "yield dependency {dependency!r} returned without yielding a value"
 
@@ -155,9 +142,5 @@ MSG_LABEL_HEADER_NAME = "header name"
 MSG_LABEL_SET_COOKIE_VALUE = "Set-Cookie value"
 
 # ── `request._state` keys the framework owns ──────────────
-# Reserved names an application must not reuse (see the request-state rules in
-# `.claude/rules/style-guide.md`). Four sites agree on this one: the HTTP
-# resolver and the MCP bridge create the entry, the compiled resolver emits an
-# equivalent read/store inline, and the dispatcher reads it back to decide
-# whether to merge a handler-injected status onto the final response.
+# Reserved names an application must not reuse.
 STATE_INJECTED_RESPONSE = "_injected_response"

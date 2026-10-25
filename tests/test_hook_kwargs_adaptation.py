@@ -30,7 +30,7 @@ from __future__ import annotations
 import pytest
 
 from veloce import Response, Veloce
-from veloce.app.dispatch import _adapt_hook_kwargs
+from veloce.app.dispatch import _adapt_hook_kwargs, _resolve_hook_binding
 from veloce.testclient import TestClient
 
 # ── the exception handler ────────────────────────────────────────────
@@ -256,7 +256,7 @@ def test_the_adapter_caches_its_answer():
 
     cache: dict = {}
     _adapt_hook_kwargs(hook, cache, "response", object(), object())
-    assert cache[hook] == (True, True)
+    assert cache[hook] == ("request", "response")
     _adapt_hook_kwargs(hook, cache, "response", object(), object())
     assert len(cache) == 1
 
@@ -370,3 +370,42 @@ def test_a_weakref_able_hook_is_still_cached():
     cache: dict = {}
     _adapt_hook_kwargs(hook, cache, "response", object(), object())
     assert hook in cache
+
+
+# ── position fills the second value, never the request ──────────────
+
+
+def test_the_second_value_is_still_filled_positionally():
+    """`(request, e)` is the shape the positional rule exists for."""
+
+    async def hook(request, e):
+        return None
+
+    assert _resolve_hook_binding(hook, "exc") == ("request", "e")
+
+
+def test_both_are_filled_when_neither_matched():
+    """The negative-space case: `(req, error)` keeps working."""
+
+    async def hook(req, error):
+        return None
+
+    assert _resolve_hook_binding(hook, "exc") == ("req", "error")
+
+
+def test_the_request_is_not_filled_into_an_unexplained_parameter():
+    """`(response, flag)` declares a third thing this adapter cannot supply.
+
+    Binding the request into it is silent and wrong - an after-request hook
+    returning anything but a `Response` is ignored, so the header it set never
+    lands and nothing says why. Leaving it unbound restores the loud `TypeError`.
+    """
+
+    async def hook(response, flag):
+        return None
+
+    # It does not merely go unbound: the existing `unfillable` guard then names
+    # the parameter, so the author is told at registration rather than reading a
+    # `Request` out of `flag` at runtime.
+    with pytest.raises(TypeError, match="flag"):
+        _resolve_hook_binding(hook, "response")

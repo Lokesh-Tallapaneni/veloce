@@ -1,14 +1,12 @@
 """Cookie-based session middleware — signed + timestamped payload.
 
 The cookie body is produced by `veloce.signing.Signer`, which embeds a
-server-side timestamp so `max_age` can be enforced on the server (the
-cookie's own `Max-Age` directive is only a client hint - an attacker
-can replay an old cookie past its expiry, so we never trust it as the
-sole expiry signal).
+server-side timestamp so `max_age` is enforced on the server: the cookie's own
+`Max-Age` is a client hint an attacker ignores when replaying a stolen cookie,
+so it is never the sole expiry signal.
 
-Secret rotation: pass a list of secrets - the first signs new cookies,
-the rest are accepted on read for the rotation window. Old cookies
-keep validating until they age out.
+Secret rotation: pass a list of secrets - the first signs new cookies, the rest
+are accepted on read until the old cookies age out.
 """
 
 from __future__ import annotations
@@ -33,9 +31,7 @@ if TYPE_CHECKING:  # pragma: no cover
 
     from veloce.audit import AuditContext
 
-# The logger name is part of the public contract: callers (and the test
-# suite) filter on "veloce.sessions", so it stays a literal rather than
-# `__name__` (which would resolve to "veloce.middleware.sessions").
+# A literal, not `__name__`: "veloce.sessions" is what callers filter on.
 _logger = logging.getLogger("veloce.sessions")
 
 
@@ -48,28 +44,17 @@ class _UnsetType:
         return "<unset>"
 
 
-# Marks a constructor argument the caller left out, so the library default
-# applies. `None` cannot serve as the marker - it is a meaningful value for
-# several settings (e.g. `samesite`). It carries its own type rather than `Any`
-# so a parameter defaulting to it declares `str | _UnsetType` and the checker
-# still sees the settings path; narrow with `isinstance(x, _UnsetType)`, since
-# mypy does not narrow an identity test against a plain singleton.
+# `None` cannot be the marker: it is a meaningful `samesite` value. Narrow
+# with `isinstance`, which mypy does not do for a plain singleton.
 _UNSET: Final = _UnsetType()
 
-# RFC 6265 Sec. 6.1 only mandates 4096 bytes per cookie (name + value + attrs);
-# browsers and proxies enforce this inconsistently, so 4093 is the de-facto
-# safe ceiling (4096 - 3 bytes of separator overhead some impls reserve).
+# RFC 6265 Sec. 6.1 mandates 4096 bytes, but some implementations reserve 3.
 _DEFAULT_MAX_COOKIE_SIZE = 4093
 
-# Chunked-cookie defaults. When `chunked=True`, a signed value too large for a
-# single cookie is split across numbered cookies named `<name>.0`, `<name>.1`,
-# ... up to `_DEFAULT_MAX_COOKIE_CHUNKS`. The cap bounds how many Set-Cookie
-# lines one session can emit (RFC 6265 Sec. 6.1 also caps per-domain cookies),
-# so an absurdly large session is dropped with a warning rather than flooding
-# the response with hundreds of cookies.
+# Caps the Set-Cookie lines one chunked session can emit, so a huge session is
+# dropped rather than exploded (RFC 6265 Sec. 6.1 caps per-domain cookies too).
 _DEFAULT_MAX_COOKIE_CHUNKS = 8
-# Separator between the base cookie name and the chunk index. A literal `.` is
-# a valid RFC 6265 token character and is widely used for this convention.
+# A literal `.` is a valid RFC 6265 token character.
 _CHUNK_SEP = "."
 
 
@@ -84,9 +69,9 @@ def _validate_cookie_security(
 ) -> None:
     """Fail-fast validation of the cookie security config at construction time.
 
-    Enforces, once for both middlewares, the RFC 6265bis name-prefix invariants
-    and the CHIPS (`Partitioned`) preconditions so a misconfiguration surfaces
-    at app wiring rather than being silently dropped at response time.
+    Enforces the RFC 6265bis name-prefix invariants and the CHIPS
+    (`Partitioned`) preconditions at app wiring, where a misconfiguration
+    surfaces instead of being silently dropped at response time.
     """
     if cookie_prefix is not None:
         if cookie_prefix not in ("host", "secure"):
@@ -100,8 +85,7 @@ def _validate_cookie_security(
                 raise ValueError("cookie_prefix='host' requires domain=None")
     if partitioned and (not secure or (samesite or "").lower() != "none"):
         raise ValueError("partitioned=True (CHIPS) requires secure=True and samesite='none'")
-    # A non-Secure SameSite=None cross-subdomain cookie is dropped by modern
-    # browsers (RFC 6265bis same-site rules / Chrome). Warn at construction.
+    # Browsers drop a non-Secure SameSite=None cookie (RFC 6265bis same-site).
     if domain is not None and not secure and (samesite or "").lower() == "none":
         warnings.warn(
             "A SameSite=None cookie without Secure is rejected by modern "
@@ -115,11 +99,9 @@ def _validate_cookie_security(
 def _reassemble_chunks(cookies: Any, base_name: str, max_chunks: int) -> str | None:
     """Rebuild a chunked cookie value from `<base_name>.0`, `.1`, ... cookies.
 
-    The chunks must be contiguous from index 0: the first missing index ends the
-    sequence. Returns the concatenated value, or None when no `.0` chunk exists.
-    Reads at most `max_chunks` indices so a forged cookie header cannot drive an
-    unbounded scan. The signed value is a single URL-safe token, so plain string
-    concatenation is the exact inverse of the response-side split.
+    The chunks must be contiguous from index 0, and at most `max_chunks` indices
+    are read so a forged cookie header cannot drive an unbounded scan. The signed
+    value is one URL-safe token, so concatenation inverts the response-side split.
     """
     first = cookies.get(f"{base_name}{_CHUNK_SEP}0")
     if first is None:
@@ -147,9 +129,8 @@ def _build_signer(secret_key: str | list[str]) -> Signer:
 def _wire_name(cookie_prefix: Literal["host", "secure"] | None, cookie_name: str) -> str:
     """Apply the RFC 6265bis name prefix to the configured cookie name.
 
-    The wire name carries the `__Host-`/`__Secure-` prefix so the request read
-    and the response write agree on the same name. Derived once at construction
-    to keep the per-request read off the hot path. Shared by both middlewares.
+    The prefix must be on both the request read and the response write, so it is
+    derived once at construction and the per-request read stays off the hot path.
     """
     if cookie_prefix == "host":
         return f"__Host-{cookie_name}"
@@ -161,8 +142,8 @@ def _wire_name(cookie_prefix: Literal["host", "secure"] | None, cookie_name: str
 def _should_persist(policy: Callable[[int], bool] | None, status_code: int) -> bool:
     """Whether a modified session should be written for this response status.
 
-    The `None` policy default means "persist for status < 500" - a failed
-    request should not write a half-mutated session. Shared by both middlewares.
+    The `None` policy default means "persist for status < 500": a failed request
+    should not write a half-mutated session.
     """
     return policy(status_code) if policy is not None else status_code < 500
 
@@ -172,12 +153,10 @@ def _begin_session_response(
 ) -> tuple[bool, bool] | None:
     """Shared response-phase preamble for both session middlewares.
 
-    Returns `None` when there is no session to persist (the caller returns the
-    response unchanged). Otherwise returns `(accessed, modified)` after emitting
-    `Vary: Cookie` when the handler touched the session, so a URL-keyed cache
-    cannot share a session-personalized body across users (RFC 9110 Sec.
-    12.5.5). `getattr` with a default tolerates a non-`Session` object placed
-    under the reserved `session` state key, skipping the session work as before.
+    Returns `None` when there is no session to persist, else `(accessed,
+    modified)` after emitting `Vary: Cookie` when the handler touched the
+    session - without which a URL-keyed cache could share one user's
+    session-personalized body with another (RFC 9110 Sec. 12.5.5).
     """
     if session is None:
         return None
@@ -188,10 +167,7 @@ def _begin_session_response(
     return accessed, modified
 
 
-# The cookie settings both session middlewares take, and the default each uses
-# when the constructor is not given one. Held here rather than spelled out in
-# each `__init__` so a new shared setting is wired in one place - the two copies
-# had already diverged in how they render SameSite.
+# In one place, so a new shared setting is wired once not per `__init__`.
 _SHARED_COOKIE_DEFAULTS: dict[str, Any] = {
     "cookie_name": "session",
     "path": "/",
@@ -205,9 +181,8 @@ def _shared_cookie_settings(**supplied: Any) -> dict[str, Any]:
     """Settle the shared cookie settings from the constructor and the defaults.
 
     The constructor is the only source: a setting the caller did not pass takes
-    the library default here and does not change again. Nothing re-reads the
-    app's config later, so a middleware is fully configured the moment it is
-    built and two middlewares can carry different cookies.
+    the library default here and does not change again, so two middlewares can
+    carry different cookies.
     """
     return {
         name: _SHARED_COOKIE_DEFAULTS[name] if isinstance(value, _UnsetType) else value
@@ -215,8 +190,7 @@ def _shared_cookie_settings(**supplied: Any) -> dict[str, Any]:
     }
 
 
-# Config keys that configured the session cookie before the constructor became
-# its only source. Kept only to recognise a stale configuration and say so.
+# Kept only to recognise a configuration that no longer configures anything.
 _RETIRED_CONFIG_KEYS: dict[str, str] = {
     "APPLICATION_ROOT": "path",
     "MAX_COOKIE_SIZE": "max_cookie_size",
@@ -231,18 +205,13 @@ _RETIRED_CONFIG_KEYS: dict[str, str] = {
 class SessionMiddlewareBase(Middleware):
     """Base class for a session middleware — subclass it to add a backend.
 
-    Subclassing supplies two things a backend would otherwise have to
-    reimplement. It inherits the documented `session.permanent` rule (a
-    permanent session takes the longer lifetime), and it becomes the type
-    `Veloce.security_audit` recognises, so `veloce check` warns when the
-    backend's session cookie is not `Secure`. A backend that does not
-    subclass gets neither, and the audit passes it in silence.
+    Subclassing inherits the documented `session.permanent` rule (a permanent
+    session takes the longer lifetime) and makes the backend the type
+    `Veloce.security_audit` recognises, so `veloce check` warns when its session
+    cookie is not `Secure`. A backend that does not subclass gets neither.
 
     A subclass sets `max_age` and `permanent_lifetime`, then calls
-    `cookie_lifetime(session)` wherever it writes the cookie or the store
-    entry. Both built-in backends - `SessionMiddleware` (signed cookie) and
-    `ServerSessionMiddleware` (server-side store) - are subclasses, and
-    adding another requires no edit inside the framework.
+    `cookie_lifetime(session)` wherever it writes the cookie or the store entry.
 
     Usage::
 
@@ -264,11 +233,9 @@ class SessionMiddlewareBase(Middleware):
 
     #: Cookie lifetime, in seconds, for a session not marked permanent.
     max_age: int
-    #: Cookie and store lifetime, in seconds, for a session marked
-    #: `session.permanent`.
+    #: Cookie and store lifetime, in seconds, when `session.permanent` is set.
     permanent_lifetime: int
-    #: Whether the session cookie carries `Secure`. A subclass that does not
-    #: set it is audited as insecure.
+    #: Whether the cookie carries `Secure`; unset audits as insecure.
     secure: bool = False
 
     def cookie_lifetime(self, session: Any) -> int:
@@ -295,15 +262,10 @@ class SessionMiddlewareBase(Middleware):
         """Settle, validate and assign every cookie setting both backends share.
 
         Each `_UNSET` argument takes the library default here, so the object is
-        fully formed at construction and a bad combination of settings fails at
-        that point rather than on the first request. Only `secret_key` and
-        `store` are left to the subclass - they are what distinguishes the
-        backends; everything above this line is the cookie, and the cookie is
-        the same.
-
-        A subclass adding a third backend gets the validation and the
-        `__Host-`/`__Secure-` wire name by calling this, rather than by copying
-        forty lines that must then be kept in step.
+        fully formed at construction and a bad combination of settings fails
+        there rather than on the first request. Only `secret_key` and `store`
+        are left to the subclass; a third backend gets the validation and the
+        `__Host-`/`__Secure-` wire name by calling this.
         """
         shared = _shared_cookie_settings(
             cookie_name=cookie_name,
@@ -312,10 +274,7 @@ class SessionMiddlewareBase(Middleware):
             secure=secure,
             samesite=samesite,
         )
-        # Rebound under their settled types: `_shared_cookie_settings` has
-        # replaced every `_UNSET` with the library default, so from here down
-        # these are the plain values the attributes below - and every reader of
-        # them - are typed as.
+        # Rebound under their settled types, every `_UNSET` now replaced.
         settled_cookie_name: str = shared["cookie_name"]
         settled_path: str = shared["path"]
         settled_httponly: bool = shared["httponly"]
@@ -331,9 +290,7 @@ class SessionMiddlewareBase(Middleware):
         )
         self.cookie_name = settled_cookie_name
         self.max_age = max_age
-        # `PERMANENT_SESSION_LIFETIME` analog - the cookie `Max-Age` when
-        # `session.permanent` is set. Both backends default to 31 days, so the
-        # two answer `session.permanent = True` identically.
+        # The `Max-Age` when `session.permanent` is set; 31 days in both backends.
         self.permanent_lifetime = (
             86400 * 31 if isinstance(permanent_lifetime, _UnsetType) else permanent_lifetime
         )
@@ -342,19 +299,14 @@ class SessionMiddlewareBase(Middleware):
         self.secure = settled_secure
         self.samesite = settled_samesite
         self.domain = domain
-        self.cookie_prefix = cookie_prefix
+        self.cookie_prefix: Literal["host", "secure"] | None = cookie_prefix
         self.partitioned = partitioned
-        # Emit `Vary: Cookie` on responses that write the session cookie, so a
-        # shared cache keyed on URL alone can't serve one user's session-bearing
-        # body to another (RFC 9110 Sec. 12.5.5). Set False to opt out.
+        # Without `Vary: Cookie` a URL-keyed cache could serve one user's
+        # session-bearing body to another (RFC 9110 Sec. 12.5.5).
         self.vary_on_cookie = vary_on_cookie
-        # Policy deciding whether to persist for a given response status. The
-        # `None` default means "persist for status < 500" - a failed request
-        # should not write a half-mutated session.
+        # `None` means "status < 500": no half-mutated session on a failure.
         self._persist_on_status = persist_on_status
-        # Sliding expiry: when True, a session merely *read* during the request
-        # has its lifetime refreshed on the way out, so an active user is never
-        # logged out mid-session. Default False keeps the prior behaviour.
+        # Sliding expiry: a session merely *read* has its lifetime refreshed.
         self.renew_on_access = renew_on_access
         # Read and write must share the prefixed wire name.
         self._wire_cookie_name = _wire_name(cookie_prefix, settled_cookie_name)
@@ -364,31 +316,25 @@ class SessionMiddlewareBase(Middleware):
         """The cookie name actually used on the wire.
 
         `cookie_name` with the RFC 6265bis `__Host-` / `__Secure-` prefix
-        applied. Anything writing or reading this backend's cookie directly
-        needs this name and not the configured one - seeded under the bare name
-        the cookie is simply never found, and the read silently takes the
-        anonymous path.
+        applied. Anything reading or writing the cookie directly needs this name:
+        under the bare one the cookie is never found and the read silently takes
+        the anonymous path.
         """
         return self._wire_cookie_name
 
     def cookie_is_secure(self) -> bool:
         """Whether this backend's session cookie will carry `Secure`.
 
-        Answered from the middleware alone - there is no second source to
-        reconcile. A subclass that never sets `secure` reads as not secure, so
-        the audit reports a cookie it cannot vouch for rather than staying
-        quiet about it.
+        A subclass that never sets `secure` reads as not secure, so the audit
+        reports a cookie it cannot vouch for rather than staying quiet.
         """
         return bool(getattr(self, "secure", False))
 
     def _delete_cookie(self, response: Response, name: str, *, prefix: bool) -> None:
         """Tell the client to drop `name` using this middleware's attribute set.
 
-        The single place mapping the shared cookie attribute set to
-        `delete_cookie`, for the same reason `_configure_cookie` is the single
-        place that settles it: a per-backend copy has already diverged once (see
-        the SameSite note above), and a delete whose attributes disagree with
-        the set leaves the cookie in place.
+        One place mapping the shared attribute set to `delete_cookie`, because a
+        delete whose attributes disagree with the set leaves the cookie in place.
 
         `prefix` is True for the base cookie passed by its bare name; a chunk
         cookie passes its already-prefixed wire name with `prefix=False`.
@@ -408,10 +354,7 @@ class SessionMiddlewareBase(Middleware):
         """Report an insecure cookie, and config that no longer configures one."""
         stale = sorted(key for key in _RETIRED_CONFIG_KEYS if ctx.app.config.get(key) is not None)
         if stale:
-            # These keys used to configure the cookie. An app that set one and
-            # passed no constructor argument had a `Secure` cookie and would now
-            # silently have a plain one, so the boot stops instead: a security
-            # setting must not quietly weaken because its home moved.
+            # Otherwise an app that set one silently loses its `Secure` cookie.
             yield Finding(
                 f"{', '.join(stale)} no longer configures the session cookie - "
                 f"{type(self).__name__} takes its cookie settings from its constructor.",
@@ -433,27 +376,21 @@ class SessionMiddlewareBase(Middleware):
 class SessionMiddleware(SessionMiddlewareBase):
     """Server-side session stored in a signed, timestamped cookie.
 
-    Every cookie setting comes from this constructor. An argument left out
-    takes the library default and does not change again - `app.config` is not
-    consulted, so what the signature says is what the cookie carries, and two
-    session middlewares can carry different cookies.
-
-    `secret_key` is the exception: left out, it is taken from `SECRET_KEY`
-    (also settable as `app.secret_key`) on the first request, because it is the
-    application's signing key rather than an attribute of this cookie. Without
-    either, the first request raises.
+    Every cookie setting comes from this constructor; an argument left out takes
+    the library default and does not change again, since `app.config` is not
+    consulted. `secret_key` is the exception: left out, it is taken from
+    `SECRET_KEY` (also settable as `app.secret_key`) on the first request,
+    because it is the application's signing key rather than an attribute of this
+    cookie. Without either, the first request raises.
 
     Set `renew_on_access=True` for sliding expiry: a session that was only read
-    during a request has its cookie re-signed with a fresh `Max-Age` on the way
-    out, so an active user is not logged out at the fixed `max_age`. Default is
-    off - only a modifying write rewrites the cookie.
+    has its cookie re-signed with a fresh `Max-Age`, so an active user is not
+    logged out at the fixed `max_age`. Default off.
 
-    Set `chunked=True` to transparently split a signed value larger than
-    `max_cookie_size` across numbered cookies (`<cookie_name>.0`, `.1`, ...) and
-    reassemble them on the next request. `max_chunks` bounds the split so an
-    oversized session is dropped with a warning rather than exploded into an
-    unbounded number of cookies. Default is off - the single oversized cookie is
-    dropped with a warning, unchanged from before.
+    Set `chunked=True` to split a signed value larger than `max_cookie_size`
+    across numbered cookies (`<cookie_name>.0`, `.1`, ...) and reassemble them on
+    the next request, bounded by `max_chunks`. Default off, in which case the
+    oversized cookie is dropped with a warning.
     """
 
     def __init__(
@@ -493,21 +430,14 @@ class SessionMiddleware(SessionMiddlewareBase):
             persist_on_status=persist_on_status,
             renew_on_access=renew_on_access,
         )
-        # The signing key is the one setting still settled against the app: it
-        # is the application's key, not an attribute of this cookie, and
-        # `app.secret_key` is already its single home.
+        # The application's key, not an attribute of this cookie.
         self._pending_config = secret_key is None
         if secret_key is not None:
             self._signer = _build_signer(secret_key)
         if isinstance(max_cookie_size, _UnsetType):
             max_cookie_size = _DEFAULT_MAX_COOKIE_SIZE
         self.max_cookie_size = max_cookie_size
-        # Opt-in transparent chunking: when True, a signed value too large for a
-        # single cookie is split across numbered cookies (`<name>.0`, `.1`, ...)
-        # on the response and transparently reassembled on the request. Default
-        # off preserves the drop-with-warning behavior. `max_chunks` bounds the
-        # split so an absurdly large session is dropped, not exploded into
-        # hundreds of cookies.
+        # `max_chunks` bounds the split, so a huge session is dropped instead.
         if max_chunks < 1:
             raise ValueError("max_chunks must be >= 1")
         self.chunked = chunked
@@ -516,14 +446,10 @@ class SessionMiddleware(SessionMiddlewareBase):
     def audit(self, ctx: AuditContext) -> Iterable[Finding]:
         """Report a backend that cannot sign, on top of the shared checks.
 
-        A cookie session is signed, so a middleware with neither a
-        `secret_key=` argument nor a configured `SECRET_KEY` cannot serve a
-        single request - it raises on the first one. That is an `error`, which
-        refuses the boot, rather than a warning discovered by traffic.
-
-        The middleware answers this and not the audit, because only it knows
-        whether the constructor supplied a key: reading `SECRET_KEY` alone
-        warned about a backend that was already signing correctly.
+        A middleware with neither a `secret_key=` argument nor a configured
+        `SECRET_KEY` raises on its first request, so this is an `error` that
+        refuses the boot rather than a warning discovered by traffic. The
+        middleware answers it because only it knows what the constructor got.
         """
         yield from super().audit(ctx)
         if self._pending_config and not ctx.app.config.get("SECRET_KEY"):
@@ -600,27 +526,20 @@ class SessionMiddleware(SessionMiddlewareBase):
     def decode_cookie(self, value: str) -> dict[str, Any] | None:
         """Return the session inside a signed cookie value, or `None` if invalid.
 
-        `None` covers a bad signature, a tampered payload, and a token older
-        than this middleware would accept. The request path calls this, so what
-        it accepts and what a request accepts cannot diverge.
+        `None` covers a bad signature, a tampered payload, and a token older than
+        this middleware accepts. The request path calls this, so the two cannot
+        diverge.
         """
         self._require_signer("decode_cookie")
         try:
-            # Decode with the longer window so a permanent cookie is not
-            # rejected before its flag is known. The cookie's own `Max-Age`
-            # is a client hint an attacker ignores when replaying a stolen
-            # cookie (RFC 6265 Sec. 5.3), so the server-side ceiling is
-            # re-checked against the payload's own `_permanent` flag.
+            # The longer window first, so a permanent cookie is not rejected
+            # before its flag is known - its own `Max-Age` being a client hint
+            # an attacker ignores when replaying (RFC 6265 Sec. 5.3).
             lenient = max(self.max_age, self.permanent_lifetime)
             decoded = self._signer.loads(value, max_age=lenient)
-            # Enforce the flag-appropriate ceiling: a permanent session may
-            # live for `permanent_lifetime`, a non-permanent one only for
-            # `max_age` - independent of which value is configured larger.
-            # When that ceiling is shorter than the lenient decode window,
-            # re-validate the token's age against it, so neither a stolen
-            # non-permanent cookie nor a stale permanent one replays past its
-            # own limit. A tampered flag cannot help - the whole payload is
-            # HMAC-signed.
+            # Then the flag-appropriate ceiling, so neither a stolen
+            # non-permanent cookie nor a stale permanent one replays past its own
+            # limit. A tampered flag cannot help: the payload is HMAC-signed.
             if isinstance(decoded, dict):
                 ceiling = (
                     self.permanent_lifetime if decoded.get("_permanent", False) else self.max_age
@@ -638,10 +557,7 @@ class SessionMiddleware(SessionMiddlewareBase):
         session_data: dict[str, Any] = {}
         is_new = True
         cookie_val = request.cookies.get(self._wire_cookie_name)
-        # When chunking is enabled and no single cookie is present, fall back to
-        # reassembling the numbered chunks. A whole (unchunked) cookie always
-        # wins so a session that later fits in one cookie reads correctly even
-        # while stale chunks linger before their delete reaches the client.
+        # A whole cookie wins, so stale chunks on the client cannot shadow it.
         if not cookie_val and self.chunked:
             cookie_val = _reassemble_chunks(
                 request.cookies, self._wire_cookie_name, self.max_chunks
@@ -666,41 +582,32 @@ class SessionMiddleware(SessionMiddlewareBase):
             return response
         accessed, modified = begun
 
-        # The re-sign + Set-Cookie is normally skipped when the session was never
-        # mutated. With `renew_on_access`, an existing session that was only
-        # *read* (accessed, non-empty, not new) is also re-signed so its
-        # server-side timestamp and `Max-Age` slide forward - the idle reset.
+        # `renew_on_access` re-signs a session that was only *read*, sliding
+        # its timestamp and `Max-Age` forward.
         if not modified and not (
             self.renew_on_access and accessed and not getattr(session, "new", False) and session
         ):
             return response
 
-        # A 5xx response should not persist a half-mutated session - neither a
-        # Set-Cookie nor the empty-session delete. The gate wraps the whole
-        # persist block. Default (no policy): persist only for status < 500.
+        # A 5xx should persist neither a Set-Cookie nor the empty-session delete.
         if not _should_persist(self._persist_on_status, response.status_code):
             return response
 
         if not session:
             self._delete_cookie(response, self.cookie_name, prefix=True)
-            # Clear any chunk cookies a previous larger session left behind, so
-            # an emptied session does not resurrect from stale `<name>.N` parts.
+            # Or an emptied session resurrects from stale `<name>.N` parts.
             if self.chunked:
                 self._clear_chunks(response)
             return response
 
         cookie_value = self.encode_cookie(session)
         lifetime = self.cookie_lifetime(session)
-        # Browsers silently truncate Set-Cookie above ~4 KB, which corrupts
-        # the session on the next request. Measure the rendered header and
-        # drop the cookie (with a warning) rather than raising - a raise here
-        # re-enters this middleware via the error-response path and would
-        # propagate as an unhandled ASGI exception. RFC 6265 Sec. 6.1.
+        # Browsers silently truncate Set-Cookie above ~4 KB (RFC 6265 Sec. 6.1),
+        # corrupting the session. Dropped, not raised: a raise here would
+        # re-enter this middleware through the error-response path.
         rendered = self._render_cookie(self.cookie_name, cookie_value, lifetime, prefix=True)
         rendered_size = self._rendered_size(rendered)
-        # The single cookie fits: write it, and (chunked mode) clear any chunk
-        # cookies a previous oversized response wrote so the client does not
-        # keep two encodings of the same session.
+        # It fits, so stale chunks go and the client keeps one encoding.
         if rendered_size <= self.max_cookie_size:
             response._append_set_cookie_header(rendered)
             response._encoded = None
@@ -708,16 +615,12 @@ class SessionMiddleware(SessionMiddlewareBase):
                 self._clear_chunks(response)
             return response
 
-        # Too large for one cookie. With chunking enabled, split the signed
-        # value across numbered cookies instead of dropping it.
+        # Too large for one cookie, so split it rather than drop it.
         if self.chunked:
             if self._write_chunks(response, cookie_value, lifetime):
                 return response
-            # Fell through: even chunked, the value needs more than `max_chunks`
-            # cookies. Drop with a warning rather than emit a partial session.
-            # Clear the base cookie and every chunk slot so a previously-persisted
-            # (smaller) session is not silently resurrected from the client's
-            # stale cookies on the next request.
+            # Over `max_chunks` even chunked, so every slot is cleared rather
+            # than leaving a smaller session to resurrect.
             self._delete_cookie(response, self.cookie_name, prefix=True)
             self._clear_chunks(response)
             _logger.warning(
@@ -729,8 +632,7 @@ class SessionMiddleware(SessionMiddlewareBase):
             )
             return response
 
-        # Non-chunked mode (the default): the single cookie is oversized and
-        # chunking is off, so drop it with a warning. RFC 6265 Sec. 6.1.
+        # Oversized with chunking off, so dropped (RFC 6265 Sec. 6.1).
         _logger.warning(
             "Session cookie %r is %d bytes, exceeds max_cookie_size=%d; "
             "dropping Set-Cookie on this response. Enable chunked=True or "
@@ -744,23 +646,19 @@ class SessionMiddleware(SessionMiddlewareBase):
     def _chunk_name(self, index: int) -> str:
         """Bare wire name of chunk `index`, e.g. `__Host-session.0`.
 
-        Built on the prefixed wire name so request reassembly and response
-        writes agree, and so the `__Host-`/`__Secure-` guarantees carry to every
-        chunk. The prefix lives in the literal name (not passed to `dump_cookie`)
-        because `dump_cookie` would re-derive `__Host-__Host-...`.
+        Built on the prefixed wire name, so the `__Host-`/`__Secure-` guarantees
+        carry to every chunk. The prefix stays in the literal name because
+        `dump_cookie` would otherwise re-derive `__Host-__Host-...`.
         """
         return f"{self._wire_cookie_name}{_CHUNK_SEP}{index}"
 
     def _render_cookie(self, name: str, value: str, lifetime: int, *, prefix: bool) -> str:
         """Serialise one Set-Cookie line from this middleware's attributes.
 
-        `dump_cookie` has no `partitioned` arg, so the CHIPS attribute is
-        appended here rather than by `Response.set_cookie`, which this method
-        cannot use because `_rendered_size` needs the serialised line before it
-        is attached to a response. The `partitioned and secure` condition below
-        is therefore `set_cookie`'s, restated. `prefix` is True only for the
-        base cookie passed by its bare `cookie_name`; chunk cookies pass their
-        already-prefixed wire name with `prefix=False`.
+        `Response.set_cookie` cannot serve here because `_rendered_size` needs
+        the serialised line before it is attached to a response, so the CHIPS
+        attribute is appended below instead. `prefix` is True only for the base
+        cookie passed by its bare `cookie_name`.
         """
         rendered = dump_cookie(
             name,
@@ -773,11 +671,7 @@ class SessionMiddleware(SessionMiddlewareBase):
             samesite=self.samesite,
             prefix=self.cookie_prefix if prefix else None,
         )
-        # Mirrors `Response.set_cookie`: CHIPS keys a partitioned cookie to the
-        # top-level site and browsers reject the attribute without `Secure`, so
-        # emitting it alone would cost the whole cookie. The constructor guard
-        # already rejects that combination; this keeps the two renderers
-        # answering alike if either guard moves.
+        # Browsers reject `Partitioned` without `Secure`, costing the cookie.
         if self.partitioned and self.secure:
             rendered += "; Partitioned"
         return rendered
@@ -786,26 +680,22 @@ class SessionMiddleware(SessionMiddlewareBase):
     def _rendered_size(rendered: str) -> int:
         """On-the-wire byte length of a Set-Cookie line.
 
-        Measure bytes, not characters: a non-ASCII cookie_name/path/domain would
-        otherwise under-count and let the line exceed the browser's ~4 KB
-        truncation limit. Cookie headers serialise as latin-1 (one byte per code
-        point), so an all-ASCII line (the common case - the signed value is
-        base64) needs no encode; the latin-1 fallback still raises on code
-        points above U+00FF.
+        Bytes, not characters: a non-ASCII cookie_name/path/domain would
+        under-count and let the line pass the browser's ~4 KB truncation limit.
+        An all-ASCII line needs no encode, and the latin-1 fallback still raises
+        above U+00FF.
         """
         return len(rendered) if rendered.isascii() else len(rendered.encode("latin-1"))
 
     def _write_chunks(self, response: Response, value: str, lifetime: int) -> bool:
         """Split `value` across numbered cookies `<name>.0`, `.1`, ... .
 
-        Returns True when the whole value fit within `max_chunks`, False when it
-        needs more (the caller then drops with a warning). The per-chunk value
-        budget is the limit minus the rendered overhead of an empty chunk
-        cookie; the signed value is a URL-safe token, so it is not
-        percent-expanded and one token char renders as one byte. Built into a
-        scratch list first so a too-large value writes no partial cookies. On
-        success the base cookie and any higher-numbered stale chunks are cleared
-        so the client keeps exactly one encoding.
+        Returns True when the value fit within `max_chunks`, else False and the
+        caller drops it with a warning. The per-chunk budget is the limit minus
+        an empty chunk cookie's rendered overhead; the signed value is a URL-safe
+        token, so one token char renders as one byte. Built into a scratch list
+        first, so a too-large value writes no partial cookies, and on success the
+        base cookie and stale higher chunks are cleared.
         """
         chunks: list[str] = []
         start = 0
@@ -815,8 +705,7 @@ class SessionMiddleware(SessionMiddlewareBase):
             if index >= self.max_chunks:
                 return False
             name = self._chunk_name(index)
-            # A multi-digit chunk index widens the name, so recompute the budget
-            # per chunk rather than reusing index 0's.
+            # A multi-digit index widens the name, so index 0's budget is wrong.
             piece_overhead = self._rendered_size(
                 self._render_cookie(name, "", lifetime, prefix=False)
             )
@@ -829,8 +718,7 @@ class SessionMiddleware(SessionMiddlewareBase):
             index += 1
         for rendered in chunks:
             response._append_set_cookie_header(rendered)
-        # Clear the base cookie (it may hold a stale smaller session) and any
-        # higher-numbered stale chunks left by a previous larger session.
+        # The base cookie and higher chunks may hold stale sessions.
         self._delete_cookie(response, self.cookie_name, prefix=True)
         for stale in range(index, self.max_chunks):
             self._delete_cookie(response, self._chunk_name(stale), prefix=False)
@@ -846,20 +734,18 @@ class SessionMiddleware(SessionMiddlewareBase):
 class ServerSessionMiddleware(SessionMiddlewareBase):
     """Server-side session - the cookie carries only an opaque session id.
 
-    The session payload lives in a `SessionStore`, not in the cookie, so a
-    session is *revocable*: empty it in a handler (`session.clear()`) or
-    delete it straight from the store (`await store.delete(session_id)`)
-    and it is gone server-side. A tampered or stale cookie simply fails to
-    resolve to a stored payload and is treated as a fresh session.
+    The payload lives in a `SessionStore`, not in the cookie, so a session is
+    *revocable*: empty it in a handler (`session.clear()`) or delete it from the
+    store and it is gone server-side. A tampered or stale cookie simply fails to
+    resolve and is treated as a fresh session.
 
-    The default store is a process-local `InMemorySessionStore`; pass a
-    shared backend (e.g. a Redis-backed `SessionStore`) for a multi-worker
-    deployment. The store is a plain object the caller owns - keep a
-    reference to it to revoke sessions by id.
+    The default store is a process-local `InMemorySessionStore`; pass a shared
+    backend for a multi-worker deployment. The caller owns it - keep a reference
+    to revoke sessions by id.
 
     Set `renew_on_access=True` for sliding expiry: a session that was only read
-    during a request has its store TTL refreshed (via `SessionStore.touch`) and
-    its cookie re-stamped on the way out - an idle-timeout reset. Default off.
+    has its store TTL refreshed (via `SessionStore.touch`) and its cookie
+    re-stamped. Default off.
     """
 
     def __init__(
@@ -907,7 +793,7 @@ class ServerSessionMiddleware(SessionMiddlewareBase):
         if data is not None:
             session = Session(data)
             session.new = False
-            # Stash the id so process_response writes back under it.
+            # Stashed so process_response writes back under it.
             request._state["_session_id"] = session_id
         else:
             session = Session()
@@ -924,9 +810,7 @@ class ServerSessionMiddleware(SessionMiddlewareBase):
         accessed, modified = begun
 
         if not modified:
-            # Sliding expiry: an existing session that was only read (accessed,
-            # not new) has its store TTL and cookie `Max-Age` refreshed, then
-            # we are done - the payload is unchanged so there is no store write.
+            # The payload is unchanged, so a TTL slide needs no store write.
             if (
                 self.renew_on_access
                 and accessed
@@ -941,31 +825,25 @@ class ServerSessionMiddleware(SessionMiddlewareBase):
             return response
 
         session_id = request._state.get("_session_id")
-        # One lifetime for the entry and its cookie, so a `permanent` session
-        # does not outlive its store entry or vice versa.
+        # One lifetime for the entry and its cookie, so neither outlives the other.
         lifetime = self.cookie_lifetime(session)
         if not session:
-            # The handler emptied the session - revoke it server-side and
-            # tell the client to drop the cookie.
+            # Emptied by the handler: revoke it and drop the cookie.
             if session_id is not None:
                 await self.store.delete(session_id)
                 self._delete_cookie(response, self.cookie_name, prefix=True)
             return response
 
         if session_id is None or session.regenerate:
-            # A fresh session, or an explicit id rotation requested via
-            # `session.regenerate_id()` at a privilege boundary. Drop the
-            # old store entry so the previous id can no longer resolve.
+            # A fresh session, or a rotation whose old id must stop resolving.
             if session_id is not None and session.regenerate:
                 await self.store.delete(session_id)
             # Mint an unguessable id - 256 bits of entropy - and create it.
             session_id = secrets.token_urlsafe(32)
             await self.store.write(session_id, dict(session), lifetime)
         else:
-            # An already-stored session: write back only if it still
-            # exists. A concurrent request may have revoked it (logout,
-            # `store.delete(...)`) while this one was in flight - a plain
-            # `write` would resurrect it, so use the conditional `replace`.
+            # A concurrent logout may have revoked it, and `write` would
+            # resurrect it; `replace` is conditional.
             if not await self.store.replace(session_id, dict(session), lifetime):
                 # Revoked under us - honour the revocation and drop the cookie.
                 self._delete_cookie(response, self.cookie_name, prefix=True)
@@ -976,17 +854,15 @@ class ServerSessionMiddleware(SessionMiddlewareBase):
     async def _renew(self, request: Request, response: Response) -> None:
         """Slide the store TTL and cookie `Max-Age` for a read-only access.
 
-        Refreshes the existing entry's expiry without rewriting its payload.
-        If the entry was revoked under us (`touch` returns False) the cookie is
-        cleared, mirroring the revoked-under-us handling in `process_response`.
+        Refreshes the entry's expiry without rewriting its payload. An entry
+        revoked under us (`touch` returns False) clears the cookie, as in
+        `process_response`.
         """
         session_id = request._state.get("_session_id")
-        # No stored id means the cookie did not resolve to an entry on read;
-        # there is nothing to slide forward.
+        # The cookie did not resolve on read, so there is nothing to slide.
         if session_id is None:
             return
-        # Slide by the lifetime this session is entitled to, so a permanent one
-        # is not quietly demoted to the default window on a read-only request.
+        # Its own lifetime, or a permanent session is demoted on a mere read.
         lifetime = self.cookie_lifetime(request._state.get("session"))
         if not await self.store.touch(session_id, lifetime):
             self._delete_cookie(response, self.cookie_name, prefix=True)
@@ -996,9 +872,8 @@ class ServerSessionMiddleware(SessionMiddlewareBase):
     def _set_session_cookie(self, response: Response, session_id: str, lifetime: int) -> None:
         """Write the opaque session-id cookie with this middleware's attributes.
 
-        Single place mapping the cookie attribute set to `set_cookie`, mirroring
-        the base class's delete-side `_delete_cookie`; both write and renew
-        share it.
+        One place mapping the cookie attribute set to `set_cookie`, shared by
+        write and renew, mirroring the delete-side `_delete_cookie`.
         """
         response.set_cookie(
             self.cookie_name,

@@ -1,18 +1,8 @@
 """MCPSession — per-connection lifecycle state for a stateful transport.
 
-A transport that keeps one connection alive across many messages (the serial
-stdio loop) owns one `MCPSession` and threads it into every
-`MCPServer.handle_message` call. The session records two things the spec ties to
-the connection: whether `initialize` has run, and the capabilities the client
-advertised in that `initialize` (so the server can later consult what the client
-supports, e.g. before issuing a `sampling` / `elicitation` request).
-
 Per the MCP lifecycle the initialization exchange MUST be the first interaction:
-before it completes the only requests a server answers are `initialize` and
-`ping`. The session lets the server enforce that ordering on a stateful
-transport. The stateless HTTP transport passes no session - each POST is an
-independent message with no connection to order against - so its fast path is
-unaffected.
+until it completes a server answers only `initialize` and `ping`, and this state
+lets a stateful transport enforce that ordering.
 """
 
 from __future__ import annotations
@@ -23,21 +13,12 @@ from typing import Any
 
 from veloce.contrib.mcp._helpers import META_CLIENT_CAPABILITIES, META_CLIENT_INFO
 
-# Monotonic source of per-session connection ids. A connection id is a stable
-# identity for the session's lifetime and is never reused, unlike `id(session)`
-# (a memory address CPython recycles once the session is freed). Task ownership
-# and the in-flight registry key off this so a task that outlives its evicted
-# session cannot be matched by a later session that lands on a recycled address.
+# Never reused, unlike `id(session)` (an address CPython recycles): a task that
+# outlives its evicted session cannot be matched by a later session.
 _connection_id_counter = itertools.count(1)
 
-# Randomised once per process. The counter above restarts at 1 in every worker,
-# so under a pre-forked server (`--workers 4`, the gunicorn worker) four
-# connections on four workers all call themselves 1. That is harmless for the
-# internal registries, which are themselves per-process, but `session_id` hands
-# the value to application code as a client identity - and a handler keying
-# per-client state on it would silently share one bucket between unrelated
-# clients. Prefixing with a per-process token makes the public identity unique
-# without putting a string on the per-session path.
+# The counter above restarts at 1 in every pre-forked worker, so a per-process
+# prefix keeps the public identity from pooling unrelated clients in one bucket.
 _PROCESS_TOKEN = secrets.token_hex(4)
 
 
@@ -61,53 +42,35 @@ class MCPSession:
     )
 
     def __init__(self, persistent: bool = True) -> None:
-        # A process-unique, never-recycled identity for this connection. Used as
-        # the ownership key for tasks and the in-flight registry so ownership
-        # cannot alias across a freed session's recycled `id()`.
+        # The ownership key for tasks and the in-flight registry.
         self.connection_id = next(_connection_id_counter)
-        # Whether the session outlives a single message. The stdio loop and an HTTP
-        # `Mcp-Session-Id` own a persistent session that carries connection state
-        # (subscriptions, lifecycle) across messages; a stateless HTTP POST gets a
-        # throwaway session only to isolate its in-flight registry, so it is not
-        # persistent and cannot subscribe or advertise per-connection features.
+        # Whether the session outlives a single message. A stateless HTTP POST gets
+        # a throwaway one, which cannot subscribe or advertise connection features.
         self.persistent = persistent
         self.initialized = False
         # The server consults this before relying on a client feature.
         self.client_capabilities: dict[str, Any] = {}
         # Whatever `clientInfo` carried - name / version / title.
         self.client_info: dict[str, Any] | None = None
-        # Resource URIs this connection subscribed to via `resources/subscribe`;
-        # the server emits `notifications/resources/updated` only to a connection
-        # holding the changed URI here. Empty until the connection subscribes, so
-        # a connection that never subscribes pays nothing.
+        # URIs from `resources/subscribe`; `notifications/resources/updated` goes
+        # only to a connection holding the changed URI here.
         self.subscriptions: set[str] = set()
-        # Open `subscriptions/listen` streams on this connection, keyed by the
-        # JSON-RPC id of the request that opened each one - which the spec defines
-        # as the subscription id. The value is the notification filter that request
-        # asked for. A connection that never listens keeps an empty dict, so the
-        # fan-out skips it without allocating.
+        # Open `subscriptions/listen` streams, keyed by the JSON-RPC id of the
+        # opening request - which the spec defines as the subscription id.
         self.listen_streams: dict[Any, dict[str, Any]] = {}
-        # Primitives this connection has asked not to see, by tool/prompt name or
-        # resource URI. A running call narrows its own client's view without
-        # touching what anyone else is served. Empty until something hides, so a
-        # connection that never does pays one falsy check per listing.
+        # Primitives this connection asked not to see, so a running call narrows
+        # its own client's view without touching what anyone else is served.
         self.hidden: set[str] = set()
-        # Minimum level for `notifications/message`, set by `logging/setLevel`.
-        # The spec scopes it to the connection, so it lives on the connection:
-        # a ContextVar would be scoped to whichever context happened to set it,
-        # which is the serial stdio loop's context on one transport and a single
-        # request's on the other. `None` means the client has not chosen one.
+        # Minimum level for `notifications/message`, set by `logging/setLevel`. The
+        # spec scopes it to the connection, so it lives here, not in a ContextVar.
         self.log_level: str | None = None
 
     @property
     def public_id(self) -> str:
         """A globally unique identity for this connection, safe to key state on.
 
-        `connection_id` alone restarts at 1 in every worker process, so it is an
-        ownership key for this process's registries and nothing more. This is
-        what application code is handed. Composed on access rather than stored:
-        a stateless HTTP POST builds a session per request, and a string it
-        never reads would be pure per-request cost.
+        `connection_id` alone restarts at 1 per worker, so it keys this process's
+        registries and nothing more. Composed on access, not stored.
         """
         return f"{_PROCESS_TOKEN}-{self.connection_id}"
 
@@ -121,12 +84,8 @@ class MCPSession:
     def record_request_meta(self, meta: dict[str, Any] | None) -> None:
         """Record the client identity a modern request carries in its `_meta`.
 
-        The modern revision has no `initialize`: a client states who it is and what
-        it supports on every request. Recording it here keeps one place -
-        `client_info` / `client_capabilities` - answering for both eras, so nothing
-        downstream has to know which handshake produced them. Absent keys leave the
-        previous values alone rather than clearing them, since a session may be
-        persistent across requests.
+        The modern revision has no `initialize`. Absent keys leave the previous
+        values alone, since a session may be persistent across requests.
         """
         if not isinstance(meta, dict):
             return

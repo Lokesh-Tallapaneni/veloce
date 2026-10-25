@@ -1,12 +1,9 @@
 """Protocol vocabulary — internal protocol and routing constants.
 
-These names centralize wire-level ASGI tokens, HTTP method names, auth-scheme
-names, and a few framework-level protocol invariants that are repeated across
-multiple modules, plus the small `build_trace_carrier` tail that assembles a
-W3C trace-carrier dict from extracted header values (colocated with the trace
-header constants so the keys and their consumer stay together).
-
-This module is internal-only and is not part of the public API.
+Wire-level ASGI tokens, HTTP method names, auth-scheme names and a few
+framework-level protocol invariants repeated across modules, plus the
+`build_trace_carrier` tail colocated with the trace header constants it reads.
+Internal-only; not part of the public API.
 """
 
 from __future__ import annotations
@@ -61,12 +58,8 @@ URL_SCHEME_HTTPS = "https"
 URL_SCHEME_WS = "ws"
 URL_SCHEME_WSS = "wss"
 
-# The schemes that mean "this connection is encrypted". Single source, so a
-# guard cannot recognise one of them and miss the other: an HTTPS redirect that
-# knew `wss` while `Request.is_secure` did not gave two answers about one
-# connection. Compared against the already-lowercased `URL.scheme`; RFC 3986
-# Sec. 3.1 makes a scheme case-insensitive, so normalisation happens once where
-# the scheme is resolved rather than at each comparison.
+# In one place so no guard can know one scheme and miss the other. Compared
+# against an already-lowercased scheme, case-insensitive per RFC 3986 Sec. 3.1.
 SECURE_URL_SCHEMES = frozenset({URL_SCHEME_HTTPS, URL_SCHEME_WSS})
 
 # Lower-case raw header bytes used on ASGI / protocol paths
@@ -89,11 +82,8 @@ TRACE_HEADER_TRACESTATE = "tracestate"
 def build_trace_carrier(traceparent: str | None, tracestate: str | None) -> dict[str, str] | None:
     """Assemble a W3C trace-carrier dict from extracted header values.
 
-    Shared tail for the two extraction sites (the framework-core
-    `request.headers` reader and the optional otel bridge's raw-ASGI-scope
-    reader): both pull the same two headers from different sources, then build
-    the same `{traceparent[, tracestate]}` carrier. Returns `None` when
-    `traceparent` is absent so callers can cheaply skip propagator extraction.
+    Returns `None` when `traceparent` is absent, so callers can cheaply skip
+    propagator extraction.
     """
     if traceparent is None:
         return None

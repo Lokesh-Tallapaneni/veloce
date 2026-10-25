@@ -63,6 +63,51 @@ def test_buggy_generic_handler_returns_500_not_uncaught(caplog):
     assert any("handle_value" in r.getMessage() for r in caplog.records)
 
 
+def test_buggy_status_handler_on_the_500_path_returns_500_not_uncaught(caplog):
+    """A raising `@errorhandler(500)` must degrade like every other handler.
+
+    The unhandled-exception arm invoked the handler without the guard the
+    `HTTPException` arm uses, so the handler's own raise travelled out of
+    dispatch and the client received no response at all - even with
+    `PROPAGATE_EXCEPTIONS` off, where a buggy handler is meant to become a 500.
+    """
+    app = Veloce(openapi_url=None)
+    app.config["PROPAGATE_EXCEPTIONS"] = False
+
+    @app.errorhandler(500)
+    async def handle_500(request: Request, exc: Exception):
+        raise RuntimeError("handler is buggy")
+
+    @app.get("/boom")
+    async def boom():
+        raise ValueError("original failure")
+
+    with TestClient(app) as client, caplog.at_level(logging.ERROR):
+        resp = client.get("/boom")
+    assert resp.status_code == 500
+    assert resp.json()["status_code"] == 500
+    assert any("handle_500" in r.getMessage() for r in caplog.records)
+
+
+def test_a_well_behaved_status_handler_on_the_500_path_still_answers():
+    """The negative: the guard must not swallow a handler that works."""
+    app = Veloce(openapi_url=None)
+    app.config["PROPAGATE_EXCEPTIONS"] = False
+
+    @app.errorhandler(500)
+    async def handle_500(request: Request, exc: Exception):
+        return JSONResponse({"handled": True}, status_code=503)
+
+    @app.get("/boom")
+    async def boom():
+        raise ValueError("original failure")
+
+    with TestClient(app) as client:
+        resp = client.get("/boom")
+    assert resp.status_code == 503
+    assert resp.json() == {"handled": True}
+
+
 def test_buggy_handler_reraises_under_propagate():
     import pytest
 

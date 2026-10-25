@@ -10,17 +10,13 @@ A converter:
     of the URL (including slashes) instead of one segment.
 
 Beyond match-time coercion the module owns the rest of what a route template
-says about itself: placeholder scanning (`_iter_placeholders`), the decision of
-whether a path is tree-expressible or needs a compiled regex (`is_regex_path`,
-`build_route_regex`, `extract_regex_converters`), and the JSON-Schema fragment
-each parameter contributes (`path_param_schemas`), which the OpenAPI and MCP
-packages both import.
+says about itself: placeholder scanning, the decision of whether a path is
+tree-expressible or needs a compiled regex, and the JSON-Schema fragment each
+parameter contributes.
 
-When a route declares `{name:converter}`, the radix node holding that param
-keeps the converter and applies it during the match traversal. A segment
-the converter rejects causes the router to fall through to the next child
-candidate (next param or wildcard) - which means a typed mismatch is a
-**route miss**, not a 422.
+A radix node keeps the converter its param declares and applies it during the
+match traversal, falling through to the next child candidate when it rejects a
+segment - so a typed mismatch is a **route miss**, not a 422.
 """
 
 from __future__ import annotations
@@ -32,24 +28,20 @@ import math
 import re
 import uuid
 import warnings
-from typing import Any
+from typing import Any, cast
 
 from veloce._internal import _SCALAR_JSON_SCHEMAS, _require_methods
 
-# The module's one optional dependency: a C ISO-8601 parser that
-# `_parse_datetime` selects over the stdlib when it is installed. Declared here
-# rather than beside the two parsers it chooses between, so the header states
-# every import the module has.
+# A C ISO-8601 parser `_parse_datetime` selects over the stdlib when installed.
 try:  # pragma: no cover - one branch per environment
     from ciso8601 import parse_datetime as _parse_datetime_ciso
 
     _HAS_CISO8601 = True
 except ImportError:  # pragma: no cover
+    _parse_datetime_ciso = cast("Any", None)
     _HAS_CISO8601 = False
 
-# UUID format per RFC 4122 (8-4-4-4-12 hex digits, case-insensitive). This is
-# the body (un-anchored) form, reused when translating a `{id:uuid}` placeholder
-# into a named regex group for the hybrid router's regex fallback.
+# RFC 4122, un-anchored so it is reusable as a group in the regex fallback.
 _UUID_PATTERN = (
     r"[0-9a-fA-F]{8}-"
     r"[0-9a-fA-F]{4}-"
@@ -58,32 +50,20 @@ _UUID_PATTERN = (
     r"[0-9a-fA-F]{12}"
 )
 
-# Anchored form for whole-segment validation. Derived from the single
-# `_UUID_PATTERN` source so the two cannot drift.
+# Anchored for whole-segment validation; one source, so the two cannot drift.
 _UUID_RE = re.compile(f"^{_UUID_PATTERN}$")
 
-# Un-anchored regex fragments for the built-in converters. A bare `{name}`
-# (no converter) and the `str`/`string` converters both match one non-slash
-# segment. `path` is greedy and crosses slashes. These feed the regex
-# fallback only - the radix fast path never consults them.
+# Fragments for the regex fallback only; the radix fast path never reads them.
 _BUILTIN_REGEX: dict[str, str] = {
     "str": r"[^/]+",
     "string": r"[^/]+",
     "int": r"-?\d+",
-    # A superset of what `FloatConverter.match` accepts: an optional sign, and a
-    # dot with digits on either side or both. It was `-?\d+\.\d+`, which is
-    # *stricter* than the converter, so `+1.5`, `.5` and `5.` were rejected
-    # before the converter was consulted - the same route matched on the radix
-    # tree and 404'd on the regex fallback. The dot stays required so a float
-    # placeholder does not also match what an `int` one would.
+    # A superset of `FloatConverter.match`, since a stricter fragment would 404
+    # what the tree matches. The dot stays required to exclude `int` values.
     "float": r"[+-]?(?:\d+\.\d*|\.\d+)",
     "uuid": _UUID_PATTERN,
     "path": r".+",
-    # Single-segment (no slash) fragments for the regex fallback. Each must be a
-    # SUPERSET of what its converter accepts - the converter re-validates the
-    # matched group, so a fragment narrower than its converter silently rejects
-    # values the converter would have taken, and `_match_regex` moves on to the
-    # next route instead.
+    # Each is a SUPERSET of its converter, which re-validates the matched group.
     "date": r"\d{4}-\d{2}-\d{2}",
     "datetime": r"\d{4}-\d{2}-\d{2}[T ][\d:.]+(?:[+-][\d:]+|Z)?",
     "time": r"\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:[+-][\d:]+|Z)?",
@@ -91,9 +71,7 @@ _BUILTIN_REGEX: dict[str, str] = {
     "decimal": r"[+-]?\d+(?:\.\d+)?",
 }
 
-# Cap int-parse input length to bound adversarial parse cost. The converter
-# coerces to Python int (arbitrary precision), so this is a bignum-DoS guard,
-# not a 64-bit range check.
+# A bignum-DoS guard on arbitrary-precision coercion, not a 64-bit range check.
 _MAX_INT_DIGITS = 20
 
 
@@ -106,32 +84,19 @@ class Converter:
     __slots__ = ()
     greedy = False
 
-    #: How restrictive this converter is. When two parameter segments compete
-    #: for the same position, the lower value is tried first, so
-    #: `/items/{id:int}` beats `/items/{slug:str}` however they were declared.
-    #:
-    #: Declared on the converter rather than in a table the router keeps: a
-    #: table only knows the classes someone remembered to add, and a converter
-    #: missing from it ties with `str`, which makes route resolution depend on
-    #: the order the decorators appear in the file. A custom converter that
-    #: does not declare one is assumed no
-    #: more restrictive than `str`, which is the only safe assumption about a
-    #: pattern the framework cannot see.
+    #: How restrictive this converter is: the lower value is tried first when two
+    #: parameter segments compete, so `/items/{id:int}` beats `/items/{slug:str}`
+    #: however declared. On the converter, not in a router table that would tie
+    #: an unlisted one with `str` and make resolution depend on decorator order.
     specificity = 50
 
-    #: The method a subclass must supply, checked at definition rather than left
-    #: to fail at call time - a converter that cannot match refuses every
-    #: segment, so the route it was registered for would silently 404 instead of
-    #: reporting the omission.
+    #: Checked at definition: a converter that cannot match silently 404s.
     _required = ("match",)
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
         _require_methods(cls, Converter, Converter._required)
-        # Every converter here is slotted, so a subclass that omits `__slots__`
-        # silently regains a per-instance `__dict__` and stops matching the
-        # shape the base declares. Warned rather than raised: a third-party
-        # converter written before this check would otherwise fail at import.
+        # Warned, not raised, so an older third-party converter still imports.
         if "__slots__" not in cls.__dict__:
             warnings.warn(
                 f"{cls.__name__} does not declare __slots__; add `__slots__ = ()` "
@@ -148,9 +113,8 @@ class StringConverter(Converter):
     """Default. Accepts a single non-empty segment (slashes excluded).
 
     Optional constraints bound the segment length so a violation is a route
-    miss, not a handler-layer error: `{code:str(length=2)}` fixes the length,
-    while `{slug:str(minlength=3,maxlength=64)}` sets an inclusive range.
-    `length` is shorthand for an exact length (sets both bounds). Zero-arg use
+    miss, not a handler-layer error: `{code:str(length=2)}` is an exact length
+    and `{slug:str(minlength=3,maxlength=64)}` an inclusive range. Zero-arg use
     keeps the unbounded fast path.
     """
 
@@ -184,8 +148,7 @@ class StringConverter(Converter):
 
     def match(self, value: str) -> tuple[bool, Any]:
         """Accept the segment when its length satisfies the configured bounds."""
-        # Empty path segments cannot match a {param}; the splitter strips
-        # them out, so reaching here with an empty value is unexpected.
+        # The splitter strips empty segments, so one cannot arrive here.
         length = len(value)
         if length < self._minlength:
             return False, None
@@ -197,10 +160,9 @@ class StringConverter(Converter):
 class IntConverter(Converter):
     """Matches a decimal integer; coerces to Python int.
 
-    Optional constraints participate in matching rather than the handler
-    layer: `{page:int(min=1)}` rejects `0`/negatives as a route miss, and
-    `{n:int(min=1,max=100)}` bounds both ends. `signed=False` forbids the
-    leading `-` outright. Zero-arg use keeps the unbounded fast path.
+    Optional constraints participate in matching rather than the handler layer,
+    so `{page:int(min=1)}` makes `0` a route miss. `signed=False` forbids the
+    leading `-`; zero-arg use keeps the unbounded fast path.
     """
 
     __slots__ = ("_min", "_max", "_signed")
@@ -247,9 +209,8 @@ class FloatConverter(Converter):
     """
 
     __slots__ = ("_min", "_max", "_signed")
-    #: Digits with a required fractional part - a strict subset of what
-    #: `decimal` accepts, so it is the more restrictive of the two and is
-    #: tried first.
+    #: Digits with a required fractional part - a strict subset of `decimal`,
+    #: so it is the more restrictive of the two and is tried first.
     specificity = 40
 
     def __init__(
@@ -268,8 +229,7 @@ class FloatConverter(Converter):
         """Accept a decimal-float segment within the configured bounds; coerce to `float`."""
         if not value:
             return False, None
-        # the float converter rejects "nan"/"inf" and scientific
-        # notation; require a '.' to make this a clear float vs int.
+        # A required `.` keeps this distinct from `int`.
         if "." not in value:
             return False, None
         if "e" in value or "E" in value:
@@ -316,31 +276,21 @@ class PathConverter(Converter):
 
     def match(self, value: str) -> tuple[bool, Any]:
         """Accept any non-empty remainder of the URL, slashes included."""
-        # Reject empty (zero segments left) so static suffixes still win.
         if not value:
             return False, None
         return True, value
 
 
-# Anchored prefilters keep the try/except parse off the hot path for the
-# common reject. The actual validation is delegated to the stdlib
-# `fromisoformat` parsers (3.10-compatible after Z normalization).
+# Anchored prefilters keep the try/except parse off the hot path for a reject.
 _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}$")
-# The numeric offset is captured, not just matched: the parse below needs to
-# know whether one is present, and the prefilter has already scanned past it.
-# A trailing `Z` is deliberately outside the group - it is UTC, which both
-# parsers represent identically.
+# The offset is captured because the parse below needs to know it is there.
 _DATETIME_RE = re.compile(r"\d{4}-\d{2}-\d{2}[T ][\d:.]+(?:([+-][\d:]+)|Z)?$")
 _TIME_RE = re.compile(r"\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:[+-][\d:]+|Z)?$")
 # ISO 8601 duration: at least one component required.
 _TIMEDELTA_RE = re.compile(
     r"P(?=\d|T)(?:(\d+)D)?(?:T(?=\d)(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?)?$"
 )
-# Python's `str(timedelta)` form: `[D day[s], ]H:MM:SS[.ffffff]`. Accepting it
-# lets a real `timedelta` round-trip through `url_for`, which reverse-validates
-# the reversed value via `converter.match(str(value))`. The day count and the
-# hour field are unbounded/variable-width because `timedelta` normalizes only
-# minutes/seconds (RFC 8601 covers the ISO form above; this covers stdlib repr).
+# Python's `str(timedelta)`, so a real one round-trips through `url_for`.
 _TIMEDELTA_STR_RE = re.compile(
     r"(?:(?P<days>-?\d+) days?, )?(?P<hours>\d+):(?P<minutes>\d{2}):(?P<seconds>\d{2}(?:\.\d{1,6})?)$"
 )
@@ -367,19 +317,11 @@ def _parse_datetime_stdlib(value: str, offset: str | None) -> datetime.datetime:
 def _parse_datetime_accelerated(value: str, offset: str | None) -> datetime.datetime:
     """Parse through ciso8601 where it answers exactly as the stdlib does.
 
-    ciso8601 parses the same shapes in C and handles `Z` itself, but it returns
-    its own `FixedOffset` for a *numeric* offset where the stdlib returns a
-    `datetime.timezone`. The datetimes compare equal and render the same
-    `isoformat()`, yet `type(dt.tzinfo)` differs - and it would differ according
-    to whether an optional package happened to be installed, which is a worse
-    property than either behaviour chosen deliberately.
-
-    So the accelerated path takes only the values with no numeric offset: naive
-    ones and `Z`, for which ciso8601 yields a real `datetime.timezone`. Whether
-    there is one is already known - `_DATETIME_RE` captured it - so the split
-    costs a group read rather than a second scan of the string. Anything with an
-    offset falls through to exactly the call this converter has always made,
-    which keeps 3.10's `Z` handling with it.
+    ciso8601 returns its own `FixedOffset` for a *numeric* offset where the
+    stdlib returns a `datetime.timezone`, so `type(dt.tzinfo)` would depend on
+    whether an optional package is installed. The accelerated path therefore
+    takes only naive values and `Z`; `_DATETIME_RE` already captured the offset,
+    so the split costs a group read rather than a second scan.
     """
     if offset is None:
         return _parse_datetime_ciso(value)
@@ -419,8 +361,7 @@ class DateTimeConverter(Converter):
         if matched is None:
             return False, None
         try:
-            # Read off the module so the accelerated and stdlib parsers can be
-            # swapped in a test and required to answer identically.
+            # Read off the module, so a test can swap the two parsers.
             return True, _parse_datetime(value, matched.group(1))
         except ValueError:
             return False, None
@@ -446,11 +387,9 @@ class TimeConverter(Converter):
 class TimeDeltaConverter(Converter):
     """Matches an ISO 8601 duration or `str(timedelta)`; coerces to timedelta.
 
-    Stricter than Litestar: a bare number such as `60` is rejected. An ISO
-    duration (`P1DT2H`, at least one component) is accepted, as is Python's
-    own `str(timedelta)` form (`1:00:00`, `1 day, 2:00:00`) so a real
-    `timedelta` round-trips through `url_for`, which reverse-validates the
-    reversed value via `converter.match(str(value))`.
+    A bare number such as `60` is rejected. An ISO duration (`P1DT2H`, at least
+    one component) is accepted, as is Python's own `str(timedelta)` form so a
+    real `timedelta` round-trips through `url_for`.
     """
 
     __slots__ = ()
@@ -468,10 +407,7 @@ class TimeDeltaConverter(Converter):
                 minutes=int(minutes) if minutes else 0,
                 seconds=float(seconds) if seconds else 0,
             )
-        # `str(timedelta)` repr: `[D day[s], ]H:MM:SS[.ffffff]`. A negative
-        # timedelta renders as e.g. `-1 day, 23:00:00`, so days may be signed
-        # while the clock fields stay non-negative; reconstruct via the same
-        # constructor, which re-normalizes to the canonical representation.
+        # A negative timedelta is `-1 day, 23:00:00`: signed days, unsigned clock.
         sm = _TIMEDELTA_STR_RE.match(value)
         if sm is None:
             return False, None
@@ -487,8 +423,7 @@ class DecimalConverter(Converter):
     """Matches a decimal literal; coerces to decimal.Decimal."""
 
     __slots__ = ()
-    #: Digits with an optional fractional part, so it accepts everything
-    #: `float` does and more; the looser of the pair sorts after it.
+    #: Accepts everything `float` does and more, so it sorts after it.
     specificity = 41
 
     def match(self, value: str) -> tuple[bool, Any]:
@@ -519,9 +454,7 @@ class AnyConverter(Converter):
 # ── Registry and parsing ──────────────────────────────────
 
 
-# The pre-rename spelling of `Converter`, kept so an importer of the private
-# name still resolves. `Converter` is the class itself, so a user subclass's
-# MRO, its `repr()` and any traceback name the documented public symbol.
+# The pre-rename spelling, kept so an importer of the private name resolves.
 _Converter = Converter
 
 _BUILTIN: dict[str, type[Converter]] = {
@@ -538,30 +471,22 @@ _BUILTIN: dict[str, type[Converter]] = {
     "decimal": DecimalConverter,
 }
 
-# User-registered converters - `register_converter(name, cls)` populates
-# this; `parse_converter` consults it after the built-ins.
+# Populated by `register_converter`; consulted after the built-ins.
 _CUSTOM: dict[str, type[Converter]] = {}
 
-# Converter names that accept the `name(args)` constraint grammar. `any(...)`
-# is handled separately because its arguments are a literal value list, not
-# keyword constraints. A spec like `{n:bogus(min=1)}` for an unknown name
-# raises rather than silently dropping the constraints.
+# `any(...)` is separate: its arguments are literals, not keyword constraints.
 _PARAMETRIZED = frozenset({"str", "string", "int", "float"})
 
-# A `name(args)` spec, e.g. `int(min=1,max=100)` or `str(length=2)`. The name
-# is captured separately from the parenthesised argument body so the body can
-# be split independently. Whitespace around the parenthesis is tolerated.
+# A `name(args)` spec, with the name captured apart from the argument body.
 _PARAM_SPEC_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s*\((.*)\)$", re.DOTALL)
 
 
 def _coerce_arg(raw: str) -> Any:
     """Coerce one converter-argument token to int, float, bool, or str.
 
-    The brace grammar carries no type annotations, so a bare token is parsed
-    the way a literal would be: an integer where possible, then a float, then
-    the booleans `true`/`false`, otherwise the unquoted string. This keeps the
-    argument syntax declarative (`int(min=1)`, `str(length=2)`) without forcing
-    quotes around the common numeric case.
+    The brace grammar carries no type annotations, so a bare token is read as a
+    literal would be - int, then float, then `true`/`false`, else the unquoted
+    string - which spares the common numeric case its quotes.
     """
     try:
         return int(raw)
@@ -584,11 +509,10 @@ def _coerce_arg(raw: str) -> Any:
 def _parse_converter_args(body: str) -> tuple[list[Any], dict[str, Any]]:
     """Split the `(...)` body of a converter spec into positional/keyword args.
 
-    Arguments are comma-separated; a `key=value` token is a keyword argument
-    and a bare token is positional. Each value is coerced by `_coerce_arg`. An
-    empty body yields no arguments. This is a deliberately small grammar - no
-    nested parentheses or quoted commas - matching what the brace placeholders
-    need; richer specs belong in a custom converter.
+    Arguments are comma-separated; a `key=value` token is a keyword argument and
+    a bare token positional, each coerced by `_coerce_arg`. A deliberately small
+    grammar - no nested parentheses or quoted commas - so richer specs belong in
+    a custom converter.
     """
     args: list[Any] = []
     kwargs: dict[str, Any] = {}
@@ -621,31 +545,23 @@ def register_converter(name: str, converter_cls: type[Converter]) -> None:
     """Register a custom path converter.
 
     After `register_converter("slug", SlugConverter)`, routes may use
-    `{post:slug}` and the radix tree validates/coerces the segment via
-    `SlugConverter().match(...)`. `converter_cls` must subclass
-    `Converter`. A built-in name cannot be shadowed -
-    that raises `ValueError`.
+    `{post:slug}` and the radix tree coerces the segment through
+    `SlugConverter().match(...)`. Shadowing a built-in name raises `ValueError`.
     """
     if name in _BUILTIN:
         raise ValueError(f"cannot override built-in converter {name!r}")
     if not (isinstance(converter_cls, type) and issubclass(converter_cls, Converter)):
         raise TypeError("converter_cls must be a subclass of Converter")
     _CUSTOM[name] = converter_cls
-    # A template parsed before this name existed resolved its spec differently.
     _cached_path_param_converters.cache_clear()
 
 
 def unregister_converter(name: str) -> None:
     """Remove a converter registered with `register_converter`.
 
-    No-op when `name` was never registered. A built-in name is refused with
-    `ValueError`, matching `register_converter`: the built-ins are not the
-    caller's to remove, and silently ignoring the attempt would leave a test
-    or a plugin believing it had.
-
-    Routes already registered against the converter keep the instance they were
-    built with - `parse_converter` runs at registration time, not at match
-    time - so this affects only routes registered afterwards.
+    No-op when `name` was never registered; a built-in name raises `ValueError`
+    as in `register_converter`. Routes already registered keep the instance they
+    were built with, so this affects only later registrations.
     """
     if name in _BUILTIN:
         raise ValueError(f"cannot unregister built-in converter {name!r}")
@@ -656,10 +572,9 @@ def unregister_converter(name: str) -> None:
 def parse_converter(spec: str | None) -> Converter:
     """Build a converter from the `:spec` portion of `{name:spec}`.
 
-    `None` or empty `spec` -> StringConverter (the default).
-    Unknown specs raise `ValueError` at route-registration time, never at
-    match time. Custom converters registered via `register_converter`
-    are consulted after the built-ins.
+    `None` or empty `spec` gives the default `StringConverter`. An unknown spec
+    raises `ValueError` at route-registration time, never at match time; custom
+    converters are consulted after the built-ins.
     """
     if not spec:
         return StringConverter()
@@ -671,9 +586,7 @@ def parse_converter(spec: str | None) -> Converter:
         choices = tuple(c.strip() for c in body.split(","))
         return AnyConverter(choices)
 
-    # `name(args)` form: a parametrized built-in converter such as
-    # `int(min=1,max=100)` or `str(length=2)`. The constructor validates the
-    # parsed kwargs, so a bad bound raises at registration time.
+    # The constructor validates the kwargs, so a bad bound raises at registration.
     pm = _PARAM_SPEC_RE.match(spec)
     if pm is not None:
         conv_name, body = pm.group(1), pm.group(2)
@@ -695,8 +608,7 @@ def parse_converter(spec: str | None) -> Converter:
 # ── Regex-path classification and compilation ─────────────
 
 
-# Names the radix tree can express natively. A converter spec outside this
-# set (a raw regex like `[0-9]+`) forces the route onto the regex fallback.
+# A spec outside this set forces the route onto the regex fallback.
 _TREE_EXPRESSIBLE = frozenset(_BUILTIN)
 
 
@@ -719,10 +631,9 @@ class _Placeholder:
 def _iter_placeholders(text: str) -> list[_Placeholder]:
     """Scan `text` for top-level `{...}` placeholders, balance-aware.
 
-    A placeholder opens at an unescaped `{` and closes at the matching `}`,
-    so a converter spec may contain its own balanced braces (`[0-9]{2}`).
-    The first `:` inside the placeholder separates the name from the spec;
-    everything after it (up to the closing brace) is the spec verbatim.
+    A placeholder closes at the *matching* `}`, so a converter spec may carry its
+    own balanced braces (`[0-9]{2}`). The first `:` separates name from spec, and
+    everything after it is the spec verbatim.
     """
     out: list[_Placeholder] = []
     i = 0
@@ -731,8 +642,7 @@ def _iter_placeholders(text: str) -> list[_Placeholder]:
         if text[i] != "{":
             i += 1
             continue
-        # Walk to the matching close brace, tracking nesting depth so an
-        # inner `{2}` quantifier does not terminate the placeholder early.
+        # Depth-tracked, so an inner `{2}` quantifier does not close it early.
         depth = 1
         j = i + 1
         while j < n and depth:
@@ -742,7 +652,6 @@ def _iter_placeholders(text: str) -> list[_Placeholder]:
                 depth -= 1
             j += 1
         if depth:
-            # Unbalanced brace - leave the rest as literal text.
             break
         inner = text[i + 1 : j - 1]
         name, sep, spec = inner.partition(":")
@@ -765,14 +674,11 @@ def _is_tree_expressible_spec(spec: str) -> bool:
         return True
     if spec in _TREE_EXPRESSIBLE or spec in _CUSTOM:
         return True
-    # A parametrized built-in (`int(min=1)`, `str(length=2)`) stays on the
-    # radix path: the node holds the constrained converter and applies it
-    # during traversal, so a bound violation is a converter miss, not regex.
+    # A parametrized built-in stays on the radix path, which holds its converter.
     return _is_parametrized_spec(spec)
 
 
-# A bare-identifier spec (`{id:bogus}`) is an unknown-converter typo, not a raw
-# regex; only a spec carrying regex metacharacters is treated as a regex route.
+# A bare identifier (`{id:bogus}`) is a typo, not a raw regex.
 _BARE_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -784,17 +690,12 @@ def _looks_like_regex(conv: str) -> bool:
 def _validate_bare_word_spec(spec: str | None) -> None:
     """Raise for a bare-word converter spec a regex-forced segment cannot honour.
 
-    A regex-forced segment may still carry a bare-identifier converter spec
-    (`/v{version:bogus}/api`). Two cases must raise at registration rather than
-    silently miscompile into literal regex:
-
-    - an unknown-converter typo (`{version:bogus}`) - the same `ValueError`
-      the radix path raises via `parse_converter`.
-    - a registered custom converter (`{name:slug}`) - its `match()` has no
-      regex representation, so `build_route_regex` cannot express it. Emitting
-      `(?P<name>slug)` would match the literal text "slug" instead of the
-      converter's semantics. Built-in converters and `any(...)` are exempt:
-      `build_route_regex` translates those to real patterns.
+    A regex-forced segment may still carry a bare-identifier spec
+    (`/v{version:bogus}/api`). Two cases must raise rather than miscompile into
+    literal regex: an unknown-converter typo, and a registered custom converter,
+    whose `match()` has no regex representation - `(?P<name>slug)` would match
+    the literal text "slug". Built-ins and `any(...)` are exempt, since
+    `build_route_regex` translates those to real patterns.
     """
     if not spec:
         return
@@ -812,22 +713,15 @@ def _validate_bare_word_spec(spec: str | None) -> None:
 def is_regex_path(path: str) -> bool:
     """Decide whether `path` must use the regex fallback rather than the tree.
 
-    A path is a regex route when any segment carries more than one
-    placeholder, holds a placeholder that does not span the whole segment
-    (`/v{n}/x`, `/files/{name}.{ext}`), or names a converter the radix tree
-    cannot express (a raw regex like `{id:[0-9]+}`). A greedy `:path`
-    placeholder followed by a non-empty suffix is also a regex route, since
-    the tree only accepts `:path` as the final segment.
+    A path is a regex route when any segment carries more than one placeholder,
+    holds one that does not span the whole segment (`/files/{name}.{ext}`), or
+    names a converter the tree cannot express (`{id:[0-9]+}`). A greedy `:path`
+    followed by a non-empty suffix is one too, since the tree accepts `:path`
+    only as the final segment.
 
-    Once a path is classified as a regex route, every bare-word converter
-    spec across all of its segments is validated: an unknown name like
-    `{version:bogus}` or a registered custom converter like `{name:slug}`
-    raises `ValueError` here rather than slipping through as literal regex.
-    Validating every segment (not just the one that forced regex routing)
-    catches typos in later segments such as `/v{version:int}/{id:bogus}`,
-    which would otherwise miscompile into a group matching the literal text.
-    Custom converters have no regex representation, so they are rejected in
-    regex routes rather than miscompiled.
+    Every bare-word spec across *all* segments is then validated, so a typo in a
+    later segment (`/v{version:int}/{id:bogus}`) raises rather than miscompiling
+    into a group matching the literal text.
     """
     segments = [s for s in path.split("/") if s]
     total = len(segments)
@@ -843,19 +737,15 @@ def is_regex_path(path: str) -> bool:
         ph = placeholders[0]
         whole = ph.start == 0 and ph.end == len(seg)
         if not whole:
-            # A placeholder shares the segment with static text.
             forced = True
         for cand in placeholders:
             spec = cand.spec
             if spec and not _is_tree_expressible_spec(spec) and _looks_like_regex(spec):
-                # Raw regex converter (`{id:[0-9]+}`).
                 forced = True
             if spec == "path" and idx != total - 1:
                 forced = True
     if forced:
-        # Validate every bare-word spec across all segments so an unknown
-        # converter typo anywhere in a regex-routed path still raises instead
-        # of becoming a group that matches the literal converter name.
+        # Across all segments, so a typo anywhere raises rather than compiling.
         for placeholders in all_placeholders:
             for cand in placeholders:
                 _validate_bare_word_spec(cand.spec)
@@ -866,13 +756,10 @@ def is_regex_path(path: str) -> bool:
 def extract_regex_converters(path: str) -> dict[str, Converter]:
     """Return the built-in converter for each placeholder in a regex route.
 
-    Bare `{name}` and raw-regex placeholders (`{id:[0-9]+}`) have no built-in
-    converter and are omitted - their matched groups stay as strings. Built-in
-    specs (`int`, `float`, `uuid`, `path`, `any(...)`) map to the converter the
-    radix tree would apply, so `_match_regex` can coerce matched groups to the
-    same Python types the tree produces. Custom converters never reach here:
-    `is_regex_path` rejects them in regex-forced segments because they have no
-    regex representation.
+    Bare `{name}` and raw-regex placeholders have no built-in converter and are
+    omitted, so their matched groups stay strings. A built-in spec maps to the
+    converter the radix tree would apply, so `_match_regex` coerces to the same
+    Python types. Custom converters never reach here.
     """
     converters: dict[str, Converter] = {}
     for ph in _iter_placeholders(path):
@@ -892,10 +779,9 @@ def extract_regex_converters(path: str) -> dict[str, Converter]:
 def build_route_regex(path: str) -> re.Pattern[str]:
     """Compile `path` into an anchored regex with named groups per parameter.
 
-    Built-in converters map to their `_BUILTIN_REGEX` fragment; a bare
-    `{name}` matches one non-slash segment; a raw `{name:PATTERN}` uses
-    `PATTERN` verbatim. Static text is `re.escape`'d. The result is anchored
-    `^...$` and matched against the full request path.
+    Built-in converters map to their `_BUILTIN_REGEX` fragment, a bare `{name}`
+    matches one non-slash segment, and a raw `{name:PATTERN}` uses `PATTERN`
+    verbatim. Static text is escaped and the result anchored `^...$`.
     """
     out: list[str] = ["^"]
 
@@ -909,14 +795,10 @@ def build_route_regex(path: str) -> re.Pattern[str]:
             body = conv[4:-1]
             choices = "|".join(re.escape(c.strip()) for c in body.split(","))
             return f"(?P<{name}>{choices})"
-        # Parametrized built-in (`int(min=1)`, `str(length=2)`): emit the base
-        # converter's permissive fragment; the constrained converter from
-        # `extract_regex_converters` re-validates the matched group, so bounds
-        # are enforced even on the regex fallback.
+        # The permissive base fragment; the converter re-validates the group.
         pm = _PARAM_SPEC_RE.match(conv)
         if pm is not None and pm.group(1) in _PARAMETRIZED:
             return f"(?P<{name}>{_BUILTIN_REGEX[pm.group(1)]})"
-        # Raw regex converter: the spec after the colon is the pattern itself.
         return f"(?P<{name}>{conv})"
 
     pos = 0
@@ -929,11 +811,7 @@ def build_route_regex(path: str) -> re.Pattern[str]:
     return re.compile("".join(out))
 
 
-# JSON Schema type for each built-in converter, so a path parameter can be
-# documented even when no handler parameter declares one. Only the converters
-# that coerce to a non-string value need an entry; everything else - including
-# a raw-regex spec and any user-registered converter - is carried as a string,
-# which is what the segment is before coercion.
+# Only non-string coercions need an entry; everything else carries as a string.
 _CONVERTER_JSON_TYPES: dict[str, dict[str, Any]] = {
     "int": _SCALAR_JSON_SCHEMAS["integer"],
     "float": _SCALAR_JSON_SCHEMAS["number"],
@@ -950,8 +828,7 @@ _CONVERTER_JSON_TYPES: dict[str, dict[str, Any]] = {
 def _cached_path_param_converters(template: str) -> dict[str, Converter]:
     """Walk `template`, mapping each typed placeholder to its converter.
 
-    The mapping is shared, not copied: both callers only read it. A caller that
-    needs to mutate must copy first.
+    The mapping is shared, not copied, so a caller that mutates must copy first.
     """
     converters: dict[str, Converter] = {}
     for placeholder in _iter_placeholders(template):
@@ -968,19 +845,18 @@ def _cached_path_param_converters(template: str) -> dict[str, Converter]:
 def path_param_converters(template: str) -> dict[str, Converter]:
     """Map each *typed* placeholder in `template` to the converter it applies.
 
-    A bare `{name}` and a raw-regex placeholder (`{id:[0-9]+}`) have no single
-    coercing converter and are omitted, so a caller learns which placeholders it
-    can validate rather than being promised coverage that does not exist. A
-    parametrized built-in (`int(min=1)`) carries parens that read as regex but
-    maps to a real converter, and `any(...)` is whitelisted for the same reason.
+    A bare `{name}` and a raw-regex placeholder have no single coercing converter
+    and are omitted, so a caller learns which placeholders it can validate rather
+    than being promised coverage that does not exist. A parametrized built-in
+    (`int(min=1)`) and `any(...)` carry parens that read as regex but map to real
+    converters, so both are whitelisted.
 
     Shared by `url_for`'s reverse check and the MCP tool door, so a value a URL
     could never carry is refused identically wherever it arrives.
 
-    Cached on the template: `parse_converter` builds a converter object per
-    placeholder, which measured 12.5 us for a single `{id:int}` and is paid per
-    tool call. `register_converter` / `unregister_converter` clear the cache, so
-    a template parsed before a custom converter existed is not served stale.
+    Cached on the template: building a converter per placeholder measured 12.5 us
+    for a single `{id:int}` and is paid per tool call. `register_converter` and
+    `unregister_converter` clear the cache.
     """
     return _cached_path_param_converters(template)
 
@@ -989,10 +865,9 @@ def path_param_schemas(template: str) -> dict[str, dict[str, Any]]:
     """Map each placeholder in `template` to the JSON Schema of its value.
 
     A route's path parameters are part of its contract whether or not a handler
-    parameter declares one: a dependency reading `request.path_params` consumes
-    the same segment. Both documentation paths (OpenAPI and the MCP tool schema)
-    use this to describe a parameter no signature mentions, rather than
-    publishing a contract that omits a value the route requires.
+    parameter declares one, since a dependency reading `request.path_params`
+    consumes the same segment. Both OpenAPI and the MCP tool schema use this to
+    describe a parameter no signature mentions.
     """
     schemas: dict[str, dict[str, Any]] = {}
     for placeholder in _iter_placeholders(template):

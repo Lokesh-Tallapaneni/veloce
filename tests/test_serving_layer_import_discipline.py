@@ -21,7 +21,8 @@ import pytest
 
 import veloce
 
-_SERVING = pathlib.Path(veloce.__file__).parent / "serving"
+_SRC = pathlib.Path(veloce.__file__).parent
+_SERVING = _SRC / "serving"
 _MODULES = sorted(_SERVING.glob("*.py"))
 
 
@@ -78,3 +79,19 @@ def test_a_deferred_import_is_not_an_offence():
 
 def test_a_sibling_veloce_import_is_not_an_offence():
     assert _runtime_app_imports("from veloce.websocket import WebSocket") == []
+
+
+# ── uvloop is still preferred ────────────────────
+#
+# The event-loop policy API the run path used to call is banned by ruff
+# `TID251` (`flake8-tidy-imports.banned-api` in `pyproject.toml`), which
+# catches both the attribute call and the `from` import at write time. What
+# lint cannot state is the positive half - that dropping the policy call kept
+# uvloop - and this is source-level because the uvloop branch cannot run on a
+# platform whose marker excludes it, which is where it is most often edited.
+
+
+def test_the_run_path_still_prefers_uvloop():
+    source = (_SRC / "app" / "serving.py").read_text(encoding="utf-8")
+    assert "new_loop = uvloop.new_event_loop" in source
+    assert "loop = new_loop()" in source

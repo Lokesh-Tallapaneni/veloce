@@ -6,21 +6,20 @@ server answers immediately with a `CreateTaskResult` carrying a task id, runs th
 handler detached, and the client retrieves the outcome later with ``tasks/result``
 (or watches progress with ``tasks/get`` and ``notifications/tasks/status``).
 
-The handler invocation is the *same* one a synchronous call uses - the background
-runner calls the server's shared `tools/call` result builder - so a tool exposed
-from a route stays one handler behind both doors: the HTTP request, the
-synchronous tool call, and the task all run the identical dispatch path. Task
-support is opt-in per tool (`@app.mcp_tool(task_support=True)` or
-``mcp_task_support=True`` on a route); a tool that does not opt in omits the
-``execution`` field from its listing entirely and rejects a task-augmented call.
+The background runner calls the server's shared `tools/call` result builder, so
+the HTTP request, the synchronous tool call and the task all run the identical
+dispatch path. Task support is opt-in per tool
+(`@app.mcp_tool(task_support=True)` or ``mcp_task_support=True`` on a route); a
+tool that does not opt in omits the ``execution`` field from its listing
+entirely and rejects a task-augmented call.
 
 A task moves through the spec's lifecycle - ``working`` while the handler runs,
-then ``completed`` / ``failed`` on its outcome, or ``cancelled`` after
-``tasks/cancel``. ``input_required`` is part of the modelled status set for a tool
-that needs follow-up, though the framework never enters it on its own. Each task
-carries the ``io.modelcontextprotocol/related-task`` ``_meta`` key on its status
-notifications so a client can correlate them, and the `CreateTaskResult` carries
-the optional ``io.modelcontextprotocol/model-immediate-response`` hint.
+then ``completed`` / ``failed``, or ``cancelled`` after ``tasks/cancel``.
+``input_required`` is modelled for a tool that needs follow-up but is never
+entered automatically. Status notifications carry the
+``io.modelcontextprotocol/related-task`` ``_meta`` key so a client can correlate
+them, and the `CreateTaskResult` carries the optional
+``io.modelcontextprotocol/model-immediate-response`` hint.
 
 Tasks are kept in memory for a bounded time-to-live so a never-polled task does
 not leak; an expired task is evicted lazily on the next task method.
@@ -42,24 +41,18 @@ from veloce.contrib.mcp.errors import InvalidParamsError, ResourceNotFoundError
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.server import MethodHandler
 
-# The extension the modern revision moves tasks into. A client declares it in the
-# `extensions` block of its per-request capabilities; a server advertises the same
-# key in `server/discover`. A task is never returned to a client that did not.
+# The extension the modern revision moves tasks into; a task is never returned
+# to a client that did not declare it.
 TASKS_EXTENSION = "io.modelcontextprotocol/tasks"
 
-# The task status values the spec defines. `working` is the only non-terminal
-# state the framework drives a task into on its own; `input_required` is modelled
-# for a tool that needs client follow-up but is never entered automatically.
+# `working` is the only non-terminal state the framework enters on its own.
 STATUS_WORKING = "working"
 STATUS_INPUT_REQUIRED = "input_required"
 STATUS_COMPLETED = "completed"
 STATUS_FAILED = "failed"
 STATUS_CANCELLED = "cancelled"
 
-# The two non-terminal states a task may legitimately sit in; everything else is
-# terminal (its result final, `tasks/cancel` a no-op). Defining terminal as the
-# complement keeps the lifecycle set in one place: a new non-terminal state need
-# only be added here.
+# Terminal is the complement of this, so the lifecycle set lives in one place.
 _NON_TERMINAL_STATUSES = frozenset({STATUS_WORKING, STATUS_INPUT_REQUIRED})
 TASK_STATUSES = frozenset(
     {
@@ -72,28 +65,20 @@ TASK_STATUSES = frozenset(
 )
 _TERMINAL_STATUSES = TASK_STATUSES - _NON_TERMINAL_STATUSES
 
-# Default time-to-live (seconds) a created task is retained before eviction, used
-# when the client requests none. A client may shorten or extend it per call via
-# the task `ttl`.
+# Retention (seconds) when the client requests no `ttl` of its own.
 _DEFAULT_TASK_TTL_SECONDS = 300
 
-# Ceiling (seconds) on a client-requested `ttl`. Expiry is what reclaims a
-# settled task and its result, so an unclamped `ttl` let a caller decide how long
-# the server holds them - `{"task": {"ttl": 999999999999}}` is 31 years, which is
-# process life. Clamped rather than refused: the call still succeeds and the task
-# reports the TTL it actually got, so a client asking for more learns what it has.
+# An unclamped `ttl` would let a caller pin a settled task for process life
+# (`{"task": {"ttl": 999999999999}}` is 31 years). Clamped, not refused.
 _MAX_TASK_TTL_SECONDS = 3600
 
-# Suggested client poll interval (milliseconds) reported on a working task so a
-# client paces its `tasks/get` polling instead of busy-looping.
+# Reported on a working task so a client paces `tasks/get` polling.
 _POLL_INTERVAL_MS = 500
 
-# MCP `_meta` key correlating a message with the task it belongs to. Set on every
-# `notifications/tasks/status` so a client can route the notification to the task.
+# Set on every `notifications/tasks/status` so a client can route it.
 META_RELATED_TASK = "io.modelcontextprotocol/related-task"
 
-# MCP `_meta` hint on a `CreateTaskResult` telling the client an immediate model
-# turn is not expected - the task runs in the background. Advisory, non-binding.
+# Advisory `_meta` hint that no immediate model turn is expected.
 _META_MODEL_IMMEDIATE_RESPONSE = "io.modelcontextprotocol/model-immediate-response"
 
 
@@ -109,10 +94,7 @@ def _now_iso() -> str:
 class MCPTask(MCPDescriptor):
     """One in-flight or settled task created from a task-augmented tool call.
 
-    `name` (inherited) is the task id the client polls by. The task records its
-    lifecycle status, the tool it runs, its created / last-updated timestamps and
-    time-to-live, and - once it settles - the `tools/call` result the client
-    retrieves with ``tasks/result``.
+    `name` (inherited) is the task id the client polls by.
     """
 
     tool_name: str = ""
@@ -122,22 +104,14 @@ class MCPTask(MCPDescriptor):
     last_updated_at: str = field(default_factory=_now_iso)
     ttl_ms: int = _DEFAULT_TASK_TTL_SECONDS * 1000
     expires_at: float = 0.0
-    # Identity of the connection that created the task (the dispatching session's
-    # `connection_id`, or `None` off a connection). The id is process-unique and
-    # never recycled, so a task that outlives its evicted owner cannot be matched
-    # by a later session. A task method from a different connection cannot see or
-    # act on this task, so one HTTP client cannot read another's result, cancel
-    # another's work, or enumerate another's tasks.
+    # The creating connection's id, never recycled, so one client cannot read,
+    # cancel or enumerate another's tasks.
     owner_key: int | None = None
-    # The settled `tools/call` result, set when the task reaches a terminal
-    # status; `None` while the task is still working.
+    # Set when the task reaches a terminal status; `None` while working.
     result: dict[str, Any] | None = None
-    # The running asyncio task, kept so `tasks/cancel` can unwind it; cleared once
-    # the task settles. Typed loosely to avoid importing asyncio at module load.
+    # Kept so `tasks/cancel` can unwind it. Typed loosely: no asyncio import.
     runner: Any = None
-    # Responses a client supplied for this task's outstanding input requests, keyed
-    # as the requests were. Written by `tasks/update`; read by a handler resuming
-    # work that asked for input.
+    # Written by `tasks/update`, keyed as the input requests were.
     input_responses: dict[str, Any] = field(default_factory=dict)
 
     def describe(self) -> dict[str, Any]:
@@ -162,12 +136,10 @@ class MCPTask(MCPDescriptor):
         }
         if self.status_message is not None:
             task["statusMessage"] = self.status_message
-        # A working task suggests a poll cadence so the client does not busy-loop;
-        # a settled task needs no further polling, so the hint is omitted.
+        # Omitted on a settled task, which needs no further polling.
         if self.status == STATUS_WORKING:
             task["pollIntervalMs" if modern else "pollInterval"] = _POLL_INTERVAL_MS
-        # On the modern revision a completed task carries its result here, since
-        # `tasks/result` no longer exists to fetch it separately.
+        # The modern revision has no `tasks/result` to fetch it separately.
         if modern and self.status == STATUS_COMPLETED and self.result is not None:
             task["result"] = self.result
         return task
@@ -322,11 +294,8 @@ class TasksCapability(_ServerCapability):
     def advertise(self, *, modern: bool = False) -> dict[str, Any] | None:
         if not any(tool.task_support for tool in self._server.registry.tools.values()):
             return None
-        # `list` / `cancel` are the optional sub-capabilities this server answers;
-        # `requests.tools/call` declares that a `tools/call` may be task-augmented.
-        # The modern revision retired `tasks/list`, so it is not offered there -
-        # advertising it would promise a method the dispatcher answers with
-        # method-not-found.
+        # The modern revision retired `tasks/list`; advertising it would
+        # promise a method the dispatcher answers with method-not-found.
         entry: dict[str, Any] = {"cancel": {}, "requests": {"tools/call": {}}}
         if not modern:
             entry["list"] = {}

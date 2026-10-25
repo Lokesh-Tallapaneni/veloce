@@ -1,16 +1,13 @@
 """Route contract — the one IR projection every interface lowers from.
 
-Veloce builds a frozen `HandlerPlan` per handler at registration and compiles it
-to the runtime resolver. The same plan describes each route's *contract*, not
-just how to run it. `RouteContract` is a thin read-only view over that plan plus
-the route metadata the non-runtime lowerings need, and `iter_param_descriptors`
-is the single canonical walk over the plan's parameter slots. OpenAPI lowers
-from this walk (as the MCP layer already does), so the documented contract and
+The frozen `HandlerPlan` built per handler at registration describes the route's
+*contract*, not just how to run it. `RouteContract` is a thin read-only view over
+it, and `iter_param_descriptors` the single canonical walk over its parameter
+slots: OpenAPI and MCP both lower from that walk, so the documented contract and
 the executed contract cannot drift.
 
 The view holds references, never copies, and is built lazily by a lowering —
-never at registration and never on the request path, so the resolver and its
-slot layout are untouched.
+never at registration and never on the request path.
 """
 
 from __future__ import annotations
@@ -48,9 +45,8 @@ class ParamDescriptor:
 
     `location` is the wire source (`path`/`query`/`header`/`cookie`/`form`) or
     `body` for a JSON request-body model. `wire_name` is the name read off the
-    wire (alias, or a header's hyphenated form); `name` is the Python parameter
-    name. `marker` is the originating `ParamBase` when one drove the slot, so a
-    lowering can read its constraints directly.
+    wire - alias, or a header's hyphenated form - and `name` the Python
+    parameter. `marker` is the originating `ParamBase`, carrying its constraints.
     """
 
     name: str
@@ -64,20 +60,12 @@ class ParamDescriptor:
     has_default: bool
     default: Any
     is_optional: bool
-    #: For a grouped model (`Annotated[Filters, Query(group=True)]`), the
-    #: `(validate_key, wire_key, is_list)` of each field, since the group is N
-    #: wire parameters rather than one. `None` for every other kind.
-    #:
-    #: Classified here rather than in each lowering because it was classified in
-    #: neither: `describe_slot` returned `None` for the kind, so a grouped model
-    #: appeared in no OpenAPI document and no MCP tool schema, while the HTTP
-    #: path served it correctly.
+    #: A grouped model's `(validate_key, wire_key, is_list)` per field, since the
+    #: group is N wire parameters rather than one. `None` for every other kind.
     group_fields: tuple[tuple[str, str, bool], ...] | None = None
 
-    #: True on a descriptor produced by expanding a group. `model` then names the
-    #: model the field belongs to rather than a body model, so a lowering can read
-    #: the field's declared schema - constraints included - instead of rebuilding
-    #: one from the bare annotation.
+    #: True when expanded from a group, where `model` names the field's own model
+    #: so a lowering reads its declared schema rather than the bare annotation.
     group_field: bool = False
 
 
@@ -87,10 +75,8 @@ class RouteContract:
 
     Bundles the runtime IR (`plan`) with the route metadata a lowering reads.
     `ws_messages` is the typed websocket channel's message contract, or `None`
-    for every route that declares no messages.
-    Built lazily by a lowering via `from_route_info`; references the existing
-    `HandlerPlan` and never copies it. Grows fields as further lowerings (the
-    typed client) need them.
+    when the route declares no messages. Built lazily via `from_route_info`,
+    referencing the existing `HandlerPlan` rather than copying it.
     """
 
     plan: HandlerPlan
@@ -102,11 +88,10 @@ class RouteContract:
         """Project a finalized `RouteInfo` into a contract for lowering."""
         plan = info.handler_plan
         if plan is None:
-            # Cold path: a caller reached lowering before the route's plan was
-            # finalized. Build it on demand from the same builder registration
-            # uses, so the lowering still reads the IR rather than the signature.
+            # Cold path: lowering reached before the plan was finalized, so it is
+            # built from the same builder rather than read off the signature.
 
-            plan = build_plan(info.handler)
+            plan = build_plan(info.handler, path_params=frozenset(info.param_names))
         return cls(
             plan=plan,
             param_names=tuple(info.param_names),
@@ -122,13 +107,12 @@ def _is_model(annotation: Any) -> bool:
 def describe_slot(slot: _Slot, param_names: tuple[str, ...]) -> ParamDescriptor | None:
     """Classify one plan slot into a `ParamDescriptor`, or `None` to skip it.
 
-    The single per-slot classification every lowering shares. `None` is returned
-    for an inject-only slot (request, response, background tasks, security
-    scopes, websocket, depends), which carries no client- or agent-facing input.
-    `param_names` resolves the planner's path-or-query ambiguity: a bare slot
-    whose name is a path segment is a path parameter. A dependency's own
-    sub-graph is not recursed here; a lowering that advertises sub-dependency
-    inputs walks `slot.sub_plan` itself.
+    The single per-slot classification every lowering shares. An inject-only slot
+    (request, response, background tasks, security scopes, websocket, depends)
+    carries no client- or agent-facing input and returns `None`. `param_names`
+    resolves the planner's path-or-query ambiguity: a bare slot whose name is a
+    path segment is a path parameter. A dependency's sub-graph is not recursed
+    here; a lowering that advertises those walks `slot.sub_plan` itself.
     """
     kind = slot.kind
     if kind == K_PARAM_MARKER:
@@ -184,28 +168,34 @@ def describe_slot(slot: _Slot, param_names: tuple[str, ...]) -> ParamDescriptor 
             is_optional=slot.is_optional,
         )
     if kind == K_QUERY_LIST:
+        # A folded `Field(alias=...)` names the query key; a path keeps the
+        # template's own name, which is what the radix tree stored.
+        in_path = slot.name in param_names
         return ParamDescriptor(
             name=slot.name,
-            wire_name=slot.name,
-            location="path" if slot.name in param_names else "query",
+            wire_name=slot.name if in_path else (slot.lookup_name or slot.name),
+            location="path" if in_path else "query",
             target_type=slot.list_inner,
             is_list=True,
             model=None,
-            marker=None,
+            marker=slot.marker,
             is_file=False,
             has_default=slot.has_default,
             default=slot.default,
             is_optional=slot.is_optional,
         )
     if kind == K_QUERY:
+        # A folded `Field(alias=...)` names the query key; a path keeps the
+        # template's own name, which is what the radix tree stored.
+        in_path = slot.name in param_names
         return ParamDescriptor(
             name=slot.name,
-            wire_name=slot.name,
-            location="path" if slot.name in param_names else "query",
+            wire_name=slot.name if in_path else (slot.lookup_name or slot.name),
+            location="path" if in_path else "query",
             target_type=slot.target_type,
             is_list=False,
             model=None,
-            marker=None,
+            marker=slot.marker,
             is_file=False,
             has_default=slot.has_default,
             default=slot.default,
@@ -226,8 +216,7 @@ def describe_slot(slot: _Slot, param_names: tuple[str, ...]) -> ParamDescriptor 
             is_optional=slot.is_optional,
             group_fields=slot.group_fields,
         )
-    # Inject-only kinds (request/response/background/scopes/websocket/depends)
-    # are not documentable inputs.
+    # Inject-only kinds are not documentable inputs.
     return None
 
 
@@ -236,12 +225,9 @@ def iter_param_descriptors(contract: RouteContract) -> Iterator[ParamDescriptor]
 
     The single canonical walk over the plan's parameter slots, built on
     `describe_slot`. Inject-only slots are skipped. Dependency sub-graphs *are*
-    recursed: a `Query()` declared on a dependency is read off the wire and
-    enforced with a 422 exactly like one declared on the handler, so it belongs
-    in the contract.
-
-    A route with no dependency takes the flat loop below, so the bookkeeping the
-    recursion needs is not paid by the common case.
+    recursed, because a `Query()` declared on a dependency is read off the wire
+    and enforced with a 422 exactly like one on the handler. A route with no
+    dependency takes the flat loop, so the common case pays no bookkeeping.
     """
     param_names = contract.param_names
     slots = contract.plan.slots
@@ -254,10 +240,8 @@ def iter_param_descriptors(contract: RouteContract) -> Iterator[ParamDescriptor]
         if descriptor is None:
             continue
         if descriptor.group_fields is not None:
-            # A grouped model is N wire parameters, not one, so it is expanded
-            # here rather than in each lowering - the same reason the
-            # classification itself is shared. Expanded in neither, it appeared
-            # in no OpenAPI document and no MCP tool schema.
+            # A grouped model is N wire parameters, expanded here rather than in
+            # each lowering, for the same reason the classification is shared.
             yield from _expand_group(descriptor)
             continue
         yield descriptor
@@ -269,9 +253,8 @@ def _iter_through_dependencies(
     """Walk a plan whose slots include a dependency, sub-graphs included.
 
     Level by level, so a handler's own parameter shadows a sub-dependency of the
-    same name regardless of declaration order, and each sub-plan is visited once:
-    a diamond graph, and a dependency injected twice, are each one wire
-    parameter rather than two.
+    same name whatever the declaration order, and each sub-plan is visited once -
+    a diamond graph is one wire parameter, not two.
     """
     seen_names: set[str] = set()
     seen_plans: set[int] = set()
@@ -302,14 +285,13 @@ def _expand_group(descriptor: ParamDescriptor) -> Iterator[ParamDescriptor]:
     """Yield one descriptor per field of a grouped model.
 
     Each field is read off the wire under its own name, so each is its own
-    parameter as far as any lowering is concerned. Annotations come from the
-    model, which is the only place they exist.
+    parameter to a lowering. Annotations come from the model, the only place
+    they exist.
     """
     hints, defaults = _model_field_shape(descriptor.model)
     for validate_key, wire_key, is_list in descriptor.group_fields or ():
-        # A grouped field's default lives on the model, and the model supplies it
-        # when the key is absent - so the wire parameter is optional exactly when
-        # the field has one.
+        # The model supplies a field's default when the key is absent, so the
+        # wire parameter is optional exactly when the field has one.
         has_default = validate_key in defaults
         yield ParamDescriptor(
             name=validate_key,
@@ -338,8 +320,7 @@ def _model_field_shape(model: Any) -> tuple[dict[str, Any], dict[str, Any]]:
     fields = getattr(model, "model_fields", None)
     if fields is not None:
         for name, field in fields.items():
-            # Keyed by the same key the group walk validates under, which for an
-            # aliased field is the alias - see `_group_field_specs`.
+            # The key the group walk validates under: for an alias, the alias.
             key = getattr(field, "alias", None) or name
             hints[key] = getattr(field, "annotation", None)
             if not getattr(field, "is_required", lambda: True)():

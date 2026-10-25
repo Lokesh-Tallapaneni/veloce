@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from tests.conftest import make_request
 from veloce import RangeSpec, Request, Veloce
 from veloce.testclient import TestClient
@@ -148,3 +150,49 @@ def test_range_property_cached_across_repeat_access():
     with TestClient(app) as client:
         client.get("/range", headers={"Range": "bytes=0-100"})
     assert observed["same"] is True
+
+
+# ── a byte position is digits, and only digits ───────────────────────
+#
+# The positions were read with `int()`, which accepts more than RFC 9110
+# Sec. 14.1.1's `1*DIGIT`: a leading sign, PEP 515 digit separators, and any
+# Unicode decimal digit. Each of those was honoured as a range the client had
+# not asked for, which on a `send_file` route meant serving a slice instead of
+# the representation.
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "bytes=+3-4",  # a signed first position
+        "bytes=3-+4",  # a signed last position
+        "bytes=1_0-20",  # a digit separator
+        "bytes=٣-4",  # an Arabic-Indic digit three
+        "bytes=3-٤",
+    ],
+)
+def test_a_non_digit_byte_position_is_not_a_range(value):
+    assert RangeSpec.parse(value) is None
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("bytes=3-4", [(3, 4)]),
+        ("bytes=0-", [(0, None)]),
+        ("bytes=-500", [(None, 500)]),
+        ("bytes=10-20", [(10, 20)]),
+    ],
+)
+def test_a_digit_only_range_is_still_parsed(value, expected):
+    """The control: the shapes the parser exists for are untouched."""
+    spec = RangeSpec.parse(value)
+    assert spec is not None
+    assert spec.ranges == expected
+
+
+def test_one_bad_range_does_not_discard_a_good_one_beside_it():
+    """A multi-range header keeps the members that are well formed."""
+    spec = RangeSpec.parse("bytes=+1-2,5-6")
+    assert spec is not None
+    assert spec.ranges == [(5, 6)]

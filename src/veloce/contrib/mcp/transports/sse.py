@@ -1,25 +1,16 @@
 """Legacy HTTP+SSE transport — the split-endpoint wire of MCP revision 2024-11-05.
 
-Before Streamable HTTP, an MCP server over HTTP exposed *two* endpoints: a long
-lived `GET` that opens an SSE stream carrying everything the server says, and a
-`POST` that carries everything the client says. The client learns the POST URL
-from the stream itself - the first event the server sends is an `endpoint` event
-whose data is that URL, carrying the session id that ties the two halves
-together.
+Two endpoints: a long-lived `GET` carrying everything the server says, and a
+`POST` carrying everything the client says. The client learns the POST URL from
+the stream's first `endpoint` event, which carries the session id tying the two
+halves together.
 
 The asymmetry is the whole design: a `POST` is answered `202 Accepted` with no
-body, and the JSON-RPC response for it arrives later as a `message` event on the
-open stream. A client that is not listening to its stream therefore never sees
-its answers.
+body, and its JSON-RPC response arrives later as a `message` event on the open
+stream, so a client not listening to its stream never sees its answers.
 
-This transport is deprecated - the current spec defines Streamable HTTP
-(`transports/http.py`), which does the same work over one endpoint and survives a
-dropped connection. It is served here for clients that only speak the older wire.
-Prefer `mount_mcp(transport="http")` for anything new.
-
-Both halves converge on `MCPServer.handle_message`, exactly as the other
-transports do, so tools, resources and prompts behave identically whichever wire
-carries them.
+Deprecated in favour of Streamable HTTP (`transports/http.py`); prefer
+`mount_mcp(transport="http")` for anything new.
 """
 
 from __future__ import annotations
@@ -27,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
+from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
@@ -70,8 +62,7 @@ if TYPE_CHECKING:  # pragma: no cover
 
 _logger = logging.getLogger(__name__)
 
-# The event naming the URL to POST to. The 2024-11-05 transport defines exactly
-# this name; a client waits for it before sending anything.
+# The name the 2024-11-05 transport defines; a client waits for it to speak.
 _ENDPOINT_EVENT = "endpoint"
 
 # The event carrying a JSON-RPC message from server to client.
@@ -89,9 +80,7 @@ class _SSEConnection:
     def __init__(self, session: MCPSession, principal: Principal | None) -> None:
         self.session = session
         self.queue: asyncio.Queue[Any] = asyncio.Queue()
-        # The identity that opened the stream. A POST is authenticated in its own
-        # right; this is what the dispatch task runs under when the POST carries
-        # no credential of its own, which is the usual shape for this transport.
+        # Who opened the stream, which a POST without its own credential runs as.
         self.principal = principal
 
     async def send(self, message: dict[str, Any]) -> None:
@@ -117,9 +106,7 @@ def register_sse_transport(
     client is told the second by the first, so the two only have to agree here.
 
     `auth` makes both endpoints an OAuth 2.1 resource server, and
-    `allowed_origins` enables `Origin` validation (DNS-rebinding defense) - the
-    same options the Streamable HTTP transport takes, since both are ordinary
-    HTTP endpoints on this app.
+    `allowed_origins` enables `Origin` validation (DNS-rebinding defense).
     """
     connections: dict[str, _SSEConnection] = {}
 
@@ -150,11 +137,7 @@ def register_sse_transport(
             principal, challenge = await _authenticate(auth, request)
             if challenge is not None:
                 return challenge
-            # Publish the identity this POST authenticated as, so the dispatch
-            # below carries it to the runner. Discarding it left
-            # `current_principal()` unset and the tool ran under the identity
-            # that opened the GET stream - a validated token for one caller
-            # executing as another.
+            # Unset, the tool would run as whoever opened the GET stream.
             set_principal(principal)
 
         session_id = request.query_params.get("sessionId")
@@ -163,10 +146,7 @@ def register_sse_transport(
         except MCPError as exc:
             return _protocol_response(exc.to_error(None), status_code=exc.http_status)
 
-        # There is no stream frame to carry a failure for a message whose id could
-        # not be read, so it is reported on the POST - with the code the other two
-        # transports use. Answering -32603 for both failures made a client with
-        # per-code retry logic behave differently purely by which wire it used.
+        # An unreadable id has no stream frame, so the POST carries the failure.
         try:
             message = await request.json()
         except Exception:
@@ -178,9 +158,7 @@ def register_sse_transport(
                 invalid_request_error(), status_code=status.HTTP_400_BAD_REQUEST
             )
 
-        # The answer travels on the stream, not on this response, so the dispatch
-        # runs detached and the POST is acknowledged immediately. This is the
-        # defining shape of the transport.
+        # The answer travels on the stream, so this is acknowledged at once.
         connection.queue.put_nowait(_Dispatch(message, current_principal() or connection.principal))
         return Response(status_code=status.HTTP_202_ACCEPTED)
 
@@ -233,18 +211,16 @@ async def _stream(
     session_id: str,
     connection: _SSEConnection,
     message_path: str,
-) -> Any:
+) -> AsyncIterator[ServerSentEvent]:
     """Yield the endpoint event, then every message the server sends this client.
 
-    Each queued dispatch is run here rather than in the POST handler, so the work
-    lives for as long as the stream does and its notifications are queued onto the
-    same channel its response will use - the ordering a client relies on.
+    Each queued dispatch runs here, not in the POST handler, so its notifications
+    are queued onto the same channel as its response - the ordering a client
+    relies on.
     """
     endpoint = f"{message_path}?sessionId={quote(session_id, safe='')}"
-    # The client cannot speak until it has this, so it is the first frame. It
-    # also carries the reconnect hint: WHATWG SSE applies `retry` as soon as it
-    # is parsed, and this stream only ends when the client is already gone, so
-    # a closing frame would never arrive.
+    # First frame: the client cannot speak without it, and WHATWG SSE applies
+    # `retry` as soon as it is parsed.
     yield ServerSentEvent(data=endpoint, event=_ENDPOINT_EVENT, retry=_SSE_RETRY_MS)
 
     conn_token = server.register_connection(connection.session, connection.send)
@@ -259,20 +235,13 @@ async def _stream(
                 continue
             yield ServerSentEvent(data=encode_envelope(item).decode(), event=_MESSAGE_EVENT)
     finally:
-        # The client is gone: drop the session so a later POST naming it is told
-        # so, rather than queueing an answer nothing will read.
+        # The client is gone, so a later POST naming it is told rather than queued.
         connections.pop(session_id, None)
         server.unregister_connection(conn_token)
         for task in pending:
             task.cancel()
-        # Reclaim what the connection owned, the same way stdio does on EOF and
-        # the HTTP session store does on eviction. Unregistering alone drops the
-        # notification sink and the listen streams but leaves the session's tasks
-        # registered, and `TaskRegistry.evict_expired` deliberately never reaps a
-        # task that has not settled - so a never-settling task created on this
-        # stream outlived it, with its running asyncio runner, for the lifetime
-        # of the process. The session is minted per stream here, so it has no
-        # life beyond this point to protect.
+        # Unregistering leaves the tasks registered and `evict_expired` never
+        # reaps an unsettled one; this session has no life beyond the stream.
         server.evict_session(connection.session)
 
 

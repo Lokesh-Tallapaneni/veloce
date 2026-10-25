@@ -1,10 +1,8 @@
 """MCP registration — tools, prompts, completers, call hooks, and the mount.
 
-Mixed into `Veloce`, alongside the other sibling mixins that keep one concern
-each out of `core.py`. Everything here runs at registration or mount time, so
-none of it is on a request path; the `veloce.contrib.mcp` imports are deferred
-into the methods that need them so an app exposing no tools never loads the
-subsystem at all.
+Everything here runs at registration or mount time, never on a request path, and
+the `veloce.contrib.mcp` imports are deferred so an app exposing no tools never
+loads the subsystem.
 """
 
 from __future__ import annotations
@@ -17,7 +15,9 @@ from typing_extensions import Doc
 
 from veloce._internal import _refuse_string_scopes
 from veloce.app._host import AppHost
+from veloce.http.response import JSONResponse
 from veloce.principal import set_principal
+from veloce.status import HTTP_409_CONFLICT
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.icons import Icon
@@ -27,15 +27,9 @@ if TYPE_CHECKING:  # pragma: no cover
 class MCPToolRegistration:
     """One `@app.mcp_tool(...)` registration, read by `contrib.mcp` at mount time.
 
-    `handler` is the decorated callable; `name` defaults to its `__name__`, and
-    `namespace` prefixes that (`<namespace>_<name>`). `description` is the
-    required LLM-facing text, separate from the docstring. `scopes` are the
-    authorization scopes a caller must hold, `tags` group the tool for
-    filtering, and `icons` is a sequence of `Icon` a client may render.
-    `task_support` lets a client run the tool as a background task.
-    `annotations` are the validated behaviour hints (`readOnlyHint` and its
-    siblings), `meta` is passed through to the tool descriptor, and `version`
-    labels the registration so two tools may share a name.
+    `name` defaults to the handler's `__name__` and `namespace` prefixes it as
+    `<namespace>_<name>`. `description` is the required LLM-facing text, separate
+    from the docstring, and `version` lets two tools share a name.
 
     Fields are read by keyword across the `app` / `contrib.mcp` boundary. Do not
     rely on their order: this was an eleven-element tuple, and the two ends had
@@ -84,6 +78,28 @@ class MCPCompleterRegistration:
 
 class MCPMixin(AppHost):
     """Register MCP tools, prompts, completers and hooks, and mount a server."""
+
+    def _map_tool_error_to_conflict(self) -> None:
+        """Give `ToolError` an HTTP answer, unless the app already gave it one.
+
+        A route-backed tool raises the same `ToolError` whichever door called
+        it, and its message is written for the caller to read - the agent door
+        surfaces it verbatim. Over HTTP it was an unhandled exception, so the
+        author's refusal arrived as a server fault with the message dropped.
+        409 is the reading the agent door already records for it: the request
+        was well formed and the work was refused for a stated reason
+        (RFC 9110 Sec. 15.5.10).
+        """
+        from veloce.contrib.mcp.errors import ToolError
+
+        if ToolError in self._exception_handlers:
+            return
+
+        async def _tool_error_response(request: Any, exc: Exception) -> Any:
+            # The agent door's text, in the shape this door's refusals use.
+            return JSONResponse({"detail": str(exc)}, status_code=HTTP_409_CONFLICT)
+
+        self._exception_handlers[ToolError] = _tool_error_response
 
     def mcp_tool(
         self,
@@ -148,8 +164,8 @@ class MCPMixin(AppHost):
 
         def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
             require_mcp_description(name or func.__name__, description)
-            # Validated here rather than at mount time, so a misspelled hint is
-            # reported against the decorator that wrote it.
+            self._map_tool_error_to_conflict()
+            # Validated here so a misspelled hint names the decorator that wrote it.
             declared = validate_tool_annotations(annotations)
             self._mcp_tools.append(
                 MCPToolRegistration(
@@ -347,13 +363,8 @@ class MCPMixin(AppHost):
             str, Doc("URL an SSE stream names for the client to POST to; ignored elsewhere.")
         ] = "/messages",
     ) -> Any:
-        # Deliberately `Any`, not `Coroutine[Any, Any, None] | None`. The return
-        # really does depend on `transport` - stdio yields a serve coroutine,
-        # http and sse mount routes and return `None` - but declaring the union
-        # makes the documented `asyncio.run(app.mount_mcp(transport="stdio"))`
-        # fail a strict type-check in *user* code, because `asyncio.run` cannot
-        # take a `| None`. Expressing it honestly needs `@overload` on a
-        # `Literal` transport, which duplicates this whole keyword signature.
+        # Deliberately `Any`: the union makes a documented
+        # `asyncio.run(app.mount_mcp(...))` fail a strict check in user code.
         """Build the MCP server and serve the registered tools.
 
         Assembles the tool registry from `@app.mcp_tool` registrations plus every
@@ -451,17 +462,11 @@ class MCPMixin(AppHost):
         # Omitted means the server's own default freshness hint.
         cache_ttl = DEFAULT_CACHE_TTL_MS if cache_ttl_ms is None else cache_ttl_ms
 
-        # Converted once: two transports pass it on, and doing it at each call
-        # site means two places to keep in step.
+        # Converted once; two transports pass it on and would drift apart.
         origin_allow_list = frozenset(allowed_origins) if allowed_origins is not None else None
 
         def _build_server() -> MCPServer:
-            """Build the server, the same way for every transport.
-
-            Three branches constructed it with the same five arguments; a sixth
-            option added to one of them and not the others is a transport that
-            quietly behaves differently.
-            """
+            """Build the server, the same way for every transport."""
             return MCPServer(
                 self,
                 tool_filter=tool_filter,
@@ -489,12 +494,8 @@ class MCPMixin(AppHost):
             from veloce.contrib.mcp.transports.http import register_http_transport
 
             server = _build_server()
-            # A task-augmented call records the creating connection's identity and
-            # the follow-up tasks/get|result|list|cancel must run under that same
-            # connection. The stateless default mints a throwaway session (a fresh,
-            # never-recycled connection id) per POST, so a task created by one POST
-            # can never be retrieved by another. Require sessions=True so the
-            # connection persists and the task remains reachable.
+            # A task and its follow-up tasks/* must share one connection, and the
+            # stateless default mints a throwaway session per POST.
             if not sessions and any(tool.task_support for tool in server.registry.tools.values()):
                 raise ValueError(
                     "MCP task support over the HTTP transport requires sessions=True; "
@@ -538,22 +539,14 @@ class MCPMixin(AppHost):
 
     def _init_mcp_state(self) -> None:
         """Set up the registries `mcp_tool` / `mcp_prompt` / `mcp_completer` write into."""
-        # MCP-only tool registrations (contrib.mcp), recorded by
-        # `@app.mcp_tool(...)` and consumed once at `mount_mcp` time when the
-        # tool registry is assembled.
+        # Recorded by `@app.mcp_tool(...)`, consumed once at `mount_mcp` time.
         self._mcp_tools: list[MCPToolRegistration] = []
-        # MCP prompt registrations (contrib.mcp), recorded by
-        # `@app.mcp_prompt(...)` and consumed at `mount_mcp` time.
+        # Recorded by `@app.mcp_prompt(...)`, consumed at `mount_mcp` time.
         self._mcp_prompts: list[MCPPromptRegistration] = []
-        # Hooks that run around every MCP call - tool, resource read or prompt
-        # render - whichever way the primitive was registered. A route-backed tool
-        # replays the HTTP request lifecycle and so already sees `before_request`;
-        # a tool registered with `@app.mcp_tool` has no route, so these are the
-        # only place a cross-cutting concern can sit for it. Empty lists cost one
-        # falsy check per call.
+        # Run around every MCP call. An `@app.mcp_tool` has no route, so for it
+        # these are the only seam a cross-cutting concern can sit on.
         self._mcp_before_call: list[Callable[..., Any]] = []
         self._mcp_after_call: list[Callable[..., Any]] = []
-        # MCP argument-completer registrations (contrib.mcp), recorded by
-        # `@app.mcp_completer(...)` and bound onto its descriptor at `mount_mcp`
-        # time so `completion/complete` can answer for that argument.
+        # Recorded by `@app.mcp_completer(...)` and bound onto its descriptor at
+        # `mount_mcp` time, so `completion/complete` can answer for that argument.
         self._mcp_completers: list[MCPCompleterRegistration] = []
