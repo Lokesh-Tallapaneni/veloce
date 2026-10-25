@@ -106,6 +106,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A callable-instance or class handler's parameters reach the OpenAPI document, not only the resolver.
 - A default declared beside a marker - `Annotated[str, Query()] = ""` - is honoured; the parameter was required.
 - A marker's declared default is published in both documents; the framework's own copying factory withheld it.
+- A grouped model parameter with no default is listed in its MCP tool schema's `required`.
 - Setting `openapi_version` to a 3.0 version warns that the document's schemas stay 3.1.
 - `veloce.testclient` reports a clear `TypeError` for a `files=` entry whose content is neither bytes, str nor file-like.
 - `Annotated[..., Field(...)]` bounds are enforced on a scalar `websocket_listener` message.

@@ -689,12 +689,11 @@ class _LiveConnection:
             wire[HEADER_CONNECTION] = "close"
         # Both framing headers on one request is forbidden (RFC 9112 Sec. 6.1), so
         # the unused one is removed; `send_raw` puts malformed framing on the wire.
+        wire.popall(HEADER_CONTENT_LENGTH, None)
         if body is None:
             wire[HEADER_TRANSFER_ENCODING] = "chunked"
-            wire.popall(HEADER_CONTENT_LENGTH, None)
         else:
             wire.popall(HEADER_TRANSFER_ENCODING, None)
-            wire.popall(HEADER_CONTENT_LENGTH, None)
             if body:
                 wire[HEADER_CONTENT_LENGTH] = str(len(body))
 

@@ -29,7 +29,6 @@ from veloce._constants import (
     STATE_INJECTED_RESPONSE,
 )
 from veloce._handler_plan import (
-    _SEQUENCE_ORIGINS,
     K_BG_TASKS,
     K_BODY_MODEL,
     K_DEPENDS,
@@ -689,7 +688,7 @@ class DependencyResolver:
                 compiled = compile_param_resolver(plan, _coerce_value, RequestValidationError)
                 plan.compiled_resolver = cr = compiled if compiled is not None else _NOT_COMPILABLE
             if cr is not _NOT_COMPILABLE:
-                return cast("Callable[..., Any]", cr)(request, path_params)
+                return cr(request, path_params)  # pyright: ignore[reportCallIssue]
 
             # A no-wave graph compiles too, but its body reads neither the override
             # map nor the MCP context, so it is used only when both are absent.
@@ -1124,7 +1123,7 @@ class DependencyResolver:
         lookup = slot.lookup_name
 
         # A list-typed marker collects every repeated value, not just the first.
-        if mk in (0, 2, 3, 5) and get_origin(slot.target_type) in _SEQUENCE_ORIGINS:
+        if mk in (0, 2, 3, 5) and slot.marker_reads_list:
             if mk == 5:  # MK_FORM
                 values = (await request.form()).getlist(lookup)
             elif mk == 2:  # MK_HEADER
@@ -1194,8 +1193,10 @@ class DependencyResolver:
 
     async def _exec_depends(self, slot: Any, request: Request, path_params: dict[str, str]) -> Any:
         """Resolve a K_DEPENDS slot with caching and override support."""
-        # One `_Slot` serves every kind, so the field is declared optional.
-        dep_callable = cast("Callable[..., Any]", slot.dep_callable)
+        # One `_Slot` serves every kind, so the field is declared optional; a
+        # K_DEPENDS slot always carries it. Annotated rather than cast: a local
+        # annotation narrows the reads below and is not evaluated at runtime.
+        dep_callable: Callable[..., Any] = slot.dep_callable
         actual = self._overrides.get(dep_callable, dep_callable)
 
         # Plain `Depends` has none, so every scope branch below is skipped.

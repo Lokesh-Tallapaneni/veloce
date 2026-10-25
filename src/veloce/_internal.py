@@ -140,9 +140,6 @@ def json_body_refused(mimetype: str) -> bool:
     keeps a JSON endpoint off that path. It does nothing about a same-origin
     attacker, a CORS-permissive app, or one declaring `application/json` from an
     allowed origin: `CSRFMiddleware` and `SameSite` cookies are the control.
-
-    `force=True` reads a refused body deliberately, which is where a client that
-    genuinely omits the header belongs.
     """
     return not is_json_mimetype(mimetype)
 

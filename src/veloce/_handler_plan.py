@@ -988,7 +988,7 @@ def _build_marker_slot(
         slot.model = grp_inner
         slot.backend = grp_backend
         slot.is_optional = grp_opt
-        slot.has_default = has_default or marker.has_default
+        slot.has_default = marker.has_default
         slot.group_fields = _group_field_specs(grp_inner, grp_backend, marker_kind)
         return slot
 

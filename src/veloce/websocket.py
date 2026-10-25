@@ -1031,7 +1031,8 @@ class WebSocket:
         `timeout` raises `asyncio.TimeoutError` unchanged.
         """
         eff = self._effective_timeout(timeout)
-        queue = cast("asyncio.Queue[bytes | object]", self._receive_queue)
+        queue = self._receive_queue
+        assert queue is not None  # raw transport only; the ASGI path never reaches here
         if eff is None:
             item = await queue.get()
         else:
@@ -1459,8 +1460,10 @@ class WebSocket:
         Message Too Big` rather than letting the exception unwind into the asyncio
         Protocol callback or growing the queue without bound.
         """
+        queue = self._receive_queue
+        assert queue is not None  # raw transport only; the ASGI path never reaches here
         try:
-            cast("asyncio.Queue[bytes | object]", self._receive_queue).put_nowait(payload)
+            queue.put_nowait(payload)
         except asyncio.QueueFull:
             # Synchronous: no `await` is available from inside `feed_data`.
             self._close_too_big()

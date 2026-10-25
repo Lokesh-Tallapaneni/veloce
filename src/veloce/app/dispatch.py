@@ -376,9 +376,11 @@ class DispatchMixin(AppHost):
             raise
 
         # Captured before the receivers run, so a span window stays accurate.
-        timing: tuple[int, float] | None = None
+        end_time_ns = 0
+        duration_ms = 0.0
         if instrument:
-            timing = (time.time_ns(), (time.perf_counter() - started) * 1000.0)
+            end_time_ns = time.time_ns()
+            duration_ms = (time.perf_counter() - started) * 1000.0
 
         # Receivers may peek at the response, not replace it.
         if request_finished._subs:
@@ -387,15 +389,15 @@ class DispatchMixin(AppHost):
             except Exception:
                 self.logger.exception("request_finished signal raised an exception")
 
-        if timing is not None:
+        if instrument:
             # A HEAD response never iterates its body, so it is not a live stream.
             is_streamed = response.is_streamed and request.method != HTTP_METHOD_HEAD
             await self._run_instrumentation(
                 request,
                 response.status_code,
-                timing[1],
+                duration_ms,
                 streamed=is_streamed,
-                end_time_ns=timing[0],
+                end_time_ns=end_time_ns,
             )
 
         return response

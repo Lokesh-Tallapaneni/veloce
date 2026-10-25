@@ -16,7 +16,13 @@ import signal
 import subprocess
 import sys
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
+
+try:
+    import watchfiles
+except ImportError:  # pragma: no cover - exercised only without the extra
+    # Probed once here rather than per change; `None` selects the stat poller.
+    watchfiles = cast("Any", None)
 
 if TYPE_CHECKING:  # pragma: no cover
     from collections.abc import Iterable, Iterator
@@ -141,8 +147,6 @@ def _wait_for_change_stat(dirs: list[str], interval: float) -> str:
 
 def _wait_for_change_watchfiles(dirs: list[str]) -> str:
     """Block until a `.py` file changes, returning its path (watchfiles)."""
-    import watchfiles
-
     for batch in watchfiles.watch(*dirs):
         for _change, path in batch:
             if path.endswith(".py"):
@@ -153,10 +157,9 @@ def _wait_for_change_watchfiles(dirs: list[str]) -> str:
 
 def _wait_for_change(dirs: list[str], interval: float) -> str:
     """Block until a watched source file changes; pick the best backend."""
-    try:
-        return _wait_for_change_watchfiles(dirs)
-    except ImportError:
+    if watchfiles is None:
         return _wait_for_change_stat(dirs, interval)
+    return _wait_for_change_watchfiles(dirs)
 
 
 def _announce(message: str) -> None:

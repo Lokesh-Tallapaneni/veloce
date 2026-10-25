@@ -31,6 +31,7 @@ from veloce._constants import (
     STATE_INJECTED_RESPONSE,
 )
 from veloce._handler_plan import (
+    _SEQUENCE_ORIGINS,
     K_BG_TASKS,
     K_DEPENDS,
     K_PARAM_MARKER,
@@ -513,10 +514,12 @@ def _emit_scalar_param(
     """
     name = slot.name
     ns[f"_t{j}"] = slot.target_type or str
-    ns[f"_hd{j}"] = slot.has_default
-    ns[f"_io{j}"] = slot.is_optional
     # A plain mutable default is wrapped in a copying factory at registration.
-    default_expr = _default_expression(ns, j, slot.default_factory, slot._static_default)
+    default_expr = (
+        _default_expression(ns, j, slot.default_factory, slot._static_default)
+        if slot.has_default
+        else None
+    )
 
     effective = slot.target_type or str
     # A source-less `Field` marker binds whichever source answered.
@@ -538,15 +541,16 @@ def _emit_scalar_param(
         lines, j, effective, f"{target}[{name!r}]", f"_qp[{lookup!r}]", lookup, "query", " " * 12
     )
     _emit_field_validate(lines, j, target, name, "query", " " * 12, marker, lookup)
-    lines.append(f"        elif _hd{j}:")
-    lines.append(f"            {target}[{name!r}] = {default_expr}")
-    lines.append(f"        elif _io{j}:")
-    lines.append(f"            {target}[{name!r}] = None")
     lines.append("        else:")
-    lines.append(
-        f"            raise _RVE([{{'loc': ('query', {lookup!r}), "
-        f"'msg': {MSG_FIELD_REQUIRED!r}, 'type': 'missing'}}])"
-    )
+    if default_expr is not None:
+        lines.append(f"            {target}[{name!r}] = {default_expr}")
+    elif slot.is_optional:
+        lines.append(f"            {target}[{name!r}] = None")
+    else:
+        lines.append(
+            f"            raise _RVE([{{'loc': ('query', {lookup!r}), "
+            f"'msg': {MSG_FIELD_REQUIRED!r}, 'type': 'missing'}}])"
+        )
 
 
 def _emit_marker(
@@ -567,7 +571,6 @@ def _emit_marker(
     name = slot.name
 
     ns[f"_t{j}"] = slot.target_type
-    ns[f"_io{j}"] = slot.is_optional
     # Bound once at registration, so the per-request call is a plain local.
     ns[f"_val{j}"] = marker.validate
 
@@ -579,7 +582,7 @@ def _emit_marker(
     )
 
     # List-typed query / header / cookie marker - collect every repeated value.
-    from veloce.dependency import _SEQUENCE_ORIGINS, _fixed_shape_args
+    from veloce.dependency import _fixed_shape_args  # breaks a dependency<->codegen cycle
 
     if mk in _LIST_MARKERS and get_origin(slot.target_type) in _SEQUENCE_ORIGINS:
         inner_args = get_args(slot.target_type)

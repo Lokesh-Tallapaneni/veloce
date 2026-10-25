@@ -325,6 +325,7 @@ select = [
     "UP",   # pyupgrade
     "SIM",  # flake8-simplify
     "ASYNC",
+    "TID251",  # banned APIs, named under `flake8-tidy-imports.banned-api`
     # PEP 257 docstring rules. The style guide names ruff as the write-time gate
     # for its PEP 257 clause; before this, `select` carried no `D` family at all,
     # so that clause was prose nothing executed. The subset below is every `D`
@@ -362,6 +363,18 @@ ignore = [
     "D203",  # incompatible with D211, which is the convention here
     "D213",  # incompatible with D212, which is the convention here
 ]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+# The event-loop policy API is deprecated as of Python 3.14 and scheduled for
+# removal in 3.16, and 3.14 is in the CI matrix. `Veloce.run()` selects a loop
+# factory instead, which still prefers uvloop where it is installed.
+"asyncio.set_event_loop_policy".msg = "deprecated in 3.14; pass a loop factory as app/serving.py does"
+"asyncio.get_event_loop_policy".msg = "deprecated in 3.14; pass a loop factory as app/serving.py does"
+"asyncio.AbstractEventLoopPolicy".msg = "deprecated in 3.14; pass a loop factory as app/serving.py does"
+"asyncio.DefaultEventLoopPolicy".msg = "deprecated in 3.14; pass a loop factory as app/serving.py does"
+"asyncio.WindowsSelectorEventLoopPolicy".msg = "deprecated in 3.14; pass a loop factory as app/serving.py does"
+"asyncio.WindowsProactorEventLoopPolicy".msg = "deprecated in 3.14; pass a loop factory as app/serving.py does"
+"uvloop.EventLoopPolicy".msg = "deprecated in 3.14; pass `uvloop.new_event_loop` as the loop factory"
 
 [tool.ruff.lint.per-file-ignores]
 # The style guide's PEP 257 clause is about `src/veloce/**`. Test functions,

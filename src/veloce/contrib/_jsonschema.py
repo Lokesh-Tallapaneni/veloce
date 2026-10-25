@@ -127,7 +127,7 @@ def _python_type_to_schema(annotation: Any) -> dict[str, Any]:
         return {"anyOf": [_python_type_to_schema(m) for m in reachable]}
 
     # `list[Tag]` 422s on a JSON-array string, so the item schema is a string.
-    if origin in _SEQUENCE_ORIGINS:
+    if origin in _ARRAY_ORIGINS:
         args = get_args(annotation)
         positional = _fixed_shape_args(annotation)
         if positional is not None:
@@ -556,7 +556,7 @@ def _pydantic_to_schema(
 
 
 #: Origins that serialise to a JSON array.
-_SEQUENCE_ORIGINS = (list, collections.abc.Sequence, tuple, set, frozenset, collections.abc.Set)
+_ARRAY_ORIGINS = (list, collections.abc.Sequence, tuple, set, frozenset, collections.abc.Set)
 
 
 #: Keyed weakly by the model - `id(model)` recycles - with the filter inside.
@@ -667,7 +667,7 @@ def _response_model_to_schema(
     documented as clients actually receive them.
     """
     origin = get_origin(response_model)
-    if origin in _SEQUENCE_ORIGINS:
+    if origin in _ARRAY_ORIGINS:
         args = get_args(response_model)
         # `tuple[Item, ...]` carries an Ellipsis in its second slot.
         if args and _is_model_type(args[0]):

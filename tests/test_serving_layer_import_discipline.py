@@ -81,23 +81,14 @@ def test_a_sibling_veloce_import_is_not_an_offence():
     assert _runtime_app_imports("from veloce.websocket import WebSocket") == []
 
 
-# ── the event-loop policy API is not used ────────────────────────────
+# ── uvloop is still preferred ────────────────────
 #
-# `asyncio.set_event_loop_policy` is deprecated as of Python 3.14 and scheduled
-# for removal in 3.16, and 3.14 is in the CI matrix. `Veloce.run()` selects a
-# loop factory instead, so uvloop is still preferred where it is installed.
-# Source-level because the uvloop branch cannot run on a platform that excludes
-# it, which is where this is most often edited.
-
-
-def test_no_module_uses_the_deprecated_event_loop_policy_api():
-    offenders = [
-        f"{path.relative_to(_SRC).as_posix()}:{number}"
-        for path in sorted(_SRC.rglob("*.py"))
-        for number, line in enumerate(path.read_text(encoding="utf-8").split("\n"), 1)
-        if "set_event_loop_policy" in line or "EventLoopPolicy" in line
-    ]
-    assert offenders == []
+# The event-loop policy API the run path used to call is banned by ruff
+# `TID251` (`flake8-tidy-imports.banned-api` in `pyproject.toml`), which
+# catches both the attribute call and the `from` import at write time. What
+# lint cannot state is the positive half - that dropping the policy call kept
+# uvloop - and this is source-level because the uvloop branch cannot run on a
+# platform whose marker excludes it, which is where it is most often edited.
 
 
 def test_the_run_path_still_prefers_uvloop():

@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from pydantic import ValidationError as PydanticValidationError
 
 from veloce._handler_plan import (
+    _SEQUENCE_ORIGINS,
     K_BG_TASKS,
     K_BODY_MODEL,
     K_DEPENDS,
@@ -49,7 +50,6 @@ from veloce.contrib._jsonschema import (
 )
 from veloce.contrib.mcp.context import MCPContext
 from veloce.dependency import (
-    _SEQUENCE_ORIGINS,
     DependencyResolver,
     SecurityScopes,
     _as_declared_sequence,
