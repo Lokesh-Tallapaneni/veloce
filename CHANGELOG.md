@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `[tool.pyright]` ships in `pyproject.toml`, so an editor reports what CI enforces.
+
 - `veloceframework[standard]` installs uvicorn, `brotli` and `msgspec` together. ([#298](https://github.com/Lokesh-Tallapaneni/veloce/pull/298))
 - The documentation site publishes `/llms.txt` and `/llms-full.txt`. ([#298](https://github.com/Lokesh-Tallapaneni/veloce/pull/298))
 - Python 3.14 is tested in CI and listed in the PyPI classifiers. ([#299](https://github.com/Lokesh-Tallapaneni/veloce/pull/299))
@@ -102,6 +104,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A default declared beside a marker - `Annotated[str, Query()] = ""` - is honoured; the parameter was required.
 - A marker's declared default is published in both documents; the framework's own copying factory withheld it.
 - Setting `openapi_version` to a 3.0 version warns that the document's schemas stay 3.1.
+- `veloce.testclient` reports a clear `TypeError` for a `files=` entry whose content is neither bytes, str nor file-like.
 - `Annotated[..., Field(...)]` bounds are enforced on a scalar `websocket_listener` message.
 - A `websocket_listener` frame whose JSON type contradicts its declared scalar closes `1007`.
 - An exception handler or hook declaring a parameter the adapter cannot fill raises instead of silently receiving the request.

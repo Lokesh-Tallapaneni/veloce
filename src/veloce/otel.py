@@ -142,10 +142,10 @@ try:
 
     _OTEL_IMPORT_ERROR: ImportError | None = None
 except ImportError as exc:  # pragma: no cover - exercised only without opentelemetry
-    _otel_context = None  # type: ignore[assignment]
-    _otel_trace = None  # type: ignore[assignment]
-    _OtelContext = None  # type: ignore[assignment,misc]
-    _W3CPropagator = None  # type: ignore[assignment,misc]
+    # `Any` rather than four suppressions: no checker can follow
+    # `_OTEL_IMPORT_ERROR` to these names, and that flag is what gates every use.
+    _otel_context = _otel_trace = cast("Any", None)
+    _OtelContext = _W3CPropagator = cast("Any", None)  # type: ignore[misc]
     _OTEL_IMPORT_ERROR = exc
 
 

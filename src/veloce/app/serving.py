@@ -181,7 +181,7 @@ class ServingMixin(AppHost):
         # uvloop is an optional extra and is unavailable on Windows, so the
         # import failing is the ordinary path there rather than an error.
         try:
-            import uvloop
+            import uvloop  # pyright: ignore[reportMissingImports]
 
             asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
         except ImportError:

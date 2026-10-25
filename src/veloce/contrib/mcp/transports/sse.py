@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
+from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
@@ -233,7 +234,7 @@ async def _stream(
     session_id: str,
     connection: _SSEConnection,
     message_path: str,
-) -> Any:
+) -> AsyncIterator[ServerSentEvent]:
     """Yield the endpoint event, then every message the server sends this client.
 
     Each queued dispatch is run here rather than in the POST handler, so the work

@@ -52,7 +52,7 @@ from ``veloce.metrics`` when you want it.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.app import Veloce
@@ -70,9 +70,10 @@ try:
 
     _PROM_IMPORT_ERROR: ImportError | None = None
 except ImportError as exc:  # pragma: no cover - exercised only without prometheus_client
-    _prom = None  # type: ignore[assignment]
-    Counter = None  # type: ignore[assignment,misc]
-    Histogram = None  # type: ignore[assignment,misc]
+    # `Any` rather than three suppressions: `_PROM_IMPORT_ERROR` gates every use
+    # and no checker can follow it to these names.
+    _prom = cast("Any", None)
+    Counter = Histogram = cast("Any", None)  # type: ignore[misc]
     _PROM_IMPORT_ERROR = exc
 
 

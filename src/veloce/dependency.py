@@ -16,7 +16,7 @@ import logging
 import weakref
 from collections.abc import Callable
 from enum import Enum
-from typing import TYPE_CHECKING, Annotated, Any, Literal, get_args, get_origin
+from typing import TYPE_CHECKING, Annotated, Any, Literal, cast, get_args, get_origin
 
 from pydantic import TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
@@ -822,7 +822,8 @@ class DependencyResolver:
                 compiled = compile_param_resolver(plan, _coerce_value, RequestValidationError)
                 plan.compiled_resolver = cr = compiled if compiled is not None else _NOT_COMPILABLE
             if cr is not _NOT_COMPILABLE:
-                return cr(request, path_params)
+                # The sentinel is what the test above rules out.
+                return cast("Callable[..., Any]", cr)(request, path_params)
 
             # The param-only compiler rejected this plan (it has dependencies or
             # other interpreter-only slots). A no-wave dependency graph - a
@@ -864,7 +865,8 @@ class DependencyResolver:
                         graph if graph is not None else _NOT_COMPILABLE
                     )
                 if gcr is not _NOT_COMPILABLE:
-                    return await gcr(request, path_params, self._teardowns)
+                    resolver = cast("Callable[..., Any]", gcr)
+                    return await resolver(request, path_params, self._teardowns)
         else:
             for slot in route_dep_plans:
                 await self._exec_depends(slot, request, path_params)
@@ -1459,7 +1461,9 @@ class DependencyResolver:
 
     async def _exec_depends(self, slot: Any, request: Request, path_params: dict[str, str]) -> Any:
         """Resolve a K_DEPENDS slot with caching and override support."""
-        dep_callable = slot.dep_callable
+        # One `_Slot` class serves every kind, so the field is declared
+        # optional; a K_DEPENDS slot always carries the callable.
+        dep_callable = cast("Callable[..., Any]", slot.dep_callable)
         actual = self._overrides.get(dep_callable, dep_callable)
 
         # The scopes this Security() pushes onto the chain. Plain `Depends` has

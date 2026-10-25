@@ -89,7 +89,7 @@ def _brotli_codec() -> _Codec | None:
         import brotli
     except ImportError:
         try:
-            import brotlicffi as brotli
+            import brotlicffi as brotli  # pyright: ignore[reportMissingImports]
         except ImportError:
             return None
 

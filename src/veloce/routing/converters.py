@@ -32,7 +32,7 @@ import math
 import re
 import uuid
 import warnings
-from typing import Any
+from typing import Any, cast
 
 from veloce._internal import _SCALAR_JSON_SCHEMAS, _require_methods
 
@@ -45,6 +45,7 @@ try:  # pragma: no cover - one branch per environment
 
     _HAS_CISO8601 = True
 except ImportError:  # pragma: no cover
+    _parse_datetime_ciso = cast("Any", None)
     _HAS_CISO8601 = False
 
 # UUID format per RFC 4122 (8-4-4-4-12 hex digits, case-insensitive). This is

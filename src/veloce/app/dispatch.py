@@ -528,9 +528,9 @@ class DispatchMixin(AppHost):
         # the request_finished receivers and instrumentation hooks run - so a
         # tracing bridge can anchor an accurate span window regardless of how
         # long a slow earlier hook/receiver takes.
+        timing: tuple[int, float] | None = None
         if instrument:
-            end_time_ns = time.time_ns()
-            duration_ms = (time.perf_counter() - started) * 1000.0
+            timing = (time.time_ns(), (time.perf_counter() - started) * 1000.0)
 
         # Signal: request finished. Sender is the app, `response=` is the
         # final Response, `request=` lets a receiver correlate with the
@@ -541,7 +541,7 @@ class DispatchMixin(AppHost):
             except Exception:
                 self.logger.exception("request_finished signal raised an exception")
 
-        if instrument:
+        if timing is not None:
             # A HEAD response never iterates its body (the ASGI path sends
             # headers + an empty terminal frame), so its timing/status are
             # already final at this point - it is NOT a live stream even when
@@ -550,9 +550,9 @@ class DispatchMixin(AppHost):
             await self._run_instrumentation(
                 request,
                 response.status_code,
-                duration_ms,
+                timing[1],
                 streamed=is_streamed,
-                end_time_ns=end_time_ns,
+                end_time_ns=timing[0],
             )
 
         return response

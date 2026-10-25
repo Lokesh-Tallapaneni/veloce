@@ -15,7 +15,7 @@ import typing
 import weakref
 from collections.abc import Callable
 from enum import IntEnum
-from typing import Any, get_args, get_origin
+from typing import Any, cast, get_args, get_origin
 
 from pydantic import BaseModel as _PydanticModel
 from pydantic import TypeAdapter
@@ -29,7 +29,7 @@ try:
     _MSGSPEC_STRUCT: Any = _msgspec.Struct
     _HAS_MSGSPEC = True
 except ImportError:  # pragma: no cover - exercised in the no-msgspec CI leg
-    _msgspec = None  # type: ignore[assignment]
+    _msgspec = cast("Any", None)
     _MSGSPEC_STRUCT = None
     _HAS_MSGSPEC = False
 

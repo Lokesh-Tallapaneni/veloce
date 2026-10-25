@@ -529,6 +529,21 @@ def _emit_coerced(
 
 
 # ── Parameter / marker emission (shared with the param-only compiler) ──
+def _default_expression(
+    ns: dict[str, Any], index: int, factory: Callable[[], Any] | None, static: Any
+) -> str:
+    """Bind a default into the namespace and name it in the generated source.
+
+    A static default is read inline, so the common path pays no call; a factory
+    is called per request so each gets its own value.
+    """
+    if factory is not None:
+        ns[f"_df{index}"] = factory
+        return f"_df{index}()"
+    ns[f"_d{index}"] = static
+    return f"_d{index}"
+
+
 def _emit_field_validate(
     lines: list[str],
     j: int,
@@ -569,14 +584,8 @@ def _emit_scalar_param(
     ns[f"_hd{j}"] = slot.has_default
     ns[f"_io{j}"] = slot.is_optional
     # A plain mutable default is wrapped in a copying factory at registration so
-    # each request gets its own value (see `_guard_plain_mutable_default`); emit
-    # a fresh call for it, and read an immutable default inline.
-    if slot.default_factory is not None:
-        ns[f"_df{j}"] = slot.default_factory
-        default_expr = f"_df{j}()"
-    else:
-        ns[f"_d{j}"] = slot._static_default
-        default_expr = f"_d{j}"
+    # each request gets its own value (see `_guard_plain_mutable_default`).
+    default_expr = _default_expression(ns, j, slot.default_factory, slot._static_default)
 
     effective = slot.target_type or str
     # A source-less `Field` marker on a bare slot: the lookup order is unchanged
@@ -638,17 +647,13 @@ def _emit_marker(
     # plain local invocation rather than an attribute lookup on the marker.
     ns[f"_val{j}"] = marker.validate
 
-    # Decide static-vs-factory default once, here at codegen time. A static
-    # default snapshots the value into the namespace and reads it inline (no
-    # call overhead on the common path); a `default_factory` binds the callable
-    # and emits a fresh call so each request gets an independent object.
-    if marker.has_default:
-        if marker.default_factory is not None:
-            ns[f"_df{j}"] = marker.default_factory
-            default_expr = f"_df{j}()"
-        else:
-            ns[f"_d{j}"] = marker.default
-            default_expr = f"_d{j}"
+    # Decided once, here at codegen time; `None` when the parameter declares no
+    # default, which is also what the emit sites below branch on.
+    marker_default = (
+        _default_expression(ns, j, marker.default_factory, marker.default)
+        if marker.has_default
+        else None
+    )
 
     # List-typed query / header / cookie marker - collect every repeated value.
     from veloce.dependency import _SEQUENCE_ORIGINS, _fixed_shape_args
@@ -671,8 +676,8 @@ def _emit_marker(
         else:  # MK_QUERY
             lines.append(f"    _vals = request.query_params.getlist({lookup!r})")
         lines.append("    if not _vals:")
-        if marker.has_default:
-            lines.append(f"        {target}[{name!r}] = {default_expr}")
+        if marker_default is not None:
+            lines.append(f"        {target}[{name!r}] = {marker_default}")
         elif slot.is_optional:
             lines.append(f"        {target}[{name!r}] = None")
         else:
@@ -724,8 +729,8 @@ def _emit_marker(
         lines.append(f"    _raw = request.query_params.get({lookup!r})")
 
     lines.append("    if _raw is None:")
-    if marker.has_default:
-        lines.append(f"        {target}[{name!r}] = {default_expr}")
+    if marker_default is not None:
+        lines.append(f"        {target}[{name!r}] = {marker_default}")
     elif slot.is_optional:
         lines.append(f"        {target}[{name!r}] = None")
     else:

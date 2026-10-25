@@ -374,6 +374,21 @@ ignore = [
 "bench/**" = ["D"]
 "mkdocs_hooks.py" = ["D"]  # a build hook, not shipped API
 
+[tool.pyright]
+include = ["src/veloce"]
+pythonVersion = "3.10"
+# Pylance reads this, so a contributor sees the same diagnostics CI would.
+# `standard` rather than `strict`: strict's bulk is the private-leaf-module
+# convention below plus `Any` arriving from untyped third-party surfaces, and
+# `mypy --strict` already covers what is enforceable here.
+typeCheckingMode = "standard"
+# `_handler_plan`, `_params` and `_internal` are underscore modules that import
+# each other's underscore names - the same convention `no_implicit_reexport`
+# is relaxed for below.
+reportPrivateUsage = false
+# uvloop, brotli and brotlicffi are optional extras imported conditionally.
+reportMissingModuleSource = false
+
 [tool.mypy]
 python_version = "3.10"
 mypy_path = "src"

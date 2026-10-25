@@ -388,7 +388,10 @@ class Veloce(
         # `package_root` (template / static-file resolution) and the app logger.
         if import_name is None:
             frame = sys._getframe(1)
-            import_name = frame.f_globals.get("__name__", "veloce.app")
+            # A frame's globals are untyped, so the fallback also covers a
+            # `__name__` that is not a string.
+            caller = frame.f_globals.get("__name__")
+            import_name = caller if isinstance(caller, str) else "veloce.app"
         self.import_name = import_name
         # Both are REQUIRED strings in the document these build (OpenAPI 3.1
         # Sec. 4.8.2) and both are interpolated into the two HTML pages, where a

@@ -610,9 +610,8 @@ async def _handle_authorize(server: MCPAuthorizationServer, request: Request) ->
             state,
         )
 
-    outcome = server.authenticate(request)
-    if hasattr(outcome, "__await__"):
-        outcome = await outcome  # type: ignore[misc]
+    answer = server.authenticate(request)
+    outcome = await answer if isinstance(answer, Awaitable) else answer
     if isinstance(outcome, Response):
         # The application is taking the browser somewhere first - a login form, a
         # consent screen - and will drive this endpoint again afterwards.

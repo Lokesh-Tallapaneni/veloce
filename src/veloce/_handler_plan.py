@@ -22,7 +22,7 @@ import typing
 import warnings
 import weakref
 from collections.abc import Callable, Mapping
-from typing import Any, Union, get_args, get_origin, get_type_hints
+from typing import Any, Union, cast, get_args, get_origin, get_type_hints
 
 import typing_extensions
 
@@ -154,10 +154,9 @@ def _normalise_sequence_default(marker: ParamBase, target_type: Any) -> ParamBas
     if not is_immutable(members) and deepcopyable(members):
         normalised.default_factory = lambda: origin(copy.deepcopy(members))
     elif origin is set or origin is list:
-        # The container built above rather than the member snapshot: copying a
-        # set re-uses the hashes it already stored, where building one from the
-        # tuple re-hashes every member on every request.
-        normalised.default_factory = built.copy
+        # Copying the container built above, not rebuilding from the member
+        # snapshot: a set copy re-uses the hashes it already stored.
+        normalised.default_factory = cast("set[Any] | list[Any]", built).copy
     else:
         normalised.default = built
         normalised.default_factory = None

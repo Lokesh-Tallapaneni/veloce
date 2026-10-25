@@ -665,7 +665,9 @@ class _VeloceArgumentParser(argparse.ArgumentParser):
     ) -> tuple[argparse.Namespace, list[str]]:
         argv = list(sys.argv[1:] if args is None else args)
         head, tail = _split_custom_argv(argv)
-        parsed, extras = super().parse_known_args(head, namespace)
+        # argparse builds a `Namespace` when given none, so handing it one
+        # is the same call and keeps the return type a `Namespace`.
+        parsed, extras = super().parse_known_args(head, namespace or argparse.Namespace())
         if tail is not None:
             parsed.cli_args = tail
         return parsed, extras

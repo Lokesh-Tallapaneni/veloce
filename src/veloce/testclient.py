@@ -522,10 +522,13 @@ def _encode_multipart(
         else:
             raise TypeError(f"files[{name!r}] must be bytes, str, file-like, or 2/3-tuple")
         # Resolve the body bytes for any file-like content.
-        if hasattr(content, "read"):
-            content = content.read()
+        read = getattr(content, "read", None)
+        if read is not None:
+            content = read()
         if isinstance(content, str):
             content = content.encode("utf-8")
+        if not isinstance(content, bytes):
+            raise TypeError(f"files[{name!r}] content must be bytes, str, or file-like")
         parts.append(b"--" + b + b"\r\n")
         parts.append(
             (

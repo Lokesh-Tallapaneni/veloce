@@ -61,7 +61,7 @@ import asyncio
 import base64
 import logging
 import secrets
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from itertools import count
 from typing import TYPE_CHECKING, Any
 
@@ -404,7 +404,7 @@ async def _handle_get(
             return _protocol_response(exc.to_error(None), status_code=exc.http_status)
     missed = event_store.replay_after(last_event_id)
 
-    async def events() -> Any:
+    async def events() -> AsyncIterator[ServerSentEvent]:
         for event_id, payload in missed:
             yield ServerSentEvent(data=encode_envelope(payload).decode(), id=event_id)
         # Close the resumed stream with the same reconnect hint a live stream uses,
@@ -712,7 +712,7 @@ def _stream_response(
             if draining:
                 await queue.put(_STREAM_END)
 
-    async def events() -> Any:
+    async def events() -> AsyncIterator[ServerSentEvent]:
         nonlocal draining
         # Disconnection is not cancellation (MCP transport): a client that closes
         # the stream must not abort the in-flight call, so the dispatch task is

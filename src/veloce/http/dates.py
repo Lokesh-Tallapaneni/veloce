@@ -78,8 +78,6 @@ def parse_date(value: str | None) -> datetime | None:
         parsed = parsedate_to_datetime(value.strip())
     except (TypeError, ValueError):
         return None
-    if parsed is None:
-        return None
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)

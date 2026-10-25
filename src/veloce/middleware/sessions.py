@@ -342,7 +342,7 @@ class SessionMiddlewareBase(Middleware):
         self.secure = settled_secure
         self.samesite = settled_samesite
         self.domain = domain
-        self.cookie_prefix = cookie_prefix
+        self.cookie_prefix: Literal["host", "secure"] | None = cookie_prefix
         self.partitioned = partitioned
         # Emit `Vary: Cookie` on responses that write the session cookie, so a
         # shared cache keyed on URL alone can't serve one user's session-bearing

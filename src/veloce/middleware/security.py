@@ -22,7 +22,7 @@ import time
 import uuid
 from collections import deque
 from collections.abc import Awaitable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import veloce.status as status
 from veloce._constants import (
@@ -612,6 +612,7 @@ class RateLimitMiddleware(Middleware):
                 # admits everything while reporting itself as installed.
                 self._warn_unstable_key(caller)
             caller = f"{_SUPPLIED_KEY_PREFIX}{caller}"
+        caller = cast("str", caller)
         if strategy is not None:
             return await self._process_strategy(request, strategy, caller)
         assert log is not None
@@ -923,7 +924,7 @@ class RateLimitMiddleware(Middleware):
         # restates the body can read the value the response is stamped with.
         exc = TooManyRequests(headers={HEADER_RETRY_AFTER: str(retry_after)})
         handler = app._find_error_handler(request, exc) if app is not None else None
-        if handler is not None:
+        if app is not None and handler is not None:
             rejected: Response = await app._dispatch_exc_handler(handler, request, exc)
         else:
             rejected = Response(

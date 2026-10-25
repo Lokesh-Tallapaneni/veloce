@@ -73,7 +73,8 @@ def _veloce_context_class() -> Any:
     """Return the render-context subclass resolving Veloce's template names."""
     global _context_class
     if _context_class is None:
-        from jinja2.runtime import Context, missing
+        from jinja2.runtime import Context
+        from jinja2.utils import missing
 
         class _VeloceContext(Context):
             """Render context that falls back to Veloce's request-scoped names.
@@ -493,7 +494,7 @@ def _templates_for(caller: str) -> Any:
     return templates
 
 
-def _new_fallback_env() -> Any:
+def _new_fallback_env() -> Environment:
     """Build the minimal environment the string helper falls back to."""
     from jinja2 import Environment, select_autoescape
 

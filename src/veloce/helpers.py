@@ -671,8 +671,9 @@ def make_response(
         )
     # Duck-typed rather than `isinstance(..., BaseModel)` so this module
     # needs no pydantic import.
-    if hasattr(body, "model_dump"):
-        return JSONResponse(body.model_dump(), status_code=status_code, headers=headers)
+    model_dump = getattr(body, "model_dump", None)
+    if model_dump is not None:
+        return JSONResponse(model_dump(), status_code=status_code, headers=headers)
     return JSONResponse(body, status_code=status_code, headers=headers)
 
 

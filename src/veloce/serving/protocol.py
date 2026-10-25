@@ -15,7 +15,7 @@ import threading
 import weakref
 from collections import deque
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol, cast
 from urllib.parse import unquote
 
 import httptools
@@ -152,6 +152,14 @@ _WS_SUPPORTED_VERSION = b"13"
 _PERCENT_BYTE = 0x25
 
 
+class _RequestCompleteHook(Protocol):
+    def __call__(self) -> None: ...
+
+
+class _KeepServingPredicate(Protocol):
+    def __call__(self) -> bool: ...
+
+
 class HttpProtocol(asyncio.Protocol):
     """Raw asyncio protocol - bypasses ASGI overhead entirely."""
 
@@ -205,7 +213,7 @@ class HttpProtocol(asyncio.Protocol):
     # here to drive `max_requests` recycling; nothing else uses it. Set on the
     # class (process-wide) rather than per instance to avoid bloating every
     # connection object with a slot that is unused under uvicorn / Veloce.run().
-    on_request_complete: Callable[[], None] | None = None
+    on_request_complete: ClassVar[_RequestCompleteHook | None] = None
 
     # Optional class-level predicate consulted after each dispatched request to
     # decide whether the connection may serve the next queued/pipelined request.
@@ -214,7 +222,7 @@ class HttpProtocol(asyncio.Protocol):
     # returning `self.alive`, so once `max_requests` recycling clears `alive`
     # the per-connection loop stops at the request boundary instead of draining
     # the whole pipelined queue past the limit.
-    should_keep_serving: Callable[[], bool] | None = None
+    should_keep_serving: ClassVar[_KeepServingPredicate | None] = None
 
     # Cross-thread connection counter. `+=` on a class-level int is read-
     # modify-write, not atomic under the GIL, so guard with a Lock. Only

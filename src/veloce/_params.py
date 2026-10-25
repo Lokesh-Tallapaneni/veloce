@@ -751,4 +751,7 @@ def find_field_info(annotation: Any) -> FieldInfo | None:
         found.insert(0, FieldInfo.from_annotation(rebuilt))
     if not found:
         return None
+    # `merge_field_infos` is deprecated with no replacement offered, and the
+    # supported `Annotated` chain is not the same rule: it keeps every entry,
+    # so two bounds on one key both apply where this documents last-wins.
     return found[0] if len(found) == 1 else FieldInfo.merge_field_infos(*found)
