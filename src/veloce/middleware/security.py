@@ -156,9 +156,8 @@ class CSPMiddleware(Middleware):
         references_nonce = (
             self._enforce_template is not None and "{nonce}" in self._enforce_template
         ) or (self._report_template is not None and "{nonce}" in self._report_template)
-        # A nonce-referencing template with nonce generation disabled would
-        # render `'nonce-None'`, which a browser parses as a real nonce and
-        # which silently breaks the policy. Refuse the construction instead.
+        # A nonce template with generation disabled renders `'nonce-None'`, which
+        # a browser parses as a real nonce, silently breaking the policy.
         if not nonce and references_nonce:
             raise ValueError(
                 "CSPMiddleware was constructed with nonce=False but a policy "
@@ -174,10 +173,8 @@ class CSPMiddleware(Middleware):
         return None
 
     async def process_response(self, request: Request, response: Response) -> Response:
-        # `Response.headers` is a plain dict but HTTP field names are
-        # case-insensitive (RFC 9110 Sec. 5.1), and browsers INTERSECT multiple
-        # CSP headers - a lowercase route override must still suppress the
-        # default, or both ship and the route's policy is silently narrowed.
+        # Field names are case-insensitive (RFC 9110 Sec. 5.1) and browsers
+        # INTERSECT multiple CSP headers, so a lowercase override must suppress this.
         for header, template in (
             (HEADER_CONTENT_SECURITY_POLICY, self._enforce_template),
             (HEADER_CONTENT_SECURITY_POLICY_REPORT_ONLY, self._report_template),
@@ -187,10 +184,8 @@ class CSPMiddleware(Middleware):
             if "{nonce}" in template:
                 nonce = csp_nonce(request)
                 if nonce is None:
-                    # No nonce was armed because `process_request` never ran - an
-                    # earlier middleware answered. A fixed `nonce-None` would let
-                    # an injected `<script nonce="None">` run while the page's own
-                    # script was blocked, so mint an unguessable one here.
+                    # No nonce armed: an earlier middleware answered. A fixed
+                    # `nonce-None` would let an injected `<script>` run, so mint one.
                     nonce = secrets.token_urlsafe(16)
                     request._state[_CSP_NONCE_STATE_KEY] = nonce
                 value = template.replace("{nonce}", f"'nonce-{nonce}'")
@@ -252,9 +247,8 @@ class TrustedHostMiddleware(Middleware):
 
     async def process_request(self, request: Request) -> Response | None:
         """Reject requests whose Host header is not in the allow-list."""
-        # A replayed MCP call carries no Host; the transport POST that carried it
-        # already passed this check, so judging the replay rejects every
-        # route-backed tool in an application that validates Host at all.
+        # A replayed MCP call carries no Host, and the transport POST that carried
+        # it already passed this check.
         if request.is_mcp:
             return None
         # Shared with the request-side parser so the IPv6 and port shapes agree.
@@ -290,13 +284,11 @@ class _SlidingLog:
     def __init__(self, max_requests: int, window_seconds: int, max_keys: int) -> None:
         self.max_requests = max_requests
         self.window_seconds = window_seconds
-        # Sweeping alone bounds nothing - keys arriving within one window
-        # accumulate, and a single machine's IPv6 /64 makes that unbounded.
+        # Sweeping alone bounds nothing: one machine's IPv6 /64 is unbounded.
         self._max_keys = max_keys
         self._buckets: dict[str, deque[float]] = {}
         self.last_sweep = time.monotonic()
-        # Lazy so the lock binds to the running loop, not whichever was current
-        # at construction. Guards a check-then-act an `await` would open.
+        # Lazy so the lock binds to the running loop, not the construction-time one.
         self._sweep_lock: asyncio.Lock | None = None
 
     async def sweep(self, now: float, cutoff: float) -> None:
@@ -349,16 +341,14 @@ class _SlidingLog:
             return 0
         # Ceil so a sub-second remainder never advertises "retry now".
         remaining = math.ceil(bucket[0] + self.window_seconds - now)
-        # A coarse clock (Windows monotonic ticks at ~15ms) can invert the
-        # compare and round the remainder past the window, so clamp to it.
+        # A coarse clock (Windows ticks at ~15ms) can round past the window.
         if remaining > self.window_seconds:
             return self.window_seconds
         return remaining if remaining > 0 else 0
 
 
-#: Namespace for a `key_func`'s answers. Without a prefix of its own, a namer
-#: echoing one of the derivation's keys (`host:`, `xff:`, `ua:`) would share
-#: that caller's bucket.
+#: Namespace for a `key_func`'s answers: without one, a namer echoing `host:`,
+#: `xff:` or `ua:` would share that caller's bucket.
 _SUPPLIED_KEY_PREFIX = "key:"
 
 
@@ -443,44 +433,36 @@ class RateLimitMiddleware(Middleware):
             raise TypeError("RateLimitMiddleware key_func must be callable")
         # Settled once so the request path calls `self._key(request)` blind.
         self._key: Callable[[Request], Any] = key_func if key_func is not None else self._bucket_key
-        # Decides whether `self._key`'s answer needs namespacing below.
         self._key_supplied: bool = key_func is not None
         # One warning per middleware: the condition is a property of the namer.
         self._warned_key_type: bool = False
         self._max_keys = max_keys
         self._strategy = strategy
         # An override key naming no route is a configuration error by default;
-        # `strict_overrides=False` downgrades it for one app that mounts a
-        # different set of routers per deployment behind a shared override map.
+        # `strict_overrides=False` downgrades it for a per-deployment router set.
         self._strict_overrides = strict_overrides
         # Last set reported, so a route-table change logs once per rebuild.
         self._reported_unknown: list[str] = []
-        # Shared by both construction modes, since a `@rate_limit` tag is
-        # honored either way; built lazily in `max_requests=` mode, so an app
-        # with no tagged route never allocates one.
+        # Shared by both construction modes, since a `@rate_limit` tag is honored
+        # either way; built lazily so an untagged app never allocates one.
         self._backend: RateLimitBackend | None = None
         self._overrides: dict[str, RateLimitStrategy] | None = None
-        # Rebuilt when the route-table generation advances. Empty means the
-        # per-request path stays a single client-keyed evaluation.
+        # Rebuilt when the route-table generation advances; empty is the fast path.
         self._route_strategies: dict[str, RateLimitStrategy] | None = None
         self._route_strategies_gen: int = -1
-        # The process-local sliding log, or `None` when a strategy limits.
         self._log: _SlidingLog | None = None
         if strategy is None:
-            # Legacy process-local sliding-log path.
             if backend is not None:
                 raise ValueError("backend requires a strategy; pass strategy= as well")
             if overrides is not None:
                 raise ValueError("overrides requires a strategy; pass strategy= as well")
             self._log = _SlidingLog(max_requests, window_seconds, max_keys)
         else:
-            # The backend runs the pure strategy under its own atomic
-            # read-modify-write.
+            # The backend runs the pure strategy under its own atomic RMW.
             if backend is None:
                 self._backend = InMemoryRateLimitBackend(max_keys=max_keys)
             else:
-                # A backend carries its own `max_keys`; accepting both would
-                # leave the cap depending on which one the request reached.
+                # A backend carries its own `max_keys`; two caps would disagree.
                 if max_keys != 100_000:
                     raise ValueError(
                         "max_keys applies to the default backend; "
@@ -501,29 +483,20 @@ class RateLimitMiddleware(Middleware):
         if strategy is None and log is None:
             return None
         caller = self._key(request)
-        # Awaited on what the call returned, not on how the namer inspects:
-        # `key_func=lambda r: tenant(r)` looks sync and returns a coroutine all
-        # the same, and an un-awaited one keys every request to a fresh bucket,
-        # so the limiter admits everything. The common path pays a type compare.
+        # Awaited on what the call returned, not on how the namer inspects: an
+        # un-awaited coroutine keys every request afresh and admits everything.
         if type(caller) is not str and inspect.isawaitable(caller):
             caller = await caller
         if caller is None or (isinstance(caller, (str, bytes)) and not caller):
-            # A namer that cannot name this caller says so with `None` or with
-            # an empty `str`/`bytes` - the shapes `headers.get(...) or ""` and
-            # `getattr(..., "", "")` produce. Keeping the empty name would put
-            # every caller the namer declined into one bucket, which the first
-            # of them could then exhaust for all the others.
+            # A namer declines with `None` or an empty `str`/`bytes`; keeping that
+            # name would pool every declined caller into one exhaustible bucket.
             caller = self._bucket_key(request)
         elif self._key_supplied:
-            # A supplied namer returns caller-influenced text, so it gets a
-            # namespace of its own: an `x-api-key` of `host:1.2.3.4` would
-            # otherwise land in the derivation's bucket for that peer address,
-            # and one caller could spend another's budget.
+            # A namer returns caller-influenced text, so it is namespaced: an
+            # `x-api-key` of `host:1.2.3.4` would else spend that peer's budget.
             if type(caller) is not str:
-                # Interpolated, not concatenated, so a tenant id handed over as
-                # an `int` costs a wrong bucket and not a 500 per request. An
-                # object with no stable `__str__` renders its address, keying
-                # every request afresh while the limiter reports itself armed.
+                # Interpolated, not concatenated, so an `int` tenant id costs a
+                # wrong bucket rather than a 500 on every request.
                 self._warn_unstable_key(caller)
             caller = f"{_SUPPLIED_KEY_PREFIX}{caller}"
         caller = cast("str", caller)
@@ -673,9 +646,8 @@ class RateLimitMiddleware(Middleware):
     async def _process_legacy(
         self, request: Request, log: _SlidingLog, caller: str
     ) -> Response | None:
-        # A `@rate_limit` tag routes this request through the strategy
-        # machinery instead, keyed by route as well as client so the tagged and
-        # default budgets stay independent.
+        # A `@rate_limit` tag is keyed by route as well as client, so the tagged
+        # and default budgets stay independent.
         tagged = self._route_override(request)
         if tagged is not None:
             if self._backend is None:
@@ -731,31 +703,25 @@ class RateLimitMiddleware(Middleware):
         client = request.client_host
         if client:
             return f"host:{client}"
-        # Right-most X-Forwarded-For hop: the closest proxy is the only
-        # trustworthy entry; left-most entries are attacker-controlled.
+        # Right-most X-Forwarded-For hop: the left-most are attacker-controlled.
         xff = request.headers.get(HEADER_X_FORWARDED_FOR, "")
         if xff:
             last = xff.split(",")[-1].strip()
             if last:
                 return f"xff:{last}"
-        # This digest is the ONLY isolation between anonymous callers, so it
-        # must resist chosen collisions: a CRC32 would let an attacker craft a
-        # User-Agent landing in another caller's bucket and drain their quota.
+        # The ONLY isolation between anonymous callers, so it must resist chosen
+        # collisions: a crafted User-Agent could else drain another's quota.
         ua = request.headers.get(HEADER_USER_AGENT, "")
         if ua:
             return "ua:" + hashlib.sha256(ua.encode("utf-8", "replace")).hexdigest()[:16]
-        # An MCP call over stdio has no transport peer, no proxy chain and no
-        # User-Agent, so without the principal the UUID below would give every
-        # call its own bucket and limit nothing. An anonymous principal is
-        # skipped deliberately: one bucket for every unauthenticated agent is
-        # the fail-shared mode this chain exists to avoid.
+        # An MCP call over stdio has no peer, chain or User-Agent. An anonymous
+        # principal is skipped: one shared bucket is the mode this chain avoids.
         if request.is_mcp:
             principal = current_principal()
             if principal is not None and principal.subject is not None:
                 return f"sub:{principal.subject}"
-        # Last resort: a per-request UUID, so a scope id reused after GC cannot
-        # leak a stale deque into a new request. Fail-open per caller, which is
-        # the right failure mode here, rather than fail-shared across all.
+        # Last resort: a per-request UUID, so a GC-reused scope id cannot leak a
+        # stale deque. Fail-open per caller rather than fail-shared across all.
         anon_id = request._state.get("_rl_anon_id")
         if anon_id is None:
             anon_id = uuid.uuid4().hex
@@ -791,11 +757,8 @@ class RateLimitMiddleware(Middleware):
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 body=b"Too Many Requests",
             )
-        # Not onto a redirect: RFC 9110 Sec. 10.2.3 gives `Retry-After` a
-        # different meaning on a 3xx - the wait before issuing the *redirected*
-        # request - so a conforming client would sit out the whole window
-        # before following a handler's `RedirectResponse`. Every other status
-        # keeps it, the 500 a raising handler degrades to included.
+        # Not onto a redirect: RFC 9110 Sec. 10.2.3 gives `Retry-After` a different
+        # meaning on a 3xx, so a client would sit out the window before following it.
         if not 300 <= rejected.status_code < 400:
             rejected.headers[HEADER_RETRY_AFTER] = str(retry_after)
         self._apply_headers(rejected, limit, 0, reset)
@@ -839,22 +802,16 @@ class HTTPSRedirectMiddleware(Middleware):
 
     async def process_request(self, request: Request) -> Response | None:
         """Redirect HTTP requests to HTTPS with a 308 status."""
-        # A replayed MCP call is not on the wire, so there is no cleartext
-        # connection to upgrade and nowhere to send a redirect.
+        # A replayed MCP call is not on the wire; there is nothing to upgrade.
         if request.is_mcp:
             return None
-        # `is_secure` also probes the raw transport's TLS object, which
-        # re-deriving the scheme here does not - natively-served TLS would then
-        # be redirected back to the URL it just answered, an infinite loop.
+        # `is_secure` also probes the transport's TLS object, without which
+        # natively-served TLS redirects to the URL it just answered - a loop.
         if request.is_secure:
             return None
-        # `is_secure` refuses an untrusted `X-Forwarded-Proto` because that is a
-        # claim about the hop in front, but a redirect guard must accept one or
-        # a TLS-terminating proxy that leaves the scope `http` bounces every
-        # request. Only where nothing has judged the header: once `ProxyFix` has
-        # run it writes the scheme it trusted into the scope, so reading the raw
-        # header here would accept a hop it refused - and a TLS-stripping
-        # attacker could suppress this redirect by adding one header.
+        # Accepted only where nothing has judged it: once `ProxyFix` has run,
+        # reading the raw header would accept a hop it refused and let a
+        # TLS-stripping attacker suppress this redirect with one header.
         if "proxy_fix_applied" not in request._state:
             fwd_proto = request.headers.get(HEADER_X_FORWARDED_PROTO, "").lower()
             if fwd_proto == URL_SCHEME_HTTPS:
@@ -962,11 +919,8 @@ class SecurityHeadersMiddleware(Middleware):
 
     async def process_response(self, request: Request, response: Response) -> Response:
         """Attach security hardening headers to every response."""
-        # Defaults only - never clobber a value the handler chose. Matching is
-        # case-insensitive because `Response.headers` is a plain dict, so a
-        # handler-set lowercase `x-frame-options` still overrides the default.
-        # One lowered-key set rather than `header_present` per default, which
-        # scans every response header on the common miss.
+        # Defaults only - never clobber a handler's value, matched case-insensitively
+        # so a lowercase `x-frame-options` still wins.
         headers = response.headers
         if not headers:
             headers.update(self._headers)

@@ -1,14 +1,10 @@
 """Plan bridge — HandlerPlan to MCP tool definition (input schema + binding).
 
 The input schema is derived from the same `HandlerPlan` the HTTP dispatch path
-uses, so a tool's declared inputs always match the handler signature, and the
-type -> JSON Schema conversion is the OpenAPI lowering's own so the two never
-drift.
-
-At call time `bind_arguments` produces the handler kwargs from the JSON
+uses, through the OpenAPI lowering's own type conversion, so the two cannot
+drift. At call time `bind_arguments` produces the handler kwargs from the JSON
 ``arguments`` mapping, resolving any `Depends` graph through the shared
-`DependencyResolver` with an `MCPContext` in the slot a `Request` would
-otherwise occupy - mirroring WebSocket DI, which resolves a plan without one.
+`DependencyResolver`.
 """
 
 from __future__ import annotations
@@ -70,8 +66,8 @@ if TYPE_CHECKING:  # pragma: no cover
     from veloce._handler_plan import HandlerPlan, _Slot
 
 
-# Slot kinds an agent supplies as a JSON argument. A required slot of one of these
-# kinds that is absent from `arguments` is a binding error, not a handler error.
+# Slot kinds an agent supplies as JSON; a required one absent from `arguments`
+# is a binding error, not a handler error.
 _INPUT_KINDS = frozenset({K_BODY_MODEL, K_QUERY_LIST, K_PARAM_MARKER, K_QUERY})
 
 # Keywords that annotate rather than constrain, so they stay outside the `anyOf`.
@@ -93,14 +89,10 @@ def _is_context_slot(slot: _Slot) -> bool:
 def _plan_reaches_context(plan: Any, _seen: set[int] | None = None) -> bool:
     """Whether this plan, or anything it depends on, binds the `MCPContext`.
 
-    Every extra message a `tools/call` can emit - progress, logging, a sampling or
-    elicitation request - is reached through `MCPContext`, so a tool whose whole
-    graph never binds it produces exactly one response and the transport can say so
-    before the call runs (see `_needs_stream`).
-
-    This reads a signature, so it cannot see a handler that dispatches to another
-    handler - `MCPTool.dispatches_tools` carries that case. Answers `True` for a
-    plan it cannot walk, so an unrecognised shape keeps the streaming response.
+    Every extra message a `tools/call` can emit is reached through `MCPContext`,
+    so a graph that never binds it produces exactly one response. This reads a
+    signature, so a handler dispatching to another is `MCPTool.dispatches_tools`
+    instead; an unwalkable plan answers `True` and keeps the streaming response.
     """
     if plan is None:
         return True
@@ -119,13 +111,11 @@ def _plan_reaches_context(plan: Any, _seen: set[int] | None = None) -> bool:
     return False
 
 
-# An MCP input schema must be standalone, so the refs `_pydantic_to_schema` emits
-# are rewritten under the local prefix and the referenced defs inlined per tool.
+# An MCP input schema must be standalone, so refs are rewritten and defs inlined.
 _OPENAPI_REF_PREFIX = "#/components/schemas/"
 _MCP_REF_PREFIX = "#/$defs/"
 
-# The spec assumes Draft 2020-12 when a schema omits `$schema`; declaring it
-# explicitly removes that ambiguity for a strict validator.
+# The spec assumes Draft 2020-12 when omitted; declaring it removes the ambiguity.
 JSON_SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
 
 
@@ -139,25 +129,18 @@ def build_input_schema(
 ) -> dict[str, Any]:
     """Build the MCP tool input JSON Schema from a handler plan.
 
-    Each handler parameter an agent supplies becomes a property; a parameter with
-    no default is required. `Depends`, `MCPContext` and `Request`/`Response` slots
+    Each handler parameter an agent supplies becomes a property; one with no
+    default is required. `Depends`, `MCPContext` and `Request`/`Response` slots
     are not agent inputs. Body models are referenced by `$ref` and inlined under
-    `$defs`, so each tool's schema is standalone with no component envelope.
+    `$defs`, so each tool's schema is standalone.
 
-    A client-supplied parameter declared *inside* a `Depends` sub-dependency is
-    sourced from the same `arguments` mapping, so it is advertised as a tool input
-    too - otherwise `tools/list` would declare no required inputs while
-    `tools/call` rejects the call.
+    A client-supplied parameter declared inside a `Depends` sub-dependency is
+    sourced from the same `arguments` mapping, so it is advertised too, and
+    `dependency_inputs`, when given, is filled with those inputs keyed by name.
 
-    `dependency_inputs`, when given, is filled with those sub-dependency inputs,
-    keyed by name, so the caller can hold the call to the types this schema
-    advertises. Collected here because this is already the one traversal that
-    decides what a tool publishes.
-
-    `path_template` is the backing route's path. Its parameters are part of the
-    call's contract whether or not a signature names them, so a placeholder no slot
-    declares is advertised from the route itself; left out, an agent would see no
-    way to supply a value the route requires.
+    `path_template` is the backing route's path; its parameters are part of the
+    call's contract whether or not a signature names them, so a placeholder no
+    slot declares is advertised from the route itself.
     """
     properties: dict[str, Any] = {}
     required: list[str] = []
@@ -277,14 +260,13 @@ def _collect_input_slots(
         if slot.kind == K_REQUEST or _is_context_slot(slot):
             continue
 
-        # A body model on a sub-dependency validates against the whole argument
-        # mapping, so its fields are the tool's inputs, not the parameter name.
+        # A body model validates against the whole mapping, so its fields are
+        # the tool's inputs rather than the parameter name.
         if in_depends and slot.kind == K_BODY_MODEL and is_pydantic_model(slot.model):
             _spread_model_fields(slot.model, properties, required, schemas_registry)
             continue
 
-        # A `Query(group=True)` model reads each field off its own wire key, so the
-        # inputs are those fields; declaring the parameter publishes a nested object.
+        # A `Query(group=True)` model reads each field off its own wire key.
         if slot.kind == K_MODEL_GROUP and is_pydantic_model(slot.model):
             _spread_model_fields(slot.model, properties, required, schemas_registry)
             continue
@@ -407,15 +389,13 @@ def _slot_schema(
         prop = _python_type_to_schema(d.target_type)
 
     if d.marker is not None:
-        # The same keywords the OpenAPI lowering publishes, from the same function,
-        # so the tool schema cannot advertise a wider contract than the server
-        # accepts. A model property is skipped: its `$ref` carries its own bounds.
+        # The same keywords the OpenAPI lowering publishes, so the tool schema
+        # cannot advertise a wider contract than the server accepts.
         if d.model is None:
             prop = dict(prop)
             _apply_marker_constraints(prop, d.marker)
-        # Advertised so a schema-aware client can populate the field itself.
-        # `publish_null` is on here because a marker's `None` on a nullable
-        # parameter is valid against the `anyOf` this schema publishes.
+        # `publish_null` is on because a marker's `None` on a nullable parameter
+        # is valid against the `anyOf` this schema publishes.
         marker_default = _publishable_default(
             getattr(d.marker, "default", ...), publish_null=d.is_optional
         )
@@ -458,8 +438,8 @@ _JSON_TYPE_NAMES = {
     type(None): "null",
 }
 
-# Scalar targets a JSON object or array can never fill. An MCP argument is raw JSON,
-# so an array reaching an `int` must be refused or it lands in the handler as one.
+# Scalar targets a JSON object or array can never fill: an array reaching an
+# `int` must be refused or it lands in the handler as one.
 _SCALAR_TARGETS = frozenset({str, int, float, bool})
 
 
@@ -501,8 +481,7 @@ def _coerce_json_scalar(slot: _Slot, value: Any, target: Any) -> Any:
             return value
         raise _wrong_type(slot.name, "a string", value)
     if target is bool:
-        # The HTTP coercer reads "yes" / "1" as true because a query string has
-        # nothing else to offer, which would silently make "maybe" false here.
+        # The HTTP coercer reads "yes" / "1" as true, making "maybe" false here.
         if value is True or value is False:
             return value
         raise _wrong_type(slot.name, "a boolean", value)
@@ -511,8 +490,7 @@ def _coerce_json_scalar(slot: _Slot, value: Any, target: Any) -> Any:
         if target is int or target is float:
             raise _wrong_type(slot.name, "a number", value)
     elif target is int and isinstance(value, float) and not value.is_integer():
-        # JSON Schema's `integer` accepts a number whose fractional part is zero and
-        # nothing else; coercing would hand the handler a different value.
+        # JSON Schema's `integer` accepts only a zero fractional part.
         raise RequestValidationError(
             [
                 {
@@ -647,22 +625,19 @@ def _member_contract(
     """
     nullable, target = _unwrap_optional(declared)
     if not nullable and get_origin(target) in _UNION_ORIGINS:
-        # `_unwrap_optional` reads only the two-member `T | None` spelling, so a
-        # wider union's `None` member went unseen and a valid null was refused.
+        # `_unwrap_optional` reads only the two-member `T | None` spelling.
         nullable = type(None) in get_args(target)
     if target is Any or target is object:
         # Neither declares anything to check, `None` included.
         return target, True, None
     if get_origin(target) in _SEQUENCE_ORIGINS:
-        # A sequence member has its own members and container: the scalar branch
-        # handed back the decoder's raw list, so a tuple member arrived mutable.
+        # A sequence member has its own members and container to rebuild.
         def _nested(value: Any, nested_target: Any) -> Any:
             return _coerce_nested_sequence(slot, value, nested_target)
 
         return target, nullable, _nested
     if _union_members(target):
-        # A union declares several acceptable JSON types, so a member is held to the
-        # set of them; no scalar branch recognised the union object itself.
+        # A union declares several acceptable JSON types, so a member is held to all.
         def _union(value: Any, union_target: Any) -> Any:
             return _coerce_union_member(slot, value, union_target)
 
@@ -689,8 +664,7 @@ def _coerce_list_members(slot: _Slot, value: list[Any]) -> list[Any]:
     """
     positional = _fixed_shape_args(slot.target_type)
     if positional is not None:
-        # A fixed-shape `tuple[int, str]` declares a type per position, not one
-        # element type for every member.
+        # A fixed-shape `tuple[int, str]` declares a type per position.
         if len(value) != len(positional):
             raise _wrong_type(slot.name, f"an array of {len(positional)} items", value)
         items = [
@@ -698,12 +672,11 @@ def _coerce_list_members(slot: _Slot, value: list[Any]) -> list[Any]:
             for item, declared in zip(value, positional, strict=True)
         ]
     else:
-        # Resolved once for the whole array: the contract cannot vary between
-        # members, and asking per member cost two model predicates on each one.
+        # Resolved once: the contract cannot vary between members of one array.
         target, nullable, validate = _member_contract(slot, slot.list_inner)
         items = [_coerce_list_item(slot, item, target, nullable, validate) for item in value]
-    # Built first, then bounded. A `set` drops duplicates, so `min_length=2`
-    # admitted `["a", "a"]` as a one-member set, below its own minimum.
+    # Built first, then bounded: a `set` drops duplicates, so `min_length=2` must
+    # be checked against the built container.
     collected = _build_sequence(slot, slot.target_type, items, value)
     if slot.list_checks is not None:
         _validate_list_marker(collected, slot.list_checks, slot.name, MARKER_LOC[slot.marker_kind])
@@ -754,24 +727,21 @@ def _coerce_argument(slot: _Slot, value: Any) -> Any:
         value = _coerce_json_scalar(slot, value, target)
         if marker is None:
             return value
-        # `marker.validate` dispatches on the Python type and its guards skip a list,
-        # so an explicit list marker's published `minItems` / `items.minimum` would
-        # be ignored here. Reached unbounded too: the element type is still coerced.
+        # `marker.validate` guards skip a list, so a published `minItems` /
+        # `items.minimum` is enforced here instead.
         if slot.marker_reads_list and isinstance(value, list):
             return _coerce_list_members(slot, value)
         return marker.validate(value, slot.name)
 
     if kind == K_QUERY_LIST:
-        # The tool published an array, so a scalar is the model's mistake to correct.
-        # Wrapping it filtered by one nonsense tag and returned a plausible empty
-        # result. Elements take the strict coercion, not the query-string one.
+        # The tool published an array, so a scalar is the model's mistake to
+        # correct; elements take the strict coercion, not the query-string one.
         if value is None and slot.is_optional:
             # The parameter itself is nullable, so the array is simply absent.
             return None
         if not isinstance(value, list):
             raise _wrong_type(slot.name, "an array", value)
-        # A folded `Field` publishes `minItems` / `maxItems` and the scalar bounds in
-        # this tool's schema, so this door enforces them too.
+        # A folded `Field` publishes these bounds, so this door enforces them.
         return _coerce_list_members(slot, value)
 
     if kind == K_QUERY:
@@ -849,16 +819,11 @@ def _scalar_str(value: Any) -> str | None:
 def _carrier_scope() -> dict[str, Any] | None:
     """Build an ASGI-shaped scope carrying the peer, or `None` off-transport.
 
-    A replayed request has no socket of its own, so without this everything keyed on
-    caller identity - rate limiting above all - sees an unknown peer and buckets
-    each call separately, failing open on the agent-facing door.
-
-    The carrier's *resolved* `client_host` propagates, so a `ProxyFix` correction
-    carries over rather than being re-derived from headers this request does not
-    have. Only the peer crosses: copying headers would let a credential presented to
-    the transport be re-read by the route's own `Security` scheme.
-
-    A port of 0 stands in for the peer's real port, which is not identifying.
+    A replayed request has no socket of its own, so without this everything
+    keyed on caller identity - rate limiting above all - sees an unknown peer.
+    The carrier's *resolved* `client_host` propagates, so a `ProxyFix`
+    correction carries over. Only the peer crosses: copying headers would let a
+    credential presented to the transport be re-read by a `Security` scheme.
     """
     carrier = _current_request_var.get()
     if carrier is None:
@@ -876,18 +841,14 @@ def _build_request(
 ) -> Request:
     """Construct the `Request` injected for a tool call's `Request` slots.
 
-    A tool call has no HTTP request, but a handler or dependency may still read
-    `request.headers` / `request.state` - built-in auth deps such as `HTTPBearer`
-    do - so a real `Request` is supplied rather than the `MCPContext`.
+    A handler or dependency may still read `request.headers` / `request.state`,
+    so a real `Request` is supplied rather than the `MCPContext`. A route-backed
+    tool carries the wrapped route's real `method` and `path`; a pure
+    `@app.mcp_tool` gets a synthetic `"MCP"` method and `/mcp/<tool>` path.
 
-    For a route-backed tool the caller passes the wrapped route's real HTTP `method`
-    and rule `path`, so a hook that branches on either sees the route's own values
-    rather than a synthetic marker. A pure `@app.mcp_tool` has no wrapped route, so
-    a synthetic `"MCP"` method and `/mcp/<tool>` path mark the call's origin.
-
-    The tool `arguments` are seeded onto the request's value sources, which is what
-    lets the *same* argument satisfy a `Query(...)` / `Body(...)` parameter declared
-    inside a `Depends` sub-plan; top-level slots are bound by `bind_arguments`.
+    The tool `arguments` are seeded onto the request's value sources, which lets
+    the same argument satisfy a `Query(...)` / `Body(...)` parameter declared
+    inside a `Depends` sub-plan.
     """
     request = Request(
         method=method if method is not None else "MCP",
@@ -900,16 +861,12 @@ def _build_request(
     if not arguments:
         return request
 
-    # Body markers / models read `request.json()`; the whole argument mapping is the
-    # synthetic body, so `Body(embed=True)` finds its key inside the dict.
+    # The whole argument mapping is the synthetic body `request.json()` returns.
     request._json = arguments
 
     # Scalar arguments feed the query / form sources a `Query` / `Form` marker reads.
-    # Headers and cookies are deliberately NOT seeded: an agent has none, so letting
-    # a tool argument populate them would let it masquerade as
-    # transport-authenticated input and a `Security` scheme (`HTTPBearer`,
-    # `APIKeyHeader`, `APIKeyCookie`) would read attacker-controlled data as a
-    # credential. Over MCP the validated `Principal` is the authorization gate.
+    # Headers and cookies are deliberately NOT seeded: a `Security` scheme
+    # (`HTTPBearer`, `APIKeyHeader`) would then read a tool argument as a credential.
     scalars: list[tuple[str, str]] = []
     for name, value in arguments.items():
         text = _scalar_str(value)
@@ -920,8 +877,7 @@ def _build_request(
     return request
 
 
-# These bind exactly as on the HTTP path - one `Response` and one `BackgroundTasks`
-# queue per request - so they delegate rather than restate the resolver.
+# One `Response` and one `BackgroundTasks` queue per request, as on HTTP.
 _injected_response = DependencyResolver._bind_injected_response
 _background_tasks = DependencyResolver._bind_background_tasks
 
@@ -939,42 +895,34 @@ async def bind_arguments(
     """Resolve handler kwargs for a tool call from the JSON `arguments`.
 
     Returns `(kwargs, request)`; the returned `Request` carries any
-    `BackgroundTasks` the handler scheduled (on `request._background_tasks`),
-    which the caller runs after the handler, mirroring the HTTP path.
+    `BackgroundTasks` the handler scheduled, which the caller runs afterwards.
 
     Scalar / model parameters are read from `arguments` and coerced through
     Pydantic; `Depends` graphs resolve through `resolver` against a minimal
-    `Request`; a parameter typed `Request` receives that same request, and one typed
-    `MCPContext` receives `context`. `Response`, `BackgroundTasks` and
-    `SecurityScopes` are injected as the HTTP path injects them. Run
-    `resolver.run_teardowns()` afterwards to drain `yield`-style teardowns.
+    `Request`; a `Request` slot receives that same request and an `MCPContext`
+    slot receives `context`. `Response`, `BackgroundTasks` and `SecurityScopes`
+    are injected as the HTTP path injects them. Run `resolver.run_teardowns()`
+    afterwards to drain `yield`-style teardowns.
 
     Route-level dependencies (`route_dep_plans`) run before any handler slot is
-    bound, mirroring `resolve_plan` / `resolve_ws_plan`, so a guard that raises
-    aborts the call before the handler sees an argument.
-
-    `route_defaults` are the route's rule `defaults=` values, overlaid *under* the
-    explicit `arguments` (explicit argument > route default > Python default) and fed
-    to both handler-kwarg binding and the DI graph, matching HTTP precedence.
+    bound, so a guard that raises aborts the call before the handler sees an
+    argument. `route_defaults` are overlaid under the explicit `arguments`
+    (explicit argument > route default > Python default).
 
     `dependency_inputs` names the published inputs declared inside a `Depends`
-    sub-dependency. They are seeded onto the synthetic request for a resolver that
-    reads query-string rules, so they are coerced here by the same strict rule the
-    top-level slots use; otherwise moving a parameter behind a dependency silently
-    changes whether the same value is accepted.
+    sub-dependency; they are coerced here by the same strict rule the top-level
+    slots use, so moving a parameter behind a dependency changes nothing.
     """
     resolver.reset()
 
-    # An explicit argument always wins. A fresh dict is built only when a default
-    # actually adds a key, so the common call keeps the caller's mapping.
+    # An explicit argument always wins; a fresh dict only when a default adds a key.
     if route_defaults:
         merged = {k: v for k, v in route_defaults.items() if k not in arguments}
         if merged:
             merged.update(arguments)
             arguments = merged
 
-    # Held to the published type before the seeding below hands them to a resolver
-    # that reads query-string rules. A fresh dict only when there is work to do.
+    # Held to the published type before a resolver reading query-string rules sees them.
     if dependency_inputs:
         coerced: dict[str, Any] | None = None
         for name, slot in dependency_inputs.items():
@@ -988,18 +936,15 @@ async def bind_arguments(
         if coerced is not None:
             arguments = coerced
 
-    # The top-level context slot is bound below; this covers the same type inside
-    # any `Depends` sub-plan, which the resolver binds by declared type.
+    # This covers the same type inside any `Depends` sub-plan, bound by declared type.
     resolver._mcp_context = context
 
-    # A real, minimal Request stands in for the HTTP request the resolver expects,
-    # mirroring WS DI. The `arguments` map is handed where the HTTP path hands
-    # `path_params` - tools have no URL, so it is the only entry into the DI graph.
+    # A minimal Request stands in for the one the resolver expects; `arguments`
+    # goes where HTTP hands `path_params`, the only entry into the DI graph.
     if request is None:
         request = _build_request(context.tool_name, arguments)
 
-    # Route-level dependencies run before the handler graph, as on HTTP/WS, so an
-    # auth guard fires even though the call arrived over MCP.
+    # Route-level dependencies run first, so an auth guard fires over MCP too.
     if route_dep_plans:
         for slot in route_dep_plans:
             await resolver._exec_depends(slot, request, arguments)
@@ -1018,21 +963,18 @@ async def bind_arguments(
             kwargs[name] = context
             continue
 
-        # Reused rather than fresh, so a dependency and the handler that both inject
-        # `Response` mutate the same object the route path then merges.
+        # Reused, so a dependency and the handler mutate the same `Response`.
         if kind == K_RESPONSE:
             kwargs[name] = _injected_response(request)
             continue
 
-        # One request-scoped queue however many slots ask for it, as on HTTP; the
-        # caller runs it after the handler returns.
+        # One request-scoped queue however many slots ask for it, as on HTTP.
         if kind == K_BG_TASKS:
             kwargs[name] = _background_tasks(request)
             continue
 
         if kind == K_SECURITY_SCOPES:
-            # An MCP tool call has no enclosing `Security()` chain, so the value is
-            # the empty `SecurityScopes` a route with no scopes receives.
+            # No enclosing `Security()` chain, so the empty `SecurityScopes`.
             kwargs[name] = SecurityScopes(list(resolver._scope_stack))
             continue
 
@@ -1045,17 +987,15 @@ async def bind_arguments(
         elif name in arguments:
             kwargs[name] = _coerce_argument(slot, arguments[name])
         elif (marker := slot.marker) is not None and marker.has_default:
-            # The slot's own `default` holds the hoisted marker rather than the
-            # value, so the marker is the only source of the real one.
-            # `resolve_default` also runs a `default_factory`, as HTTP does.
+            # The slot's `default` holds the hoisted marker, so the marker is the
+            # only source of the value; `resolve_default` runs a factory too.
             kwargs[name] = marker.resolve_default()
         elif slot.has_default:
             kwargs[name] = slot.default
         elif slot.is_optional:
             kwargs[name] = None
         elif kind in _INPUT_KINDS:
-            # Raised at the binding boundary so the server maps it to invalid-params
-            # rather than confusing it with a handler-body failure.
+            # At the binding boundary, so the server maps it to invalid-params.
             raise TypeError(f"missing required argument: {name!r}")
 
     return kwargs, request

@@ -1,16 +1,11 @@
 """Application audit — what a deployment should know before it serves traffic.
 
-Two questions share one mechanism. A misconfiguration ("this override names a
-route that does not exist") must stop the boot; a posture finding ("the session
-cookie is not `Secure`") must be reported without stopping anything. Severity is
-what separates them, so a middleware writes one method and the caller decides
-what a finding means: startup refuses to serve on an `error`, `veloce check`
-exits non-zero on anything above `info`.
+Severity separates a misconfiguration from a posture finding: startup refuses to
+serve on an `error`, `veloce check` exits non-zero on anything above `info`.
 
-The audit also runs against an application that was only imported - `veloce
-check` never starts one - so a check needing the finished route table says so
-with `Middleware.audit_needs_routes` and is skipped until startup, rather than
-reporting a route as missing when it is merely not registered yet.
+The audit also runs against an application that was only imported, so a check
+needing the finished route table says so with `Middleware.audit_needs_routes`
+and is skipped until startup.
 """
 
 from __future__ import annotations
@@ -25,24 +20,20 @@ from veloce.exceptions import VeloceError
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.app.core import Veloce
 
-#: How much a finding matters. `error` refuses the boot and fails `veloce
-#: check`; `warning` fails `veloce check` only; `info` fails nothing and is
-#: reported for awareness.
+#: How much a finding matters. `error` refuses the boot and fails `veloce check`;
+#: `warning` fails `veloce check` only; `info` fails nothing.
 Severity = Literal["error", "warning", "info"]
 
-# Ordering for "at least this severe" comparisons. A plain mapping rather than
-# an enum: a finding is written as `Finding("...", "error")` with no import of
-# an enum member, and the value survives JSON without conversion.
+# Ordering for "at least this severe" comparisons. A plain mapping rather than an
+# enum so a severity is written as a literal and survives JSON unconverted.
 _RANK: dict[str, int] = {"info": 0, "warning": 1, "error": 2}
 
 
 class AuditFailed(VeloceError, ValueError):
     """An `error`-severity finding refused the application's startup.
 
-    Also a `ValueError`, which is what a middleware raised for the same
-    condition before findings carried a severity, so existing handling of a
-    misconfigured middleware still catches it. The findings that caused the
-    failure are on `.findings`.
+    Also a `ValueError`, so existing handling of a misconfigured middleware still
+    catches it. The findings that caused the failure are on `.findings`.
     """
 
     def __init__(self, findings: list[Finding]) -> None:
@@ -54,11 +45,8 @@ class AuditFailed(VeloceError, ValueError):
 class Finding:
     """One thing an audit found.
 
-    `message` states what is wrong; `fix` states what to do about it, kept
-    separate so a tool can present or suppress the remedy independently. `id`
-    is a stable handle for the finding, which is what `SILENCED_AUDIT_IDS`
-    matches on, so an accepted finding can be turned off without turning the
-    audit off.
+    `fix` is kept separate from `message` so a tool can present or suppress the
+    remedy independently; `id` is what `SILENCED_AUDIT_IDS` matches on.
 
     Usage::
 
@@ -87,11 +75,8 @@ class Finding:
 class AuditContext:
     """What an audited middleware is given.
 
-    `routes_final` is False when the application was imported but never
-    started, which is how `veloce check` runs it. A middleware that reads the
-    route table sets `audit_needs_routes` and is not called at all in that
-    case, so this flag is for the rarer check that can narrow its scope rather
-    than skip.
+    `routes_final` is False when the application was imported but never started.
+    It is for the rarer check that narrows its scope rather than skipping.
     """
 
     app: Veloce
@@ -101,14 +86,8 @@ class AuditContext:
 def _response_contract_findings(app: Veloce) -> list[Finding]:
     """Report findings about what each route says it returns.
 
-    Reported as `Finding`s through the same audit as everything else, with
-    the severity carried in the type rather than described in prose. These
-    genuinely span two severities - a `response_model` contradicting its return
-    annotation is a contradiction, an undocumented route is informational - and
-    a second audit returning bare strings would flatten both into one untyped
-    list: the contradiction would not reach `veloce check`'s exit code, could
-    not be silenced, and would surface at startup only under `debug`. One
-    audit, one vocabulary, one exit code, one silencing mechanism.
+    A `response_model` contradicting its return annotation is a `warning`; a
+    route publishing no schema at all is `info`.
     """
     findings: list[Finding] = []
     undocumented: list[str] = []
@@ -158,30 +137,18 @@ def _app_findings(app: Veloce) -> list[Finding]:
             )
         )
     findings.extend(_response_contract_findings(app))
-    # `SECRET_KEY` is deliberately not checked here. Only the session middleware
-    # reads it, and only it knows whether it was handed a key directly - reading
-    # the config alone warned about a middleware constructed with an explicit
-    # `secret_key=`, and stayed a warning for one that could not sign at all.
+    # `SECRET_KEY` is deliberately not checked here: only the session middleware
+    # knows whether it was handed a key directly rather than through the config.
     return findings
 
 
 def _unmatched_exclusions(app: Veloce) -> list[Finding]:
     """Report `exclude_middleware` names that match nothing registered.
 
-    An exclusion is matched by `Middleware.middleware_name`, and an unmatched one
-    is simply skipped at dispatch: the route keeps a middleware its author
-    believes they opted out of, with nothing said at registration, startup, or
-    dispatch. The documented use is `exclude_middleware=["CSRFMiddleware"]` on a
-    webhook route, where a typo or a middleware registered under a custom `name=`
-    leaves the route protected and 403ing.
-
-    Only the *name* form can go unmatched. A class entry is matched by
-    `isinstance`, so it cannot be misspelled - a wrong class is an import error
-    where it is written - and excluding a class that happens not to be
-    registered is a legitimate way to write a route that is safe either way.
-
-    Registration cannot answer this - routes are commonly registered before
-    middleware - so it is asked once the set is final.
+    An unmatched name is skipped at dispatch, so the route silently keeps a
+    middleware its author believes they opted out of. Only the *name* form can go
+    unmatched: a class entry is matched by `isinstance`. Routes are commonly
+    registered before middleware, so it is asked once the set is final.
     """
     registered = {mw.middleware_name for mw in app._middlewares}
     unmatched: dict[str, str] = {}
@@ -211,16 +178,9 @@ def _registered(app: Veloce) -> Iterator[Any]:
     """Every registered component that could report on itself.
 
     Veloce accepts middleware in three shapes and static handlers besides, so
-    walking `_middlewares` alone would miss most of them: a
-    `BaseHTTPMiddleware` hardening every response would be reported as absent,
-    and a `StaticFiles` pointed at a directory that does not exist would warn at
-    construction and never reach `veloce check`.
-
-    The entries are heterogeneous by design - a plain function registered with
-    `@app.middleware("http")` sits beside a class - so each is asked whether it
-    can answer rather than assumed to. An ASGI middleware is held as a class
-    with its keyword arguments, never instantiated until the stack is built, so
-    only its class-level marker can be read.
+    walking `_middlewares` alone would miss most of them. The entries are
+    heterogeneous, so each is asked whether it can answer rather than assumed to;
+    an ASGI middleware is still a class, so only its class marker can be read.
     """
     yield from app._middlewares
     yield from app._http_middleware_funcs
@@ -233,10 +193,8 @@ def _registered(app: Veloce) -> Iterator[Any]:
 def run(app: Veloce, *, routes_final: bool = False) -> list[Finding]:
     """Collect every finding about `app`, newest concern last.
 
-    Pass `routes_final=True` once the route table cannot change again - at
-    startup, after the startup handlers and mounted sub-apps have registered
-    theirs. Left False, a middleware declaring `audit_needs_routes` is skipped
-    rather than asked a question it cannot answer yet.
+    Pass `routes_final=True` once the route table cannot change again. Left
+    False, a middleware declaring `audit_needs_routes` is skipped.
     """
     ctx = AuditContext(app=app, routes_final=routes_final)
     findings = _app_findings(app)

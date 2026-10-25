@@ -1,12 +1,7 @@
 """Declarative WebSocket listener — the accept/receive/dispatch/close loop.
 
 `Router.websocket_listener` wraps a per-message callback into a full WebSocket
-handler: accept, receive-loop, dispatch, clean disconnect. The loop builder
-lives here rather than in `routing/` so the router stays free of WebSocket
-internals, and rather than in `websocket.py` so the one module a maintainer
-opens to change frame parsing is not also the one they open to change
-listener-callback binding. Nothing here reaches past the public `WebSocket`
-API.
+handler. Nothing here reaches past the public `WebSocket` API.
 
 `WebSocket` is imported at runtime, not under `TYPE_CHECKING`: the dependency
 resolver reads the built handler's annotations through `get_type_hints`, which
@@ -55,19 +50,15 @@ def _resolve_listener_callable(
 ) -> tuple[Callable[..., Awaitable[Any]], bool]:
     """Return an async-callable form of `callback` and whether it wants the socket.
 
-    A sync callback is offloaded to the default executor so a blocking
-    per-message body never stalls the event loop, matching how the framework
-    runs sync HTTP handlers. The socket is passed positionally as the first
-    argument when the callback declares a leading `ws`/`socket` parameter or
-    accepts two or more positional parameters.
+    A sync callback is offloaded so a blocking per-message body never stalls the
+    event loop, as a sync HTTP handler is.
     """
     wants_socket = _callback_wants_socket(callback)
     if _is_async_callable(callback):
         return callback, wants_socket
 
     async def _async_call(*args: Any) -> Any:
-        # `offload` preserves the request-scoped ContextVars a sync HTTP
-        # handler sees (`current_app` / `g` / `request`).
+        # `offload` preserves the request-scoped ContextVars (`current_app`, `g`).
         return await offload(callback, *args)
 
     return _async_call, wants_socket
@@ -76,14 +67,10 @@ def _resolve_listener_callable(
 def _positional_params(callback: Any) -> list[inspect.Parameter]:
     """Return the callback's positional parameters, empty when it has no signature.
 
-    Shared so the two readers cannot disagree about which parameters count:
-    `_message_annotation` takes `params[1]` exactly when `_callback_wants_socket`
-    saw two, so a filter that drifted between them would leave the listener
-    validating the wrong argument with nothing raising.
+    Shared so `_message_annotation` and `_callback_wants_socket` cannot disagree
+    about which parameter receives the message.
     """
-    # `inspect.signature` already unwraps a callable instance's `__call__`
-    # and drops the bound `self`, so it works on plain functions, bound
-    # methods, and `__call__`-able objects alike.
+    # `inspect.signature` unwraps a callable instance's `__call__` and drops `self`.
     try:
         return [
             p
@@ -98,10 +85,8 @@ def _positional_params(callback: Any) -> list[inspect.Parameter]:
 def _callback_wants_socket(callback: Any) -> bool:
     """Decide whether a listener callback expects the socket as its first arg.
 
-    True when the first positional parameter is named `ws` or `socket`, or
-    when the callback accepts two or more positional parameters (so the data
-    is the second). A single-parameter `on_receive(data)` callback gets only
-    the message.
+    True when the first positional parameter is named `ws` or `socket`, or when
+    there are two or more. A single-parameter callback gets only the message.
     """
     params = _positional_params(callback)
     if not params:
@@ -131,25 +116,16 @@ async def _listener_send(ws: WebSocket, mode: str, data: Any) -> None:
 def _message_annotation(callback: Any, wants_socket: bool) -> Any:
     """Return the annotation on the parameter that receives the message.
 
-    `None` when the callback declares nothing, which is the existing untyped
-    behaviour and stays free.
-
+    `None` when the callback declares nothing, which stays untyped and free.
     Read through `typing_extensions`, not `typing`: below Python 3.11 the stdlib
-    drops the `Annotated` wrapper when the annotated type is a union, and
-    `Annotated[Join | Say, Field(discriminator="type")]` is exactly that shape -
-    so the discriminator would silently vanish on 3.10 and the union would be
-    refused as ambiguous on the one interpreter where that is hardest to debug.
+    drops the `Annotated` wrapper when the annotated type is a union, which is
+    exactly the shape a discriminated message union has.
     """
     params = _positional_params(callback)
     if not params:
         return None
     target = params[1] if wants_socket and len(params) >= 2 else params[0]
-    # Only this parameter's annotation is resolved, through the same
-    # one-annotation probe the handler plan uses. Resolving the whole signature
-    # refused a listener over an unrelated annotation - a return type that will
-    # not import made this raise and name the *message* parameter, which
-    # resolved perfectly - and `resolve_response_contract` is documented to
-    # tolerate exactly that return annotation and record no send contract.
+    # Only this parameter: the whole signature would fail over an unrelated one.
     hint_target = resolve_hint_target(callback)
     declared = (getattr(hint_target, "__annotations__", None) or {}).get(target.name)
     if declared is None:
@@ -161,11 +137,8 @@ def _message_annotation(callback: Any, wants_socket: bool) -> Any:
             probe, getattr(hint_target, "__globals__", None), include_extras=True
         )
     except Exception as exc:  # noqa: BLE001 - the name genuinely cannot be resolved
-        # Refused, not warned: the frame is the only source of this value, so a
-        # dropped annotation means every message reaches the callback
-        # unvalidated - the contract the author declared silently stops being
-        # enforced. There is no "has a default" escape as there is on the HTTP
-        # side; an annotated message parameter is always load-bearing.
+        # Refused, not warned: a dropped annotation would let every message reach
+        # the callback unvalidated, and a message parameter has no default escape.
         raise TypeError(
             f"{_where(callback)}: could not resolve the annotation on "
             f"{target.name!r} ({type(exc).__name__}: {exc}). The listener is "
@@ -184,10 +157,8 @@ def _unwrap_annotated(annotation: Any) -> Any:
 def _message_union_members(inner: Any) -> tuple[Any, ...]:
     """Return a message union's model members, `Annotated` peeled, else empty.
 
-    Members are unwrapped because `Annotated[Join, Tag("join")]` is an alias,
-    not a class: left wrapped it satisfies neither backend's model predicate,
-    the union reads as "not a union of models", and the listener silently ends
-    up unvalidated - the one failure direction this module must not have.
+    Left wrapped, a member satisfies neither backend's model predicate and the
+    listener would silently end up unvalidated.
     """
     if typing_extensions.get_origin(inner) not in (typing.Union, types.UnionType):
         return ()
@@ -211,19 +182,10 @@ def _msgspec_tag_fields(members: tuple[Any, ...]) -> list[str | None]:
 def _frame_matches(value: Any, target: Any) -> bool:
     """Whether a decoded frame has the JSON type its declared scalar asks for.
 
-    Only the types `ParamBase.validate` actually branches on are gated; any
-    other declared type passes through to the marker exactly as before, since
-    the marker applies no bound it could contradict.
-
-    `bool` is tested before `int` because `isinstance(True, int)` is `True` in
-    Python, so a `true` frame would otherwise satisfy a declared `int`.
-
-    A union is satisfied by any of its members: `str | int` accepts both, and
-    collapsing it to the first member refused a frame the signature allows.
-    The union is identified by its ORIGIN, not by having args - `get_args`
-    answers `(int,)` for `list[int]` just as it answers `(str, int)` for a
-    union, so testing for args alone checked a `[1, 2, 3]` frame against `int`
-    and refused every message a `list[int]` listener could receive.
+    Only the types `ParamBase.validate` branches on are gated. `bool` is tested
+    before `int` because `isinstance(True, int)` is `True`. A union is satisfied
+    by any member and is identified by its origin, not by having args -
+    `get_args` answers `(int,)` for `list[int]` too.
     """
     if typing.get_origin(target) in (typing.Union, types.UnionType):
         members = [a for a in typing.get_args(target) if a is not type(None)]
@@ -244,23 +206,12 @@ def _frame_matches(value: Any, target: Any) -> bool:
 def _bounded_scalar(marker: ParamBase, allow_null: bool, target: Any, data: Any) -> Any:
     """Apply a folded `Field`'s bounds to one scalar frame.
 
-    Raising is the contract the caller already expects: it answers any
-    validator failure with a `1007` close, so a refused bound reaches the peer
-    the same way a frame that does not match a model does.
-
-    A `null` frame is handled here rather than left to `ParamBase.validate`,
-    whose first branch substitutes the `Field`'s default for `None` - right for
-    a parameter that can be absent, wrong for a frame, which either arrived or
-    did not. `Annotated[int, Field(0, ge=0)]` turned a `null` frame into `0`.
-
-    The declared type is checked before the bound, because
-    `ParamBase.validate` dispatches on the *runtime* value: a frame of `"0"`,
-    `[1, 2, 3]` or `{"a": 1}` against `Annotated[int, Field(ge=1)]` matched
-    neither its numeric nor its string branch, so the bound was never
-    evaluated and the handler received a `str`/`list`/`dict` for a declared
-    `int`. A decoded frame carries real JSON types, so a contradicting one is
-    refused rather than coerced - the rule the agent door already applies to an
-    argument that contradicts its published schema.
+    Raising is the contract the caller expects: it answers a validator failure
+    with a `1007` close. A `null` frame is handled here rather than left to
+    `ParamBase.validate`, which would substitute the `Field`'s default. The
+    declared type is checked before the bound, because `ParamBase.validate`
+    dispatches on the runtime value; a frame contradicting it is refused, not
+    coerced.
     """
     if data is None:
         if allow_null:
@@ -274,42 +225,23 @@ def _bounded_scalar(marker: ParamBase, allow_null: bool, target: Any, data: Any)
 def _message_validator(annotation: Any, inner: Any, members: tuple[Any, ...]) -> Any:
     """Return the callable that turns one decoded frame into a message.
 
-    Selection only - the rules live in `_reject_ambiguous_union`, and the
-    annotation is already resolved by the caller. A union validates through the
-    full annotation rather than through `inner`, so a `Model | None` frame of
-    `null` stays legal: the author asked for that by writing the `| None`.
+    Selection only - the rules live in `_reject_ambiguous_union`. A union
+    validates through the full annotation, so a `Model | None` `null` stays legal.
     """
-    # `backend_of` is the framework's answer to "is this a message, and whose?"
-    # - restating it here is how the two doors drifted: a dataclass is `ADAPTED`,
-    # which an inline `pydantic or msgspec` test misses, so the HTTP body
-    # validated and the websocket frame silently arrived as a raw mapping.
+    # `backend_of` answers "is this a message, and whose?" for both doors at once.
     backend = backend_of(members[0] if members else inner)
     if backend is ModelBackend.MSGSPEC:
         return _msgspec_validator(inner)
     if backend is ModelBackend.NONE:
-        # Not a message model, but the annotation may still declare a bound:
-        # `Annotated[int, Field(ge=1)]` says the same thing here as it does on a
-        # query parameter, and this door enforced nothing at all for it while
-        # the model spelling closed 1007.
-        # The same peel the HTTP door uses, so one spelling of a bound is not
-        # enforced on a query parameter and ignored on a frame: a raw
-        # `__metadata__` read sees past the `Optional[...]` wrapper and found
-        # nothing for `Optional[Annotated[int, Field(ge=1)]]`.
+        # Not a message model, but the annotation may still declare a bound, and
+        # it is peeled the way the HTTP door peels it so `Optional` cannot hide it.
         field_info = _annotated_field_info(annotation)
         if field_info is not None and field_info_declares_constraints(field_info):
-            # From the annotation, not `members`: `_message_union_members`
-            # returns `()` unless every member is a model, and a non-empty tuple
-            # means `backend_of` is not NONE so this branch is unreachable - so
-            # scanning it for `NoneType` was always False and refused a `null`
-            # frame the author had explicitly allowed.
+            # From the annotation: a non-empty `members` cannot reach this branch.
             allow_null = type(None) in typing.get_args(annotation) or type(None) in (
                 typing.get_args(inner) or ()
             )
-            # `inner` whole: `_frame_matches` peels `Optional` and accepts any
-            # member of a union itself, and picking one member here refused a
-            # frame the signature allows. `inner` is the caller's already-peeled
-            # annotation and it returns before this on `None`, so there is
-            # nothing to fall back to.
+            # `inner` whole: `_frame_matches` peels `Optional` and unions itself.
             return functools.partial(
                 _bounded_scalar,
                 ParamBase.from_field_info(field_info),
@@ -326,21 +258,11 @@ def _reject_ambiguous_union(
 ) -> None:
     """Refuse a union that cannot be resolved to one message type.
 
-    A union of two or more message types must be discriminated: a frame has to
-    become exactly one of them, and nothing else can make that choice. The tag
-    is read from the declaration, which is the one place it is stated and the
-    one place both backends agree on.
-
-    Deliberately not read off pydantic's compiled core schema. That reports
-    `tagged-union` only for the simplest shape: a member referencing one
-    submodel twice, or referencing itself, makes pydantic wrap the schema in
-    `definitions` and the tag stops being visible there - so a correctly
-    discriminated union would be refused at registration, told to add the
-    discriminator it already declared.
-
-    Every refusal here is registration-time. A declaration that only fails on
-    the first frame would surface as a `1007` close, which tells the peer its
-    message was malformed when the fault is in the server's own types.
+    A union of two or more message types must be discriminated, and the tag is
+    read from the declaration rather than off pydantic's compiled core schema,
+    which hides it behind `definitions` for a self-referencing member. Every
+    refusal is registration-time: a `1007` close would blame the peer for a
+    fault in the server's own types.
     """
     if len(members) < 2:
         return
@@ -381,12 +303,7 @@ def _msgspec_validator(inner: Any) -> Any:
 
 
 def _where(callback: Any) -> str:
-    """Name the callback the way `_handler_plan` names a handler.
-
-    Delegates rather than restating the rule: the two used to spell it
-    differently, so the same class of mistake was reported under two different
-    names depending on which door caught it.
-    """
+    """Name the callback the way `_handler_plan` names a handler."""
     return _callable_name(callback)
 
 
@@ -405,16 +322,11 @@ class WSMessageContract:
     """What one websocket channel accepts, resolved once at registration.
 
     The receive loop validates through this record and a lowering publishes from
-    it, so the documented contract and the executed contract are the same object
-    rather than two resolutions of one annotation.
+    it, so the documented and the executed contract are one object.
 
-    `members` is the union's members, or the single type in a one-tuple.
-    `discriminator` is `None` when there is nothing to discriminate.
-
-    `send_type` documents what the callback returns and filters nothing - the
-    same rule response-model unions already follow, because which member a value
-    should be re-shaped through is ambiguous. The receive side must choose and
-    so demands a discriminator; the send side never chooses.
+    `members` is the union's members, or the single type in a one-tuple;
+    `discriminator` is `None` when there is nothing to discriminate; `send_type`
+    documents what the callback returns and filters nothing.
     """
 
     message_type: Any
@@ -428,11 +340,8 @@ class WSMessageContract:
 def _build_message_contract(callback: Any, wants_socket: bool) -> WSMessageContract | None:
     """Resolve the callback's message annotation into a contract, or `None`.
 
-    The annotation is resolved exactly once - unwrapped, its union members
-    listed, its discriminator read - and every consumer is handed that result.
-    Resolving a second time per consumer is how two copies drift: they are pure
-    functions of one annotation, so a repeat evaluation can only agree with the
-    first or be a bug in waiting.
+    Resolved exactly once - unwrapped, members listed, discriminator read - and
+    every consumer is handed that one result.
     """
     annotation = _message_annotation(callback, wants_socket)
     if annotation is None:
@@ -448,11 +357,9 @@ def _build_message_contract(callback: Any, wants_socket: bool) -> WSMessageContr
         return None
     return WSMessageContract(
         message_type=annotation,
-        # A non-union names one message; report it the same way a one-member
-        # union does, so a consumer never special-cases the shape.
+        # A non-union is reported as a one-member tuple, so nothing special-cases it.
         members=members or (inner,),
-        # The record carries the tag *field name*; pydantic's callable
-        # `Discriminator` declares a discriminator with no field to name.
+        # The record carries the tag *field name*, which a callable one has none of.
         discriminator=declared if isinstance(declared, str) else None,
         backend=backend_of(members[0] if members else inner),
         validate=validate,
@@ -463,13 +370,8 @@ def _build_message_contract(callback: Any, wants_socket: bool) -> WSMessageContr
 def _declared_discriminator(annotation: Any, members: tuple[Any, ...]) -> Any:
     """Return the discriminator a union declares, or `None` when it declares none.
 
-    A field name, or pydantic's callable `Discriminator`. Read from the
-    declaration, which states it once: pydantic carries it in the `Annotated`
-    metadata, msgspec on the struct's `__struct_config__.tag_field`. Both
-    lookups are open by necessity - the annotation may not be `Annotated`, and
-    a member may be either backend's model.
-
-    One member is one message type, so there is nothing to choose between.
+    A field name, or pydantic's callable `Discriminator`: pydantic carries it in
+    the `Annotated` metadata, msgspec on `__struct_config__.tag_field`.
     """
     if len(members) < 2:
         return None
@@ -491,12 +393,9 @@ def build_listener_handler(
 ) -> tuple[Callable[[WebSocket], Coroutine[Any, Any, None]], WSMessageContract | None]:
     """Build a WebSocket handler that runs the canonical accept/receive/close loop.
 
-    The returned handler accepts the connection, fires `on_connect`, then
-    loops: receive one message in `receive` mode, pass it to `callback`, and
-    send the return value in `send` mode when it is not `None`. The loop ends
-    on `WebSocketDisconnect`; `on_disconnect` always runs afterwards. A
-    callback that returns `None` sends nothing, so a pure consumer needs no
-    special casing.
+    The handler accepts, fires `on_connect`, then loops: receive in `receive`
+    mode, pass to `callback`, send a non-`None` return in `send` mode. The loop
+    ends on `WebSocketDisconnect`; `on_disconnect` always runs afterwards.
     """
     if receive not in _WS_MODES:
         raise ValueError(f"receive mode must be one of {sorted(_WS_MODES)}, got {receive!r}")
@@ -504,11 +403,8 @@ def build_listener_handler(
         raise ValueError(f"send mode must be one of {sorted(_WS_MODES)}, got {send!r}")
 
     fn, wants_socket = _resolve_listener_callable(callback)
-    # Resolved once, at registration: the annotation cannot change, and an
-    # ambiguous union must fail where it is written rather than on the frame
-    # that happens to be ambiguous.
-    # Only the JSON codec produces the mapping a model validates from; a
-    # `text`/`bytes` listener receives the frame as-is and declares no model.
+    # Resolved at registration so an ambiguous union fails where it is written.
+    # Only the JSON codec produces the mapping a model validates from.
     contract = _build_message_contract(callback, wants_socket) if receive == "json" else None
     validate = None if contract is None else contract.validate
     connect_fn = _resolve_listener_callable(on_connect)[0] if on_connect is not None else None
@@ -516,11 +412,8 @@ def build_listener_handler(
         _resolve_listener_callable(on_disconnect)[0] if on_disconnect is not None else None
     )
 
-    # Deliberately NOT `functools.wraps(callback)`: the registered handler
-    # must present its own `(ws: WebSocket)` signature so the dependency
-    # resolver injects the socket. `wraps` sets `__wrapped__`, which
-    # `inspect.signature` follows back to the callback's `(data)` shape and
-    # makes the resolver try to bind a nonexistent `data` dependency.
+    # Deliberately NOT `functools.wraps(callback)`: `__wrapped__` would send
+    # `inspect.signature` back to `(data)` and the resolver would bind nothing.
     async def listener(ws: WebSocket) -> None:
         await ws.accept()
         try:
@@ -528,43 +421,30 @@ def build_listener_handler(
                 await connect_fn(ws)
             while True:
                 data = await _listener_receive(ws, receive)
-                # One `is None` check for an unannotated callback, which keeps
-                # the untyped path exactly as it was.
                 if validate is not None:
                     try:
                         data = validate(data)
                     except Exception:
-                        # RFC 6455 Sec. 7.4.1: 1007 is "data inconsistent with
-                        # the type of the message", which is exactly a frame
-                        # that does not match the declared contract. Closing
-                        # beats raising - the peer learns why, and the handler
-                        # never sees a frame it was promised could not arrive.
+                        # RFC 6455 Sec. 7.4.1: 1007 is "data inconsistent with the
+                        # type of the message", so the peer learns why it closed.
                         await ws.close(
                             WS_1007_INVALID_FRAME_PAYLOAD_DATA, "message does not match schema"
                         )
                         break
                 result = await (fn(ws, data) if wants_socket else fn(data))
-                # A `None` return means "consume only" - never emit a frame
-                # for it (sending `null`/empty would be a spurious message).
+                # A `None` return means "consume only" - emit no frame for it.
                 if result is not None:
                     await _listener_send(ws, send, result)
         except WebSocketDisconnect:
-            # Peer (or idle/heartbeat close) ended the connection - the
-            # canonical, non-error way a listener loop terminates.
+            # The canonical, non-error way a listener loop terminates.
             pass
         finally:
             if disconnect_fn is not None:
-                # Run teardown even if the peer is already gone; a send from
-                # inside `on_disconnect` may itself raise, which is fine.
+                # Teardown runs even if the peer is already gone.
                 await disconnect_fn(ws)
 
-    # Borrow the callback's name for routing/OpenAPI introspection without
-    # importing its signature (see the no-`wraps` note above).
+    # The callback's name without its signature (see the no-`wraps` note above).
     listener.__name__ = getattr(callback, "__name__", "listener")
-    # Carried on the handler rather than passed to `add_route`: every
-    # registration path - direct, blueprint splice, router merge - re-registers
-    # this same object, so the contract follows it without a forwarding line
-    # each copy could forget. `_finalize_plans` reads it off the handler the
-    # same way it builds the handler plan.
+    # On the handler, not `add_route`: every registration path re-registers it.
     listener._ws_message_contract = contract  # type: ignore[attr-defined]
     return listener, contract

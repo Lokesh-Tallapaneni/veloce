@@ -17,9 +17,8 @@ from veloce.contrib.mcp._helpers import META_CLIENT_CAPABILITIES, META_CLIENT_IN
 # outlives its evicted session cannot be matched by a later session.
 _connection_id_counter = itertools.count(1)
 
-# The counter above restarts at 1 in every pre-forked worker, so a handler keying
-# per-client state on the public identity alone would share one bucket between
-# unrelated clients. A per-process prefix makes that identity unique.
+# The counter above restarts at 1 in every pre-forked worker, so a per-process
+# prefix keeps the public identity from pooling unrelated clients in one bucket.
 _PROCESS_TOKEN = secrets.token_hex(4)
 
 

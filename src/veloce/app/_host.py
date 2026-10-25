@@ -1,24 +1,5 @@
 """The contract every `app/` mixin relies on the host `Veloce` providing.
 
-`Veloce` is assembled from sixteen focused mixins, each of which reads state and
-calls methods that a *sibling* provides. Every mixin used to restate the subset
-it touched inside its own class-level `TYPE_CHECKING` block: 158 stubs across
-thirteen modules for 102 distinct names, 56 of them redundant repeats. `config`
-alone was written out seven times.
-
-Restating a contract is how it drifts, and it had. Ten names carried more than
-one annotation: `debug` was `bool` in `dispatch.py`, `errors.py` and
-`serving.py` but `Any` in `lifecycle.py`; `_mw_version` was `int` in
-`middleware.py` and `Any` in `dispatch.py`; the hook lists were concrete in
-`introspection.py` and `Any` everywhere else. Whichever module a reader opened
-decided what the type appeared to be, and the loosest copy silently won wherever
-it was used.
-
-Worse, the stubs were almost all `Any` or `Callable[..., Any]`, so mypy checked
-nothing that crossed a mixin boundary. `self.match(...)`, `self.log_exception(...)`
-and `self._find_scoped_exception_handler(...)` accepted any argument list on the
-hot path.
-
 The names here carry the type of their real definition rather than `Any`, so the
 cross-mixin calls are checked. Everything is under `TYPE_CHECKING`: at runtime
 this is an empty class, contributing one entry to the MRO and no behaviour. It

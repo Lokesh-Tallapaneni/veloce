@@ -33,10 +33,7 @@ from veloce.contrib._jsonschema import (
     _warn_schema_fallback,
 )
 
-# Two names this module no longer uses itself, kept importable from here
-# because they were imported from this module before the schema layer moved
-# to `_jsonschema`. The `X as X` spelling marks them as deliberate
-# re-exports rather than dead imports.
+# Deliberate re-exports (`X as X`); the schema layer itself lives in `_jsonschema`.
 from veloce.contrib._jsonschema import _local_def_refs as _local_def_refs
 from veloce.contrib._jsonschema import _rewrite_byte_format as _rewrite_byte_format
 from veloce.dependency import Depends
@@ -49,12 +46,7 @@ if TYPE_CHECKING:  # pragma: no cover
 
 _logger = logging.getLogger(__name__)
 
-# Per-handler memoization of `inspect.signature` + `get_type_hints`. The
-# OpenAPI generator visits each handler from four sites (operation
-# parameters, webhook bodies, dependency-graph walk, dependency leaves),
-# so introspecting once and reusing the result eliminates redundant
-# work on every schema rebuild. `WeakKeyDictionary` so test suites and
-# hot-reload sessions don't pin handlers for the process lifetime.
+# Per-handler, weak-keyed memo of `inspect.signature` + `get_type_hints`.
 _HANDLER_INTRO_CACHE: weakref.WeakKeyDictionary[Any, tuple[Any, dict[str, Any]]] = (
     weakref.WeakKeyDictionary()
 )
@@ -109,22 +101,14 @@ def _handler_intro(handler: Any) -> tuple[Any, dict[str, Any]]:
     except (TypeError, ValueError):
         sig = None
     hints: dict[str, Any] = {}
-    # The same target the resolver reads, via the shared helper: reading hints
-    # off `handler` directly published no parameters at all for a
-    # callable-instance or class handler while the resolver bound them.
+    # The same target the resolver reads; `handler` itself misses a class handler.
     hint_target = resolve_hint_target(handler)
     if hasattr(hint_target, "__annotations__"):
         try:
-            # `include_extras=True` keeps PEP 593 metadata: an
-            # `Annotated[..., Security(...)]` parameter carries its marker there
-            # and nowhere else, and stripping it published the route as
-            # unauthenticated while the runtime still enforced it.
+            # `include_extras=True` keeps the PEP 593 metadata a marker lives in.
             hints = get_type_hints(hint_target, include_extras=True)
         except Exception:
-            # `get_type_hints` raises a wide range (NameError on unresolved
-            # forward refs, TypeError on bad annotations, recursion errors on
-            # cyclic models); schema generation degrades gracefully to no hints
-            # rather than failing the whole `/docs` build over one handler.
+            # Degrades to no hints rather than failing the whole `/docs` build.
             hints = {}
     result = (sig, hints)
     with contextlib.suppress(TypeError):
@@ -135,15 +119,9 @@ def _handler_intro(handler: Any) -> tuple[Any, dict[str, Any]]:
 def _param_marker(param: Any, hints: dict[str, Any]) -> Any:
     """Find the `Depends` / parameter marker for `param`, however it was spelled.
 
-    A marker reaches a handler two ways: as the parameter default
-    (`cred = Security(scheme)`) or as PEP 593 metadata
-    (`cred: Annotated[object, Security(scheme)]`). Reading only the default
-    published an `Annotated`-spelled route as unauthenticated while the runtime
-    enforced it - and `Annotated` is this project's documented house style, so
-    the recommended form was the broken one.
-
+    A marker reaches a handler as the parameter default or as PEP 593 metadata.
     Resolution is delegated to the same helper the handler plan uses, so the
-    published contract and the enforced one cannot drift apart again.
+    published contract and the enforced one cannot drift apart.
     """
     default = param.default
     if isinstance(default, (Depends, ParamBase)):
@@ -173,11 +151,7 @@ def _deep_merge(target: dict[str, Any], overlay: dict[str, Any]) -> None:
 
 def _build_info_object(app: Veloce) -> dict[str, Any]:
     """Return the OpenAPI `info` object assembled from app metadata."""
-    # Read directly: `Veloce.__init__` requires both to be non-empty strings, so
-    # a fallback here is a second copy of a default that cannot be reached. The
-    # two copies had already disagreed - this one said "Veloce API" where the
-    # constructor and the MCP server said "Veloce", so one app named itself two
-    # things across its two doors.
+    # Read directly: `Veloce.__init__` requires both to be non-empty strings.
     info_obj: dict[str, Any] = {"title": app.title, "version": app.version}
     if app.summary:
         info_obj["summary"] = app.summary
@@ -250,13 +224,9 @@ def _is_required(d: Any, marker: Any) -> bool:
 def _extract_parameters(info: Any, schemas_registry: SchemaRegistry) -> _RouteParameters:
     """Classify every parameter by lowering the route's handler plan.
 
-    Each field of the returned `_RouteParameters` is documented on the record
-    itself; `_extract_request_body` consumes the three body-shaped ones.
-
-    Walks the same `HandlerPlan` the resolver executes (via
-    `iter_param_descriptors`), so the documented contract matches the one the
-    server enforces. Depends/Security and JSON `Body()` markers are not yielded
-    as parameters - they belong to other parts of the operation object.
+    Walks the same `HandlerPlan` the resolver executes, so the documented
+    contract matches the enforced one. Depends/Security and JSON `Body()`
+    markers are not parameters - they belong elsewhere in the operation object.
     """
     parameters: list[dict[str, Any]] = []
     request_body_schema: dict[str, Any] | None = None
@@ -273,17 +243,11 @@ def _extract_parameters(info: Any, schemas_registry: SchemaRegistry) -> _RoutePa
         location = d.location
 
         if location == "body":
-            # A bare model or `Body()`-wrapped model is the JSON request body. A
-            # JSON body is always required there: the resolver 422s on a missing
-            # body even for an `Optional` model.
+            # A JSON body is always required: the resolver 422s even for `Optional`.
             if d.model is not None:
                 request_body_schema = schemas_registry.ref(d.model, mode="validation")
                 continue
-            # A `Body()` over a non-model still has a documentable shape, and
-            # which shape depends on `embed`: an embedded param is one named key
-            # of a JSON object body, while a non-embedded one receives the whole
-            # body. Both are collected here so the operation documents the body
-            # the resolver actually reads.
+            # A `Body()` non-model is one named key when embedded, else the body.
             body_schema: dict[str, Any] = _python_type_to_schema(d.target_type)
             if d.is_list:
                 body_schema = {"type": "array", "items": body_schema}
@@ -315,9 +279,7 @@ def _extract_parameters(info: Any, schemas_registry: SchemaRegistry) -> _RoutePa
                 field_required = _is_required(d, marker)
                 field_alias = marker.alias or d.name
             else:
-                # A bare `UploadFile`: optional when it carries a default or an
-                # `Optional` annotation - the resolver leaves the kwarg unset and
-                # the handler default applies, so the field is not required.
+                # A bare `UploadFile` is optional given a default or `Optional`.
                 field_required = _is_required(d, None)
                 field_alias = d.name
             form_fields.append(_FormField(field_alias, field_schema, field_required, d.is_file))
@@ -326,9 +288,7 @@ def _extract_parameters(info: Any, schemas_registry: SchemaRegistry) -> _RoutePa
         # path / query / header / cookie parameter.
         param_schema: dict[str, Any]
         if d.group_field and (grouped := _group_field_schema(d.model, d.wire_name)) is not None:
-            # The field's own declaration owns its constraints; rebuilding the
-            # schema from the annotation alone would publish a laxer contract
-            # than the resolver enforces.
+            # The field's declaration owns its constraints; the annotation is laxer.
             param_schema = grouped
         elif d.is_list:
             param_schema = {"type": "array", "items": _python_type_to_schema(d.target_type)}
@@ -338,16 +298,11 @@ def _extract_parameters(info: Any, schemas_registry: SchemaRegistry) -> _RoutePa
         if marker is not None:
             _apply_marker_constraints(param_schema, marker)
 
-        # Path parameters document the Python name; every other location honours
-        # the alias / hyphenated wire name the resolver actually reads.
+        # Path parameters document the Python name, every other the wire name.
         param_alias = d.name if location == "path" else d.wire_name
 
-        # A path parameter is always required - the route cannot match without
-        # its segment (OpenAPI 3.1 requires `required: true`). For every other
-        # location an `Optional[T]` annotation makes the value omittable even
-        # with no default: the resolver binds `None` when it is absent, so the
-        # documented contract matches the resolver only when `is_optional`
-        # (or a default) relaxes required.
+        # A path parameter is always required (OpenAPI 3.1); elsewhere `Optional[T]`
+        # omits it with no default, since the resolver binds `None` when absent.
         if location == "path":
             required = True
         elif marker is not None:
@@ -412,23 +367,17 @@ def _extract_request_body(
 ) -> dict[str, Any] | None:
     """Build the OpenAPI `requestBody` object, or `None` when no body params exist.
 
-    A JSON Pydantic body takes precedence over form fields, matching the
-    monolithic implementation. When only form fields are present, the
-    media type is `multipart/form-data` if any field is a file upload
-    (OpenAPI 3.1 Sec. 4.8.10.4), otherwise `application/x-www-form-urlencoded`.
-
-    A JSON body is always required - the resolver 422s on a missing body. A form
-    body whose every field is optional is omittable, so it is documented
-    `required: false` to match the runtime.
+    A JSON body takes precedence over form fields. For form fields the media
+    type is `multipart/form-data` when any field is a file upload (OpenAPI 3.1
+    Sec. 4.8.10.4), else `application/x-www-form-urlencoded`. A JSON body is
+    always required; a form body whose every field is optional is not.
     """
     if request_body_schema:
         return {
             "required": True,
             "content": {MIME_JSON: {"schema": request_body_schema}},
         }
-    # `Body(embed=True)` params are named keys of one JSON object body. The body
-    # is only required when at least one of them is, matching a resolver that
-    # accepts an absent body when every field carries a default.
+    # `Body(embed=True)` keys make the body required only when one of them is.
     if body_fields:
         embed_properties: dict[str, Any] = {}
         embed_required: list[str] = []
@@ -446,8 +395,7 @@ def _extract_request_body(
             "required": bool(embed_required),
             "content": {MIME_JSON: {"schema": embed_schema}},
         }
-    # A non-embedded `Body()` over a non-model receives the whole JSON body, so
-    # the body schema is that value's own schema rather than an object wrapper.
+    # A non-embedded `Body()` receives the whole JSON body, not a wrapper object.
     if scalar_body is not None:
         schema, required = scalar_body.schema, scalar_body.required
         return {"required": required, "content": {MIME_JSON: {"schema": schema}}}
@@ -470,29 +418,19 @@ def _extract_request_body(
     }
 
 
-# Component-schema names for the auto-generated validation-error response. The
-# `{"detail": [{"loc", "msg", "type"}, ...], "status_code": 422}` payload these
-# describe is what the dispatcher emits for a failed path/query/header/cookie/
-# body/form parameter, so the document advertises the body a client receives.
-# (`request_validation_exception_handler` is exported for applications that want
-# to install it; it is not registered by default and is not this path.)
+# Component names for the auto 422, whose payload the dispatcher emits.
 _VALIDATION_ERROR_SCHEMA_NAME = "ValidationError"
 _HTTP_VALIDATION_ERROR_SCHEMA_NAME = "HTTPValidationError"
 
-# The auto-added 422 response points at this internal placeholder ref rather than
-# the real component name. At finalize the placeholder is resolved to the actual
-# (collision-free) envelope component everywhere it appears. Using a placeholder
-# means a user-declared 422 that legitimately references a model named
-# `HTTPValidationError` is never mistaken for - or rewritten as - the auto entry.
+# A placeholder resolved at finalize, so a user-declared 422 referencing its own
+# `HTTPValidationError` model is never mistaken for the auto entry.
 _AUTO_VALIDATION_ERROR_REF = "#/components/schemas/__veloce_auto_http_validation_error__"
 
 # Reference key (string status code) for the auto-added 422 entry.
 _VALIDATION_ERROR_STATUS = str(HTTP_422_UNPROCESSABLE_ENTITY)
 
-# Component schemas for the validation-error envelope, mirroring the per-error
-# items `RequestValidationError` carries (`loc` / `msg` / `type`). `loc` is a
-# mixed string/int path (`["query", "n"]`, `["body", 0, "name"]`), so its items
-# accept either; the wrapper nests an array of these under `detail`.
+# The validation-error envelope, mirroring `RequestValidationError`'s per-error
+# items; `loc` is a mixed string/int path, so its items accept either.
 _VALIDATION_ERROR_COMPONENT_SCHEMAS: dict[str, dict[str, Any]] = {
     _VALIDATION_ERROR_SCHEMA_NAME: {
         "type": "object",
@@ -517,8 +455,7 @@ _VALIDATION_ERROR_COMPONENT_SCHEMAS: dict[str, dict[str, Any]] = {
                 "title": "Detail",
                 "items": {"$ref": f"#/components/schemas/{_VALIDATION_ERROR_SCHEMA_NAME}"},
             },
-            # The dispatcher emits this alongside `detail`; a schema that omits
-            # it describes a body no client actually receives.
+            # The dispatcher emits this alongside `detail`.
             "status_code": {"type": "integer", "title": "Status Code"},
         },
     },
@@ -588,16 +525,10 @@ def _extract_responses(
 ) -> dict[str, dict[str, Any]]:
     """Build the operation `responses` map.
 
-    Seeds with the success response (re-keyed to `info.status_code` when
-    not 200), attaches `response_model` under the primary status, then
-    merges entries from `info.responses` - each carrying `model`,
-    `description`, or any free-form OpenAPI keys.
-
-    When `has_validatable_params` is set and the user has not already declared
-    a 422, an `HTTPValidationError` entry is added: the resolver raises
-    `RequestValidationError` (rendered as a 422 `{"detail": [...]}`) whenever a
-    request-bound parameter fails validation, so the documented responses match
-    what the operation actually returns.
+    Seeds with the success response (re-keyed to `info.status_code` when not
+    200), attaches `response_model` under the primary status, then merges
+    `info.responses`. An `HTTPValidationError` 422 is added when
+    `has_validatable_params` is set and the user declared no 422 of their own.
     """
     responses: dict[str, dict[str, Any]] = {
         str(HTTP_200_OK): {"description": info.response_description},
@@ -617,12 +548,8 @@ def _extract_responses(
         if resp_schema is not None:
             responses[primary_status]["content"] = {MIME_JSON: {"schema": resp_schema}}
 
-    # Auto-add the validation-error response for operations whose request is
-    # validated. Skipped when the user already declares a 422 - via `responses=`
-    # OR `openapi_extra={"responses": {"422": ...}}` (which is deep-merged onto
-    # the operation later) - so a custom 422 shape / media type is preserved
-    # rather than overwritten. Operations with no validatable parameter never
-    # advertise a 422 the resolver cannot raise.
+    # Skipped when the user already declares a 422 through either route, so a
+    # custom shape is preserved; and never added where the resolver cannot raise one.
     _openapi_extra_responses = (info.openapi_extra or {}).get("responses") or {}
     if (
         has_validatable_params
@@ -664,17 +591,11 @@ def _extract_responses(
 def _scheme_definition(scheme: Any) -> tuple[str, dict[str, Any]] | None:
     """Return `(name, OpenAPI security scheme object)` for a Security() target.
 
-    The scheme describes itself through `SecurityScheme.openapi_scheme`. A
-    nine-branch `isinstance` cascade over the built-in classes lived here and
-    returned `None` for everything else, so a user's own `SecurityScheme`
-    subclass authenticated correctly at runtime and was published as an
-    endpoint with no security requirement - a document asserting the route was
-    open. Asking the object means a scheme defined outside this package is
-    published like a built-in.
-
-    `None` still means "cannot be described", which the caller reports rather
-    than passing off as an unguarded route. The name is the scheme's class name
-    so repeated registrations share one `components.securitySchemes` entry.
+    The scheme describes itself through `SecurityScheme.openapi_scheme`, so one
+    defined outside this package is published like a built-in. `None` means
+    "cannot be described", which the caller reports rather than passing off as
+    an unguarded route. The name is the scheme's class name, so repeated
+    registrations share one `components.securitySchemes` entry.
     """
     describe = getattr(scheme, "openapi_scheme", None)
     if describe is None:
@@ -688,13 +609,9 @@ def _scheme_definition(scheme: Any) -> tuple[str, dict[str, Any]] | None:
 def _dependency_params(target: Any) -> collections.abc.Iterator[tuple[Any, Any, Any]]:
     """Yield `(parameter, marker, annotation)` for each parameter of `target`.
 
-    The descent step both dependency-graph walkers take: introspect, then read
-    each parameter's marker however it was spelled. Written twice, a change to
-    how a marker is recognised reaches one walker and not the other - and the
-    two answer questions (which security schemes guard this route; does
-    anything here consume validated input) that must agree about what the graph
-    contains. The annotation is the resolved one, falling back to whatever the
-    signature carries. Yields nothing for a target that cannot be introspected.
+    The descent step both dependency-graph walkers take, shared so they cannot
+    disagree about what the graph contains. The annotation is the resolved one,
+    falling back to the signature's. Yields nothing for an opaque target.
     """
     sig, hints = _handler_intro(target)
     if sig is None:
@@ -717,26 +634,21 @@ def _collect_security_requirements(
     seen: set[int] = set()
 
     def visit(dep: Any) -> None:
-        # `dep` is either a Depends/Security marker, or a callable that
-        # might be one of the known scheme classes.
+        # Either a Depends/Security marker, or a possibly-known scheme callable.
         if isinstance(dep, Depends):
             target = dep.dependency
             scheme_def = _scheme_definition(target)
             if scheme_def is not None:
                 name, definition = scheme_def
                 registry.setdefault(name, definition)
-                # Scopes only matter for OAuth2; Security() carries them,
-                # plain Depends doesn't.
+                # Scopes only matter for OAuth2, and only `Security()` carries them.
                 scopes = list(getattr(dep, "scopes", []) or [])
                 requirements.append({name: scopes})
-                # Don't recurse past a known scheme - its internals are
-                # implementation, not policy.
+                # A known scheme's internals are implementation, not policy.
                 return
             if isinstance(target, SecurityScheme):
-                # It guards the route but cannot say how. Publishing nothing
-                # asserts the route is open, which is the one thing that must
-                # not happen quietly - a generated client and the Authorize
-                # button both read this as "no credential needed".
+                # It guards the route but cannot say how, and publishing nothing
+                # would assert the route is open to every reader of the document.
                 warnings.warn(
                     f"{type(target).__name__} guards a route but does not implement "
                     "openapi_scheme(), so the route is published with no security "
@@ -815,8 +727,7 @@ def _operation_base(info: Any, method_lower: str) -> dict[str, Any]:
     caller adds whatever its own kind of operation defines on top.
     """
     # OpenAPI 3.1 Sec. 4.8.10 - operationId must be unique across the document.
-    # Explicit override wins; default = `<name>_<method>`. Collisions among the
-    # auto-generated form are resolved later in `_disambiguate_operation_ids`.
+    # Explicit override wins; auto collisions resolve in `_disambiguate_operation_ids`.
     op_id = info.operation_id if info.operation_id else f"{info.name}_{method_lower}"
     operation: dict[str, Any] = {
         "summary": info.summary or info.name,
@@ -864,17 +775,12 @@ def _build_operation(
     if request_body is not None:
         operation["requestBody"] = request_body
 
-    # Walk this route's Security() chain to register OpenAPI security
-    # schemes and attach the operation-level `security` requirement.
+    # Registers the schemes and attaches the operation-level `security`.
     security_requirements = _collect_security_requirements(info, security_schemes_registry)
     if security_requirements:
         operation["security"] = security_requirements
 
-    # An operation can return a 422 only when it carries something the resolver
-    # validates: a path/query/header/cookie parameter, a JSON body, a form field,
-    # or any validated input inside a `Depends(...)` sub-dependency. A handler
-    # with none of these never raises `RequestValidationError`, so it must not
-    # advertise a 422.
+    # Only an operation carrying validated input, `Depends` included, can 422.
     operation["responses"] = _extract_responses(
         info, schemas_registry, _has_validatable_params(inputs, request_body, info)
     )
@@ -908,19 +814,10 @@ def _walk_webhooks(
 ) -> dict[str, Any]:
     """Return the OpenAPI 3.1 `webhooks` map from `app.webhooks`.
 
-    Empty when no webhooks router exists or it has no routes. Each entry
-    is keyed by event name (the path on `@app.webhooks.post`) and carries
-    one operation per HTTP method registered. Each webhook's auto-generated
-    operationId is appended to `auto_ops` so it flows through the same
-    document-wide disambiguation pass as normal routes; two webhooks sharing a
-    handler name (or a webhook colliding with a route) would otherwise emit a
-    duplicate operationId, which is invalid for code generation (OpenAPI 3.1
-    Sec. 4.8.10). A webhook that pins its own `operation_id` goes to
-    `explicit_ops` instead, so the pass reserves it rather than renaming it.
-
-    `app.webhooks` is an ordinary `Blueprint` and each entry an ordinary
-    `RouteInfo`, so a webhook accepts every operation keyword a route does;
-    the shared `_operation_base` is what keeps them describing the same fields.
+    Each entry is keyed by event name and carries one operation per registered
+    method. An auto-generated operationId joins `auto_ops` so it flows through
+    the document-wide disambiguation pass (OpenAPI 3.1 Sec. 4.8.10 requires
+    uniqueness); a pinned one goes to `explicit_ops` and is reserved instead.
     """
     webhook_items: dict[str, Any] = {}
     webhooks_router = app.webhooks
@@ -932,9 +829,7 @@ def _walk_webhooks(
         for wmethod in wmethods:
             method_lower = wmethod.lower()
             op = _operation_base(winfo, method_lower)
-            # The disambiguator keys collisions on a deterministic identifier; a
-            # webhook has no URL path, so its event name stands in as the
-            # suffix source if a collision must be resolved.
+            # A webhook has no URL path, so its event name is the suffix source.
             if winfo.operation_id and explicit_ops is not None:
                 explicit_ops.append((op, event, method_lower))
             else:
@@ -957,22 +852,13 @@ def _disambiguate_operation_ids(
     """Make every auto-generated operationId unique in place.
 
     OpenAPI 3.1 Sec. 4.8.10 requires `operationId` unique across the document.
-    Two handlers sharing a function name on different paths would otherwise emit
-    the same id and break client code generation. Each duplicate after the
-    first keeps a deterministic path-derived suffix; a single aggregated WARNING
-    lists every collision and its resolution.
-
-    User-pinned operationIds (`explicit_ops`) are reserved up front and never
-    rewritten: an auto id clashing with a pinned id (or with another auto id) is
-    suffixed instead. Two identical *explicit* ids are a user error the document
-    cannot silently fix by renaming a pinned id, so they are surfaced via a
-    WARNING rather than left to ship duplicated.
+    Each duplicate after the first takes a deterministic path-derived suffix,
+    aggregated into one WARNING. User-pinned ids (`explicit_ops`) are reserved
+    up front and never rewritten; two identical pinned ids are warned about.
     """
     explicit_ops = explicit_ops or []
 
-    # Reserve every explicit id first so auto ids are disambiguated against them.
-    # `assigned` accumulates ids already taken across the whole document, so the
-    # suffix search below never collides with a pinned id or an earlier auto id.
+    # Explicit ids are reserved first, so the suffix search never re-collides.
     assigned: set[str] = set()
     explicit_seen: dict[str, tuple[str, str]] = {}
     explicit_dupes: list[str] = []
@@ -993,10 +879,7 @@ def _disambiguate_operation_ids(
 
     resolutions: list[str] = []
     for op_id, group in by_id.items():
-        # An auto id is left on its bare form only when nothing else (no pinned
-        # id, no earlier auto group) already claimed it. Otherwise every member
-        # of the group, including the first, is suffixed from its path so the
-        # assignment is stable across regenerations of the document.
+        # Otherwise every member is suffixed from its path, stable across rebuilds.
         free_first = op_id not in assigned
         for index, (op, path, method) in enumerate(group):
             if index == 0 and free_first:
@@ -1039,8 +922,7 @@ def _validate_document(schema: dict[str, Any]) -> None:
     `ValueError` that names the offending path and method.
     """
     # `info.title` and `info.version` are REQUIRED and are strings - OpenAPI 3.1
-    # Sec. 4.8.2. The pass checked `$ref`s and container shapes and never these,
-    # so `validate_openapi=True` accepted a document it was asked to reject.
+    # Sec. 4.8.2.
     info = schema.get("info")
     if not isinstance(info, dict):
         raise ValueError("OpenAPI document `info` must be an object")
@@ -1089,18 +971,12 @@ def _validate_document(schema: dict[str, Any]) -> None:
 # ── Public API ─────────────────────────────────────────────
 
 
-# `app` is `Any` rather than `Veloce`: `OpenAPIMixin.openapi()` calls this with
-# `self`, which only the assembled subclass declares to be a `Veloce`. Every
-# helper it hands the app to takes the concrete type, so the check is restored
-# one frame in.
+# `app` is `Any` because `OpenAPIMixin.openapi()` calls this with `self`.
 def get_openapi_schema(app: Any) -> dict[str, Any]:
     """Generate OpenAPI 3.1 schema from the app's registered routes."""
     if not app.openapi_version.startswith("3.1"):
-        # The schema objects are written in JSON Schema 2020-12, the dialect
-        # OpenAPI 3.1 adopts, whatever this string says - `prefixItems` for a
-        # fixed-shape tuple and `examples` inside a schema are 3.1-only. A
-        # 3.0 consumer rejects such a document without explaining why, so the
-        # version that will not validate is named here instead.
+        # The schemas are JSON Schema 2020-12, the dialect OpenAPI 3.1 adopts, so
+        # naming a 3.0 version here would describe a document 3.0 cannot validate.
         warnings.warn(
             f"openapi_version is {app.openapi_version!r}, and the document's schemas are "
             "written in the JSON Schema 2020-12 dialect that OpenAPI 3.1 adopts; a 3.0 "
@@ -1109,9 +985,7 @@ def get_openapi_schema(app: Any) -> dict[str, Any]:
             stacklevel=2,
         )
     schema: dict[str, Any] = {
-        # `app.openapi_version` is documented as "the spec version string emitted
-        # in the document", and was emitted nowhere: setting it changed the
-        # attribute and not the document.
+        # `app.openapi_version` is the spec version string emitted in the document.
         "openapi": app.openapi_version,
         "info": _build_info_object(app),
         "paths": {},
@@ -1129,26 +1003,18 @@ def get_openapi_schema(app: Any) -> dict[str, Any]:
     schemas_registry = SchemaRegistry(separate_input_output=app.separate_input_output_schemas)
     security_schemes_registry: dict[str, dict[str, Any]] = {}
 
-    # Operations whose operationId was auto-generated (no explicit override),
-    # recorded so a deterministic suffix can resolve duplicates afterwards.
+    # Auto-generated operationIds, recorded so a suffix can resolve duplicates.
     auto_ops: list[tuple[dict[str, Any], str, str]] = []
-    # Operations carrying a user-pinned `operation_id`. These are reserved
-    # during disambiguation so an auto id colliding with a pinned id suffixes
-    # the AUTO one (a user's explicit id is never rewritten), and two identical
-    # pinned ids are detected and warned about (a user error the document can't
-    # silently fix by renaming).
+    # User-pinned ids, reserved during disambiguation so a colliding auto id is the
+    # one suffixed; two identical pinned ids are warned about instead.
     explicit_ops: list[tuple[dict[str, Any], str, str]] = []
 
-    # Set once any operation auto-adds the validation-error response, so the
-    # `HTTPValidationError` / `ValidationError` component schemas are emitted only
-    # when something actually references them.
+    # Set once anything auto-adds a 422, so the components are emitted only then.
     needs_validation_error_schema = False
 
     for method, path, info in app.iter_routes():
-        # OpenAPI 3.1's Path Item Object has no `query` field, so a QUERY route
-        # cannot be represented without emitting an invalid operation. Omit it
-        # rather than produce an invalid document (native support awaits the
-        # OpenAPI 3.2 `query` operation - RFC 10008).
+        # OpenAPI 3.1's Path Item Object has no `query` field, so a QUERY route is
+        # omitted rather than emitted as an invalid operation (3.2 adds it).
         if method == HTTP_METHOD_QUERY:
             continue
         method_lower = method.lower()
@@ -1165,9 +1031,7 @@ def get_openapi_schema(app: Any) -> dict[str, Any]:
         else:
             auto_ops.append((operation, path, method_lower))
 
-    # Webhook operations are appended to `auto_ops` so the disambiguation pass
-    # below dedupes operationIds across BOTH routes and webhooks deterministically
-    # (routes first in collection order, then webhooks in walker order).
+    # Appended to `auto_ops` so disambiguation spans routes and webhooks alike.
     webhook_items = _walk_webhooks(app, schemas_registry, auto_ops, explicit_ops)
     if webhook_items:
         schema["webhooks"] = webhook_items
@@ -1176,11 +1040,8 @@ def get_openapi_schema(app: Any) -> dict[str, Any]:
         _disambiguate_operation_ids(auto_ops, explicit_ops)
 
     components_schemas = schemas_registry.finalize(schema)
-    # Add the validation-error component schemas only when an operation referenced
-    # them. If a user model already occupies `HTTPValidationError` / `ValidationError`,
-    # register the auto envelope under collision-free names and repoint the 422
-    # `$ref`s, so the documented validation-error payload is never silently bound to
-    # an unrelated user model.
+    # Added only when an operation referenced them, and under collision-free names
+    # when a user model holds the default ones, so no 422 binds to an unrelated model.
     if needs_validation_error_schema:
         val_name = _unique_component_name(_VALIDATION_ERROR_SCHEMA_NAME, components_schemas)
         http_name = _unique_component_name(_HTTP_VALIDATION_ERROR_SCHEMA_NAME, components_schemas)
@@ -1193,9 +1054,7 @@ def get_openapi_schema(app: Any) -> dict[str, Any]:
         http_body["properties"]["detail"]["items"]["$ref"] = f"#/components/schemas/{val_name}"
         components_schemas[val_name] = val_body
         components_schemas[http_name] = http_body
-        # Operations reference the auto-422 via an internal placeholder; resolve
-        # it to the finalized component name everywhere (always, since the
-        # placeholder is never a real component).
+        # Always resolved, since the placeholder is never itself a real component.
         _repoint_validation_error_refs(schema, http_name)
     if components_schemas:
         schema["components"]["schemas"] = components_schemas
