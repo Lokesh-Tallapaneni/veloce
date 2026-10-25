@@ -33,8 +33,6 @@ from veloce._constants import (
     MIME_TEXT_PLAIN,
     MIME_TEXT_PLAIN_UTF8,
     MSG_INTERNAL_SERVER_ERROR,
-    MSG_METHOD_NOT_ALLOWED,
-    MSG_NOT_FOUND,
     STATE_INJECTED_RESPONSE,
 )
 from veloce._internal import (
@@ -47,6 +45,7 @@ from veloce._internal import (
     _current_request_var,
     _extract_host,
     _is_async_callable,
+    _serving_error_page_var,
     _unpack_response_tuple,
     dumps_for,
     offload,
@@ -78,15 +77,18 @@ from veloce.dependency import DependencyResolver, Depends
 from veloce.encoders import orjson_default
 from veloce.exceptions import (
     HTTPException,
+    MethodNotAllowed,
+    NotFound,
     http_exception_payload,
 )
 from veloce.helpers import g, jsonify
-from veloce.http._body import too_large_payload
+from veloce.http._body import body_too_large, too_large_payload
 from veloce.http.request import Request
 from veloce.http.response import (
     JSONResponse,
     RedirectResponse,
     Response,
+    header_present,
 )
 from veloce.instrumentation import RequestMetrics
 from veloce.middleware import Middleware
@@ -100,18 +102,20 @@ from veloce.signals import (
 # ── Dispatch-scoped module state ───────────────────────────
 
 
-# Cache of `(wants_request, wants_exc)` flags per exception handler - the
-# `inspect.signature` walk inside `_call_exc_handler` repeats on every
-# raised exception otherwise. WeakKey so handler GC reclaims the entry.
-_exc_handler_sig_cache: weakref.WeakKeyDictionary[Callable[..., Any], tuple[bool, bool]] = (
+# Cache of the `(request_key, exc_key)` binding per exception handler - the
+# signature walk inside `_call_exc_handler` repeats on every raised exception
+# otherwise. WeakKey so handler GC reclaims the entry.
+_HookBinding = tuple[str | None, str | None]
+
+_exc_handler_sig_cache: weakref.WeakKeyDictionary[Callable[..., Any], _HookBinding] = (
     weakref.WeakKeyDictionary()
 )
 
-# Cache of `(wants_request, wants_response)` flags per after-request hook.
+# Cache of the `(request_key, response_key)` binding per after-request hook.
 # A hook may reasonably be written to take the response alone, both values, or
 # neither; passing both unconditionally turned the first shape into a 500.
 # WeakKey so hook GC reclaims the entry.
-_after_hook_sig_cache: weakref.WeakKeyDictionary[Callable[..., Any], tuple[bool, bool]] = (
+_after_hook_sig_cache: weakref.WeakKeyDictionary[Callable[..., Any], _HookBinding] = (
     weakref.WeakKeyDictionary()
 )
 
@@ -179,9 +183,135 @@ def _is_struct_list_model(model: Any) -> bool:
     return False
 
 
+# The type an annotation has to name to claim the second value, per adapter.
+# `BaseException` rather than the raised class, so a handler annotated with its
+# own exception class, with `Exception`, or with a base of what was raised all
+# match the same way.
+_SECOND_VALUE_TYPES: dict[str, type[Any]] = {"response": Response, "exc": BaseException}
+
+
+def _resolve_hook_binding(fn: Callable[..., Any], second_name: str) -> _HookBinding:
+    """Decide which parameters of `fn` receive the request and the second value.
+
+    Three rules, applied per slot in order: the declared name (`request` and
+    `response` / `exc`), then the annotation, then position. The positional rule
+    is what makes a handler written `(req, error)` work: passing the request
+    and the exception positionally is the prevailing convention, so a handler
+    ported from elsewhere declares whatever names its author liked, and matching
+    on the name alone called it with an empty dict and answered 500.
+
+    A lone unmatched parameter is the exception to that order - it receives the
+    second value, because `(response)` and `(exc)` are what a one-argument
+    author of these two callbacks means. An author who wants the request alone
+    says so by name or by annotation, both of which are read first.
+
+    Binding is by keyword under the parameter's own name, so a positional-only
+    parameter cannot be filled; that shape raises from the call, as before.
+
+    A required parameter beyond the two values is the author's error and raises
+    `TypeError` here: only two values exist to pass, and the alternative is
+    Python raising the same error with less said about why.
+    """
+    # Annotations are strings under PEP 563, so they are evaluated here - once
+    # per callable, on the cold path. `eval_str` resolves the whole signature or
+    # none of it; one annotation that cannot be evaluated therefore leaves every
+    # annotation unusable, and the positional rule decides instead of raising.
+    evaluated = True
+    try:
+        params = inspect.signature(fn, eval_str=True).parameters
+    except Exception:  # noqa: BLE001 - any unevaluatable annotation, not just NameError
+        params = inspect.signature(fn).parameters
+        evaluated = False
+
+    # A callable taking `**kwargs` accepts whatever is offered.
+    if any(p.kind is p.VAR_KEYWORD for p in params.values()):
+        return "request", second_name
+
+    request_key = "request" if "request" in params else None
+    second_key = second_name if second_name in params else None
+    # No `VAR_KEYWORD` can reach here: the `any(...)` above returned for every
+    # signature that has one.
+    bindable = [p for p in params.values() if p.kind is not p.VAR_POSITIONAL]
+
+    if evaluated and (request_key is None or second_key is None):
+        second_type = _SECOND_VALUE_TYPES[second_name]
+        for p in bindable:
+            # `isinstance(..., type)` skips what cannot answer `issubclass` -
+            # `Request | None`, `Annotated[...]`, a bare string - which falls
+            # through to position rather than guessing at the parameterisation.
+            if p.name in (request_key, second_key) or not isinstance(p.annotation, type):
+                continue
+            if request_key is None and issubclass(p.annotation, Request):
+                request_key = p.name
+            elif second_key is None and issubclass(p.annotation, second_type):
+                second_key = p.name
+
+    # Position fills only a parameter that has no value yet. A default is the
+    # author stating one, and the closure-capture idiom
+    # (`async def hook(response, _name=name)`) is the common way a hook carries
+    # a third parameter it supplies itself.
+    # `self` / `cls` are never ours to fill. An unbound method registered
+    # directly (`app.after_request(Ext.tag)`) otherwise had the response bound
+    # into its `self` by position and ran against it in silence; leaving it
+    # unbound sends it to the `unfillable` refusal, which names the parameter.
+    fillable = [
+        p.name
+        for p in bindable
+        if p.name != request_key
+        and p.name != second_key
+        and p.default is p.empty
+        and p.name not in ("self", "cls")
+    ]
+    if fillable and (request_key is None or second_key is None):
+        if request_key is None and second_key is None and len(fillable) == 1:
+            # One parameter and nothing matched means the second value, not the
+            # request: `(response)` and `(exc)` are the established one-argument
+            # spellings for these two callbacks, and this adapter serves only
+            # them. Binding the request instead is silent - an after-request
+            # hook that returns anything but a `Response` is ignored, so the
+            # header it sets never lands and nothing reports it.
+            second_key = fillable[0]
+        elif request_key is not None:
+            # The request matched, so the remaining value is the second one and
+            # `(request, e)` means what it looks like.
+            second_key = fillable[0]
+        elif second_key is None:
+            # Neither matched, so they are in the order the values are passed -
+            # the `(req, error)` shape this rule exists for.
+            for name in fillable:
+                if request_key is None:
+                    request_key = name
+                elif second_key is None:
+                    second_key = name
+                else:
+                    break
+        # The remaining case - the SECOND value matched by name or annotation and
+        # a required parameter is still unbound - is left unbound deliberately.
+        # It is a parameter this adapter was never asked to supply, and filling
+        # the request into it is silent: an after-request hook that returns
+        # anything but a `Response` is ignored, so the header it set never lands
+        # and nothing reports why. Unbound reaches the `unfillable` refusal
+        # below, which names the parameter.
+        #
+        # That refusal happens on the FIRST request this hook runs for, not at
+        # registration: nothing in `src/` resolves a binding until
+        # `_adapt_hook_kwargs` needs one. Loud and attributable beats silent and
+        # wrong, but the author does not learn of it from an import.
+
+    unfillable = [n for n in fillable if n != request_key and n != second_key]
+    if unfillable:
+        raise TypeError(
+            f"{getattr(fn, '__qualname__', None) or fn!r} declares required "
+            f"parameter(s) {', '.join(unfillable)} that cannot be filled: only "
+            f"the request and the {second_name} are passed, so give them a "
+            "default or remove them"
+        )
+    return request_key, second_key
+
+
 def _adapt_hook_kwargs(
-    fn: Callable,
-    cache: MutableMapping[Any, tuple[bool, bool]],
+    fn: Callable[..., Any],
+    cache: MutableMapping[Any, _HookBinding],
     second_name: str,
     request: Request,
     second_value: Any,
@@ -189,11 +319,15 @@ def _adapt_hook_kwargs(
     """Select the kwargs `fn` accepts, from `request` and one other value.
 
     After-request hooks and exception handlers are the same adapter: both take
-    `request` and one more parameter (`response` / `exc`), either by name or via
-    `**kwargs`, and both cache the answer per callable. Written out twice, the
-    copies drifted - only one of them handled `**kwargs`, so an exception handler
-    declared `def handler(**kwargs)` was called with an empty dict and could not
-    see the exception it was handling.
+    `request` and one more parameter (`response` / `exc`), and both cache the
+    answer per callable. Written out twice, the copies drifted - only one of
+    them handled `**kwargs`, so an exception handler declared
+    `def handler(**kwargs)` was called with an empty dict and could not see the
+    exception it was handling.
+
+    `_resolve_hook_binding` decides which parameter receives which value; the
+    answer is a pair of keyword names cached per callable, so the per-request
+    cost is one cache lookup and the dict build below.
 
     A plain function, not a coroutine: it is called from inside an existing
     `await` on the response path, and wrapping it would add a coroutine per hook
@@ -207,24 +341,19 @@ def _adapt_hook_kwargs(
     # cached: its signature is resolved per call, which is the cost the guard on
     # the write was already accepting.
     try:
-        flags = cache.get(fn)
+        binding = cache.get(fn)
     except TypeError:
-        flags = None
-    if flags is None:
-        params = inspect.signature(fn).parameters
-        # A callable taking `**kwargs` accepts whatever is offered.
-        if any(p.kind is p.VAR_KEYWORD for p in params.values()):
-            flags = (True, True)
-        else:
-            flags = ("request" in params, second_name in params)
+        binding = None
+    if binding is None:
+        binding = _resolve_hook_binding(fn, second_name)
         with contextlib.suppress(TypeError):
-            cache[fn] = flags
-    wants_request, wants_second = flags
+            cache[fn] = binding
+    request_key, second_key = binding
     kwargs: dict[str, Any] = {}
-    if wants_request:
-        kwargs["request"] = request
-    if wants_second:
-        kwargs[second_name] = second_value
+    if request_key is not None:
+        kwargs[request_key] = request
+    if second_key is not None:
+        kwargs[second_key] = second_value
     return kwargs
 
 
@@ -242,17 +371,28 @@ class DispatchMixin(AppHost):
     ) -> Response:
         """Build the 413 for an over-`MAX_CONTENT_LENGTH` body, run the response phase.
 
-        Shared by the eager declared/buffered check and the streamed-body drain so
-        both reject with the identical `{detail, status_code, limit}` payload.
+        Offered to the app's error handlers as the `RequestEntityTooLarge` the
+        streamed drain raises, so one registration reshapes the refusal at every
+        point it can be made rather than at the one that happens to be dispatched.
+
+        With nothing registered the body stays the one `too_large_payload` builds
+        for both transports - the eager declared/buffered checks and the native
+        server answer from that single builder, so an app served two ways still
+        describes the refusal one way.
         """
-        # Encoded against `self` rather than through `JSONResponse`'s own
-        # resolution: this runs before the app contextvar is bound, so the
-        # dialect was applied only when a previous request on the same task had
-        # left it set.
-        response: Response = JSONResponse._from_encoded(
-            dumps_for(self, too_large_payload(max_size))
-        )
-        response.status_code = status.HTTP_413_REQUEST_ENTITY_TOO_LARGE
+        exc = body_too_large(max_size)
+        handler = self._find_error_handler(request, exc)
+        if handler is not None:
+            response = await self._dispatch_exc_handler(handler, request, exc)
+        else:
+            # Encoded against `self` rather than through `JSONResponse`'s own
+            # resolution: this runs before the app contextvar is bound, so the
+            # dialect was applied only when a previous request on the same task
+            # had left it set.
+            response = JSONResponse.from_bytes(
+                dumps_for(self, too_large_payload(max_size)),
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            )
         # No route matched on a reject, so no per-route exclusion chain exists.
         if cp is not None and cp.http_post is not None:
             response = await self._run_response_phase(cp.http_post, request, response, False)
@@ -425,9 +565,9 @@ class DispatchMixin(AppHost):
         when none are registered, in which case the caller does not reach here -
         so the slot is read directly with no per-request `None` guard.
         """
-        funcs: tuple[Callable, ...] = cp.http_around  # type: ignore[assignment]
+        funcs: tuple[Callable[..., Any], ...] = cp.http_around  # type: ignore[assignment]
 
-        def _make_next(level: int) -> Callable:
+        def _make_next(level: int) -> Callable[..., Any]:
             _called = False
 
             async def call_next(req: Request) -> Response:
@@ -665,12 +805,7 @@ class DispatchMixin(AppHost):
             # Both prefer a handler on the failing request's blueprint chain
             # before the app-level tables, so a blueprint's handler stays scoped
             # to its own routes.
-            handler = self._find_scoped_status_handler(
-                exc.status_code, request
-            ) or self._find_scoped_exception_handler(type(exc), request)
-            if handler:
-                return await self._run_exc_handler_response(request, exc, handler, cp, excluded)
-            return await self._default_http_exception_response(request, exc, cp, excluded)
+            return await self._http_exception_response(request, exc, cp, excluded)
         except Exception as exc:
             _exc = exc
             handler = self._find_scoped_exception_handler(type(exc), request)
@@ -810,7 +945,7 @@ class DispatchMixin(AppHost):
         self,
         request: Request,
         exc: Exception,
-        handler: Callable,
+        handler: Callable[..., Any],
         cp: CompiledPipeline,
         excluded: bool,
     ) -> Response:
@@ -819,21 +954,63 @@ class DispatchMixin(AppHost):
         response = await self._run_response_phase(cp.http_post, request, response, excluded)
         return response
 
-    async def _default_http_exception_response(
-        self, request: Request, exc: HTTPException, cp: CompiledPipeline, excluded: bool
-    ) -> Response:
-        """Shape an unhandled `HTTPException` into the default JSON error body.
+    def _find_error_handler(
+        self, request: Request, exc: HTTPException
+    ) -> Callable[..., Any] | None:
+        """Find the error handler for `exc` on this request, or `None`.
 
-        A `ValidationError` / `RequestValidationError` carries a structured
-        `.errors` list - emitted verbatim as `{"detail": [...]}` - rather than
-        the stringified repr stored in `exc.detail`.
+        The one place the handler table is consulted for a failing request, so
+        every built-in error offers itself to the same registration rather than
+        to a lookup of its own. A status-code handler wins over a class handler;
+        the class walk follows the MRO, so `@app.exception_handler(HTTPException)`
+        catches every subclass. Both prefer a handler on the failing request's
+        blueprint chain before the app-level tables.
+
+        Synchronous, and returns the handler rather than the response, because
+        each caller owns a different default and a different phase to run: the
+        shared part is the lookup, and wrapping it in a coroutine would add an
+        awaited frame to every raised `HTTPException` to do two dict walks.
         """
-        response: Response = JSONResponse(
-            http_exception_payload(exc),
-            status_code=exc.status_code,
-            headers=exc.headers,
-        )
-        response = await self._run_response_phase(cp.http_post, request, response, excluded)
+        return self._find_scoped_status_handler(
+            exc.status_code, request
+        ) or self._find_scoped_exception_handler(type(exc), request)
+
+    async def _http_exception_response(
+        self,
+        request: Request,
+        exc: HTTPException,
+        cp: CompiledPipeline | None,
+        excluded: bool = False,
+    ) -> Response:
+        """Build the response for an `HTTPException` and run the response phase.
+
+        The default body is `{"detail": ..., "status_code": ...}` with
+        `exc.headers` applied; a `ValidationError` / `RequestValidationError`
+        carries a structured `.errors` list, emitted verbatim as
+        `{"detail": [...]}` rather than the stringified repr in `exc.detail`.
+
+        Encoded against `self` rather than through `JSONResponse`'s own
+        resolution because a pre-dispatch refusal reaches here before dispatch
+        binds the app contextvar, so the app's dialect would otherwise apply
+        only when an earlier request on the same task had left it set.
+
+        `cp` is `None` for a caller with no pipeline to run.
+        """
+        handler = self._find_error_handler(request, exc)
+        if handler is not None:
+            response = await self._dispatch_exc_handler(handler, request, exc)
+        else:
+            response = JSONResponse.from_bytes(
+                dumps_for(self, http_exception_payload(exc)),
+                status_code=exc.status_code,
+                headers=exc.headers or None,
+            )
+        # An empty response chain has nothing to run either way: `excluded` is
+        # True only on a route that excludes middleware, which requires some to
+        # exist, so `http_post` is never None in that branch. A pre-dispatch
+        # refusal matched no route, so it leaves `excluded` at its default.
+        if cp is not None and cp.http_post is not None:
+            response = await self._run_response_phase(cp.http_post, request, response, excluded)
         return response
 
     async def _shape_server_error(
@@ -986,7 +1163,7 @@ class DispatchMixin(AppHost):
             and match.route_info.subdomain is not None
             and not self._subdomain_matches(request, match.route_info.subdomain)
         ):
-            raise HTTPException(status.HTTP_404_NOT_FOUND, MSG_NOT_FOUND)
+            raise NotFound()
 
         # Host constraint check - the full `Host` header must equal
         # the route's declared `host` (case-insensitive, port-stripped).
@@ -994,7 +1171,7 @@ class DispatchMixin(AppHost):
         if match is not None and match.route_info.host is not None:
             req_host = _extract_host(request.headers.get(HEADER_HOST, "") or "")
             if req_host != match.route_info.host:
-                raise HTTPException(status.HTTP_404_NOT_FOUND, MSG_NOT_FOUND)
+                raise NotFound()
 
         # Redirect slashes (like common web frameworks): /users -> /users/ or vice versa
         if match is None and self.redirect_slashes:
@@ -1045,16 +1222,36 @@ class DispatchMixin(AppHost):
                         cp.http_post, request, response, excluded
                     )
                     return response
+                # RFC 9110 Sec. 15.5.6: a 405 names the methods it does
+                # serve, so the `Allow` header rides on the exception and a
+                # registered handler can restate it. The default body reads its
+                # detail, status and headers off that same exception, so the
+                # refusal has one definition here rather than three.
+                #
+                # `allowed` stays off the exception, and this body stays off
+                # `http_exception_payload`: the 405 answers `{detail, allowed}`
+                # with no `status_code`, unlike every other error, so routing it
+                # through that builder the way the 413 routes `limit` would add
+                # a key to a payload clients already read.
+                # The refusal carries its own public class, not a bare
+                # `HTTPException`: `@app.exception_handler(MethodNotAllowed)` is
+                # the obvious registration for it, and against the base class
+                # that handler silently never fired. Being a subclass it still
+                # matches a broad `HTTPException` handler, and its `code` /
+                # `description` are 405 / "Method Not Allowed", so the default
+                # body is byte-for-byte what it was.
+                exc_405 = MethodNotAllowed(headers={HEADER_ALLOW: ", ".join(allowed)})
                 return await self._handle_error(
                     request,
-                    status.HTTP_405_METHOD_NOT_ALLOWED,
+                    exc_405.status_code,
                     JSONResponse(
-                        {"detail": MSG_METHOD_NOT_ALLOWED, "allowed": allowed},
-                        status_code=status.HTTP_405_METHOD_NOT_ALLOWED,
-                        headers={HEADER_ALLOW: ", ".join(allowed)},
+                        {"detail": exc_405.detail, "allowed": allowed},
+                        status_code=exc_405.status_code,
+                        headers=exc_405.headers,
                     ),
+                    exc_405,
                 )
-            raise HTTPException(status.HTTP_404_NOT_FOUND, MSG_NOT_FOUND)
+            raise NotFound()
 
         request.path_params = match.path_params
         # A routing rule's `defaults` fill in fixed values for params the
@@ -1110,7 +1307,7 @@ class DispatchMixin(AppHost):
 
     async def _resolve_dependencies(
         self, request: Request, match: Any
-    ) -> tuple[dict, DependencyResolver | None]:
+    ) -> tuple[dict[str, Any], DependencyResolver | None]:
         """Build the handler kwargs and the resolver that backs them.
 
         Returns `(kwargs, resolver)`. The resolver is `None` for trivial /
@@ -1293,29 +1490,70 @@ class DispatchMixin(AppHost):
     # ── Error handling and handler invocation ──────────────
 
     async def _handle_error(
-        self,
-        request: Request,
-        status_code: int,
-        default: Response,
-        exc: BaseException | None = None,
+        self, request: Request, status_code: int, default: Response, exc: BaseException
     ) -> Response:
-        """Check for status-code handler, fall back to default response."""
-        # Prefer a handler on the failing request's blueprint chain (a
-        # `@bp.errorhandler(500)` scoped to its own routes) before the app-level
-        # table, so a blueprint status handler still fires on the unhandled
-        # exception -> 500 path, not only on the HTTPException path.
-        handler = self._find_scoped_status_handler(status_code, request)
-        if handler:
-            # Adapt to the handler's signature rather than assuming it takes
+        """Build an error whose body is composed here, through a handler when one matches.
+
+        For the refusals that are not raised: the 405, whose body names the
+        methods the path does serve, and the 500 that an unhandled exception
+        degrades to. `default` is what the framework answers when nothing is
+        registered.
+        """
+        if isinstance(exc, HTTPException):
+            # Offered to the status table and then the class table, so a broad
+            # `@app.exception_handler(HTTPException)` reshapes this refusal the
+            # way it reshapes a 404 - without it, one registration could not
+            # cover every built-in error.
+            handler = self._find_error_handler(request, exc)
+            response = None
+            if handler is not None:
+                response = await self._dispatch_exc_handler(handler, request, exc)
+                # A handler that answered this same status inherits the headers
+                # the refusal declared, unless it set them itself. RFC 9110
+                # Sec. 15.5.6 makes `Allow` a MUST on a 405, and the class
+                # handler table reaches the 405 only now, so without this the
+                # header vanishes from every application that registers one
+                # broad handler - which it carried before. A handler answering a
+                # different status keeps its own headers untouched: `Allow` on a
+                # 302 to a login page would describe the wrong response.
+                #
+                # Scoped to the refusals composed here rather than applied to
+                # every `HTTPException`: a handler dropping `exc.headers` is
+                # long-standing behaviour elsewhere (an `abort(401, headers=...)`
+                # challenge is lost the same way) and changing that is a
+                # decision about the whole error surface, tracked separately.
+                if exc.headers and response.status_code == exc.status_code:
+                    for _name, _value in exc.headers.items():
+                        if not header_present(response.headers, _name):
+                            response.headers[_name] = _value
+        else:
+            # Prefer a handler on the failing request's blueprint chain (a
+            # `@bp.errorhandler(500)` scoped to its own routes) before the
+            # app-level table, so a blueprint status handler still fires on the
+            # unhandled exception -> 500 path, not only on the HTTPException
+            # path. The class tables are deliberately not re-walked here: the
+            # caller already missed them on this exception, and a `ValueError`
+            # is not an HTTP error for an `HTTPException` handler to claim.
+            handler = self._find_scoped_status_handler(status_code, request)
+            # Adapted to the handler's signature rather than assuming it takes
             # only `request`. The same handler registered for a status code is
             # reachable from here and from `handle_http_exception`, which passes
             # the exception - so a `(request, exc)` handler must be callable on
             # both paths, or the `TypeError` escapes dispatch itself.
-            if exc is None:
-                exc = HTTPException(status_code=status_code)
-            result = await self._call_exc_handler(handler, request, exc)
-            return await self._run_response_middleware(request, self._coerce_response(result))
-        return await self._run_response_middleware(request, default)
+            #
+            # Through the same guard the `HTTPException` arm uses: this is the
+            # unhandled-exception path, so a handler that raises here had no
+            # outer `except` left to meet and the client received no response
+            # at all - including under `PROPAGATE_EXCEPTIONS=False`, where a
+            # buggy handler is supposed to degrade to the standard 500.
+            response = (
+                await self._dispatch_exc_handler(handler, request, exc)
+                if handler is not None
+                else None
+            )
+        return await self._run_response_middleware(
+            request, default if response is None else response
+        )
 
     def _subdomain_matches(self, request: Request, subdomain: str) -> bool:
         """Check whether `request`'s host carries the expected subdomain.
@@ -1338,7 +1576,7 @@ class DispatchMixin(AppHost):
         return actual == subdomain
 
     async def _call_handler(
-        self, handler: Callable, kwargs: dict, is_coro: bool | None = None
+        self, handler: Callable[..., Any], kwargs: dict[str, Any], is_coro: bool | None = None
     ) -> Any:
         """Call a handler, supporting both sync and async.
 
@@ -1356,20 +1594,34 @@ class DispatchMixin(AppHost):
         # loop; `offload` preserves request-scoped ContextVars.
         return await offload(handler, **kwargs)
 
-    async def _call_after_hook(self, hook: Callable, request: Request, response: Response) -> Any:
+    async def _call_after_hook(
+        self, hook: Callable[..., Any], request: Request, response: Response
+    ) -> Any:
         """Call an after-request hook, adapting kwargs to match its signature."""
         kwargs = _adapt_hook_kwargs(hook, _after_hook_sig_cache, "response", request, response)
         return await self._call_handler(hook, kwargs)
 
     async def _call_exc_handler(
-        self, handler: Callable, request: Request, exc: BaseException
+        self, handler: Callable[..., Any], request: Request, exc: BaseException
     ) -> Any:
-        """Call an exception handler, adapting kwargs to match its signature."""
+        """Call an exception handler, adapting kwargs to match its signature.
+
+        The error-page flag is set here rather than at either caller: this is
+        the one point every route into a user exception handler passes through,
+        including the public `handle_http_exception` / `handle_user_exception`
+        that out-of-band callers use. A file such a handler returns stands in
+        for a representation the request did not get, so it must not be sliced
+        to that request's `Range` - see `helpers._range_negotiable_request`.
+        """
         kwargs = _adapt_hook_kwargs(handler, _exc_handler_sig_cache, "exc", request, exc)
-        return await self._call_handler(handler, kwargs)
+        token = _serving_error_page_var.set(True)
+        try:
+            return await self._call_handler(handler, kwargs)
+        finally:
+            _serving_error_page_var.reset(token)
 
     async def _dispatch_exc_handler(
-        self, handler: Callable, request: Request, exc: BaseException
+        self, handler: Callable[..., Any], request: Request, exc: BaseException
     ) -> Response:
         """Invoke a user exception handler with a guard around its own raises.
 
@@ -1689,7 +1941,7 @@ class DispatchMixin(AppHost):
 
     async def _run_response_phase(
         self,
-        fused: tuple[Callable, ...] | None,
+        fused: tuple[Callable[..., Any], ...] | None,
         request: Request,
         response: Response,
         excluded: bool,
@@ -1849,7 +2101,7 @@ class DispatchMixin(AppHost):
         return await self._run_after_hooks(request, response, _endpoint_blueprint(request.endpoint))
 
     @staticmethod
-    def ensure_sync(func: Callable) -> Callable:
+    def ensure_sync(func: Callable[..., Any]) -> Callable[..., Any]:
         """Wrap `func` so it is callable from synchronous code.
 
         - If `func` is a regular function, returns it unchanged.

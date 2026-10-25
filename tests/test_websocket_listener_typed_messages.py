@@ -284,3 +284,228 @@ def test_single_msgspec_struct_is_validated():
         ws.send_json({"type": "say"})
         with pytest.raises(RuntimeError, match="1007"):
             ws.receive_json()
+
+
+# ── a folded `Field` on a scalar message ────────────────────────────
+
+
+def test_a_scalar_messages_field_bound_is_enforced():
+    """`Annotated[int, Field(ge=1)]` declares a bound on this door too.
+
+    The model spelling already closed 1007; the scalar one had no validator at
+    all, so the frame arrived unchecked and the handler received a value its
+    own declaration forbids.
+    """
+    app = Veloce()
+    seen: list = []
+
+    @app.websocket_listener("/n")
+    async def numbers(value: Annotated[int, Field(ge=1)]):
+        seen.append(value)
+        return {"value": value}
+
+    with TestClient(app) as client, client.websocket_connect("/n") as ws:
+        ws.send_json(5)
+        assert ws.receive_json() == {"value": 5}
+        ws.send_json(0)
+        with pytest.raises(RuntimeError, match="1007"):
+            ws.receive_json()
+    assert seen == [5]
+
+
+def test_a_bound_under_an_outer_optional_is_still_enforced():
+    """`Optional[Annotated[int, Field(ge=1)]]` declares the same bound.
+
+    The frame door read `__metadata__` straight off the annotation, which sees
+    past the outer `Optional` and found nothing, so the bound was enforced on a
+    query parameter of this spelling and ignored on a frame of it.
+    """
+    app = Veloce()
+    seen: list = []
+
+    @app.websocket_listener("/outer")
+    async def outer(value: Annotated[int, Field(ge=1)] | None = None):
+        seen.append(value)
+        return {"value": value}
+
+    with TestClient(app) as client, client.websocket_connect("/outer") as ws:
+        ws.send_json(5)
+        assert ws.receive_json() == {"value": 5}
+        ws.send_json(0)
+        with pytest.raises(RuntimeError, match="1007"):
+            ws.receive_json()
+    assert seen == [5]
+
+
+def test_an_unbounded_scalar_message_is_unchanged(recwarn):
+    """The negative: a scalar with no bound keeps passing through untouched."""
+    app = Veloce()
+    seen: list = []
+
+    @app.websocket_listener("/raw")
+    async def raw(value: int):
+        seen.append(value)
+        return {"value": value}
+
+    with TestClient(app) as client, client.websocket_connect("/raw") as ws:
+        ws.send_json(0)
+        assert ws.receive_json() == {"value": 0}
+    assert seen == [0]
+
+
+def test_a_nullable_scalar_message_still_accepts_null():
+    """`Optional[int]` with a `Field` asked for `null`, so it must keep getting
+    it - the first version of this guard detected nullability from a tuple that
+    is always empty on this branch, so it refused every null frame."""
+    app = Veloce()
+    seen: list = []
+
+    @app.websocket_listener("/maybe")
+    async def maybe(value: Annotated[int | None, Field(ge=1)]):
+        seen.append(value)
+        return {"value": value}
+
+    with TestClient(app) as client, client.websocket_connect("/maybe") as ws:
+        ws.send_json(None)
+        assert ws.receive_json() == {"value": None}
+        ws.send_json(5)
+        assert ws.receive_json() == {"value": 5}
+    assert seen == [None, 5]
+
+
+@pytest.mark.parametrize(
+    "frame", ["0", "abc", [1, 2, 3], {"a": 1}, True], ids=["str", "text", "list", "object", "bool"]
+)
+def test_a_wrong_json_type_cannot_bypass_a_declared_bound(frame):
+    """`ParamBase.validate` dispatches on the runtime value, so a frame of the
+    wrong JSON type matched neither its numeric nor its string branch and the
+    bound was never evaluated - the handler received a str/list/dict/bool for a
+    declared `int`. A decoded frame carries real JSON types, so a contradicting
+    one is refused, as the agent door already refuses a contradicting argument.
+    """
+    app = Veloce()
+    seen: list = []
+
+    @app.websocket_listener("/n")
+    async def numbers(message: Annotated[int, Field(ge=1)]):
+        seen.append(message)
+        return {"got": message}
+
+    with TestClient(app) as client, client.websocket_connect("/n") as ws:
+        ws.send_json(frame)
+        with pytest.raises(RuntimeError, match="1007"):
+            ws.receive_json()
+    assert seen == [], f"the handler was reached with {frame!r}"
+
+
+def test_the_declared_type_still_accepts_its_own_frames():
+    """The negative: the gate must not refuse what the signature asks for."""
+    app = Veloce()
+
+    @app.websocket_listener("/n")
+    async def numbers(message: Annotated[int, Field(ge=1)]):
+        return {"got": message}
+
+    with TestClient(app) as client, client.websocket_connect("/n") as ws:
+        ws.send_json(5)
+        assert ws.receive_json() == {"got": 5}
+
+
+def test_a_float_message_still_accepts_a_json_integer():
+    """JSON has one number type, so a `float` declaration takes `2` as well as `2.5`."""
+    app = Veloce()
+
+    @app.websocket_listener("/f")
+    async def ratio(message: Annotated[float, Field(ge=1)]):
+        return {"got": message}
+
+    with TestClient(app) as client, client.websocket_connect("/f") as ws:
+        ws.send_json(2)
+        assert ws.receive_json() == {"got": 2}
+        ws.send_json(2.5)
+        assert ws.receive_json() == {"got": 2.5}
+
+
+def test_a_union_typed_message_accepts_every_member():
+    """`str | int` means both, so the type gate must not pick one.
+
+    The gate first peeled the union to its first member, so an `int` frame
+    closed `1007` against a signature that explicitly allows it.
+    """
+    app = Veloce()
+    seen: list = []
+
+    @app.websocket_listener("/u")
+    async def either(message: Annotated[str | int, Field(min_length=1)]):
+        seen.append(message)
+        return {"got": message}
+
+    with TestClient(app) as client, client.websocket_connect("/u") as ws:
+        ws.send_json("ab")
+        assert ws.receive_json() == {"got": "ab"}
+        ws.send_json(7)
+        assert ws.receive_json() == {"got": 7}
+    assert seen == ["ab", 7]
+
+
+def test_a_union_typed_message_still_refuses_a_non_member():
+    """The negative: widening to the union must not widen to anything else."""
+    app = Veloce()
+    seen: list = []
+
+    @app.websocket_listener("/u")
+    async def either(message: Annotated[str | int, Field(min_length=1)]):
+        seen.append(message)
+        return {"got": message}
+
+    with TestClient(app) as client, client.websocket_connect("/u") as ws:
+        ws.send_json([1])
+        with pytest.raises(RuntimeError, match="1007"):
+            ws.receive_json()
+    assert seen == []
+
+
+def test_a_union_typed_message_still_applies_the_bound():
+    """And the bound still runs on the member that matched."""
+    app = Veloce()
+
+    @app.websocket_listener("/u")
+    async def either(message: Annotated[str | int, Field(min_length=1)]):
+        return {"got": message}
+
+    with TestClient(app) as client, client.websocket_connect("/u") as ws:
+        ws.send_json("")
+        with pytest.raises(RuntimeError, match="1007"):
+            ws.receive_json()
+
+
+@pytest.mark.parametrize(
+    "annotation,frame",
+    [
+        (Annotated[list[int], Field(min_length=1)], [1, 2, 3]),
+        (Annotated[dict[str, int], Field(min_length=1)], {"a": 1}),
+    ],
+    ids=["list", "dict"],
+)
+def test_a_generic_typed_message_is_not_read_as_a_union(annotation, frame):
+    """`get_args(list[int])` is `(int,)`, the same shape a union answers.
+
+    Testing for args alone therefore checked a `[1, 2, 3]` frame against `int`
+    and closed `1007` on every message such a listener could receive. The union
+    is identified by its origin instead. Only scalar bounds are gated, so these
+    shapes pass through as they did before the gate existed.
+    """
+    app = Veloce()
+    seen: list = []
+
+    async def listener(message=None):
+        seen.append(message)
+        return {"got": message}
+
+    listener.__annotations__ = {"message": annotation, "return": dict}
+    app.websocket_listener("/g")(listener)
+
+    with TestClient(app) as client, client.websocket_connect("/g") as ws:
+        ws.send_json(frame)
+        assert ws.receive_json() == {"got": frame}
+    assert seen == [frame]

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import functools
 import inspect
 import logging
@@ -28,6 +29,7 @@ from veloce._constants import (
     STATE_INJECTED_RESPONSE,
 )
 from veloce._handler_plan import (
+    _SEQUENCE_ORIGINS,
     K_BG_TASKS,
     K_BODY_MODEL,
     K_DEPENDS,
@@ -44,6 +46,7 @@ from veloce._handler_plan import (
     MK_COOKIE,
     MK_FORM,
     MK_HEADER,
+    _fixed_shape_args,
     build_plan,
     build_route_dep_plans,
 )
@@ -80,15 +83,17 @@ _NOT_COMPILABLE = object()
 # fresh `WeakKeyDictionary` on the first write so the sentinel is never
 # mutated and cross-resolver contamination is impossible for direct
 # `DependencyResolver()` callers (tests, public-API users).
-_EMPTY_OVERRIDES: dict[Callable, Callable] = {}
-_EMPTY_OVERRIDE_SUBPLANS: weakref.WeakKeyDictionary[Callable, Any] = weakref.WeakKeyDictionary()
+_EMPTY_OVERRIDES: dict[Callable[..., Any], Callable[..., Any]] = {}
+_EMPTY_OVERRIDE_SUBPLANS: weakref.WeakKeyDictionary[Callable[..., Any], Any] = (
+    weakref.WeakKeyDictionary()
+)
 
 
 # ── Helpers ───────────────────────────────────────────────
 
 
 @functools.lru_cache(maxsize=512)
-def _type_adapter(target_type: Any) -> TypeAdapter | None:
+def _type_adapter(target_type: Any) -> TypeAdapter[Any] | None:
     """Build (once) and cache a Pydantic ``TypeAdapter`` for a parameter type.
 
     Adapters are keyed on the annotation object, so a route that declares
@@ -265,6 +270,24 @@ def _coerce_scalar(value: Any, target_type: Any, param_name: str, loc: str) -> A
     return value
 
 
+def _err_body_validation(
+    exc: PydanticValidationError, root: str = "body"
+) -> RequestValidationError:
+    """Rebuild a Pydantic validation failure as this framework's 422 shape.
+
+    Pydantic's own per-field path is appended to `root`, so a single body model,
+    a `Body(...)` marker and a JSON array body all report the same `["body",
+    ...]` location however the body was declared - and a marker reading from
+    elsewhere passes its own `MARKER_LOC` root instead.
+    """
+    return RequestValidationError(
+        [
+            {"loc": [root, *err["loc"]], "msg": err["msg"], "type": err["type"]}
+            for err in exc.errors()
+        ]
+    )
+
+
 def _err_missing_marker(loc: str, name: str) -> RequestValidationError:
     """Build the missing-required error for a parameter marker.
 
@@ -283,6 +306,181 @@ def _err_missing_marker(loc: str, name: str) -> RequestValidationError:
             }
         ]
     )
+
+
+def _list_marker_checks(
+    marker: Any,
+) -> tuple[int | None, int | None, Callable[[Any, str], Any] | None] | None:
+    """Return what a list-typed marker enforces, or `None` when it declares nothing.
+
+    `min_length` / `max_length` bound the item count on a repeated parameter -
+    the published schema emits them as `minItems` / `maxItems` - so the
+    per-element check is the same marker with those two cleared. The scalar
+    bounds then keep one implementation and one set of messages instead of a
+    second copy that could drift from `ParamBase.validate`. Called once per
+    marker slot at plan build, which records the result on the slot - no
+    request path reaches this, so it is not memoized: a folded `Field` builds a
+    fresh marker per plan and `ParamBase` hashes by identity, so a cache keyed
+    on the marker never hit for one and only evicted the shared explicit
+    markers it was meant to help.
+    """
+    per_item = (
+        marker.ge is not None
+        or marker.le is not None
+        or marker.gt is not None
+        or marker.lt is not None
+        or marker.multiple_of is not None
+        or marker.regex is not None
+    )
+    if not per_item and marker.min_length is None and marker.max_length is None:
+        return None
+    item_validate = None
+    if per_item:
+        item_marker = copy.copy(marker)
+        item_marker.min_length = None
+        item_marker.max_length = None
+        item_validate = item_marker.validate
+    return (marker.min_length, marker.max_length, item_validate)
+
+
+def _as_declared_sequence(annotation: Any, items: list[Any]) -> Any:
+    """Build the sequence type the annotation declares from validated members.
+
+    The HTTP door validates through the annotation itself and so returns a set
+    for a `set[int]`; this door built the members and handed back the list it
+    had collected them in. A `set` handler then received duplicates its own
+    annotation forbids, and a `tuple` handler a mutable sequence - the two doors
+    disagreeing about a value neither of them had rejected.
+    """
+    origin = get_origin(annotation)
+    if origin is set:
+        return set(items)
+    if origin is frozenset:
+        return frozenset(items)
+    if origin is tuple:
+        return tuple(items)
+    return items
+
+
+def _collect_sequence_marker(values: list[str], target_type: Any, name: str, loc: str) -> Any:
+    """Coerce repeated source values onto a declared sequence type.
+
+    One home for the rule, called by the interpreted resolver and bound into the
+    compiled one, because the copies had drifted: a fixed-shape `tuple[int, str]`
+    held every value to the first type, and a `set[str]` came back as the list
+    the values had been collected in.
+    """
+    positional = _fixed_shape_args(target_type)
+    if positional is not None:
+        if len(values) != len(positional):
+            # Also covers `tuple[()]`, which declares no positions at all.
+            raise RequestValidationError(
+                [
+                    {
+                        "loc": [loc, name],
+                        "msg": f"{name} must have exactly {len(positional)} values",
+                        "type": "value_error",
+                    }
+                ]
+            )
+        collected = [
+            value if declared is str else _coerce_value(value, declared, name, loc)
+            for value, declared in zip(values, positional, strict=True)
+        ]
+    else:
+        args = get_args(target_type)
+        inner = args[0] if args else str
+        collected = [
+            value if inner is str else _coerce_value(value, inner, name, loc) for value in values
+        ]
+    return _as_declared_sequence(target_type, collected)
+
+
+def _validate_list_marker(
+    values: list[Any],
+    checks: tuple[int | None, int | None, Callable[[Any, str], Any] | None],
+    name: str,
+    loc: str,
+) -> None:
+    """Enforce a list-typed marker's resolved bounds on the collected values.
+
+    Takes what `_list_marker_checks` returned rather than the marker, so the
+    compiled resolver binds the tuple at registration instead of reading it
+    back through the cache on every request. Callers skip the call entirely
+    when the marker declared nothing a list can violate.
+    """
+    min_items, max_items, item_validate = checks
+    if min_items is not None and len(values) < min_items:
+        raise RequestValidationError(
+            [
+                {
+                    "loc": [loc, name],
+                    "msg": f"{name} must have at least {min_items} items",
+                    "type": "value_error",
+                }
+            ]
+        )
+    if max_items is not None and len(values) > max_items:
+        raise RequestValidationError(
+            [
+                {
+                    "loc": [loc, name],
+                    "msg": f"{name} must have at most {max_items} items",
+                    "type": "value_error",
+                }
+            ]
+        )
+    if item_validate is None:
+        return
+    try:
+        for value in values:
+            item_validate(value, name)
+    except ValueError as e:
+        raise RequestValidationError(
+            [{"loc": [loc, name], "msg": str(e), "type": "value_error"}]
+        ) from e
+
+
+def _validate_body_list(raw: list[Any], slot: Any) -> Any:
+    """Validate a JSON array body against the sequence type it declares.
+
+    The members arrive already typed by the JSON decode, so the declared type is
+    a contract to check rather than a string to parse - which is what separates
+    this from the query path, where every value really is a string. Parsing them
+    read `1.5` as `1` and `true` as `1` for a `list[int]`, and let a `list[str]`
+    through holding whatever it was given, so a handler received values its own
+    annotation forbade.
+
+    Through the same adapter a bare body model would use, so a well-formed
+    numeric string is still accepted and a fractional one is still refused -
+    one answer for the declared type, not a second dialect for lists.
+
+    That answer is Pydantic's lax one, which admits what a web client plausibly
+    meant: `"1"` for an `int`, `True` for an `int`. The agent door is stricter
+    by design - `plan_bridge._coerce_list_members` refuses a member whose JSON
+    type is not the declared one, so a model is told to correct itself rather
+    than having its mistake coerced. The two doors agree on which arrays are
+    *valid*; they differ on how much they will convert on the way, and that
+    difference is deliberate.
+    """
+    adapter = slot.list_adapter
+    if adapter is None:
+        # Against the declared container itself, not a `list` of its first
+        # element type: `tuple[int, str]` is heterogeneous, and rebuilding it as
+        # `list[int]` refused its own second member. `set[str]` likewise comes
+        # back a set. Memoised because the annotation is fixed when the route is
+        # registered, so the adapter lookup belongs once per route.
+        adapter = slot.list_adapter = _type_adapter(slot.target_type)
+    if adapter is None:
+        # Nothing to validate against: an element type Pydantic cannot adapt
+        # leaves the members as the decode produced them, which is what the
+        # declaration asked for as closely as it can be honoured.
+        return raw
+    try:
+        validated: Any = adapter.validate_python(raw)
+    except PydanticValidationError as e:
+        raise _err_body_validation(e) from e
+    return validated
 
 
 # ── Markers ───────────────────────────────────────────────
@@ -314,10 +512,24 @@ class Depends:
 
     __slots__ = ("dependency", "use_cache", "offload")
 
+    if TYPE_CHECKING:  # pragma: no cover
+        # Type-only. A marker is written as a parameter's DEFAULT
+        # (`db: Database = Depends(get_db)`), so a checker compares `Depends`
+        # against the declared type and refuses it - Pylance reports
+        # `Expression of type "Depends" cannot be assigned to parameter of
+        # type "Database"` on the shape this class exists for, and the one its
+        # own docstring above shows. Declaring the constructor as `Any` to a
+        # checker makes the default assignable to whatever it annotates, which
+        # is the honest description: the resolver replaces it with a value of
+        # that type before the function body runs. Runtime is untouched - the
+        # real `__init__` below still runs, and the resolver still compares
+        # markers by identity.
+        def __new__(cls, *args: Any, **kwargs: Any) -> Any: ...
+
     def __init__(
         self,
         dependency: Annotated[
-            Callable | None,
+            Callable[..., Any] | None,
             Doc(
                 "Callable to resolve and inject; inferred from the parameter's type annotation when omitted."
             ),
@@ -354,7 +566,7 @@ class Security(Depends):
     def __init__(
         self,
         dependency: Annotated[
-            Callable | None,
+            Callable[..., Any] | None,
             Doc(
                 "Callable to resolve and inject; inferred from the parameter's type annotation when omitted."
             ),
@@ -415,6 +627,16 @@ class SecurityScopes:
 # ── Resolver ──────────────────────────────────────────────
 
 
+def _validated(marker: Any, value: Any, name: str, loc: str) -> Any:
+    """Apply a source-less marker's bounds to a value the caller already found."""
+    try:
+        return marker.validate(value, name)
+    except ValueError as e:
+        raise RequestValidationError(
+            [{"loc": [loc, name], "msg": str(e), "type": "value_error"}]
+        ) from e
+
+
 def _resolve_scalar_param(slot: Any, request: Request, path_params: dict[str, str]) -> Any:
     """Resolve a scalar path-or-query parameter to its coerced value.
 
@@ -423,10 +645,26 @@ def _resolve_scalar_param(slot: Any, request: Request, path_params: dict[str, st
     the parameter is reported missing.
     """
     name = slot.name
+    marker = slot.marker if slot.marker_validates else None
     if name in path_params:
-        return _coerce_value(path_params[name], slot.target_type or str, name, "path")
-    if name in request.query_params:
-        return _coerce_value(request.query_params[name], slot.target_type or str, name, "query")
+        value = _coerce_value(path_params[name], slot.target_type or str, name, "path")
+        return value if marker is None else _validated(marker, value, name, "path")
+    # The alias names the query key; the path keys on the declared name, which
+    # is what the route template stored. `or name` so this cannot disagree with
+    # the compiled resolver for a slot built without `_adopt_field_marker`.
+    # `_adopt_field_marker` sets `lookup_name` for every `K_QUERY` /
+    # `K_QUERY_LIST` slot before its own early return, and those are the only
+    # two kinds that reach here, so there is nothing to fall back to - the
+    # `or name` it used to carry was dead and cost a compare per request.
+    lookup = slot.lookup_name
+    if lookup in request.query_params:
+        # Reported under the key the client sent, which is the one the schema
+        # published. Naming the Python parameter instead handed a client built
+        # from that document an error about a key it never sent.
+        value = _coerce_value(
+            request.query_params[lookup], slot.target_type or str, lookup, "query"
+        )
+        return value if marker is None else _validated(marker, value, lookup, "query")
     if slot.has_default:
         # A plain mutable default is wrapped in a copying factory at
         # registration so each request gets its own value (see
@@ -437,7 +675,7 @@ def _resolve_scalar_param(slot: Any, request: Request, path_params: dict[str, st
     if slot.is_optional:
         return None
     raise RequestValidationError(
-        [{"loc": ("query", name), "msg": MSG_FIELD_REQUIRED, "type": "missing"}]
+        [{"loc": ("query", lookup), "msg": MSG_FIELD_REQUIRED, "type": "missing"}]
     )
 
 
@@ -449,14 +687,26 @@ def _resolve_list_param(slot: Any, request: Request, path_params: dict[str, str]
     default / optional, else raises `missing`.
     """
     name = slot.name
+    checks = slot.list_checks
     if name in path_params:
-        return [_coerce_value(path_params[name], slot.list_inner, name, "path")]
-    if name in request.query_params:
+        values = [_coerce_value(path_params[name], slot.list_inner, name, "path")]
+        if checks is not None:
+            _validate_list_marker(values, checks, name, "path")
+        return values
+    # `_adopt_field_marker` sets `lookup_name` for every `K_QUERY` /
+    # `K_QUERY_LIST` slot before its own early return, and those are the only
+    # two kinds that reach here, so there is nothing to fall back to - the
+    # `or name` it used to carry was dead and cost a compare per request.
+    lookup = slot.lookup_name
+    if lookup in request.query_params:
         # MultiDict.getall returns every value the URL carried for this key.
-        return [
-            _coerce_value(v, slot.list_inner, name, "query")
-            for v in request.query_params.getall(name)
+        values = [
+            _coerce_value(v, slot.list_inner, lookup, "query")
+            for v in request.query_params.getall(lookup)
         ]
+        if checks is not None:
+            _validate_list_marker(values, checks, lookup, "query")
+        return values
     if slot.has_default:
         # A plain mutable default is wrapped in a copying factory at
         # registration so each request gets its own value (see
@@ -467,7 +717,7 @@ def _resolve_list_param(slot: Any, request: Request, path_params: dict[str, str]
     if slot.is_optional:
         return None
     raise RequestValidationError(
-        [{"loc": ("query", name), "msg": MSG_FIELD_REQUIRED, "type": "missing"}]
+        [{"loc": ("query", lookup), "msg": MSG_FIELD_REQUIRED, "type": "missing"}]
     )
 
 
@@ -507,15 +757,17 @@ class DependencyResolver:
     )
 
     def __init__(self) -> None:
-        self._cache: dict[Callable, Any] = {}
+        self._cache: dict[Callable[..., Any], Any] = {}
         # `_overrides` and `_override_subplans` are immediately overwritten
         # by `Veloce._dispatch_request` with the app-scoped instances. Skip
         # the throwaway dict + WeakKeyDictionary allocation here on the hot
         # path; the module-level sentinels below provide the same
         # iteration / `.get(...)` semantics for resolvers constructed
         # outside the dispatcher (unit tests, direct callers).
-        self._overrides: dict[Callable, Callable] = _EMPTY_OVERRIDES
-        self._override_subplans: weakref.WeakKeyDictionary[Callable, Any] = _EMPTY_OVERRIDE_SUBPLANS
+        self._overrides: dict[Callable[..., Any], Callable[..., Any]] = _EMPTY_OVERRIDES
+        self._override_subplans: weakref.WeakKeyDictionary[Callable[..., Any], Any] = (
+            _EMPTY_OVERRIDE_SUBPLANS
+        )
         # Per-request stack of yield-style dependency teardowns. Each entry is
         # `(kind, generator)` where kind is "sync" or "async". The stack is
         # drained in reverse by `run_teardowns()` after the response.
@@ -705,7 +957,7 @@ class DependencyResolver:
 
     async def resolve(
         self,
-        handler: Callable,
+        handler: Callable[..., Any],
         request: Request,
         path_params: dict[str, str],
         route_dependencies: list[Depends] | None = None,
@@ -714,7 +966,7 @@ class DependencyResolver:
 
         The back-compat path: tests and direct callers land here.
         """
-        plan = build_plan(handler)
+        plan = build_plan(handler, path_params=frozenset(path_params))
         rdp = build_route_dep_plans(route_dependencies) if route_dependencies else None
         return await self.resolve_plan(plan, request, path_params, rdp)
 
@@ -963,16 +1215,7 @@ class DependencyResolver:
                 return adapter_for(slot.model).validate_python(raw)
             return slot.model.model_validate(raw)
         except PydanticValidationError as e:
-            raise RequestValidationError(
-                [
-                    {
-                        "loc": [loc, *err["loc"]],
-                        "msg": err["msg"],
-                        "type": err["type"],
-                    }
-                    for err in e.errors()
-                ]
-            ) from e
+            raise _err_body_validation(e, loc) from e
         except Exception as err:
             raise RequestValidationError(
                 [{"loc": [loc], "msg": str(err), "type": "value_error"}]
@@ -989,24 +1232,21 @@ class DependencyResolver:
     def _require_json_body(request: Request) -> None:
         """Refuse a body whose `Content-Type` declares it is not JSON.
 
-        Beyond reading what the client said rather than guessing, this closes a
-        CSRF avenue. `text/plain`, `multipart/form-data` and
-        `application/x-www-form-urlencoded` are the content types a cross-origin
-        form or `fetch` may send *without* a CORS preflight (the Fetch
-        Standard's CORS-safelisted request headers), so a JSON endpoint that
-        parses a body under `text/plain` can be driven cross-origin through a
-        cookie-authenticated victim's browser with no preflight to stop it.
+        Which content types are refused, and why, lives in `json_body_refused`
+        so this door and `await request.json()` cannot answer differently.
 
-        An absent header is accepted: plenty of clients omit it, and its absence
-        asserts nothing about the body. A `+json` structured suffix (RFC 6839),
-        such as `application/vnd.api+json`, is JSON and is accepted too.
-
-        The rule lives in `json_body_refused` so this door and
-        `await request.json()` cannot answer differently; re-spelling it here
-        is what let the two disagree on `text/foo+json`.
+        What this door adds is the carve-out for an absent *body*: there is
+        nothing there to have been sent cross-origin, so a request that omitted
+        an optional body is answered "absent" by the resolvers below - a default
+        for an optional slot, a missing-body error for a required one - rather
+        than refused for a content type it had no body to declare. That also
+        carries the agent door, whose replayed request has no raw body at all
+        (the tool arguments are seeded as the parsed JSON) and no headers.
         """
         mimetype = request.mimetype
         if not json_body_refused(mimetype):
+            return
+        if request._body_drained and not request._body.strip():
             return
         raise RequestValidationError(
             [
@@ -1031,16 +1271,7 @@ class DependencyResolver:
         try:
             return adapter_for(slot.model).validate_json(raw)
         except PydanticValidationError as e:
-            raise RequestValidationError(
-                [
-                    {
-                        "loc": ["body", *err["loc"]],
-                        "msg": err["msg"],
-                        "type": err["type"],
-                    }
-                    for err in e.errors()
-                ]
-            ) from e
+            raise _err_body_validation(e) from e
 
     async def _resolve_pydantic_body(self, slot: Any, request: Request) -> Any:
         self._require_json_body(request)
@@ -1048,20 +1279,7 @@ class DependencyResolver:
             body_data = await request.json()
             return slot.model.model_validate(body_data)
         except PydanticValidationError as e:
-            # Prefix each field path with "body" so a single body model's errors
-            # carry the same `["body", ...]` location as a `Body(...)` marker
-            # param (MARKER_LOC) and the whole-body cases below - the validation
-            # error shape stays consistent regardless of how the body is declared.
-            raise RequestValidationError(
-                [
-                    {
-                        "loc": ["body", *err["loc"]],
-                        "msg": err["msg"],
-                        "type": err["type"],
-                    }
-                    for err in e.errors()
-                ]
-            ) from e
+            raise _err_body_validation(e) from e
         except ValidationError:
             raise
         except HTTPException:
@@ -1134,16 +1352,7 @@ class DependencyResolver:
                 return adapter_for(slot.model).validate_python(value)
             return slot.model.model_validate(value)
         except PydanticValidationError as e:
-            raise RequestValidationError(
-                [
-                    {
-                        "loc": ["body", *err["loc"]],
-                        "msg": err["msg"],
-                        "type": err["type"],
-                    }
-                    for err in e.errors()
-                ]
-            ) from e
+            raise _err_body_validation(e) from e
         except _msgspec_validation_error as e:
             # msgspec embeds the field path in the message text rather than
             # exposing it, so `loc` stays `["body"]` - as `_resolve_msgspec_body`
@@ -1163,9 +1372,7 @@ class DependencyResolver:
         # (`tags: list[str] = Query(...)` / `Header(...)` / `Cookie(...)`
         # / `Form(...)`) - collect every repeated value, not just the
         # first.
-        if mk in (0, 2, 3, 5) and get_origin(slot.target_type) in (list, set, tuple):
-            inner_args = get_args(slot.target_type)
-            inner = inner_args[0] if inner_args else str
+        if mk in (0, 2, 3, 5) and get_origin(slot.target_type) in _SEQUENCE_ORIGINS:
             if mk == 5:  # MK_FORM
                 values = (await request.form()).getlist(lookup)
             elif mk == 2:  # MK_HEADER
@@ -1181,10 +1388,10 @@ class DependencyResolver:
                 if slot.is_optional:
                     return None
                 raise _err_missing_marker(loc, slot.name)
-            # Per-element `marker.validate(...)` constraints (min_length, ge, regex,
-            # ...) are intentionally NOT enforced on list-typed markers here; only
-            # coercion runs. The codegen path matches.
-            return [v if inner is str else _coerce_value(v, inner, slot.name, loc) for v in values]
+            collected = _collect_sequence_marker(values, slot.target_type, slot.name, loc)
+            if slot.list_checks is not None:
+                _validate_list_marker(collected, slot.list_checks, slot.name, loc)
+            return collected
 
         if mk == 1:  # MK_PATH
             raw = path_params.get(lookup)
@@ -1197,13 +1404,30 @@ class DependencyResolver:
             # The same content-type policy the bare-model body applies. A JSON
             # endpoint that parses a `text/plain` body is reachable cross-origin
             # without a preflight; the two body forms must not differ on that.
-            if slot.model is not None:
-                self._require_json_body(request)
+            # Checked for a scalar `Body()` too, not just a model: the refusal
+            # left `request.json()` answering `None`, which the missing-value
+            # branch below then reported as "missing required parameter" - a
+            # message that names the wrong problem and hides a refused type.
+            self._require_json_body(request)
             body = await request.json()
             # `Body(embed=True)` - the value lives under the param name
             # inside the JSON object, rather than being the whole body.
             # `embed` is a declared slot always set in `ParamBase.__init__`.
             raw = body.get(lookup) if marker.embed and isinstance(body, dict) else body
+            # A JSON array body (`payload: list[str] = Body(max_length=3)`) is
+            # the one value `marker.validate` below cannot check - it bounds a
+            # string or a number - so it is checked here against the same
+            # `minItems` / `maxItems` the schema publishes for it.
+            if slot.marker_reads_list and isinstance(raw, list):
+                # The element type first: `ParamBase.validate` dispatches on the
+                # Python type, so a raw `["0"]` took the string branch and
+                # skipped the numeric bounds the published `items.minimum`
+                # advertises. Unconditional, because the declared type is a
+                # contract whether or not a bound accompanies it.
+                items = _validate_body_list(raw, slot)
+                if slot.list_checks is not None:
+                    _validate_list_marker(items, slot.list_checks, slot.name, MARKER_LOC[mk])
+                return items
         elif mk in (5, 6):  # MK_FORM / MK_FILE
             form = await request.form()
             raw = form.get(lookup)

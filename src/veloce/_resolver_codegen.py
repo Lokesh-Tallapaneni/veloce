@@ -228,9 +228,9 @@ def compile_graph_resolver(
     coerce_value: Callable[[Any, Any, str, str], Any],
     validation_error: type[Exception],
     offload: Callable[..., Any],
-    background_tasks_cls: type,
-    response_cls: type,
-    security_scopes_cls: type,
+    background_tasks_cls: type[Any],
+    response_cls: type[Any],
+    security_scopes_cls: type[Any],
 ) -> Callable[[Any, dict[str, str], list[tuple[str, Any]]], Any] | None:
     """Generate an `async (request, path_params) -> kwargs` resolver for `plan`.
 
@@ -529,6 +529,33 @@ def _emit_coerced(
 
 
 # ── Parameter / marker emission (shared with the param-only compiler) ──
+def _emit_field_validate(
+    lines: list[str],
+    j: int,
+    target: str,
+    name: str,
+    loc: str,
+    indent: str,
+    marker: Any,
+    reported: str,
+) -> None:
+    """Emit the bound check for a source-less `Field` marker, or nothing.
+
+    `reported` is the name the error names, which is not always the slot's: an
+    aliased parameter is read and published under the alias, so reporting the
+    Python parameter describes a key the client never sent.
+    """
+    if marker is None:
+        return
+    lines.append(f"{indent}try:")
+    lines.append(f"{indent}    {target}[{name!r}] = _fv{j}({target}[{name!r}], {reported!r})")
+    lines.append(f"{indent}except ValueError as _e:")
+    lines.append(
+        f"{indent}    raise _RVE([{{'loc': [{loc!r}, {reported!r}], "
+        f"'msg': str(_e), 'type': 'value_error'}}]) from _e"
+    )
+
+
 def _emit_scalar_param(
     lines: list[str], ns: dict[str, Any], j: int, slot: Any, target: str = "k"
 ) -> None:
@@ -552,22 +579,38 @@ def _emit_scalar_param(
         default_expr = f"_d{j}"
 
     effective = slot.target_type or str
+    # A source-less `Field` marker on a bare slot: the lookup order is unchanged
+    # and the bound is applied to whichever source answered. Bound once here, so
+    # an unconstrained parameter emits nothing extra and costs nothing.
+    marker = slot.marker if slot.marker_validates else None
+    if marker is not None:
+        ns[f"_fv{j}"] = marker.validate
+    # The alias names the query key; the path keys on the declared name, which
+    # is what the route template stored.
+    # Always set by `_adopt_field_marker`; see the note in `dependency.py`.
+    lookup = slot.lookup_name
+
     lines.append(f"    _v = path_params.get({name!r}, _M)")
     lines.append("    if _v is not _M:")
     _emit_coerced(lines, j, effective, f"{target}[{name!r}]", "_v", name, "path", " " * 8)
+    _emit_field_validate(lines, j, target, name, "path", " " * 8, marker, name)
     lines.append("    else:")
     lines.append("        _qp = request.query_params")
-    lines.append(f"        if {name!r} in _qp:")
+    lines.append(f"        if {lookup!r} in _qp:")
+    # Reported under `lookup`, the key the client sent and the schema published
+    # - the interpreted resolver does the same, so the two cannot disagree
+    # about which name an error names.
     _emit_coerced(
-        lines, j, effective, f"{target}[{name!r}]", f"_qp[{name!r}]", name, "query", " " * 12
+        lines, j, effective, f"{target}[{name!r}]", f"_qp[{lookup!r}]", lookup, "query", " " * 12
     )
+    _emit_field_validate(lines, j, target, name, "query", " " * 12, marker, lookup)
     lines.append(f"        elif _hd{j}:")
     lines.append(f"            {target}[{name!r}] = {default_expr}")
     lines.append(f"        elif _io{j}:")
     lines.append(f"            {target}[{name!r}] = None")
     lines.append("        else:")
     lines.append(
-        f"            raise _RVE([{{'loc': ('query', {name!r}), "
+        f"            raise _RVE([{{'loc': ('query', {lookup!r}), "
         f"'msg': {MSG_FIELD_REQUIRED!r}, 'type': 'missing'}}])"
     )
 
@@ -608,10 +651,19 @@ def _emit_marker(
             default_expr = f"_d{j}"
 
     # List-typed query / header / cookie marker - collect every repeated value.
-    if mk in _LIST_MARKERS and get_origin(slot.target_type) in (list, set, tuple):
+    from veloce.dependency import _SEQUENCE_ORIGINS, _fixed_shape_args
+
+    if mk in _LIST_MARKERS and get_origin(slot.target_type) in _SEQUENCE_ORIGINS:
         inner_args = get_args(slot.target_type)
         inner = inner_args[0] if inner_args else str
         ns[f"_in{j}"] = inner
+        # Only a homogeneous `list[T]` is emitted inline. A fixed-shape tuple
+        # needs a type per position and a set/frozenset/tuple needs building
+        # into the declared container, and inlining those was how this copy and
+        # the interpreted one came to disagree - so they call the one helper.
+        simple = _fixed_shape_args(slot.target_type) is None and (
+            get_origin(slot.target_type) is list
+        )
         if mk == MK_HEADER:
             lines.append(f"    _vals = request.headers.getlist({lookup.lower()!r})")
         elif mk == MK_COOKIE:
@@ -630,12 +682,31 @@ def _emit_marker(
                 f"'type': 'value_error.missing'}}])"
             )
         lines.append("    else:")
-        if inner is str:
+        # Registration-time import: `dependency` imports this module at its
+        # top, so the reverse edge cannot live at module level.
+        from veloce.dependency import _collect_sequence_marker, _validate_list_marker
+
+        if not simple:
+            ns[f"_cs{j}"] = _collect_sequence_marker
+            ns[f"_tt{j}"] = slot.target_type
+            lines.append(f"        {target}[{name!r}] = _cs{j}(_vals, _tt{j}, {name!r}, {loc!r})")
+        elif inner is str:
             lines.append(f"        {target}[{name!r}] = list(_vals)")
         else:
             lines.append(
                 f"        {target}[{name!r}] = [_cv(_x, _in{j}, {name!r}, {loc!r}) for _x in _vals]"
             )
+
+        # A marker declaring no bound emits no check at all, so an unconstrained
+        # repeated parameter resolves exactly as before. The tuple the plan
+        # already resolved is bound here rather than the marker, so the request
+        # path does not read it back through the cache on every call - and the
+        # interpreted resolver reads the same field, so the two cannot drift.
+        list_checks = slot.list_checks
+        if list_checks is not None:
+            ns[f"_lv{j}"] = _validate_list_marker
+            ns[f"_lc{j}"] = list_checks
+            lines.append(f"        _lv{j}({target}[{name!r}], _lc{j}, {name!r}, {loc!r})")
         return
 
     # Scalar source lookup per marker kind.

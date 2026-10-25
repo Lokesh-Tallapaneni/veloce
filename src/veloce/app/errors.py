@@ -19,7 +19,7 @@ from veloce._constants import (
     MIME_TEXT_PLAIN,
     MSG_INTERNAL_SERVER_ERROR,
 )
-from veloce._internal import _coerce_bool
+from veloce._internal import T_route, _coerce_bool
 from veloce._protocol_constants import (
     HTTP_METHOD_GET,
     HTTP_METHOD_HEAD,
@@ -42,7 +42,9 @@ _MISSING: Any = object()
 class ErrorsMixin(AppHost):
     """Exception-handler registration and dispatch, mixed into `Veloce`."""
 
-    def register_error_handler(self, code_or_exception: int | type, func: Callable) -> None:
+    def register_error_handler(
+        self, code_or_exception: int | type[Any], func: Callable[..., Any]
+    ) -> None:
         """Register an error handler without a decorator.
 
         The key is an `int` status code or an exception class. Anything else is
@@ -65,10 +67,12 @@ class ErrorsMixin(AppHost):
             # already-cached subclasses.
             self._exc_handler_cache.clear()
 
-    def exception_handler(self, exc_class_or_status: type | int) -> Callable:
+    def exception_handler(
+        self, exc_class_or_status: type[Any] | int
+    ) -> Callable[[T_route], T_route]:
         """Register a custom exception handler by exception type or status code."""
 
-        def decorator(func: Callable) -> Callable:
+        def decorator(func: T_route) -> T_route:
             self.register_error_handler(exc_class_or_status, func)
             return func
 
@@ -79,7 +83,9 @@ class ErrorsMixin(AppHost):
     # second implementation.
     errorhandler = exception_handler
 
-    def add_exception_handler(self, exc_class_or_status: type | int, handler: Callable) -> None:
+    def add_exception_handler(
+        self, exc_class_or_status: type[Any] | int, handler: Callable[..., Any]
+    ) -> None:
         """Imperative exception-handler registration - ASGI shape.
 
         The non-decorator form of `@app.exception_handler(...)`.
@@ -200,7 +206,7 @@ class ErrorsMixin(AppHost):
             return _coerce_bool(explicit)
         return self.debug and _coerce_bool(self.config.get("TESTING"))
 
-    def _find_exception_handler(self, exc_type: type) -> Callable | None:
+    def _find_exception_handler(self, exc_type: type[Any]) -> Callable[..., Any] | None:
         """Walk `exc_type`'s MRO looking for a registered handler.
 
         Handlers registered against a base class catch every subclass -
@@ -221,8 +227,8 @@ class ErrorsMixin(AppHost):
         return None
 
     def _find_scoped_exception_handler(
-        self, exc_type: type, request: Request | None
-    ) -> Callable | None:
+        self, exc_type: type[Any], request: Request | None
+    ) -> Callable[..., Any] | None:
         """Find an exception handler, preferring the request's blueprint chain.
 
         A blueprint's `@bp.errorhandler` only applies to exceptions raised on its
@@ -244,7 +250,9 @@ class ErrorsMixin(AppHost):
                         return handler
         return self._find_exception_handler(exc_type)
 
-    def _find_scoped_status_handler(self, code: int, request: Request | None) -> Callable | None:
+    def _find_scoped_status_handler(
+        self, code: int, request: Request | None
+    ) -> Callable[..., Any] | None:
         """Find a status-code handler, preferring the request's blueprint chain."""
         if request is not None and self._bp_status_handlers:
             for bp_name in request.blueprints:
@@ -256,7 +264,7 @@ class ErrorsMixin(AppHost):
         return self._status_handlers.get(code)
 
     async def _run_exc_handler(
-        self, handler: Callable, exc: BaseException, request: Request | None
+        self, handler: Callable[..., Any], exc: BaseException, request: Request | None
     ) -> Response:
         """Invoke a matched error handler and coerce whatever it returns.
 

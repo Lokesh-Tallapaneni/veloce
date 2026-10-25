@@ -15,10 +15,13 @@ halves read the same way and neither reaches into the app.
 
 from __future__ import annotations
 
+import warnings
+from typing import Annotated
+
 from pydantic import BaseModel
 
 from tests._openapi import document
-from veloce import Request, Veloce
+from veloce import Query, Request, Veloce
 from veloce.contrib.openapi import get_openapi_schema
 from veloce.middleware.security import CSPMiddleware
 from veloce.testclient import TestClient
@@ -269,3 +272,98 @@ def test_deprecated_route():
 
     schema = get_openapi_schema(app)
     assert schema["paths"]["/old"]["get"]["deprecated"] is True
+
+
+def test_a_three_zero_openapi_version_warns_that_the_schemas_stay_three_one():
+    """The attribute sets the version string and nothing else: the schemas are
+    written in the 2020-12 dialect OpenAPI 3.1 adopts, so `prefixItems` for a
+    fixed-shape tuple lands in a document declaring 3.0, which a 3.0-only
+    consumer rejects without saying why."""
+    app = Veloce()
+    app.openapi_version = "3.0.3"
+
+    @app.get("/pair")
+    async def pair(values: tuple[int, str] = Query(default=(1, "a"))) -> dict:
+        return {}
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        schema = get_openapi_schema(app)
+
+    messages = [str(entry.message) for entry in caught if "openapi_version" in str(entry.message)]
+    assert len(messages) == 1
+    assert "3.0.3" in messages[0]
+    assert schema["openapi"] == "3.0.3"
+    parameter = schema["paths"]["/pair"]["get"]["parameters"][0]
+    assert "prefixItems" in parameter["schema"]
+
+
+def test_the_default_openapi_version_does_not_warn():
+    """The negative: 3.1 is the dialect the document is written in."""
+    app = Veloce()
+
+    @app.get("/plain")
+    async def plain() -> dict:
+        return {}
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        get_openapi_schema(app)
+
+    assert [e for e in caught if "openapi_version" in str(e.message)] == []
+
+
+def test_a_declared_default_is_published_however_it_was_written():
+    """A marker's mutable default went unpublished because the framework's own
+    copying factory was read as a user `default_factory` - which `_params`
+    keeps `self.default` precisely in order to avoid. The `Annotated` shape
+    published nothing for a second reason: the signature default was dropped
+    when the marker was hoisted into its place."""
+    app = Veloce()
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+
+        @app.get("/bare")
+        async def bare(tags: list[str] = ["x"]) -> dict:  # noqa: B006
+            return {}
+
+        @app.get("/marker")
+        async def marker(tags: list[str] = Query(default=["x"])) -> dict:
+            return {}
+
+        @app.get("/annotated")
+        async def annotated(tags: Annotated[list[str], Query()] = ["x"]) -> dict:
+            return {}
+
+        @app.get("/fixed")
+        async def fixed(pair: tuple[int, str] = Query(default=(1, "a"))) -> dict:
+            return {}
+
+        schema = get_openapi_schema(app)
+
+    published = {}
+    for path in ("/bare", "/marker", "/annotated", "/fixed"):
+        parameter = schema["paths"][path]["get"]["parameters"][0]
+        published[path] = (parameter["schema"].get("default"), parameter["required"])
+    assert published == {
+        "/bare": (["x"], False),
+        "/marker": (["x"], False),
+        "/annotated": (["x"], False),
+        "/fixed": ([1, "a"], False),
+    }
+
+
+def test_a_real_default_factory_publishes_no_default():
+    """The negative: a factory builds a per-call value, so there is no single
+    value to publish - and a marker declaring one has `...` for its default."""
+    app = Veloce()
+
+    @app.get("/f")
+    async def f(tags: list[str] = Query(default_factory=lambda: ["x"])) -> dict:
+        return {}
+
+    schema = get_openapi_schema(app)
+    parameter = schema["paths"]["/f"]["get"]["parameters"][0]
+    assert "default" not in parameter["schema"]
+    assert parameter["required"] is False

@@ -64,7 +64,11 @@ from veloce._internal import (
     guess_content_type,
     is_json_mimetype,
 )
-from veloce._protocol_constants import AUTH_SCHEME_BASIC, SET_COOKIE_JOINER
+from veloce._protocol_constants import (
+    AUTH_SCHEME_BASIC,
+    HTTP_METHOD_GET,
+    SET_COOKIE_JOINER,
+)
 from veloce._warnings import VeloceDeprecationWarning
 from veloce.background import coerce_background
 from veloce.http.cache_control import CacheControl
@@ -73,10 +77,21 @@ from veloce.http.dates import http_date, parse_date
 from veloce.http.header_set import HeaderSet
 from veloce.status import (
     HTTP_200_OK,
+    HTTP_206_PARTIAL_CONTENT,
     HTTP_304_NOT_MODIFIED,
     HTTP_307_TEMPORARY_REDIRECT,
+    HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE,
     status_permits_body,
 )
+
+if TYPE_CHECKING:  # pragma: no cover
+    # Type-only. A runtime import here fails: `request.py` imports
+    # `veloce.exceptions`, which imports `JSONResponse` from this module, so it
+    # closes a response -> request -> exceptions -> response cycle (measured:
+    # `ImportError: cannot import name 'BadRequest' from partially initialized
+    # module 'veloce.exceptions'`). The annotation exists so the opt-in
+    # parameter carries its real type rather than `Any`.
+    from veloce.http.request import Request
 
 # ── Case-insensitive response-header access ──────────────────────────
 # `Response.headers` is a plain `dict` (case-SENSITIVE), not a CIMultiDict.
@@ -160,11 +175,12 @@ def _format_content_disposition(disposition: str, filename: str) -> str:
     return f"{disposition}; {param}"
 
 
-async def _stream_file(path: str, loop: Any, limit: int | None = None) -> Any:
+async def _stream_file(path: str, loop: Any, limit: int | None = None, start: int = 0) -> Any:
     """Yield a file's bytes in chunks, each read in the executor, up to `limit`.
 
     The open and every read are offloaded, so no disk I/O runs on the event
-    loop, and only one chunk is resident at a time.
+    loop, and only one chunk is resident at a time. `start` seeks before the
+    first read, so a `206` serves its slice without reading what precedes it.
 
     `limit` is the `Content-Length` the response already declared. The stat that
     produced it and these reads are two different moments, so a file appended to
@@ -174,7 +190,7 @@ async def _stream_file(path: str, loop: Any, limit: int | None = None) -> Any:
     is read as the start of the next one. `None` reads to EOF, for a caller with
     no declared length to honour.
     """
-    handle = await loop.run_in_executor(None, _open_file_binary, path)
+    handle = await loop.run_in_executor(None, _open_file_binary, path, start)
     remaining = limit
     try:
         while remaining is None or remaining > 0:
@@ -191,9 +207,13 @@ async def _stream_file(path: str, loop: Any, limit: int | None = None) -> Any:
         await loop.run_in_executor(None, handle.close)
 
 
-def _open_file_binary(path: str) -> BinaryIO:
-    """Open `path` for binary reading - run in an executor."""
-    return open(path, "rb")  # noqa: SIM115 - closed by `_stream_file`
+def _open_file_binary(path: str, start: int = 0) -> BinaryIO:
+    """Open `path` for binary reading, positioned at `start` - run in an executor."""
+    handle = open(path, "rb")  # noqa: SIM115 - closed by `_stream_file`
+    if start:
+        # Seeking here keeps the open and the seek in one executor hop.
+        handle.seek(start)
+    return handle
 
 
 #: Bytes per chunk when streaming a file off disk. Large enough that the
@@ -1866,6 +1886,8 @@ def _build_file_headers(
     content_type: str | None,
     content_disposition_type: str,
     headers: dict[str, str] | None,
+    *,
+    advertise_ranges: bool,
 ) -> tuple[str, dict[str, str]]:
     """Resolve the content type and build the file-serving response headers.
 
@@ -1876,7 +1898,13 @@ def _build_file_headers(
     if content_type is None:
         content_type = guess_content_type(path)
 
-    hdrs = headers or {}
+    # Copied, not aliased: every write below is this one file's validator, and
+    # with the caller's dict aliased they landed on whatever the caller reuses.
+    # One `HEADERS = {...}` shared across two routes meant the second file
+    # shipped the first file's `ETag` and `Last-Modified` - and behind
+    # `ConditionalMiddleware` a client holding that tag is told `304` for a body
+    # it has never seen. Same reason `Response.__init__` copies its own.
+    hdrs = dict(headers) if headers else {}
     if filename:
         # `content_disposition_type` - "attachment" (force a download dialog)
         # or "inline" (render in the browser).
@@ -1894,11 +1922,123 @@ def _build_file_headers(
         hdrs[HEADER_LAST_MODIFIED] = http_date(st.st_mtime)
     if HEADER_ETAG not in hdrs and "etag" not in hdrs:
         hdrs[HEADER_ETAG] = _file_etag(path, st.st_size, st.st_mtime)
+    if advertise_ranges and HEADER_ACCEPT_RANGES not in hdrs and "accept-ranges" not in hdrs:
+        # A client only attempts a resumable or seeking download when the first
+        # response advertised the capability (RFC 9110 Sec. 14.3). Guarded like
+        # the two above so a caller can answer `none` and opt the file out -
+        # `_negotiate_file_range` reads the same header back and honours it.
+        #
+        hdrs[HEADER_ACCEPT_RANGES] = HEADER_VALUE_BYTES
     return content_type, hdrs
 
 
+def _resolve_byte_range(span: tuple[int | None, int | None], size: int) -> tuple[int, int] | None:
+    """Turn one parsed `bytes=` range into absolute offsets, or `None` if unsatisfiable.
+
+    `None` covers a suffix range of zero bytes and anything out of bounds; the
+    caller answers those with a `416`. A zero-length representation has no
+    satisfiable range at all (RFC 9110 Sec. 14.1.2).
+    """
+    start, end = span
+    if start is None:
+        # Suffix range: the last `end` bytes, clamped to the file, so
+        # `bytes=-500` over a 200-byte file is the whole file.
+        suffix = min(end or 0, size)
+        return (size - suffix, size - 1) if suffix > 0 else None
+    if start >= size:
+        return None
+    if end is None or end >= size:
+        end = size - 1
+    return (start, end) if start <= end else None
+
+
+#: The lowercase wire key for `Range`, encoded once for `_peek_header_key`.
+_RAW_RANGE = b"range"
+
+
+def _negotiate_file_range(
+    request: Request | None, hdrs: dict[str, str], size: int, mtime: float
+) -> tuple[bool, tuple[int, int] | None]:
+    """Resolve a request's `Range` against a file of `size` bytes.
+
+    Returns `(satisfiable, span)`: `(True, None)` to serve the whole file,
+    `(True, (start, end))` to serve that inclusive slice as a `206`, and
+    `(False, None)` to answer `416`.
+
+    The request is an argument, and `None` means "do not negotiate". It used to
+    be read from the context var so that an existing `FileResponse(path)` became
+    seekable for free - but that made the range a function of *when* the
+    response was built rather than of what it represents, and a `Range` applies
+    only to the representation the client asked for. An error handler returning
+    a file was the case that proved it: a client resuming a download of a URL
+    that 404s received the error page sliced to the requested offsets, or a
+    `416` with the handler's body discarded. So negotiation is opt-in, and the
+    helpers that serve the *requested* file - `send_file`,
+    `send_from_directory`, `StaticFiles` - are what opt in.
+
+    `GET` is the only method range handling is defined for, and a `Range` on any
+    other MUST be ignored (RFC 9110 Sec. 14.2) - including `HEAD`, which the
+    `Accept-Ranges` header already answers for a client probing support
+    (Sec. 14.3), and which would otherwise be refused a `416` instead of the
+    full representation's `Content-Length` it asked for.
+
+    A request that will not act on a `Range` stops at the method compare, and
+    one that carries no `Range` at the lookup after it - a scan of the raw
+    header block rather than `request.headers`, because materialising that
+    mapping costs ~2.7 us a handler serving a file need not have spent (see
+    `Request._peek_header_key`).
+    """
+    if request is None or request.method != HTTP_METHOD_GET:
+        return True, None
+    if request._peek_header_key(_RAW_RANGE) is None:
+        return True, None
+
+    if header_get(hdrs, HEADER_ACCEPT_RANGES) != HEADER_VALUE_BYTES:
+        return True, None
+
+    spec = request.range
+    if spec is None or spec.unit != HEADER_VALUE_BYTES or len(spec.ranges) != 1:
+        # RFC 9110 Sec. 14.2 lets a recipient ignore a `Range` it will not act
+        # on, which is the whole handling of an unparsable header, a unit other
+        # than `bytes`, and a multi-range request: a `multipart/byteranges` body
+        # is not emitted here, exactly as `StaticFiles` does not emit one.
+        return True, None
+
+    # If-Range (RFC 9110 Sec. 13.1.5): a stale validator means the client would
+    # splice these bytes onto a different version of the representation, so the
+    # range is dropped for the full body rather than honoured.
+    if_etag, if_date = request.if_range
+    if if_etag:
+        # The strong comparison function is mandated here: a weak validator
+        # promises semantic equivalence, not the byte-level identity a resumed
+        # download depends on.
+        if not _etag_matches_strong(header_get(hdrs, HEADER_ETAG) or "", if_etag):
+            return True, None
+    elif if_date is not None and int(mtime) != int(if_date):
+        # An exact date match, unlike the "not later than" test
+        # `If-Unmodified-Since` uses. Compared at whole-second HTTP-date
+        # resolution, which is all the header carries.
+        return True, None
+
+    span = _resolve_byte_range(spec.ranges[0], size)
+    return (True, span) if span is not None else (False, None)
+
+
 class FileResponse(Response):
-    """Serve a file from disk - small files inline, large files via executor."""
+    """Serve a file from disk - small files inline, large files via executor.
+
+    Advertises `Accept-Ranges: bytes` and honours a single-range `Range:` header
+    on the `GET` being served, answering `206` with a `Content-Range` for a
+    satisfiable range and `416` for one past the end of the file. A multi-range
+    request is served in full, as is one whose `If-Range` validator is stale and
+    one on any other method - `GET` is the only method range handling is defined
+    for (RFC 9110 Sec. 14.2).
+
+    `If-Range` is compared strongly, as Sec. 13.1.5 requires, so the weak `ETag`
+    these responses carry by default cannot authorize a resume: a client echoing
+    it back is served the full representation. Resume against `Last-Modified`,
+    or pass a strong `ETag` of your own in `headers`.
+    """
 
     __slots__ = ()
 
@@ -1909,10 +2049,17 @@ class FileResponse(Response):
         content_type: str | None = None,
         headers: dict[str, str] | None = None,
         content_disposition_type: str = HEADER_VALUE_ATTACHMENT,
+        request: Request | None = None,
     ) -> None:
         st = _stat_regular_file(path)
         content_type, hdrs = _build_file_headers(
-            path, st, filename, content_type, content_disposition_type, headers
+            path,
+            st,
+            filename,
+            content_type,
+            content_disposition_type,
+            headers,
+            advertise_ranges=request is not None,
         )
 
         # Warn when called on a running loop - a 50 MB read on the loop
@@ -1936,15 +2083,35 @@ class FileResponse(Response):
                 VeloceDeprecationWarning,
                 stacklevel=2,
             )
-        with open(path, "rb") as f:
-            body = f.read()
+        satisfiable, span = _negotiate_file_range(request, hdrs, st.st_size, st.st_mtime)
+        if not satisfiable:
+            status = HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE
+            body = b""
+            served: tuple[int | None, int | None, int] | None = (None, None, st.st_size)
+        elif span is None:
+            with open(path, "rb") as f:
+                body = f.read()
+            status = HTTP_200_OK
+            served = None
+        else:
+            start, end = span
+            with open(path, "rb") as f:
+                f.seek(start)
+                body = f.read(end - start + 1)
+            status = HTTP_206_PARTIAL_CONTENT
+            served = (start, end, st.st_size)
 
         super().__init__(
-            status_code=HTTP_200_OK,
+            status_code=status,
             body=body,
             content_type=content_type,
             headers=hdrs,
         )
+        if served is not None:
+            # Through the setter, which also drops any cached encoding, and onto
+            # the response's own headers: this value describes one slice of one
+            # request, so nothing outliving the response should hold it.
+            self.set_content_range(*served)
 
     async def stream_to(
         self,
@@ -2002,33 +2169,72 @@ class FileResponse(Response):
         content_type: str | None = None,
         headers: dict[str, str] | None = None,
         content_disposition_type: str = HEADER_VALUE_ATTACHMENT,
+        request: Request | None = None,
     ) -> FileResponse:
         """Async factory - reads small files inline, large files in the executor.
 
-        Stats the path on the loop (one fast syscall) to size the file. A file at
+        Stats the path on the loop (one fast syscall) to size the file. A slice at
         or below `_INLINE_READ_MAX` is read inline, skipping the thread-pool hop
-        that otherwise dominates serving a small static asset; a larger file is
-        read in the executor so a big read never stalls the loop.
+        that otherwise dominates serving a small static asset; a larger one is
+        read in the executor so a big read never stalls the loop. Honours
+        `Range:` on the same terms as the sync constructor.
         """
         loop = asyncio.get_running_loop()
 
         st = _stat_regular_file(path)
 
         content_type, hdrs = _build_file_headers(
-            path, st, filename, content_type, content_disposition_type, headers
+            path,
+            st,
+            filename,
+            content_type,
+            content_disposition_type,
+            headers,
+            advertise_ranges=request is not None,
         )
 
-        if st.st_size <= _INLINE_READ_MAX:
-            # ASYNC230: a bounded inline read is deliberate here - the file is
+        satisfiable, span = _negotiate_file_range(request, hdrs, st.st_size, st.st_mtime)
+        if not satisfiable:
+            resp = Response.__new__(cls)
+            Response.__init__(
+                resp,
+                status_code=HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE,
+                body=b"",
+                content_type=content_type,
+                headers=hdrs,
+            )
+            resp.set_content_range(None, None, st.st_size)
+            return resp
+
+        if span is None:
+            start, length, status = 0, st.st_size, HTTP_200_OK
+            served: tuple[int, int, int] | None = None
+        else:
+            start, end = span
+            length = end - start + 1
+            status = HTTP_206_PARTIAL_CONTENT
+            served = (start, end, st.st_size)
+
+        # The threshold applies to the slice being served, not to the file it
+        # came from: a bounded range off a large asset is still one small read.
+        if length <= _INLINE_READ_MAX:
+            # ASYNC230: a bounded inline read is deliberate here - the slice is
             # known to be <= 64 KiB, so this read is microseconds and avoids the
             # ~100 us thread-pool hop (measured) that dominates serving a small
             # asset.
             with open(path, "rb") as f:  # noqa: ASYNC230
-                body = f.read()
+                if span is None:
+                    body = f.read()
+                else:
+                    f.seek(start)
+                    body = f.read(length)
             resp = Response.__new__(cls)
             Response.__init__(
-                resp, status_code=HTTP_200_OK, body=body, content_type=content_type, headers=hdrs
+                resp, status_code=status, body=body, content_type=content_type, headers=hdrs
             )
+            if served is not None:
+                # See the note in `__init__`: the response's own headers.
+                resp.set_content_range(*served)
             return resp
 
         # A larger file is streamed off disk rather than read whole. Reading it
@@ -2039,10 +2245,12 @@ class FileResponse(Response):
         # streams a known-size body, it does not switch to chunked encoding.
         resp = Response.__new__(cls)
         Response.__init__(
-            resp, status_code=HTTP_200_OK, body=b"", content_type=content_type, headers=hdrs
+            resp, status_code=status, body=b"", content_type=content_type, headers=hdrs
         )
-        resp.headers[HEADER_CONTENT_LENGTH] = str(st.st_size)
-        # The same size the header declares, so the two cannot disagree if the
+        if served is not None:
+            resp.set_content_range(*served)
+        resp.headers[HEADER_CONTENT_LENGTH] = str(length)
+        # The same length the header declares, so the two cannot disagree if the
         # file grows between this stat and the reads below.
-        resp._stream = _stream_file(path, loop, st.st_size)
+        resp._stream = _stream_file(path, loop, length, start)
         return resp

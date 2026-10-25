@@ -75,7 +75,7 @@ class Address(NamedTuple):
     port: int
 
 
-class State(dict):
+class State(dict[str, Any]):
     """Per-request scratch namespace - supports both styles.
 
     ASGI servers expose `request.state` for attribute-style
@@ -528,7 +528,7 @@ def _files_key_hint(key: str, mimetype: str, form_keys: frozenset[str]) -> str:
     )
 
 
-class FormData(_GetListMixin, MultiDict):
+class FormData(_GetListMixin, MultiDict[Any]):
     """Multi-value form-field collection (text fields + file uploads).
 
     Backed by `multidict.MultiDict`. Repeated form fields (`<input name="a">`
@@ -566,7 +566,7 @@ class FormData(_GetListMixin, MultiDict):
         return val if isinstance(val, UploadFile) else None
 
 
-class Headers(_GetListMixin, CIMultiDict):
+class Headers(_GetListMixin, CIMultiDict[str]):
     """Case-insensitive, multi-value header collection.
 
     Backed by `multidict.CIMultiDict`. Existing single-value access via
@@ -610,6 +610,11 @@ class Headers(_GetListMixin, CIMultiDict):
 
 
 # ── Parsed header values ──────────────────────────────────
+def _is_byte_pos(value: str) -> bool:
+    """True when `value` is a byte position - ASCII digits only, nothing else."""
+    return value.isdigit() and value.isascii()
+
+
 class RangeSpec:
     """Parsed `Range:` header (RFC 9110 Sec. 14.2).
 
@@ -644,14 +649,15 @@ class RangeSpec:
             start_s, _, end_s = chunk.partition("-")
             start_s = start_s.strip()
             end_s = end_s.strip()
-            try:
-                start = int(start_s) if start_s else None
-                end = int(end_s) if end_s else None
-            except ValueError:
+            # RFC 9110 Sec. 14.1.1 spells a byte position `1*DIGIT`. `int()` is
+            # looser than that: it reads a sign, digit separators and non-ASCII
+            # decimal digits, so `bytes=+3-4` and `bytes=1_0-20` were honoured
+            # as ranges no client had asked for.
+            if (start_s and not _is_byte_pos(start_s)) or (end_s and not _is_byte_pos(end_s)):
                 continue
-            if start is None and end is None:
+            if not start_s and not end_s:
                 continue  # `-` alone is invalid
-            ranges.append((start, end))
+            ranges.append((int(start_s) if start_s else None, int(end_s) if end_s else None))
         if not ranges:
             return None
         return cls(unit=unit, ranges=ranges)
@@ -1044,7 +1050,7 @@ class Authorization:
 
 
 # ── Cookies & query parameters ────────────────────────────
-class Cookies(_GetListMixin, MultiDict):
+class Cookies(_GetListMixin, MultiDict[str]):
     """Cookie collection parsed from the `Cookie` header.
 
     Built on `multidict.MultiDict`. Parsing delegates to `iter_cookies`
@@ -1065,7 +1071,7 @@ class Cookies(_GetListMixin, MultiDict):
         return cls(iter_cookies(header_value))
 
 
-class QueryParams(_GetListMixin, MultiDict):
+class QueryParams(_GetListMixin, MultiDict[str]):
     """Multi-value, case-sensitive query parameter collection.
 
     Backed by `multidict.MultiDict`. Repeated query keys (``?x=1&x=2``)

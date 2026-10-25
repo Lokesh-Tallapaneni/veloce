@@ -24,3 +24,16 @@ class VeloceDeprecationWarning(UserWarning):
 
         warnings.filterwarnings("ignore", category=VeloceDeprecationWarning)
     """
+
+
+class _RegistrationWarning(UserWarning):
+    """A diagnostic about a declaration, raised while a route is registered.
+
+    Its own category so an application can silence a declaration diagnostic
+    without silencing anything else Veloce or its own code raises - in
+    particular `VeloceDeprecationWarning`, which roots at `UserWarning` by
+    design and so cannot be told apart from these by category alone.
+
+    Rooted at `UserWarning` so every existing way of filtering these keeps
+    working; it is private because filtering the base category still catches it.
+    """

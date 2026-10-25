@@ -220,9 +220,11 @@ an ETag and `("", timestamp)` when it parses as a date, so a `Range` request can
 to a full `200` when the cached resource is stale.
 
 !!! note
-    Veloce's [`FileResponse`](../reference/responses.md#veloce.FileResponse) and the
-    [StaticFiles](static-files.md) mount already honour `Range` and `If-Range` for you.
-    Parse `request.range` yourself only when you serve byte ranges from a custom source.
+    [`send_file`](helpers.md#range-requests), a
+    [`FileResponse`](../reference/responses.md#veloce.FileResponse) given `request=`,
+    and the [StaticFiles](static-files.md) mount already honour `Range` and `If-Range`
+    for you. Parse `request.range` yourself only when you serve byte ranges from a
+    custom source.
 
 ## Authorization
 

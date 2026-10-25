@@ -14,20 +14,36 @@ Reflection happens at registration time only, never on the hot path.
 from __future__ import annotations
 
 import builtins
+import contextlib
 import copy
-import functools
 import inspect
 import types
 import typing
 import warnings
+import weakref
 from collections.abc import Callable, Mapping
 from typing import Any, Union, get_args, get_origin, get_type_hints
 
 import typing_extensions
 
-from veloce._internal import _is_async_callable
+from veloce._internal import _is_async_callable, resolve_hint_target
 from veloce._model_backend import ModelBackend, _msgspec, backend_of
-from veloce._params import Body, Cookie, File, Form, Header, ParamBase, Path
+from veloce._params import (
+    Body,
+    Cookie,
+    File,
+    Form,
+    Header,
+    ParamBase,
+    Path,
+    deepcopyable,
+    field_info_declares_constraints,
+    field_info_uncarried_constraints,
+    find_field_info,
+    is_immutable,
+    needs_per_request_copy,
+)
+from veloce._warnings import _RegistrationWarning
 from veloce.background import BackgroundTasks
 from veloce.http.datastructures import UploadFile
 from veloce.http.request import Request
@@ -69,6 +85,123 @@ MK_FILE = 6
 # Canonical MK_* -> openapi-style location string. Single-sourced here next to
 # the MK_ constants so the interpreter (`dependency.py`) and the codegen
 # (`_resolver_codegen.py`) read one map instead of maintaining divergent copies.
+#: Every sequence origin a repeated value or a JSON array validates into. One
+#: definition, because each place that listed them separately forgot a different
+#: one: `frozenset` was absent from the body validator, from the grouped-model
+#: field spec and from the schema lowering, each failing in its own way.
+_SEQUENCE_TYPES = (list, set, frozenset, tuple)
+_SEQUENCE_ORIGINS = frozenset(_SEQUENCE_TYPES)
+
+
+def _normalise_sequence_default(marker: ParamBase, target_type: Any) -> ParamBase:
+    """Return a marker whose default is the container the annotation declares.
+
+    `t: set[str] = Query(default=["a", "b"])` names a set and offers a list, and
+    the default is returned as written when the parameter is absent - so the
+    handler received a list from a signature that says set.
+
+    A copy when anything changes, never the marker itself. One marker can be
+    shared between routes (`SHARED = Query(default=["a"])` used by two
+    handlers), and writing the converted default back into it let whichever
+    route registered last decide the container for both.
+
+    Whether the converted value can be shared between requests is decided by
+    what is in it, not by the container around it:
+
+    - A member with mutable state of its own means every request gets a deep
+      copy. A `tuple` is immutable only at the top, so `(["a"],)` would
+      otherwise hand every request the same inner list to append to. A member
+      that cannot be deep-copied - one holding a lock or a connection - is
+      shared instead, because raising from the factory would turn it into a 500
+      on every request that omits the value.
+    - A `set` or `list` is mutable even when its members are not, so each
+      request gets its own built from a snapshot of the members.
+    - A `frozenset` or `tuple` of immutable members is immutable through and
+      through, and one value serves every request.
+
+    Nothing is copied where nothing can change, so a default that wants to stay
+    one object - a sentinel compared with `is`, a registry key - is declared
+    with `default_factory`, whose value is used as it is returned.
+
+    The build is attempted here rather than per request. A declared `set` whose
+    default holds an unhashable member cannot be converted at all, and raising
+    from the factory turned that authoring mistake into a 500 on every request
+    that omitted the value; the default is left as written instead.
+    """
+    origin = get_origin(target_type)
+    if origin not in _SEQUENCE_ORIGINS or not marker.has_default:
+        return marker
+    source = marker.default
+    if not isinstance(source, _SEQUENCE_TYPES):
+        if marker.default_factory is None:
+            return marker
+        # No static default to read - `default_factory=lambda: [...]` - so the
+        # factory's answer is converted as it is produced.
+        inner_factory = marker.default_factory
+        normalised = copy.copy(marker)
+        normalised.default_factory = lambda: _rebuild_sequence(origin, inner_factory())
+        return normalised
+    # Read from the static default even when a factory exists: `ParamBase`
+    # builds a deep-copying factory for a mutable default, and deep-copying a
+    # thousand-element list to then rebuild it as a set was most of the cost of
+    # every request that omitted the value.
+    members = tuple(source)
+    try:
+        built = origin(members)
+    except TypeError:
+        return marker
+    normalised = copy.copy(marker)
+    if not is_immutable(members) and deepcopyable(members):
+        normalised.default_factory = lambda: origin(copy.deepcopy(members))
+    elif origin is set or origin is list:
+        # The container built above rather than the member snapshot: copying a
+        # set re-uses the hashes it already stored, where building one from the
+        # tuple re-hashes every member on every request.
+        normalised.default_factory = built.copy
+    else:
+        normalised.default = built
+        normalised.default_factory = None
+    return normalised
+
+
+def _rebuild_sequence(origin: Any, value: Any) -> Any:
+    """Build `origin` from `value`, leaving it alone if it cannot be built."""
+    if not isinstance(value, _SEQUENCE_TYPES):
+        # Not a sequence to convert. `set` would accept anything iterable and
+        # answer with something else entirely - a `default_factory` returning
+        # `"ab"` became `{"a", "b"}`, a dict became the set of its keys, an
+        # iterator was consumed - so the factory's value is passed through as
+        # written, which is what the static-default path does with one.
+        return value
+    try:
+        return origin(value)
+    except TypeError:
+        # An unhashable member in a declared `set` default is the author's bug.
+        # This runs per request, so raising here would answer every request
+        # that omits the value with a 500; the value goes through as written.
+        return value
+
+
+def _fixed_shape_args(annotation: Any) -> tuple[Any, ...] | None:
+    """Return a fixed-shape tuple's per-position types, or `None` if homogeneous.
+
+    `tuple[int, str]` declares two positions; `tuple[int, ...]`, `list[int]` and
+    `set[int]` declare one element type for every member.
+    """
+    if get_origin(annotation) is not tuple:
+        return None
+    args = get_args(annotation)
+    if Ellipsis in args:
+        return None
+    if args == ((),):
+        # How `tuple[()]` decomposes before 3.11; from 3.11 it is `()`. Either
+        # spelling declares the empty tuple, which is zero positions - not the
+        # "no element type given" that a bare `tuple` means, and reading them
+        # the same way let `tuple[()]` accept any values at all.
+        return ()
+    return args
+
+
 MARKER_LOC = {
     MK_QUERY: "query",
     MK_PATH: "path",
@@ -132,6 +265,22 @@ def extract_annotated_marker(annotation: Any) -> tuple[Any, Any]:
     return None, base_type
 
 
+def _annotated_field_info(annotation: Any) -> Any:
+    """Return the pydantic `FieldInfo` an `Annotated` parameter carries, or `None`.
+
+    The `Optional[...]` wrapper Python 3.10's `get_type_hints` adds around a
+    parameter defaulting to `None` is peeled first, the same way
+    `extract_annotated_marker` peels it - a raw `__metadata__` read sees
+    straight past it and would find nothing on 3.10 while finding the `Field`
+    on 3.11+.
+    """
+    if annotation is not None and not hasattr(annotation, "__metadata__"):
+        was_optional, inner = _unwrap_optional(annotation)
+        if was_optional:
+            annotation = inner
+    return find_field_info(annotation)
+
+
 def _unwrap_list(annotation: Any) -> tuple[bool, Any]:
     """Detect `list[T]` and unwrap T."""
     origin = get_origin(annotation)
@@ -174,7 +323,7 @@ def _group_field_specs(
         if mk == MK_HEADER and not alias:
             key = key.replace("_", "-")
         origin = get_origin(annotation)
-        specs.append((validate_key, key, origin in (list, set, tuple)))
+        specs.append((validate_key, key, origin in _SEQUENCE_ORIGINS))
     return tuple(specs)
 
 
@@ -233,10 +382,89 @@ def _warn_shared_mutable_default(name: str, default: Any, *, stacklevel: int = 3
     author wrote, so a caller reached through an extra helper raises it by one
     and the warning keeps pointing at the same place.
     """
+    kind = type(default).__name__
+    # An immutable container holding a mutable member is shared through the
+    # member, not the container, so naming the container mutable would send the
+    # author looking at the wrong thing - and `default_factory=tuple` is not
+    # the fix there.
+    what = (
+        f"a {kind} default holding a mutable member"
+        if isinstance(default, (tuple, frozenset))
+        else f"a mutable {kind} default"
+    )
+    fix = (
+        "default_factory" if isinstance(default, (tuple, frozenset)) else f"default_factory={kind}"
+    )
     warnings.warn(
-        f"parameter {name!r} has a mutable {type(default).__name__} default that is "
-        f"shared across requests; pass default_factory={type(default).__name__} so each "
-        f"request gets its own value",
+        f"parameter {name!r} has {what} that is shared across requests; "
+        f"pass {fix} so each request gets its own value",
+        _RegistrationWarning,
+        stacklevel=stacklevel,
+    )
+
+
+def _owned(name: str, owner: str) -> str:
+    """Name a parameter, and the handler it belongs to when the caller knows."""
+    return f"{owner}: parameter {name!r}" if owner else f"parameter {name!r}"
+
+
+def _warn_field_info_overridden(
+    name: str, marker: Any, owner: str = "", *, stacklevel: int = 3
+) -> None:
+    """Warn that a parameter's `Field` lost to the marker declared beside it.
+
+    One parameter declaring both says two things about the same value, and the
+    marker is the one Veloce acts on. Which of the two wins is arbitrary to the
+    author until something says so, and a silently discarded `Field` is the
+    bug this folding exists to fix, reintroduced one line over.
+    """
+    from veloce.dependency import Depends  # local import breaks the import cycle
+
+    kind = type(marker).__name__
+    # A `Depends()` / `Security()` carries no constraints, so telling the author
+    # to move them there would be advice they cannot follow.
+    remedy = "" if isinstance(marker, Depends) else f" - declare them on the {kind}() instead"
+    warnings.warn(
+        f"{_owned(name, owner)} declares both a pydantic Field() and a "
+        f"{kind}() marker; the marker wins and the Field's "
+        f"constraints are ignored{remedy}",
+        _RegistrationWarning,
+        stacklevel=stacklevel,
+    )
+
+
+def _warn_field_constraint_uncarried(name: str, keywords: tuple[str, ...], owner: str = "") -> None:
+    """Warn that a `Field` declares a bound no parameter marker can carry.
+
+    pydantic keeps `max_digits` / `decimal_places` / `allow_inf_nan` on its own
+    metadata object rather than as `annotated_types` classes, so the fold cannot
+    see them to carry. Silence here would be the original defect intact: a
+    declared bound that neither validates nor publishes, discovered from a 200.
+    """
+    warnings.warn(
+        f"{_owned(name, owner)} declares {', '.join(keywords)} on its pydantic Field(), which a "
+        "parameter marker cannot carry, so it is neither enforced nor published; validate it "
+        "inside the handler or declare the parameter with a model",
+        _RegistrationWarning,
+        stacklevel=4,
+    )
+
+
+def _warn_field_info_unused(
+    name: str, binding: str, owner: str = "", *, stacklevel: int = 4
+) -> None:
+    """Warn that a `Field` cannot be carried by the binding its annotation chose.
+
+    A body is validated by the model or read as an upload, neither of which
+    consults a parameter marker, so the `Field` beside such an annotation has
+    nowhere to go. Saying so is the point: silently dropping it is the defect
+    the folding exists to fix, and it would be no less silent here.
+    """
+    warnings.warn(
+        f"{_owned(name, owner)} carries a pydantic Field(), but its annotation binds it to "
+        f"{binding}, where a parameter marker's constraints have no effect; they are "
+        "ignored",
+        _RegistrationWarning,
         stacklevel=stacklevel,
     )
 
@@ -251,9 +479,10 @@ def _guard_plain_mutable_default(slot: _Slot, name: str, *, stacklevel: int = 3)
     nudge the explicit-marker path already gives. Markers carry their own
     `default` handling, so this only fires for slots holding a static default.
     """
-    if slot.has_default and isinstance(slot._static_default, (list, dict, set)):
+    if slot.has_default and needs_per_request_copy(slot._static_default):
         original = slot._static_default
-        slot.default_factory = lambda: copy.deepcopy(original)
+        if deepcopyable(original):
+            slot.default_factory = lambda: copy.deepcopy(original)
         _warn_shared_mutable_default(name, original, stacklevel=stacklevel)
 
 
@@ -274,6 +503,7 @@ class _Slot:
         "has_default",
         "is_optional",
         "list_inner",
+        "list_adapter",
         "model",
         "marker",
         "marker_kind",
@@ -288,6 +518,9 @@ class _Slot:
         "dep_offload",
         "scope_sensitive",
         "backend",
+        "list_checks",
+        "marker_reads_list",
+        "marker_validates",
     )
 
     def __init__(self, kind: int, name: str) -> None:
@@ -301,6 +534,12 @@ class _Slot:
         self.has_default = False
         self.is_optional = False
         self.list_inner: Any = None
+        # The validator for a JSON array body of `list[list_inner]`, memoised on
+        # first use. The alias `list[T]` and the adapter lookup behind it cost
+        # ~230ns, which is a quarter of that validation and is constant for the
+        # life of the route - the same reason `list_checks` is an attribute here
+        # rather than a call per request.
+        self.list_adapter: Any = None
         self.model: Any = None
         self.marker: ParamBase | None = None
         self.marker_kind = MK_QUERY
@@ -310,7 +549,7 @@ class _Slot:
         self.group_fields: tuple[tuple[str, str, bool], ...] = ()
         self.sub_plan: HandlerPlan | None = None
         self.use_cache = True
-        self.dep_callable: Callable | None = None
+        self.dep_callable: Callable[..., Any] | None = None
         self.dep_is_coro = False
         # Yield-style dependencies (the typed-DI "context-manager" pattern): the
         # resolver starts the generator, captures the first yielded value as
@@ -331,6 +570,19 @@ class _Slot:
         # Which model backend validates a K_BODY_MODEL slot - Pydantic or
         # msgspec, tagged at registration by `backend_of(inner_type)`.
         self.backend = ModelBackend.NONE
+        # What a list-typed marker enforces, resolved once here. The resolver
+        # reads one attribute instead of calling `_list_marker_checks` - an
+        # `lru_cache` lookup, and a rebuild past its eviction bound - on every
+        # request. `None` means the marker declares nothing to enforce.
+        self.list_checks: Any = None
+        # Whether this marker's annotation is a list/set/tuple, so the body
+        # branch does not run `get_origin` over a fixed annotation per request.
+        self.marker_reads_list = False
+        # Whether this slot's marker declares a bound worth checking per
+        # request. A documentation-only `Field(description=...)` still reaches
+        # the OpenAPI and MCP lowerings through `marker`, but validating it
+        # would be a call that cannot fail on every request.
+        self.marker_validates = False
 
     @property
     def default(self) -> Any:
@@ -533,7 +785,8 @@ class HandlerPlan:
 
 # ── Plan builders ─────────────────────────────────────────
 #: Shared empty set so the common call allocates nothing and no mutable default
-#: is introduced.
+#: is introduced. Means "this route declares no path parameter" - a positive
+#: statement, which only a caller that read the route template can make.
 _NO_PATH_PARAMS: frozenset[str] = frozenset()
 
 
@@ -544,7 +797,7 @@ def _build_depends_slot(
     *,
     websocket: bool = False,
     path_params: frozenset[str] = _NO_PATH_PARAMS,
-    _seen: list | None = None,
+    _seen: list[Any] | None = None,
 ) -> _Slot:
     """Build a K_DEPENDS slot, recursively planning the sub-callable.
 
@@ -607,6 +860,20 @@ def _subgraph_reads_scopes(plan: HandlerPlan | None, seen_plans: set[int]) -> bo
     return False
 
 
+#: Memoised `(signature, hints)` per handler. Both halves depend only on the
+#: callable, so a handler planned a second time - which `include_router` under a
+#: path-parameter prefix does, for a handler declaring one of the prefix's
+#: parameters - reuses them instead of paying `inspect.signature` and
+#: `get_type_hints` again. Weak-keyed so a handler a test suite or a reloader
+#: discards is not pinned for the process lifetime. The cached value is what the
+#: handler's annotations said when it was first planned: Veloce never mutates a
+#: handler's `__annotations__` between registrations, and a caller that does
+#: must register a fresh function object to be re-read.
+_INSPECT_CACHE: weakref.WeakKeyDictionary[
+    Callable[..., Any], tuple[inspect.Signature, dict[str, Any]]
+] = weakref.WeakKeyDictionary()
+
+
 def _inspect_handler(
     handler: Callable[..., Any],
     path_params: frozenset[str] = _NO_PATH_PARAMS,
@@ -631,22 +898,24 @@ def _inspect_handler(
     that need an annotation then fall back to the parameter default.
     """
     try:
+        cached = _INSPECT_CACHE.get(handler)
+    except TypeError:
+        # A callable that is unhashable or takes no weak reference (a builtin,
+        # some C callables) raises building the key rather than missing, so the
+        # read is guarded as well as the write. Planning it uncached is fine.
+        cached = None
+    if cached is not None:
+        return cached
+
+    try:
         sig = inspect.signature(handler)
     except (TypeError, ValueError):
         return None
 
-    real: Any = handler
-    while isinstance(real, functools.partial):
-        real = real.func
-    if inspect.isclass(real):
-        hint_target: Any = real.__init__
-    elif not inspect.isfunction(real) and not inspect.ismethod(real) and callable(real):
-        hint_target = type(real).__call__
-    else:
-        hint_target = real
+    hint_target: Any = resolve_hint_target(handler)
 
     try:
-        return sig, get_type_hints(hint_target, include_extras=True)
+        hints = get_type_hints(hint_target, include_extras=True)
     except Exception as exc:
         # `get_type_hints` resolves the whole signature or none of it, so one
         # unresolvable annotation used to take every other annotation with it -
@@ -655,7 +924,16 @@ def _inspect_handler(
         # parameter did not resolve stopped authenticating and answered 200.
         # Resolve what can be resolved instead, so a broken annotation costs
         # only its own parameter, and say so rather than degrading in silence.
+        # Deliberately not cached: this is the one branch whose answer depends
+        # on `path_params`, and it refuses the registration when a dropped
+        # annotation is load-bearing. Cached, the same handler would be refused
+        # under one route template and silently accepted under another.
         return sig, _salvage_hints(hint_target, exc, path_params, sig.parameters)
+
+    result = (sig, hints)
+    with contextlib.suppress(TypeError):
+        _INSPECT_CACHE[handler] = result
+    return result
 
 
 def _callable_name(obj: Any) -> str:
@@ -771,7 +1049,7 @@ class _UnresolvedName:
 _TYPING_NAMES: dict[str, Any] = {**vars(typing), **vars(typing_extensions)}
 
 
-class _PlaceholderNamespace(dict):
+class _PlaceholderNamespace(dict[str, Any]):
     """A name mapping that yields a placeholder rather than raising `NameError`."""
 
     def __missing__(self, key: str) -> _UnresolvedName:
@@ -873,6 +1151,11 @@ def _declaration_is_load_bearing(
         return True
     if any(isinstance(item, _UnresolvedName) for item in metadata):
         return True
+    # A `Field` declaring a bound is enforced now that the fold carries it to
+    # resolve time, so dropping the annotation drops the bound with it. Before
+    # the fold the `Field` was ignored anyway and losing it cost nothing.
+    if any(field_info_declares_constraints(item) for item in metadata):
+        return True
     if name in path_params:
         # The name is in the route template, so the resolver reads it from
         # `path_params` before the query string - the source the declaration
@@ -937,6 +1220,7 @@ def _warn_unresolved_annotations(hint_target: Any, unresolved: list[str], exc: E
         "those parameters are treated as unannotated. Nothing about where their "
         "values come from changes - import the name at runtime rather than only "
         "under TYPE_CHECKING to keep the annotation",
+        _RegistrationWarning,
         stacklevel=3,
     )
 
@@ -1027,7 +1311,14 @@ def _build_marker_slot(
     # mutable `default` is exactly "the author wrote a static mutable
     # default". The marker copies it per request now; still point them
     # at the spelling that says so.
-    if isinstance(marker.default, (list, dict, set)):
+    # A sequence-typed parameter's default is rebuilt below into the container
+    # it declares, per request where that container is mutable - so the warning
+    # would name a sharing that no longer happens.
+    if needs_per_request_copy(marker.default) and get_origin(slot.target_type) not in (
+        set,
+        frozenset,
+        tuple,
+    ):
         _warn_shared_mutable_default(param_name, marker.default, stacklevel=4)
     # `payload: Payload = Body()` declares the same thing as a bare
     # `payload: Payload`, so it must validate the same way. Recorded here
@@ -1038,7 +1329,64 @@ def _build_marker_slot(
         if backend is not ModelBackend.NONE:
             slot.model = slot.target_type
             slot.backend = backend
+    # Derived from registration-time facts, for the same reason as the backend
+    # above: the resolver reads an attribute rather than recomputing a constant
+    # per request. Only a list-reading marker needs either of them - every
+    # reader of `list_checks` sits inside a list-producing branch - and
+    # computing them for a scalar `Query(ge=1)` built a `copy.copy` of the
+    # marker that nothing reads and the slot then held for the life of the
+    # process.
+    # Every sequence shape a JSON array validates into. `frozenset` was absent,
+    # so a `frozenset[int]` body skipped validation entirely and reached the
+    # handler as the raw list the decoder produced.
+    slot.marker_reads_list = get_origin(slot.target_type) in _SEQUENCE_ORIGINS
+    if slot.marker_reads_list:
+        marker = _normalise_sequence_default(marker, slot.target_type)
+        slot.marker = marker
+        from veloce.dependency import _list_marker_checks  # local import breaks the import cycle
+
+        slot.list_checks = _list_marker_checks(marker)
+        # The element type, so the resolver can coerce before bounding. Without
+        # it a raw `["0"]` was bounded as a string and skipped the numeric
+        # constraints the published `items.minimum` advertises.
+        args = get_args(slot.target_type)
+        slot.list_inner = args[0] if args else str
     return slot
+
+
+def _adopt_field_marker(
+    slot: _Slot,
+    marker: ParamBase | None,
+    param_name: str,
+    declares_constraints: bool = False,
+) -> None:
+    """Carry a source-less `Field` marker on a bare path-or-query slot.
+
+    The marker names no source, so the resolver keeps its own path-then-query
+    lookup and only asks the marker to validate what that found. `lookup_name`
+    is the alias when one is declared and the parameter name otherwise, and it
+    is set either way so the resolver reads one attribute rather than testing
+    for an alias per request - the PATH lookup still keys on the declared name,
+    because that is what the route template stores.
+    """
+    slot.lookup_name = param_name
+    if marker is None:
+        return
+    slot.marker = marker
+    slot.marker_validates = declares_constraints
+    if marker.alias:
+        slot.lookup_name = marker.alias
+    # The marker folded in the parameter's own default, so it is authoritative.
+    slot.has_default = marker.has_default
+    slot.default_factory = marker.default_factory
+    slot._static_default = marker.default if marker.default is not ... else None
+    if slot.kind == K_QUERY_LIST:
+        # Only a list slot reads these. Computing them for a scalar built a
+        # `copy.copy` of the marker that nothing reads and the slot then held
+        # for the life of the process.
+        from veloce.dependency import _list_marker_checks  # local import breaks the import cycle
+
+        slot.list_checks = _list_marker_checks(marker)
 
 
 def _build_annotated_slot(
@@ -1048,12 +1396,19 @@ def _build_annotated_slot(
     *,
     has_default: bool,
     websocket: bool,
+    field_info: Any = None,
+    owner: str = "",
 ) -> _Slot | None:
     """Build the slot for a parameter carrying neither `Depends` nor a marker.
 
     The binding follows from the annotation alone: an upload, a model body, a
     list read from the query, or the path-or-query fallback. Returns `None` when
     the binding needs a request body a WebSocket handshake does not have.
+
+    `field_info` is the pydantic `Field` the annotation carries. The two value
+    bindings carry it as a source-less marker and validate at resolve time; the
+    two body bindings warn on it instead, since no marker of any class could
+    carry it there.
     """
     is_optional, inner_type = _unwrap_optional(annotation) if annotation else (False, annotation)
     is_list, list_inner = _unwrap_list(inner_type) if inner_type else (False, inner_type)
@@ -1063,6 +1418,8 @@ def _build_annotated_slot(
     if annotation is UploadFile or (is_optional and inner_type is UploadFile):
         if websocket:
             return None
+        if field_info is not None and field_info_declares_constraints(field_info):
+            _warn_field_info_unused(param_name, "a file upload", owner)
         slot = _Slot(K_UPLOAD_FILE, param_name)
         slot.is_optional = is_optional
         slot.has_default = has_default
@@ -1077,11 +1434,34 @@ def _build_annotated_slot(
     if body_backend is not ModelBackend.NONE:
         if websocket:
             return None
+        if field_info is not None and field_info_declares_constraints(field_info):
+            _warn_field_info_unused(param_name, "a request-body model", owner)
         slot = _Slot(K_BODY_MODEL, param_name)
         slot.model = inner_type
         slot.backend = body_backend
         slot.is_optional = is_optional
         return slot
+
+    # A `Field` declares what a marker declares, so it becomes one - but a
+    # SOURCE-LESS one, carried on the bare path-or-query slot below. Choosing
+    # `Path` or `Query` here would need the route template, which is what made
+    # the plan route-dependent; and it could not be done correctly anyway,
+    # because a `Field(alias=...)` on a path parameter made the marker look
+    # itself up under the alias while the radix tree stored the declared name.
+    # The bare slot already resolves path-then-query per request, so the
+    # resolver validates against whichever source answered, and one object
+    # still carries the constraints into the OpenAPI document and the MCP tool
+    # schema.
+    field_marker = (
+        ParamBase.from_field_info(field_info, default if has_default else ...)
+        if field_info is not None
+        else None
+    )
+    field_declares_bounds = field_info is not None and field_info_declares_constraints(field_info)
+    if field_info is not None:
+        uncarried = field_info_uncarried_constraints(field_info)
+        if uncarried:
+            _warn_field_constraint_uncarried(param_name, uncarried, owner)
 
     # List-typed parameter: read from query as a list.
     if is_list:
@@ -1091,6 +1471,7 @@ def _build_annotated_slot(
         slot._static_default = default if has_default else None
         slot.is_optional = is_optional
         _guard_plain_mutable_default(slot, param_name, stacklevel=4)
+        _adopt_field_marker(slot, field_marker, param_name, field_declares_bounds)
         return slot
 
     # Default fallback: path-or-query, decided at resolve time because
@@ -1104,6 +1485,7 @@ def _build_annotated_slot(
     slot.has_default = has_default
     slot._static_default = default if has_default else None
     _guard_plain_mutable_default(slot, param_name, stacklevel=4)
+    _adopt_field_marker(slot, field_marker, param_name, field_declares_bounds)
     return slot
 
 
@@ -1144,6 +1526,9 @@ def build_plan(
     sig, hints = inspected
 
     slots: list[_Slot] = []
+    # Named once: the declaration diagnostics below all surface on one
+    # `router.py` line, so the parameter alone does not say which route to fix.
+    handler_name = _callable_name(handler)
 
     for param_name, param in sig.parameters.items():
         if param_name == "self":
@@ -1163,10 +1548,30 @@ def build_plan(
         # If the metadata carries a marker and the user didn't ALSO set it as the
         # default, hoist the marker into `default` and reduce `annotation` to the
         # inner type.
+        field_info = _annotated_field_info(annotation)
         extracted_marker, annotation = extract_annotated_marker(annotation)
         if extracted_marker is not None and not isinstance(default, (Depends, ParamBase)):
+            # `Annotated[int, Query()] = 10` declares the default beside the
+            # marker, which the documented guide calls the way to keep "the
+            # argument's real default free for an ordinary value". Hoisting the
+            # marker into the default position overwrote that value, so the
+            # parameter had no default at all: the resolver answered `422` for
+            # the documented example and both documents published it required.
+            if (
+                has_default
+                and isinstance(extracted_marker, ParamBase)
+                and not extracted_marker.has_default
+            ):
+                extracted_marker = extracted_marker.with_default(default)
             default = extracted_marker
             has_default = True
+
+        # A `Depends` / `Security` or an explicit marker decides the parameter
+        # on its own, so the `Field` beside it has nothing left to say.
+        if field_info is not None and isinstance(default, (Depends, ParamBase)):
+            if field_info_declares_constraints(field_info):
+                _warn_field_info_overridden(param_name, default, handler_name)
+            field_info = None
 
         # Ambiguity guard (registration-time, intent-aware). A parameter bound
         # by a BY-NAME magic rule below (`request`, or `ws` / `websocket` on a
@@ -1245,9 +1650,17 @@ def build_plan(
                 slots.append(marker_slot)
             continue
 
-        # Everything else binds from the annotation alone.
+        # Everything else binds from the annotation alone. A pydantic `Field`
+        # beside it rides along as a source-less marker, so this builder needs
+        # nothing about the route - which is what keeps the plan handler-local.
         annotated_slot = _build_annotated_slot(
-            param_name, annotation, default, has_default=has_default, websocket=websocket
+            param_name,
+            annotation,
+            default,
+            has_default=has_default,
+            websocket=websocket,
+            field_info=field_info,
+            owner=handler_name,
         )
         if annotated_slot is not None:
             slots.append(annotated_slot)

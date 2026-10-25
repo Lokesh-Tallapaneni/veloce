@@ -15,7 +15,7 @@ import threading
 import weakref
 from collections import deque
 from collections.abc import Callable
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import unquote
 
 import httptools
@@ -39,12 +39,13 @@ from veloce.config import (
 )
 from veloce.config import Config as _Config
 from veloce.exceptions import RequestEntityTooLarge, WebSocketDisconnect
-from veloce.http._body import RequestBodySource, too_large_payload
+from veloce.http._body import RequestBodySource, body_too_large, too_large_payload
 from veloce.http.request import Request
 from veloce.http.response import Response
 from veloce.websocket import WebSocket, compute_accept
 
 if TYPE_CHECKING:  # pragma: no cover
+    from veloce._pipeline import CompiledPipeline
     from veloce.app import Veloce
     from veloce.routing.router import RouteMatch
 
@@ -175,6 +176,7 @@ class HttpProtocol(asyncio.Protocol):
         "_closing",
         "_draining",
         "_current_source",
+        "_serving_source",
         "_raw_content_length",
         "_has_expect_continue",
         "_can_write",
@@ -186,7 +188,7 @@ class HttpProtocol(asyncio.Protocol):
     )
 
     # Class-level set: prevents GC of in-flight tasks across all connections.
-    _active_tasks: set[asyncio.Task] = set()
+    _active_tasks: set[asyncio.Task[Any]] = set()
 
     # Live, admitted connections, tracked so graceful shutdown can quiesce each
     # one at its next request boundary. A `WeakSet` so a connection that tears
@@ -280,7 +282,7 @@ class HttpProtocol(asyncio.Protocol):
         self._request_queue: deque[tuple[Request, RequestBodySource, bool, RouteMatch | None]] = (
             deque()
         )
-        self._server_loop: asyncio.Task | None = None
+        self._server_loop: asyncio.Task[Any] | None = None
         # Set on teardown so an in-flight server loop stops pulling more work
         # and a client that closes mid-pipeline does not wedge the loop.
         self._closing: bool = False
@@ -296,6 +298,11 @@ class HttpProtocol(asyncio.Protocol):
         # the request the server loop is dispatching (an earlier one may still
         # be in flight while a pipelined follow-up's body streams in).
         self._current_source: RequestBodySource | None = None
+        # The body source of the request the server loop is dispatching. Held
+        # separately because `_current_source` is released at message-complete,
+        # and a handler streaming its *response* long outlives that - the drop
+        # `connection_lost` records has to reach the source it still holds.
+        self._serving_source: RequestBodySource | None = None
         # Captured during header parsing so headers-complete reads them in O(1)
         # rather than rescanning the whole header list. The raw Content-Length
         # value (still bytes, parsed lazily) drives the early 413; the expect
@@ -319,7 +326,7 @@ class HttpProtocol(asyncio.Protocol):
         # bytes are fed to its frame parser instead of the HTTP parser. `_ws_task`
         # is the handler dispatch task, cancelled on connection_lost.
         self._websocket: WebSocket | None = None
-        self._ws_task: asyncio.Task | None = None
+        self._ws_task: asyncio.Task[Any] | None = None
 
     # ── httptools callbacks ───────────────────────────────
 
@@ -825,6 +832,12 @@ class HttpProtocol(asyncio.Protocol):
         if self._current_source is not None:
             self._current_source.feed_eof(disconnected=True)
             self._current_source = None
+        # The request being served may be past its body and streaming its
+        # response, in which case there is no stream to end - only the drop to
+        # record, so the `is_disconnected()` its generator polls answers True
+        # and it stops producing for a client that is gone.
+        if self._serving_source is not None:
+            self._serving_source.mark_disconnected()
         if self._server_loop is not None and not self._server_loop.done():
             self._server_loop.cancel()
         if self._keep_alive_handle is not None:
@@ -1102,49 +1115,87 @@ class HttpProtocol(asyncio.Protocol):
         if self._current_source is not None:
             self._current_source.feed_eof()
             self._current_source = None
-        # The same body the ASGI path answers with, so one app does not describe
-        # the same refusal two ways depending on how it is served.
-        body = dumps_for(self.app, too_large_payload(self.app.config.get("MAX_CONTENT_LENGTH")))
-        post = None
+        max_size = self.app.config.get("MAX_CONTENT_LENGTH")
         if request is not None:
             cp = self.app._ensure_pipeline()
-            post = cp.http_post if cp is not None else None
-        if post is None:
-            # No request, or no response phase to run: the refusal is written
-            # synchronously, before this callback returns, exactly as it always
-            # was. An app with no response middleware pays nothing for this.
-            self._emit_http_error(
-                status.HTTP_413_CONTENT_TOO_LARGE,
-                b"Content Too Large",
-                body,
-                extra=CONTENT_TYPE_JSON_LINE,
-            )
-            return
-        response = Response(
-            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-            body=body,
-            content_type=MIME_JSON,
+            # A probe, not the decision - the builder does the authoritative
+            # lookup. Its only job is to tell "nothing would reshape this
+            # refusal" from "something would", because the former is written
+            # synchronously below and the latter has to be awaited.
+            if (cp is not None and cp.http_post is not None) or self.app._find_error_handler(
+                request, body_too_large(max_size)
+            ) is not None:
+                # The handler and any middleware may await, and this is a
+                # synchronous parser callback, so the build and the write are
+                # deferred to a task. `_oversized` is already latched, so
+                # nothing further is parsed off this connection meanwhile.
+                task = self.loop.create_task(self._emit_refusal(request, cp, max_size))
+                HttpProtocol._active_tasks.add(task)
+                task.add_done_callback(HttpProtocol._active_tasks.discard)
+                return
+        # Nothing to run: the refusal is written synchronously, before this
+        # callback returns, exactly as it always was - including RFC 9110
+        # Sec. 15.5.14's reason phrase, which the status table still spells the
+        # pre-9110 way. The same body the ASGI path answers with, so one app
+        # does not describe the same refusal two ways depending on how it is
+        # served.
+        self._emit_http_error(
+            status.HTTP_413_CONTENT_TOO_LARGE,
+            b"Content Too Large",
+            dumps_for(self.app, too_large_payload(max_size)),
+            extra=CONTENT_TYPE_JSON_LINE,
         )
-        # A middleware may await, and this is a synchronous parser callback, so
-        # the write is deferred to a task. `_oversized` is already latched, so
-        # nothing further is parsed off this connection in the meantime.
-        task = self.loop.create_task(self._emit_refusal(post, cast("Request", request), response))
-        HttpProtocol._active_tasks.add(task)
-        task.add_done_callback(HttpProtocol._active_tasks.discard)
 
     async def _emit_refusal(
-        self, post: tuple[Callable, ...], request: Request, response: Response
+        self, request: Request, cp: CompiledPipeline | None, max_size: int | None
     ) -> None:
-        """Run the response phase over a refusal, then frame it and close."""
+        """Build the 413 the way the ASGI path builds it, then frame it and close.
+
+        Through the app's own builder, so a registered `RequestEntityTooLarge`
+        handler shapes this refusal exactly as it shapes the ASGI one - the
+        payload was already shared between the transports, but the handler
+        lookup above it was not, so the same app served two ways still answered
+        two different bodies.
+        """
         try:
-            response = await self.app._run_response_phase(post, request, response, False)
+            response = await self.app._body_too_large_response(request, cp, max_size)
         except Exception:
-            # A middleware failure must not swallow the refusal: send what was
-            # built, and record why its headers are missing.
-            _logger.exception("response middleware raised while building a refusal")
+            # A failing handler or middleware must not swallow the refusal: send
+            # the built-in body, and record why it is not the app's.
+            _logger.exception("building a body-too-large refusal raised")
+            response = Response(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                body=dumps_for(self.app, too_large_payload(max_size)),
+                content_type=MIME_JSON,
+            )
         transport = self.transport
-        if transport is not None and not transport.is_closing():
-            transport.write(response.encode(keep_alive=False))
+        if transport is None or transport.is_closing():
+            return
+        try:
+            if request.method == HTTP_METHOD_HEAD:
+                # A HEAD response carries no body whatever its framing says
+                # (RFC 9110 Sec. 9.3.2), so the head is written and nothing
+                # follows - no chunks, no terminator. Streaming it sent the
+                # whole refusal body to a client that asked for headers.
+                transport.write(_strip_response_body(response.encode(keep_alive=False)))
+            elif response.is_streamed:
+                # `is_streamed`, not a class test, for the reason the main emit
+                # path gives: a response that produces chunks has to be emitted
+                # as one whatever type it is. Writing only its encoded head sent
+                # chunked framing with no chunks, so a handler answering a
+                # refusal with a streamed body produced a broken response.
+                await response.stream_to(transport, drain=self.drain, keep_alive=False)
+            else:
+                transport.write(response.encode(keep_alive=False))
+        except Exception:
+            # A body that fails partway leaves the client waiting on a chunked
+            # terminator that is never coming, and this runs in a task nobody
+            # awaits - so the failure is logged here and the connection closed
+            # below rather than surfacing as an unretrieved task exception.
+            _logger.exception("emitting a body-too-large refusal failed")
+        finally:
+            # Always: the body was refused unread, so the connection goes
+            # whether or not the refusal reached the wire intact.
             transport.close()
 
     def _request_timeout(self) -> None:
@@ -1167,7 +1218,7 @@ class HttpProtocol(asyncio.Protocol):
             self.transport.close()
 
     @staticmethod
-    def _task_done(task: asyncio.Task) -> None:
+    def _task_done(task: asyncio.Task[Any]) -> None:
         """Log any error from a completed dispatch task and drop the reference."""
         HttpProtocol._active_tasks.discard(task)
         if task.cancelled():
@@ -1177,7 +1228,7 @@ class HttpProtocol(asyncio.Protocol):
             _logger.error("Unhandled error in request dispatch: %s", exc, exc_info=exc)
 
     @staticmethod
-    def _ws_task_done(ws: WebSocket, task: asyncio.Task) -> None:
+    def _ws_task_done(ws: WebSocket, task: asyncio.Task[Any]) -> None:
         """Retire a completed WebSocket dispatch task.
 
         A handler that raises closes with 1011 first, and that close awaits. A
@@ -1263,6 +1314,7 @@ class HttpProtocol(asyncio.Protocol):
         """
         while self._request_queue and not self._closing:
             request, source, keep_alive, match = self._request_queue.popleft()
+            self._serving_source = source
             # Resume at half the limit rather than at the limit, so a connection
             # serving a steady pipeline does not pause and resume on every
             # request.
@@ -1270,7 +1322,15 @@ class HttpProtocol(asyncio.Protocol):
                 len(self._request_queue) <= self._max_pipelined >> 1
             ):
                 self._resume_reading_depth()
-            should_continue = await self._dispatch(request, source, keep_alive, match)
+            try:
+                should_continue = await self._dispatch(request, source, keep_alive, match)
+            finally:
+                # Released in `finally`: a dispatch that raises is exactly the
+                # window where the connection would otherwise keep the last
+                # request's source - and anything still queued in it - reachable
+                # for the rest of its keep-alive life, and where a later
+                # `connection_lost` would mark a stale source disconnected.
+                self._serving_source = None
             # Notify the optional per-request hook (gunicorn max_requests
             # recycling) once the request has been fully dispatched, regardless
             # of whether the connection is kept alive or closed. Cheap None
@@ -1506,7 +1566,7 @@ class HttpProtocol(asyncio.Protocol):
 
     def _on_detached_handler_done(
         self, source: RequestBodySource
-    ) -> Callable[[asyncio.Task], None]:
+    ) -> Callable[[asyncio.Task[Any]], None]:
         """Build a done-callback that drains the body once a detached handler ends.
 
         On a timeout/error the shielded handler keeps running so its teardowns
@@ -1518,7 +1578,7 @@ class HttpProtocol(asyncio.Protocol):
         is purely buffer cleanup; failures are swallowed.
         """
 
-        def _callback(task: asyncio.Task) -> None:
+        def _callback(task: asyncio.Task[Any]) -> None:
             with contextlib.suppress(Exception):
                 task.exception()
             # Feed EOF so a drain that would otherwise wait for on_message_complete

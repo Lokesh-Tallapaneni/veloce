@@ -7,6 +7,8 @@ property of the node.
 
 from __future__ import annotations
 
+from typing import Any
+
 from veloce.routing.converters import Converter, StringConverter
 from veloce.routing.route_info import RouteInfo
 
@@ -58,7 +60,7 @@ class RadixNode:
         # constraint), where `constraint` is the parametrized spec text (e.g.
         # `int(min=1)`) or None for an unparametrized converter. The ordered
         # list above is still the source of truth at match time.
-        self._param_index: dict[tuple[str, type, str | None], RadixNode] = {}
+        self._param_index: dict[tuple[str, type[Any], str | None], RadixNode] = {}
         self.wildcard_child: RadixNode | None = None
         # Method name (uppercase) -> RouteInfo.
         self.handlers: dict[str, RouteInfo] = {}

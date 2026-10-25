@@ -19,6 +19,7 @@ from veloce._handler_plan import (
     build_plan,
     build_route_dep_plans,
 )
+from veloce._internal import T_route
 from veloce._model_backend import resolve_response_contract
 from veloce._protocol_constants import (
     HTTP_METHOD_DELETE,
@@ -117,8 +118,8 @@ _DOC_EXCLUDE_MIDDLEWARE = Doc(
 
 
 def _split_exclusions(
-    entries: Sequence[str | type] | None,
-) -> tuple[frozenset[str], tuple[type, ...]] | None:
+    entries: Sequence[str | type[Any]] | None,
+) -> tuple[frozenset[str], tuple[type[Any], ...]] | None:
     """Split `exclude_middleware` into its name set and its type tuple.
 
     `None` when the route excludes nothing, which the dispatch path tests for
@@ -129,7 +130,7 @@ def _split_exclusions(
     if not entries:
         return None
     names: set[str] = set()
-    types: list[type] = []
+    types: list[type[Any]] = []
     for entry in entries:
         if isinstance(entry, str):
             names.add(entry)
@@ -936,7 +937,7 @@ class Router:
             _DOC_MCP_TASK_SUPPORT,
         ] = False,
         exclude_middleware: Annotated[
-            Sequence[str | type] | None,
+            Sequence[str | type[Any]] | None,
             _DOC_EXCLUDE_MIDDLEWARE,
         ] = None,
         stream: Annotated[
@@ -1583,14 +1584,14 @@ class Router:
             _DOC_MCP_TASK_SUPPORT,
         ] = False,
         exclude_middleware: Annotated[
-            Sequence[str | type] | None,
+            Sequence[str | type[Any]] | None,
             _DOC_EXCLUDE_MIDDLEWARE,
         ] = None,
         stream: Annotated[
             bool,
             _DOC_STREAM,
         ] = False,
-    ) -> Callable:
+    ) -> Callable[[T_route], T_route]:
         """Register a route for any set of HTTP methods.
 
         `exclude_middleware=["CSRFMiddleware"]` opts this route out of the
@@ -1600,7 +1601,7 @@ class Router:
         pay no extra per-request cost.
         """
 
-        def decorator(func: RouteHandler) -> RouteHandler:
+        def decorator(func: T_route) -> T_route:
             """Register `func` for the route and return it unchanged."""
             self.add_route(
                 path=path,
@@ -1649,39 +1650,39 @@ class Router:
 
         return decorator
 
-    def get(self, path: str, **kwargs: Any) -> Callable:
+    def get(self, path: str, **kwargs: Any) -> Callable[[T_route], T_route]:
         """`GET` route decorator. Safe and idempotent - RFC 9110 Sec. 9.3.1."""
         return self.route(path, methods=[HTTP_METHOD_GET], **kwargs)
 
-    def post(self, path: str, **kwargs: Any) -> Callable:
+    def post(self, path: str, **kwargs: Any) -> Callable[[T_route], T_route]:
         """`POST` route decorator - RFC 9110 Sec. 9.3.3."""
         return self.route(path, methods=[HTTP_METHOD_POST], **kwargs)
 
-    def put(self, path: str, **kwargs: Any) -> Callable:
+    def put(self, path: str, **kwargs: Any) -> Callable[[T_route], T_route]:
         """`PUT` route decorator. Idempotent - RFC 9110 Sec. 9.3.4."""
         return self.route(path, methods=[HTTP_METHOD_PUT], **kwargs)
 
-    def patch(self, path: str, **kwargs: Any) -> Callable:
+    def patch(self, path: str, **kwargs: Any) -> Callable[[T_route], T_route]:
         """`PATCH` route decorator - RFC 5789."""
         return self.route(path, methods=[HTTP_METHOD_PATCH], **kwargs)
 
-    def delete(self, path: str, **kwargs: Any) -> Callable:
+    def delete(self, path: str, **kwargs: Any) -> Callable[[T_route], T_route]:
         """`DELETE` route decorator. Idempotent - RFC 9110 Sec. 9.3.5."""
         return self.route(path, methods=[HTTP_METHOD_DELETE], **kwargs)
 
-    def head(self, path: str, **kwargs: Any) -> Callable:
+    def head(self, path: str, **kwargs: Any) -> Callable[[T_route], T_route]:
         """`HEAD` route decorator. Like `GET` with no body - RFC 9110 Sec. 9.3.2."""
         return self.route(path, methods=[HTTP_METHOD_HEAD], **kwargs)
 
-    def options(self, path: str, **kwargs: Any) -> Callable:
+    def options(self, path: str, **kwargs: Any) -> Callable[[T_route], T_route]:
         """`OPTIONS` route decorator - RFC 9110 Sec. 9.3.7."""
         return self.route(path, methods=[HTTP_METHOD_OPTIONS], **kwargs)
 
-    def trace(self, path: str, **kwargs: Any) -> Callable:
+    def trace(self, path: str, **kwargs: Any) -> Callable[[T_route], T_route]:
         """`TRACE` route decorator - RFC 9110 Sec. 9.3.8."""
         return self.route(path, methods=[HTTP_METHOD_TRACE], **kwargs)
 
-    def query(self, path: str, **kwargs: Any) -> Callable:
+    def query(self, path: str, **kwargs: Any) -> Callable[[T_route], T_route]:
         """`QUERY` route decorator - RFC 10008.
 
         QUERY is safe and idempotent like GET but carries a request body like
@@ -1697,7 +1698,7 @@ class Router:
             str,
             Doc("URL path template for the WebSocket route, including `{param}` placeholders."),
         ],
-    ) -> Callable:
+    ) -> Callable[[RouteHandler], RouteHandler]:
         """Register a WebSocket route via decorator."""
 
         def decorator(func: RouteHandler) -> RouteHandler:
@@ -1716,7 +1717,7 @@ class Router:
         send: str = "json",
         on_connect: RouteHandler | Callable[..., Any] | None = None,
         on_disconnect: RouteHandler | Callable[..., Any] | None = None,
-    ) -> Callable:
+    ) -> Callable[[RouteHandler | Callable[..., Any]], RouteHandler | Callable[..., Any]]:
         """Register a WebSocket route wrapping a per-message callback.
 
         The decorated callback handles one message at a time; the framework

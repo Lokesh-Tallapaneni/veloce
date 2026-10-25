@@ -303,6 +303,66 @@ max_age=None)`. Set `as_attachment=True` to add a
 `Content-Disposition: attachment` header, `etag=False` to suppress the
 auto-generated ETag, and `max_age=` to add a `Cache-Control` header.
 
+### Range requests
+
+`send_file` and `async_send_file` serve partial content without any extra
+work: a media player can seek, and an interrupted download can resume. They
+hand the current request to the `FileResponse` they build, which is what opts
+into `Range` handling — a `FileResponse` you construct yourself negotiates
+nothing until you pass `request=` too, because a `Range` applies to the
+representation the client asked for and a hand-built response may be standing
+in for something else (an error page, most of all). A satisfiable single range
+answers `206` with a `Content-Range` header and only the requested bytes, and
+the response seeks to the offset rather than reading the file from the start.
+
+`bytes=0-499` (an explicit span), `bytes=500-` (open-ended) and `bytes=-500`
+(the final 500 bytes) are all accepted. A range that cannot be satisfied — a
+start beyond the end of the file — answers `416` with `Content-Range: */{size}`
+so the client learns the real length. A malformed header, or a unit other than
+`bytes`, is ignored and the full `200` body is served, as is a request for
+several ranges at once.
+
+`If-Range` is honoured, with one thing to know. A stale validator means the
+range is ignored and the whole representation is returned — a resumed download
+must not splice bytes from two versions of a file. But RFC 9110 Sec. 13.1.5
+requires the ETag form to be compared *strongly*, and the ETag these responses
+advertise is weak (`W/"…"`), because it is derived from the path, size and mtime
+rather than the content. So **resume against the date, not the ETag**:
+`If-Range: <Last-Modified>` works, while `If-Range: <the weak ETag>` serves the
+full body. The same section forbids a client from sending a weak tag there at
+all. A caller that supplies its own strong ETag — `send_file(path, etag='"v1"')`
+— gets ETag-based resumption.
+
+A file response advertises `Accept-Ranges: bytes` when it will honour a range —
+that is, when it was given a request. A `FileResponse` you build without one
+negotiates nothing and advertises nothing, so it already serves the whole file
+for any `Range:` header and needs no opt-out.
+
+To serve ranges and then exclude one file, pass the request *and* set the
+header to `none` when the response is built. Setting it afterwards is too late:
+the range is resolved while the response is constructed, so the slice has
+already been chosen.
+
+```python
+from veloce import FileResponse, Request, Veloce
+
+app = Veloce()
+
+
+@app.get("/generated.csv")
+async def generated(request: Request):
+    return await FileResponse.from_path(
+        "exports/latest.csv",
+        headers={"Accept-Ranges": "none"},
+        request=request,
+    )
+```
+
+That answers `200` with the whole file for any `Range:` header. `send_file` and
+`send_from_directory` take no `headers` argument, so a file served through them
+cannot be opted out this way — build the `FileResponse` directly when you need
+to.
+
 !!! warning "Do not pass user input straight to send_file"
     `send_file` does not sanitise the path against directory traversal.
     To serve a file whose name comes from the request, use

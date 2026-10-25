@@ -15,16 +15,18 @@ evaluates them against this module's globals.
 
 from __future__ import annotations
 
+import functools
 import inspect
 import types
 import typing
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 import typing_extensions
 
-from veloce._handler_plan import _AnnotationProbe, _callable_name
-from veloce._internal import _is_async_callable, offload
+from veloce._handler_plan import _annotated_field_info, _AnnotationProbe, _callable_name
+from veloce._internal import _is_async_callable, offload, resolve_hint_target
 from veloce._model_backend import (
     ModelBackend,
     _msgspec,
@@ -32,6 +34,10 @@ from veloce._model_backend import (
     backend_of,
     is_msgspec_struct,
     resolve_response_contract,
+)
+from veloce._params import (
+    ParamBase,
+    field_info_declares_constraints,
 )
 from veloce.exceptions import WebSocketDisconnect
 from veloce.status import WS_1007_INVALID_FRAME_PAYLOAD_DATA
@@ -65,20 +71,6 @@ def _resolve_listener_callable(
         return await offload(callback, *args)
 
     return _async_call, wants_socket
-
-
-def _hint_target(callback: Any) -> Any:
-    """Return the object whose annotations describe `callback`'s parameters.
-
-    `inspect.signature` reads a callable instance through its `__call__` and
-    drops the bound `self`, but `get_type_hints` on the instance answers about
-    the *class attributes* instead - so the parameter list and the annotations
-    would come from two different objects and a callable-object listener's
-    message type would silently never be read.
-    """
-    if inspect.isroutine(callback):
-        return callback
-    return type(callback).__call__ if callable(callback) else callback
 
 
 def _positional_params(callback: Any) -> list[inspect.Parameter]:
@@ -158,7 +150,7 @@ def _message_annotation(callback: Any, wants_socket: bool) -> Any:
     # not import made this raise and name the *message* parameter, which
     # resolved perfectly - and `resolve_response_contract` is documented to
     # tolerate exactly that return annotation and record no send contract.
-    hint_target = _hint_target(callback)
+    hint_target = resolve_hint_target(callback)
     declared = (getattr(hint_target, "__annotations__", None) or {}).get(target.name)
     if declared is None:
         return None
@@ -216,6 +208,69 @@ def _msgspec_tag_fields(members: tuple[Any, ...]) -> list[str | None]:
     ]
 
 
+def _frame_matches(value: Any, target: Any) -> bool:
+    """Whether a decoded frame has the JSON type its declared scalar asks for.
+
+    Only the types `ParamBase.validate` actually branches on are gated; any
+    other declared type passes through to the marker exactly as before, since
+    the marker applies no bound it could contradict.
+
+    `bool` is tested before `int` because `isinstance(True, int)` is `True` in
+    Python, so a `true` frame would otherwise satisfy a declared `int`.
+
+    A union is satisfied by any of its members: `str | int` accepts both, and
+    collapsing it to the first member refused a frame the signature allows.
+    The union is identified by its ORIGIN, not by having args - `get_args`
+    answers `(int,)` for `list[int]` just as it answers `(str, int)` for a
+    union, so testing for args alone checked a `[1, 2, 3]` frame against `int`
+    and refused every message a `list[int]` listener could receive.
+    """
+    if typing.get_origin(target) in (typing.Union, types.UnionType):
+        members = [a for a in typing.get_args(target) if a is not type(None)]
+        return any(_frame_matches(value, member) for member in members)
+    if target is bool:
+        return isinstance(value, bool)
+    if target is int:
+        return isinstance(value, int) and not isinstance(value, bool)
+    if target is float:
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if target is Decimal:
+        return isinstance(value, (int, float, Decimal)) and not isinstance(value, bool)
+    if target is str:
+        return isinstance(value, str)
+    return True
+
+
+def _bounded_scalar(marker: ParamBase, allow_null: bool, target: Any, data: Any) -> Any:
+    """Apply a folded `Field`'s bounds to one scalar frame.
+
+    Raising is the contract the caller already expects: it answers any
+    validator failure with a `1007` close, so a refused bound reaches the peer
+    the same way a frame that does not match a model does.
+
+    A `null` frame is handled here rather than left to `ParamBase.validate`,
+    whose first branch substitutes the `Field`'s default for `None` - right for
+    a parameter that can be absent, wrong for a frame, which either arrived or
+    did not. `Annotated[int, Field(0, ge=0)]` turned a `null` frame into `0`.
+
+    The declared type is checked before the bound, because
+    `ParamBase.validate` dispatches on the *runtime* value: a frame of `"0"`,
+    `[1, 2, 3]` or `{"a": 1}` against `Annotated[int, Field(ge=1)]` matched
+    neither its numeric nor its string branch, so the bound was never
+    evaluated and the handler received a `str`/`list`/`dict` for a declared
+    `int`. A decoded frame carries real JSON types, so a contradicting one is
+    refused rather than coerced - the rule the agent door already applies to an
+    argument that contradicts its published schema.
+    """
+    if data is None:
+        if allow_null:
+            return None
+        raise ValueError("message may not be null")
+    if not _frame_matches(data, target):
+        raise ValueError(f"message must be a {getattr(target, '__name__', target)}")
+    return marker.validate(data, "message")
+
+
 def _message_validator(annotation: Any, inner: Any, members: tuple[Any, ...]) -> Any:
     """Return the callable that turns one decoded frame into a message.
 
@@ -232,6 +287,35 @@ def _message_validator(annotation: Any, inner: Any, members: tuple[Any, ...]) ->
     if backend is ModelBackend.MSGSPEC:
         return _msgspec_validator(inner)
     if backend is ModelBackend.NONE:
+        # Not a message model, but the annotation may still declare a bound:
+        # `Annotated[int, Field(ge=1)]` says the same thing here as it does on a
+        # query parameter, and this door enforced nothing at all for it while
+        # the model spelling closed 1007.
+        # The same peel the HTTP door uses, so one spelling of a bound is not
+        # enforced on a query parameter and ignored on a frame: a raw
+        # `__metadata__` read sees past the `Optional[...]` wrapper and found
+        # nothing for `Optional[Annotated[int, Field(ge=1)]]`.
+        field_info = _annotated_field_info(annotation)
+        if field_info is not None and field_info_declares_constraints(field_info):
+            # From the annotation, not `members`: `_message_union_members`
+            # returns `()` unless every member is a model, and a non-empty tuple
+            # means `backend_of` is not NONE so this branch is unreachable - so
+            # scanning it for `NoneType` was always False and refused a `null`
+            # frame the author had explicitly allowed.
+            allow_null = type(None) in typing.get_args(annotation) or type(None) in (
+                typing.get_args(inner) or ()
+            )
+            # `inner` whole: `_frame_matches` peels `Optional` and accepts any
+            # member of a union itself, and picking one member here refused a
+            # frame the signature allows. `inner` is the caller's already-peeled
+            # annotation and it returns before this on `None`, so there is
+            # nothing to fall back to.
+            return functools.partial(
+                _bounded_scalar,
+                ParamBase.from_field_info(field_info),
+                allow_null,
+                inner,
+            )
         return None
     # Pydantic validates its own models and adapts dataclasses / TypedDicts.
     return adapter_for(annotation).validate_python

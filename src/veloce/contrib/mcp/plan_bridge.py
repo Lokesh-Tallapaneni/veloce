@@ -14,7 +14,9 @@ resolves a plan without an HTTP `Request`.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Literal, get_origin
+from collections.abc import Callable
+from types import UnionType
+from typing import TYPE_CHECKING, Any, Literal, Union, get_args, get_origin
 
 from pydantic import BaseModel
 from pydantic import ValidationError as PydanticValidationError
@@ -30,6 +32,7 @@ from veloce._handler_plan import (
     K_REQUEST,
     K_RESPONSE,
     K_SECURITY_SCOPES,
+    MARKER_LOC,
     MK_BODY,
     _unwrap_optional,
 )
@@ -42,13 +45,23 @@ from veloce._model_backend import (
 )
 from veloce._route_contract import describe_slot
 from veloce.contrib._jsonschema import (
+    _NO_DEFAULT,
     _adapted_to_schema,
     _apply_marker_constraints,
+    _publishable_default,
     _pydantic_to_schema,
     _python_type_to_schema,
 )
 from veloce.contrib.mcp.context import MCPContext
-from veloce.dependency import DependencyResolver, SecurityScopes, _coerce_value
+from veloce.dependency import (
+    _SEQUENCE_ORIGINS,
+    DependencyResolver,
+    SecurityScopes,
+    _as_declared_sequence,
+    _coerce_value,
+    _fixed_shape_args,
+    _validate_list_marker,
+)
 from veloce.exceptions import RequestValidationError
 from veloce.http.datastructures import FormData, QueryParams
 from veloce.http.request import Request
@@ -447,17 +460,26 @@ def _slot_schema(
             _apply_marker_constraints(prop, d.marker)
         # Advertise the declared default so a schema-aware client can populate
         # the field itself instead of omitting it and relying on the server's
-        # fallback. A `default_factory` builds a per-call value with no single
-        # value to publish, so only a static default is emitted.
-        marker_default = getattr(d.marker, "default", ...)
-        if marker_default is not ... and getattr(d.marker, "default_factory", None) is None:
+        # fallback. Which defaults are publishable is `_publishable_default`'s
+        # rule, shared with the OpenAPI lowering so one declaration is not
+        # described two ways.
+        # `publish_null` differs between this branch and the bare-default one
+        # below, which is why each states it. A marker's `None` on a nullable
+        # parameter is valid against the `anyOf` this schema publishes and is
+        # worth reading, so it goes in; a bare Python `= None` is already fully
+        # described by that null branch and would only repeat it.
+        marker_default = _publishable_default(
+            getattr(d.marker, "default", ...), publish_null=d.is_optional
+        )
+        if marker_default is not _NO_DEFAULT:
             prop = {**prop, "default": marker_default}
-    elif d.has_default and d.default is not None:
+    elif d.has_default:
         # A bare Python default is as much a part of the contract as a marker's,
         # and a client that can read it can populate the field itself instead of
-        # omitting it. `None` is skipped: it is carried by the null branch below,
-        # where it describes an optional field rather than a value worth sending.
-        prop = {**prop, "default": d.default}
+        # omitting it.
+        bare_default = _publishable_default(d.default, publish_null=False)
+        if bare_default is not _NO_DEFAULT:
+            prop = {**prop, "default": bare_default}
 
     # An optional parameter accepts an explicit null as well as omission. Without
     # the null branch the published type rejects a value the call path takes.
@@ -578,24 +600,31 @@ def _coerce_json_scalar(slot: _Slot, value: Any, target: Any) -> Any:
     return _coerce_value(value, target, slot.name, "body")
 
 
-def _coerce_list_item(slot: _Slot, value: Any, target: Any, nullable: bool) -> Any:
+def _coerce_list_item(
+    slot: _Slot,
+    value: Any,
+    target: Any,
+    nullable: bool,
+    validate: Callable[[Any, Any], Any] | None,
+) -> Any:
     """Coerce one array element, whose nullability is the inner type's own.
 
     `_coerce_json_scalar` reads `slot.is_optional`, which describes the whole
     parameter: `list[str] | None` may be omitted, but its members are strings.
     The `None` case is therefore settled here before delegating.
+
+    `validate` is the model validator the element type needs, or `None` for a
+    scalar - decided by the caller, because it is a property of the declared
+    element type rather than of each member.
     """
     if value is None:
         if nullable:
             return None
         raise _wrong_type(slot.name, _declared_type_name(target), None)
-    # A declared member type that is a model is validated onto it, the way a
-    # model-typed parameter is; `_coerce_json_scalar` only settles scalars and
-    # would hand the handler the raw mapping.
-    if is_pydantic_model(target):
-        return _validate_model(value, target)
-    if is_adaptable_model(target):
-        return _validate_adapted(value, target)
+    if target is Any:
+        return value
+    if validate is not None:
+        return validate(value, target)
     return _coerce_json_scalar(slot, value, target)
 
 
@@ -608,6 +637,189 @@ def _declared_type_name(target: Any) -> str:
     if target is str:
         return "a string"
     return f"a {getattr(target, '__name__', target)}"
+
+
+#: What `get_origin` reports for a union, in both spellings - `int | str` and
+#: `Union[int, str]` do not share an origin object.
+_UNION_ORIGINS = frozenset({Union, UnionType})
+
+
+def _union_members(target: Any) -> tuple[Any, ...]:
+    """Return a union's member types, or `()` when `target` is not a union."""
+    if get_origin(target) in _UNION_ORIGINS:
+        return tuple(member for member in get_args(target) if member is not type(None))
+    return ()
+
+
+def _coerce_union_member(slot: _Slot, value: Any, target: Any) -> Any:
+    """Accept `value` if it satisfies any member of the union, else refuse.
+
+    Each member is tried through the same strict scalar check a bare parameter
+    of that type gets, so a union is as strict as its members rather than as
+    permissive as an annotation no branch recognised - which is what let a
+    `list[int | str]` accept an object.
+    """
+    members = _union_members(target)
+    for member in members:
+        try:
+            return _coerce_json_scalar(slot, value, member)
+        except RequestValidationError:
+            continue
+    raise _wrong_type(
+        slot.name, " or ".join(_declared_type_name(member) for member in members), value
+    )
+
+
+def _build_sequence(slot: _Slot, declared: Any, items: list[Any], raw: Any) -> Any:
+    """Build the declared container, refusing members it cannot hold.
+
+    A `set` or `frozenset` of an unhashable member type raises `TypeError` from
+    the constructor; unhandled it reached the agent as the interpreter's own
+    "unhashable type" text, logged as a server fault, where the HTTP door
+    answers a validation error.
+    """
+    try:
+        return _as_declared_sequence(declared, items)
+    except TypeError as exc:
+        raise _wrong_type(slot.name, "an array of unique, hashable items", raw) from exc
+
+
+def _coerce_nested_sequence(slot: _Slot, value: Any, declared: Any) -> Any:
+    """Coerce one sequence-typed member, recursing into its own members."""
+    if not isinstance(value, list):
+        raise _wrong_type(slot.name, "an array", value)
+    positional = _fixed_shape_args(declared)
+    if positional is not None:
+        if len(value) != len(positional):
+            raise _wrong_type(slot.name, f"an array of {len(positional)} items", value)
+        items = [
+            _coerce_list_item(slot, item, *_member_contract(slot, inner))
+            for item, inner in zip(value, positional, strict=True)
+        ]
+    else:
+        args = get_args(declared)
+        target, nullable, validate = _member_contract(slot, args[0] if args else Any)
+        items = [_coerce_list_item(slot, item, target, nullable, validate) for item in value]
+    return _build_sequence(slot, declared, items, value)
+
+
+def _member_contract(
+    slot: _Slot, declared: Any
+) -> tuple[Any, bool, Callable[[Any, Any], Any] | None]:
+    """Return what one declared member type needs: `(type, nullable, validator)`.
+
+    A member type that is a model is validated onto it, the way a model-typed
+    parameter is; `_coerce_json_scalar` only settles scalars and would hand the
+    handler the raw mapping. Resolved per declared type rather than per member,
+    since it cannot vary between members that share one declaration.
+    """
+    nullable, target = _unwrap_optional(declared)
+    if not nullable and get_origin(target) in _UNION_ORIGINS:
+        # `_unwrap_optional` reads the two-member `T | None` spelling; a wider
+        # union carries its `None` as one member among several, and reading only
+        # the narrow form refused a null the signature allows.
+        nullable = type(None) in get_args(target)
+    if target is Any or target is object:
+        # Neither declares anything to check, `None` included.
+        return target, True, None
+    if get_origin(target) in _SEQUENCE_ORIGINS:
+        # A member that is itself a sequence - `list[tuple[int, int]]`,
+        # `set[tuple[int, int]]` - has its own members and its own container.
+        # Falling through to the scalar branch handed the handler the raw list
+        # the decoder produced, so a declared tuple member arrived mutable and
+        # an unhashable one then broke the set built from it.
+        def _nested(value: Any, nested_target: Any) -> Any:
+            return _coerce_nested_sequence(slot, value, nested_target)
+
+        return target, nullable, _nested
+    if _union_members(target):
+        # A union declares several acceptable JSON types, so a member is held to
+        # the set of them rather than to the union object - which no scalar
+        # branch recognised, so every value passed.
+        def _union(value: Any, union_target: Any) -> Any:
+            return _coerce_union_member(slot, value, union_target)
+
+        return target, nullable, _union
+    if is_pydantic_model(target):
+        return target, nullable, _validate_model
+    if is_adaptable_model(target):
+        return target, nullable, _validate_adapted
+    return target, nullable, None
+
+
+def _coerce_list_members(slot: _Slot, value: list[Any]) -> list[Any]:
+    """Coerce each member onto its declared element type, then bound the list.
+
+    One rule for every spelling of a list marker - a folded `Field`, an explicit
+    marker with bounds, and one carrying none - so no two of them accept what
+    another refuses. Coercion comes first because `ParamBase.validate` dispatches
+    on the Python type: a raw `["0"]` would take the string branch, skip the
+    numeric bound the schema publishes as `items.minimum`, and hand the handler a
+    `str` for a declared `list[int]`. The element type is unwrapped first, since
+    `slot.list_inner` is the declared member type and bounding straight against
+    it refused a null member of a `list[int | None]` that the signature allows.
+
+    Bounding is conditional, coercion is not: the declared element type is the
+    contract whether or not a bound accompanies it.
+
+    "One rule" here means one rule across the spellings on *this* door. It is
+    stricter than the HTTP door's, which validates an array body through
+    Pydantic's lax mode (`dependency._validate_body_list`) and so converts a
+    `True` into an `int` where this refuses it. A model that sent the wrong JSON
+    type is better told so than quietly corrected, which is the same ground the
+    scalar branch refuses one on.
+    """
+    positional = _fixed_shape_args(slot.target_type)
+    if positional is not None:
+        # A fixed-shape `tuple[int, str]` declares a type per position, not one
+        # element type: holding every member to the first refused the tuple's
+        # own second member.
+        if len(value) != len(positional):
+            raise _wrong_type(slot.name, f"an array of {len(positional)} items", value)
+        items = [
+            _coerce_list_item(slot, item, *_member_contract(slot, declared))
+            for item, declared in zip(value, positional, strict=True)
+        ]
+    else:
+        # Resolved once for the whole array. The contract is a property of the
+        # declared element type, which cannot vary between members, and asking
+        # per member cost two model predicates on each one.
+        target, nullable, validate = _member_contract(slot, slot.list_inner)
+        items = [_coerce_list_item(slot, item, target, nullable, validate) for item in value]
+    # Built first, then bounded. A `set` drops duplicates, so a bound read
+    # against the collected list answered about a length the handler never
+    # sees: `min_length=2` admitted `["a", "a"]` as a one-member set, below its
+    # own minimum, and `max_length` refused what the HTTP door accepted.
+    collected = _build_sequence(slot, slot.target_type, items, value)
+    if slot.list_checks is not None:
+        _validate_list_marker(collected, slot.list_checks, slot.name, MARKER_LOC[slot.marker_kind])
+    return collected
+
+
+def _validate_marker_bound(slot: _Slot, value: Any) -> Any:
+    """Apply a marker's scalar bound on the agent door, as HTTP does.
+
+    Reported as `RequestValidationError` rather than the bare `ValueError`
+    `marker.validate` raises. `_invocation` catches both and refuses the call
+    either way; the difference is the message the agent reads, which it builds
+    from `err.errors` for this type and from `str(err)` for the other - so this
+    one names the field and the bound rather than one sentence.
+    """
+    marker = slot.marker
+    if marker is None:
+        return value
+    try:
+        return marker.validate(value, slot.name)
+    except ValueError as exc:
+        raise RequestValidationError(
+            [
+                {
+                    "loc": [MARKER_LOC[slot.marker_kind], slot.name],
+                    "msg": str(exc),
+                    "type": "value_error",
+                }
+            ]
+        ) from exc
 
 
 def _coerce_argument(slot: _Slot, value: Any) -> Any:
@@ -628,9 +840,17 @@ def _coerce_argument(slot: _Slot, value: Any) -> Any:
             return _validate_model(value, target)
         marker = slot.marker
         value = _coerce_json_scalar(slot, value, target)
-        if marker is not None:
-            return marker.validate(value, slot.name)
-        return value
+        if marker is None:
+            return value
+        # `marker.validate` dispatches on the Python type and its guards skip a
+        # list, so an explicit list marker's bounds - which this schema
+        # publishes as `minItems` / `maxItems` / `items.minimum` - would be
+        # advertised and ignored on this door while HTTP enforces them. Reached
+        # for a marker with no bounds too: its element type still has to be
+        # coerced, or the handler is handed the raw JSON members.
+        if slot.marker_reads_list and isinstance(value, list):
+            return _coerce_list_members(slot, value)
+        return marker.validate(value, slot.name)
 
     if kind == K_QUERY_LIST:
         # The tool published an array, so a scalar is the model's mistake to
@@ -646,11 +866,17 @@ def _coerce_argument(slot: _Slot, value: Any) -> Any:
             return None
         if not isinstance(value, list):
             raise _wrong_type(slot.name, "an array", value)
-        item_nullable, item_type = _unwrap_optional(slot.list_inner)
-        return [_coerce_list_item(slot, item, item_type, item_nullable) for item in value]
+        # A folded `Field` publishes `minItems` / `maxItems` and the scalar
+        # bounds in this tool's schema, so this door enforces them too - a
+        # published bound this door ignored would be the inverse of the defect
+        # the fold exists to fix.
+        return _coerce_list_members(slot, value)
 
     if kind == K_QUERY:
-        return _coerce_json_scalar(slot, value, slot.target_type)
+        value = _coerce_json_scalar(slot, value, slot.target_type)
+        if slot.marker_validates:
+            return _validate_marker_bound(slot, value)
+        return value
 
     return value
 

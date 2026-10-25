@@ -46,6 +46,7 @@ from collections.abc import Callable, Coroutine, Iterator
 from typing import Any
 
 from veloce._constants import MSG_RECEIVER_RAISED
+from veloce._internal import T_route
 
 _logger = logging.getLogger(__name__)
 
@@ -58,7 +59,7 @@ ANY_SENDER: Any = object()
 # Each entry is `(receiver, value)` where `value` is the receiver's
 # return value - or, for the `_robust` variants, the `Exception`
 # instance the receiver raised.
-SignalResult = list[tuple[Callable, Any]]
+SignalResult = list[tuple[Callable[..., Any], Any]]
 
 
 # ── Matching helpers ──────────────────────────────────────
@@ -162,11 +163,11 @@ class Signal:
 
     def connect(
         self,
-        receiver: Callable,
+        receiver: T_route,
         weak: bool = True,
         *,
         sender: Any = ANY_SENDER,
-    ) -> Callable:
+    ) -> T_route:
         """Register `receiver` to fire when `send(sender)` runs.
 
         `sender=ANY_SENDER` (the default) subscribes to every send.
@@ -185,7 +186,7 @@ class Signal:
             self._subs.append((sender, receiver, False, is_async))
         return receiver
 
-    def disconnect(self, receiver: Callable, *, sender: Any = ANY_SENDER) -> None:
+    def disconnect(self, receiver: Callable[..., Any], *, sender: Any = ANY_SENDER) -> None:
         """Remove the subscription for `(receiver, sender)`.
 
         Mirrors `connect` - to detach a per-sender subscription pass the
@@ -304,7 +305,7 @@ class Signal:
         # receivers must still observe the caller's original request-local
         # context, so they run under this pre-mutation snapshot.
         dispatch_context = contextvars.copy_context()
-        targets: list[tuple[Callable, Any, bool]] = []
+        targets: list[tuple[Callable[..., Any], Any, bool]] = []
         coros: list[Coroutine[Any, Any, Any]] = []
         coro_slots: list[int] = []
         for target, is_async in self._iter_live_pairs(sender):
@@ -351,7 +352,7 @@ class Signal:
         # async receivers observe the caller's original context even if a sync
         # receiver mutated a ContextVar (see `asend`).
         dispatch_context = contextvars.copy_context()
-        targets: list[tuple[Callable, Any]] = []
+        targets: list[tuple[Callable[..., Any], Any]] = []
         coros: list[Coroutine[Any, Any, Any]] = []
         coro_slots: list[int] = []
         for target, is_async in self._iter_live_pairs(sender):
@@ -401,7 +402,7 @@ class Signal:
                 return True
         return False
 
-    def _iter_live_pairs(self, sender: Any) -> Iterator[tuple[Callable, bool]]:
+    def _iter_live_pairs(self, sender: Any) -> Iterator[tuple[Callable[..., Any], bool]]:
         """Yield `(target, is_async)` for live matching receivers; prune dead refs.
 
         Walks `self._subs` once, resolves weakrefs, drops dead entries,
@@ -421,7 +422,7 @@ class Signal:
         if len(live) != len(self._subs):
             self._subs = live
 
-    def _iter_live_targets(self, sender: Any) -> Iterator[Callable]:
+    def _iter_live_targets(self, sender: Any) -> Iterator[Callable[..., Any]]:
         """Yield live receivers that match `sender`; prune dead weakrefs in place.
 
         Thin wrapper over `_iter_live_pairs` that discards the `is_async`
@@ -430,7 +431,7 @@ class Signal:
         for target, _is_async in self._iter_live_pairs(sender):
             yield target
 
-    def _log_receiver_raised(self, target: Callable, exc: BaseException) -> None:
+    def _log_receiver_raised(self, target: Callable[..., Any], exc: BaseException) -> None:
         """Log a receiver failure at WARNING with the traceback attached."""
         _logger.warning(
             MSG_RECEIVER_RAISED,

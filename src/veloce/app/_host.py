@@ -51,6 +51,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from veloce.config import Config
     from veloce.contrib.staticfiles import StaticFiles
     from veloce.contrib.templating import Jinja2Templates
+    from veloce.exceptions import HTTPException
     from veloce.http.request import Request
     from veloce.http.response import Response
     from veloce.middleware import Middleware
@@ -91,14 +92,14 @@ class AppHost:
         _bp_teardown_hooks: dict[str, list[Callable[..., Any]]]
         _bp_url_value_preprocessors: dict[str, list[Callable[..., Any]]]
         _bp_url_default_funcs: dict[str, list[Callable[..., Any]]]
-        _bp_exception_handlers: dict[str, dict[type, Callable[..., Any]]]
+        _bp_exception_handlers: dict[str, dict[type[Any], Callable[..., Any]]]
         _bp_status_handlers: dict[str, dict[int, Callable[..., Any]]]
         _blueprints_map: dict[str, Any]
 
         # ── Exception handling ──
-        _exception_handlers: dict[type, Callable[..., Any]]
+        _exception_handlers: dict[type[Any], Callable[..., Any]]
         _status_handlers: dict[int, Callable[..., Any]]
-        _exc_handler_cache: dict[type, Callable[..., Any] | None]
+        _exc_handler_cache: dict[type[Any], Callable[..., Any] | None]
 
         # ── Middleware and the compiled pipeline ──
         _middlewares: list[Middleware]
@@ -200,8 +201,16 @@ class AppHost:
             self, request: Request, cp: CompiledPipeline | None, max_size: int | None
         ) -> Response: ...
 
+        async def _http_exception_response(
+            self,
+            request: Request,
+            exc: HTTPException,
+            cp: CompiledPipeline | None,
+            excluded: bool = False,
+        ) -> Response: ...
+
         def _find_scoped_exception_handler(
-            self, exc_type: type, request: Request | None
+            self, exc_type: type[Any], request: Request | None
         ) -> Callable[..., Any] | None: ...
 
         def _find_scoped_status_handler(

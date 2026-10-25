@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from veloce._internal import T_route
 from veloce.app._host import AppHost
 
 
@@ -48,7 +49,7 @@ class TemplatingMixin(AppHost):
             return None
         return self._templates.env.loader
 
-    def context_processor(self, func: Callable) -> Callable:
+    def context_processor(self, func: T_route) -> T_route:
         """Register a template context processor.
 
         The function should return a dict that merges into the template
@@ -60,7 +61,7 @@ class TemplatingMixin(AppHost):
 
     # ── Jinja2 helper registration ────────────────────────
 
-    def template_filter(self, name: str | None = None) -> Callable:
+    def template_filter(self, name: str | None = None) -> Callable[[T_route], T_route]:
         """Register a function as a Jinja filter.
 
         Usage::
@@ -73,45 +74,45 @@ class TemplatingMixin(AppHost):
         function's own `__name__`.
         """
 
-        def decorator(func: Callable) -> Callable:
+        def decorator(func: T_route) -> T_route:
             filter_name = name or func.__name__
             self._template_filters.append((filter_name, func))
             return func
 
         return decorator
 
-    def template_global(self, name: str | None = None) -> Callable:
+    def template_global(self, name: str | None = None) -> Callable[[T_route], T_route]:
         """Register a callable as a Jinja global, reachable by name in a template.
 
         Same shape as `template_filter`.
         """
 
-        def decorator(func: Callable) -> Callable:
+        def decorator(func: T_route) -> T_route:
             global_name = name or func.__name__
             self._template_globals.append((global_name, func))
             return func
 
         return decorator
 
-    def add_template_global(self, func: Callable, name: str | None = None) -> None:
+    def add_template_global(self, func: Callable[..., Any], name: str | None = None) -> None:
         """Imperative equivalent of `@template_global`."""
         self._template_globals.append((name or func.__name__, func))
 
-    def template_test(self, name: str | None = None) -> Callable:
+    def template_test(self, name: str | None = None) -> Callable[[T_route], T_route]:
         """Register a Jinja test - used in `{% if x is name %}` constructs."""
 
-        def decorator(func: Callable) -> Callable:
+        def decorator(func: T_route) -> T_route:
             test_name = name or func.__name__
             self._template_tests.append((test_name, func))
             return func
 
         return decorator
 
-    def add_template_filter(self, func: Callable, name: str | None = None) -> None:
+    def add_template_filter(self, func: Callable[..., Any], name: str | None = None) -> None:
         """Imperative equivalent of `@template_filter`."""
         self._template_filters.append((name or func.__name__, func))
 
-    def add_template_test(self, func: Callable, name: str | None = None) -> None:
+    def add_template_test(self, func: Callable[..., Any], name: str | None = None) -> None:
         """Imperative equivalent of `@template_test`."""
         self._template_tests.append((name or func.__name__, func))
 

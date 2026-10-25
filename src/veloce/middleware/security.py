@@ -14,13 +14,14 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import logging
 import math
 import secrets
 import time
 import uuid
 from collections import deque
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 import veloce.status as status
@@ -47,12 +48,14 @@ from veloce._constants import (
 from veloce._internal import _current_request_var, _extract_host
 from veloce._protocol_constants import URL_SCHEME_HTTPS
 from veloce.audit import Finding
+from veloce.exceptions import TooManyRequests
 from veloce.http.request import Request
 from veloce.http.response import RedirectResponse, Response, header_present
 from veloce.middleware.base import Middleware
+from veloce.principal import current_principal
 
 if TYPE_CHECKING:  # pragma: no cover
-    from collections.abc import Iterable
+    from collections.abc import Callable, Iterable
 
     from veloce.audit import AuditContext
 
@@ -221,10 +224,29 @@ class TrustedHostMiddleware(Middleware):
     `a.b.example.com`, etc. - never the bare `example.com`). Matching is
     case-insensitive; the port portion of `Host:` is stripped before
     comparison (RFC 9110 Sec. 7.2).
+
+    A host that fails the check is refused with `400 Bad Request`, because the
+    request named a host this server does not answer for - the request itself is
+    malformed, not the credential it carried. Pass `status_code=403` to report it
+    as a refusal instead, or any other 4xx an edge proxy or log pipeline keys on.
     """
 
-    def __init__(self, allowed_hosts: list[str], *, name: str | None = None) -> None:
+    def __init__(
+        self,
+        allowed_hosts: list[str],
+        *,
+        status_code: int = status.HTTP_400_BAD_REQUEST,
+        name: str | None = None,
+    ) -> None:
         super().__init__(name=name)
+        # `ValueError`, not the `AssertionError` used for API misuse elsewhere:
+        # `python -O` strips asserts, and a status outside 4xx would make the
+        # refusal read as a success (2xx), a redirect the client follows (3xx),
+        # or a server fault that a retry policy keeps retrying (5xx). A host
+        # check whose rejection does not say "rejected" is worse than none.
+        if not 400 <= status_code < 500:
+            raise ValueError("TrustedHostMiddleware status_code must be a 4xx client error")
+        self._status_code = status_code
         # Split exact matches from wildcards at construction so the request
         # hot path stays O(1) for the common case.
         self._exact: frozenset[str] = frozenset(
@@ -265,7 +287,7 @@ class TrustedHostMiddleware(Middleware):
         # stay consistent in both directions.
         host = _extract_host(request.headers.get(HEADER_HOST, ""))
         if not self.is_host_allowed(host):
-            return Response(status_code=status.HTTP_400_BAD_REQUEST, body=b"Invalid host header")
+            return Response(status_code=self._status_code, body=b"Invalid host header")
         return None
 
 
@@ -381,6 +403,13 @@ class _SlidingLog:
         return remaining if remaining > 0 else 0
 
 
+#: Namespace for a `key_func`'s answers. A supplied namer returns text the
+#: caller can influence, and the derivation's keys (`host:`, `xff:`, `ua:`,
+#: `principal:`, `uuid:`) are reachable strings; without a prefix of its own a
+#: namer echoing one of them would share that bucket.
+_SUPPLIED_KEY_PREFIX = "key:"
+
+
 class RateLimitMiddleware(Middleware):
     """Per-client rate limiter with a selectable algorithm and backend.
 
@@ -418,6 +447,19 @@ class RateLimitMiddleware(Middleware):
     route matched at dispatch entry, so a `before_request` hook that rewrites the
     path does not change which limit applies.
 
+    Counters are keyed by the caller the request came from, derived from the
+    transport peer and the proxy chain. Pass `key_func=lambda request: ...` to
+    name the caller yourself - an API key, a tenant id, the authenticated
+    subject - which is what an application behind a gateway that terminates
+    identity, or one serving a door with no client address at all, has to do for
+    the limit to mean anything.
+
+    The namer may be `async def`, since the identity often has to be fetched,
+    and may return `None` for a caller it cannot name - an anonymous request to
+    a namer keyed on a user id. `None` falls through to the derivation above, so
+    such a caller is limited against a bucket of its own rather than sharing one
+    with every other caller the namer declined.
+
     Usage::
 
         from veloce import RateLimitMiddleware, TokenBucket
@@ -439,6 +481,7 @@ class RateLimitMiddleware(Middleware):
         *,
         strategy: RateLimitStrategy | None = None,
         backend: RateLimitBackend | None = None,
+        key_func: Callable[[Request], str | None | Awaitable[str | None]] | None = None,
         overrides: dict[str, RateLimitStrategy] | None = None,
         strict_overrides: bool = True,
         max_keys: int = 100_000,
@@ -447,6 +490,19 @@ class RateLimitMiddleware(Middleware):
         super().__init__(name=name)
         if max_keys < 1:
             raise ValueError("RateLimitMiddleware max_keys must be >= 1")
+        if key_func is not None and not callable(key_func):
+            raise TypeError("RateLimitMiddleware key_func must be callable")
+        # Settle which function names the caller once, here: the request path
+        # then calls `self._key(request)` with no test for whether one was
+        # supplied, and the default arm is the bound method it would otherwise
+        # have reached through the class.
+        self._key: Callable[[Request], Any] = key_func if key_func is not None else self._bucket_key
+        # Whether `self._key` is the caller's namer or the built-in derivation,
+        # which decides whether its answer needs namespacing below.
+        self._key_supplied: bool = key_func is not None
+        # One warning per middleware, not per request: the condition is a
+        # property of the namer, so repeating it would only bury the first.
+        self._warned_key_type: bool = False
         self._max_keys = max_keys
         self._strategy = strategy
         # An override key naming no route is a configuration error by default.
@@ -509,15 +565,57 @@ class RateLimitMiddleware(Middleware):
     async def process_request(self, request: Request) -> Response | None:
         """Enforce per-client request rate limits."""
         strategy = self._strategy
-        if strategy is not None:
-            return await self._process_strategy(request, strategy)
         # The constructor assigns exactly one limiter, so no strategy means a
         # log. Narrowed here and passed down rather than re-narrowed in the
         # consumer.
-        log = self._log
-        if log is None:
+        log = self._log if strategy is None else None
+        if strategy is None and log is None:
             return None
-        return await self._process_legacy(request, log)
+        # Resolved once, here, and passed down: every path below keys on the
+        # caller, and resolving it in each of them left two copies of the rule
+        # with nothing tying them together.
+        caller = self._key(request)
+        # Awaited on what the call actually returned rather than on what the
+        # namer looked like at construction. An `async def` namer is only the
+        # obvious case; `key_func=lambda r: tenant(r)` inspects as sync and
+        # returns a coroutine all the same, and an un-awaited one is a fresh
+        # object per request - so every request got its own bucket and the
+        # limiter admitted everything. The common path pays one type compare.
+        if type(caller) is not str and inspect.isawaitable(caller):
+            caller = await caller
+        if caller is None or (isinstance(caller, (str, bytes)) and not caller):
+            # A namer keyed on an identity this caller does not carry names
+            # nobody, whether it says so with `None` or with an empty string -
+            # an empty one is the shape `request.headers.get(...) or ""` and
+            # `getattr(..., "", "")` produce, in `str` or in `bytes` - and an
+            # empty `bytes` is not equal to an empty `str`, so testing one
+            # spelling left the other naming every caller the same. The
+            # derivation gives such a caller
+            # a bucket of its own; keeping the empty name would put every caller
+            # the namer declined into one bucket, which the first of them could
+            # then exhaust for all the others.
+            caller = self._bucket_key(request)
+        elif self._key_supplied:
+            # A supplied namer returns caller-influenced text, so it gets a
+            # namespace of its own: an `x-api-key` of `host:1.2.3.4` would
+            # otherwise land in the bucket the derivation uses for that peer
+            # address, and one caller could spend another's budget. Only a
+            # supplied answer is prefixed - the derivation's own keys are
+            # already the namespace this is keeping clear of.
+            if type(caller) is not str:
+                # Interpolated rather than concatenated, so a tenant id handed
+                # over as an `int` costs a wrong bucket at worst and not a 500
+                # on every request. Said out loud once, because the failure is
+                # otherwise silent in the worst case: an object with no
+                # `__str__` of its own renders its address, so every request
+                # gets a fresh key, every key a fresh bucket, and the limiter
+                # admits everything while reporting itself as installed.
+                self._warn_unstable_key(caller)
+            caller = f"{_SUPPLIED_KEY_PREFIX}{caller}"
+        if strategy is not None:
+            return await self._process_strategy(request, strategy, caller)
+        assert log is not None
+        return await self._process_legacy(request, log, caller)
 
     def _route_override(self, request: Request) -> RateLimitStrategy | None:
         """Return the strategy this route declares for itself, or `None`.
@@ -538,31 +636,38 @@ class RateLimitMiddleware(Middleware):
         route = request.url_rule
         return per_route.get(route) if route is not None else None
 
+    def _warn_unstable_key(self, caller: Any) -> None:
+        """Report a `key_func` answer that is not the `str` the contract names."""
+        if self._warned_key_type:
+            return
+        self._warned_key_type = True
+        _logger.warning(
+            "RateLimitMiddleware key_func returned %s, not str. The value is used "
+            "as text; if it has no stable __str__ every request keys to a new "
+            "bucket and nothing is limited. Return a str (or None for a caller "
+            "it cannot name).",
+            type(caller).__name__,
+        )
+
     async def _process_strategy(
-        self, request: Request, strategy: RateLimitStrategy
+        self, request: Request, strategy: RateLimitStrategy, caller: str
     ) -> Response | None:
         override = self._route_override(request)
         if override is not None:
             strategy = override
             # Scope the key to the route so an overridden route keeps its own
             # per-client counter, separate from the default budget.
-            key = f"{request.url_rule}\x00{self._bucket_key(request)}"
+            key = f"{request.url_rule}\x00{caller}"
         else:
             # No per-route limit: the common path stays a single client-keyed
             # evaluation with no extra lookup.
-            key = self._bucket_key(request)
+            key = caller
         # Wall-clock time so the same key on a shared backend agrees across
         # workers and hosts; the strategy refills/counts against it.
         assert self._backend is not None
         result = await self._backend.evaluate(key, strategy, time.time())
         if not result.allowed:
-            rejected = Response(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                body=b"Too Many Requests",
-                headers={HEADER_RETRY_AFTER: str(result.retry_after)},
-            )
-            self._apply_headers(rejected, result.limit, 0, result.reset)
-            return rejected
+            return await self._refuse(request, result.retry_after, result.limit, result.reset)
         request._state[_RL_STATE_KEY] = result
         return None
 
@@ -673,7 +778,9 @@ class RateLimitMiddleware(Middleware):
         self._route_strategies_gen = gen if gen is not None else -1
         return combined
 
-    async def _process_legacy(self, request: Request, log: _SlidingLog) -> Response | None:
+    async def _process_legacy(
+        self, request: Request, log: _SlidingLog, caller: str
+    ) -> Response | None:
         # A `@rate_limit` tag names the strategy for its own route, so that
         # route is evaluated by the strategy machinery and never reaches the
         # sliding log below. Its counter is keyed by route as well as client,
@@ -692,9 +799,8 @@ class RateLimitMiddleware(Middleware):
             # Delegate rather than restate the evaluation: `_process_strategy`
             # resolves this same route to the same tag, scopes the key, and
             # refuses identically, so a tag means one thing in both modes.
-            return await self._process_strategy(request, tagged)
+            return await self._process_strategy(request, tagged, caller)
 
-        client = self._bucket_key(request)
         now = time.monotonic()
         cutoff = now - log.window_seconds
 
@@ -703,16 +809,10 @@ class RateLimitMiddleware(Middleware):
         if now - log.last_sweep >= log.window_seconds:
             await log.sweep(now, cutoff)
 
-        bucket = log.bucket(client, cutoff)
+        bucket = log.bucket(caller, cutoff)
         if len(bucket) >= log.max_requests:
             reset = log.reset_after(bucket, now)
-            rejected = Response(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                body=b"Too Many Requests",
-                headers={HEADER_RETRY_AFTER: str(reset or log.window_seconds)},
-            )
-            self._apply_headers(rejected, log.max_requests, 0, reset)
-            return rejected
+            return await self._refuse(request, reset or log.window_seconds, log.max_requests, reset)
 
         bucket.append(now)
         # Stash the bucket so process_response can read the freshest state
@@ -742,7 +842,7 @@ class RateLimitMiddleware(Middleware):
         return response
 
     def _bucket_key(self, request: Request) -> str:
-        """Pick a bucket key for `request`.
+        """Pick a bucket key for `request`, when no `key_func` named the caller.
 
         Falls back through several signals when the transport peer is
         unknown so anonymous traffic does NOT share one global bucket
@@ -770,6 +870,22 @@ class RateLimitMiddleware(Middleware):
         ua = request.headers.get(HEADER_USER_AGENT, "")
         if ua:
             return "ua:" + hashlib.sha256(ua.encode("utf-8", "replace")).hexdigest()[:16]
+        # An MCP call over stdio has no transport peer, no proxy chain and no
+        # User-Agent, so every signal above is absent and the UUID below gives
+        # each call its own bucket: a limiter registered over the MCP door that
+        # never limits anything, while the stack says it is there. The
+        # authenticated principal is the caller identity on that door, and the
+        # only one available. Reached only once the three HTTP signals have
+        # already missed, so the HTTP path never evaluates it.
+        #
+        # An anonymous principal is skipped deliberately: keying every
+        # unauthenticated agent to one bucket is exactly the fail-shared mode
+        # this chain exists to avoid. Name the caller with `key_func` when the
+        # transport authenticates by something other than a principal.
+        if request.is_mcp:
+            principal = current_principal()
+            if principal is not None and principal.subject is not None:
+                return f"sub:{principal.subject}"
         # Last resort: per-request UUID stashed on _state so a scope-id
         # reuse after GC can't leak a stale deque into a new request.
         # Effectively disables limiting for fully anonymous traffic -
@@ -786,6 +902,45 @@ class RateLimitMiddleware(Middleware):
         response.headers[HEADER_X_RATELIMIT_LIMIT] = str(limit)
         response.headers[HEADER_X_RATELIMIT_REMAINING] = str(remaining)
         response.headers[HEADER_X_RATELIMIT_RESET] = str(reset)
+
+    async def _refuse(self, request: Request, retry_after: int, limit: int, reset: int) -> Response:
+        """Build the 429 for a caller over its budget, in the app's error format.
+
+        Offered to the app's error handlers first, so one
+        `@app.exception_handler(HTTPException)` covers a refused request the way
+        it already covers a 404; the plain-text body below is the default when
+        nothing is registered. Both limiter modes refuse through here, so a
+        tagged route and the default budget cannot describe one refusal two ways.
+
+        The response phase is not run here - the dispatch layer puts a
+        `process_request` early return through it - and `Retry-After` plus the
+        `X-RateLimit-*` family are applied after the handler, so a handler can
+        restate the body but cannot drop the headers that tell the caller when
+        to come back.
+        """
+        app = request.app
+        # The retry window rides on the exception too, so a handler that
+        # restates the body can read the value the response is stamped with.
+        exc = TooManyRequests(headers={HEADER_RETRY_AFTER: str(retry_after)})
+        handler = app._find_error_handler(request, exc) if app is not None else None
+        if handler is not None:
+            rejected: Response = await app._dispatch_exc_handler(handler, request, exc)
+        else:
+            rejected = Response(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                body=b"Too Many Requests",
+            )
+        # Not onto a redirect. RFC 9110 Sec. 10.2.3 gives `Retry-After` a
+        # different meaning on a 3xx - the minimum wait before issuing the
+        # *redirected* request - so stamping it on a handler's
+        # `RedirectResponse` made a conforming client sit out the whole limiter
+        # window before following it. Every other status keeps the header,
+        # including the 500 a raising handler degrades to: the request is still
+        # being refused and the wait is still the right advice.
+        if not 300 <= rejected.status_code < 400:
+            rejected.headers[HEADER_RETRY_AFTER] = str(retry_after)
+        self._apply_headers(rejected, limit, 0, reset)
+        return rejected
 
 
 # ── Transport upgrade ─────────────────────────────────────

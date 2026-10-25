@@ -3,9 +3,10 @@
 Both remote transports — Streamable HTTP (`http.py`) and the 2024-11-05
 HTTP+SSE pair (`sse.py`) — front a JSON-RPC endpoint with the same door: reject
 a browser `Origin` outside the allowlist, verify the bearer token, and answer a
-refusal with the RFC 6750 challenge that names the RFC 9728 metadata route. They
-also frame every protocol document the same way, which is not the same thing as
-framing application data (see `encode_envelope`).
+refusal with the RFC 6750 challenge, which names the RFC 9728 metadata route
+unless the mount is bearer-only and serves none. They also frame every protocol
+document the same way, which is not the same thing as framing application data
+(see `encode_envelope`).
 
 `sse.py` used to import all of this from `http.py`. That made a sibling
 transport's private surface load-bearing in a way invisible from `http.py`'s
@@ -86,7 +87,12 @@ def _validate_origin(request: Request, allowed_origins: frozenset[str] | None) -
 
 def _challenge(auth: MCPAuth, status_code: int, error: str) -> Response:
     """Build a `401`/`403` response with the RFC 6750 `WWW-Authenticate` challenge."""
-    parts = [f'Bearer error="{error}"', f'resource_metadata="{PROTECTED_RESOURCE_METADATA_PATH}"']
+    parts = [f'Bearer error="{error}"']
+    # RFC 9728 Sec. 5 makes the `resource_metadata` parameter (Sec. 5.1) a MAY,
+    # and bearer-only mode registers no metadata route - naming one would send a
+    # client following the challenge to a 404.
+    if not auth.bearer_only:
+        parts.append(f'resource_metadata="{PROTECTED_RESOURCE_METADATA_PATH}"')
     if error == "insufficient_scope" and auth.required_scopes:
         parts.append(f'scope="{" ".join(sorted(auth.required_scopes))}"')
     body = {"error": error}
@@ -133,15 +139,20 @@ def register_metadata_route(
 ) -> None:
     """Serve the RFC 9728 protected-resource metadata `_challenge` points at.
 
-    Every `401` either transport emits names this path in its `WWW-Authenticate`
-    header, so a client that follows the challenge - which is the whole point of
-    the header - must find something there. Registered by the HTTP transport
-    alone, an SSE mount answered its own challenge with a 404.
+    A `401` that names this path in its `WWW-Authenticate` header sends a client
+    here, and following the challenge is the whole point of the header, so it
+    must find something. Registered by the HTTP transport alone, an SSE mount
+    answered its own challenge with a 404.
 
     The path is fixed by the RFC, so two mounts on one app would collide; the
-    second is a no-op, since both would serve the same document.
+    second is a no-op, since both would serve the same document. A bearer-only
+    mount has no document at all, and its challenges name none.
     """
-    if auth is None or app.match("GET", PROTECTED_RESOURCE_METADATA_PATH) is not None:
+    # The same flag `_challenge` reads, so the header and the routing table
+    # cannot disagree about whether this document exists.
+    if auth is None or auth.bearer_only:
+        return
+    if app.match("GET", PROTECTED_RESOURCE_METADATA_PATH) is not None:
         return
 
     async def mcp_metadata(request: Request) -> Response:

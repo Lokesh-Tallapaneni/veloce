@@ -105,12 +105,18 @@ def test_two_arg_handler_on_the_method_not_allowed_path():
     assert resp.json() == {"via": "two-arg"}
 
 
-def test_the_method_not_allowed_path_passes_an_http_exception():
-    """No real exception exists there, so one carrying the status is supplied."""
+def test_the_method_not_allowed_path_passes_the_refusals_own_class():
+    """No real exception exists there, so one carrying the status is supplied.
+
+    It is `MethodNotAllowed` rather than the base class, so that
+    `@app.exception_handler(MethodNotAllowed)` - the obvious registration for
+    this refusal - fires. It is still an `HTTPException`, so a status handler
+    and a broad class handler both keep working.
+    """
     app, seen = _app(handler_405=_two_arg)
     with TestClient(app) as client:
         client.post("/get-only")
-    assert seen == ["HTTPException"]
+    assert seen == ["MethodNotAllowed"]
 
 
 def test_the_supplied_exception_carries_the_status_code():

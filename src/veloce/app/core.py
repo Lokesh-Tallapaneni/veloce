@@ -149,6 +149,12 @@ class Veloce(
     # attributes for customisation. veloce stores `openapi_schema` on
     # the instance (None until first `openapi()` call); `openapi_version`
     # is the spec version string emitted in the document.
+    #
+    # It changes that string and nothing else: the schema objects are written
+    # in JSON Schema 2020-12, which is the dialect OpenAPI 3.1 adopts. That was
+    # already true of `examples` inside a schema before `prefixItems` joined
+    # it, so setting a 3.0 version here declares a version the document does
+    # not speak rather than switching dialect.
     openapi_version: str = "3.1.0"
 
     # Attributes built lazily on first access, declared here so their type does
@@ -156,7 +162,7 @@ class Veloce(
     # construction helpers below assign the initial `None`, and the accessors
     # replace it with the built value.
     _cached_routes: list[dict[str, Any]] | None
-    _cached_view_functions: dict[str, Callable] | None
+    _cached_view_functions: dict[str, Callable[..., Any]] | None
     _cached_url_map: URLMap | None
     _json_provider: Any
     _aborter: Any
@@ -230,7 +236,7 @@ class Veloce(
             ),
         ] = "/openapi.json",
         lifespan: Annotated[
-            Callable | None,
+            Callable[..., Any] | None,
             Doc("Async context manager managing startup and shutdown resources for the app."),
         ] = None,
         redirect_slashes: Annotated[
@@ -304,7 +310,7 @@ class Veloce(
             Doc("Additional OpenAPI responses overlaid onto every route on the app."),
         ] = None,
         exception_handlers: Annotated[
-            dict[Any, Callable] | None,
+            dict[Any, Callable[..., Any]] | None,
             Doc(
                 "Mapping of exception class or status code to a handler, registered at construction."
             ),
@@ -680,10 +686,10 @@ class Veloce(
 
     def add_instrumentation(
         self,
-        hook: Callable | None = None,
+        hook: Callable[..., Any] | None = None,
         *,
         exclude_routes: Iterable[str] | None = None,
-    ) -> Callable:
+    ) -> Callable[..., Any]:
         """Register an observability instrumentation hook.
 
         `hook` is called once per finished HTTP request with a
@@ -732,7 +738,7 @@ class Veloce(
         # options and registers the function it wraps.
         if hook is None:
 
-            def decorator(fn: Callable) -> Callable:
+            def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
                 return self.add_instrumentation(fn, exclude_routes=exclude_routes)
 
             return decorator
@@ -1142,7 +1148,7 @@ class Veloce(
             Doc("Endpoint name for `url_for`; required when registering an endpoint-only stub."),
         ] = None,
         view_func: Annotated[
-            Callable | None,
+            Callable[..., Any] | None,
             Doc(
                 "Handler for the route; `None` registers an endpoint-only stub for later attachment."
             ),
@@ -1190,12 +1196,12 @@ class Veloce(
 
     # ── Dependency overrides (for testing) ────────────────
 
-    def dependency_overrides_provider(self) -> dict[Callable, Callable]:
+    def dependency_overrides_provider(self) -> dict[Callable[..., Any], Callable[..., Any]]:
         """Return the dependency override mapping."""
         return self._dependency_overrides
 
     @property
-    def dependency_overrides(self) -> dict[Callable, Callable]:
+    def dependency_overrides(self) -> dict[Callable[..., Any], Callable[..., Any]]:
         """Mutable map of dependency callables to test replacements.
 
         Populate it to swap a real dependency for a fake one in tests::
@@ -1209,7 +1215,7 @@ class Veloce(
         return self._dependency_overrides
 
     @dependency_overrides.setter
-    def dependency_overrides(self, value: dict[Callable, Callable]) -> None:
+    def dependency_overrides(self, value: dict[Callable[..., Any], Callable[..., Any]]) -> None:
         self._dependency_overrides = value
         # Sub-plans cached for previous override callables can no longer be
         # reached, but they pin the callable + its plan. Drop them so a
@@ -1399,17 +1405,17 @@ class Veloce(
         # Rebuilt when the compiled pipeline's generation advances (a new ASGI
         # wrapper registered, e.g. the live-otel span), so no wrapper registry
         # needs its own manual stack reset.
-        self._asgi_stack: Callable | None = None
+        self._asgi_stack: Callable[..., Any] | None = None
         self._asgi_stack_gen: int = -1
         # Observability instrumentation hooks - each is invoked once per
         # finished HTTP request with a `RequestMetrics` record. Empty by
         # default, so an un-instrumented app pays nothing.
-        self._instrumentation: list[Callable] = []
+        self._instrumentation: list[Callable[..., Any]] = []
         # Per-hook route-template exclusions, populated only when a hook is
         # registered with `exclude_routes`. Sparse on purpose: the common case
         # (no exclusions) leaves this empty so the dispatch loop skips the
         # membership test entirely and a hook with no exclusion pays nothing.
-        self._instrumentation_excludes: dict[Callable, frozenset[str]] = {}
+        self._instrumentation_excludes: dict[Callable[..., Any], frozenset[str]] = {}
 
     def _init_introspection_caches(self) -> None:
         """Set up the watchdog handle, error-handler maps and lazy route caches."""
@@ -1417,8 +1423,8 @@ class Veloce(
         # when the `EVENT_LOOP_WATCHDOG` config key is set, so it is `None`
         # (and free) for every other app.
         self._watchdog: Any = None
-        self._exception_handlers: dict[type, Callable] = {}
-        self._status_handlers: dict[int, Callable] = {}
+        self._exception_handlers: dict[type[Any], Callable[..., Any]] = {}
+        self._status_handlers: dict[int, Callable[..., Any]] = {}
         # Route-introspection caches - rebuilt lazily on next access after
         # a mutation. Invalidated through `_invalidate_route_caches()`,
         # which fires from `add_route` / `include_router` (the two
@@ -1434,7 +1440,7 @@ class Veloce(
         # few dozen entries. An app that synthesises new exception
         # classes per request would grow this unboundedly; not a target
         # workload.
-        self._exc_handler_cache: dict[type, Callable | None] = {}
+        self._exc_handler_cache: dict[type[Any], Callable[..., Any] | None] = {}
 
     def _init_registries(self) -> None:
         """Initialise the per-app hook, mount, template, and URL registries.
@@ -1444,10 +1450,10 @@ class Veloce(
         JSON provider, aborter, static config). Arg-free; called once from
         __init__ after the constructor-time handler/middleware registration.
         """
-        self._on_startup: list[Callable] = []
-        self._on_shutdown: list[Callable] = []
+        self._on_startup: list[Callable[..., Any]] = []
+        self._on_shutdown: list[Callable[..., Any]] = []
         self._static_handlers: list[StaticFiles] = []
-        self._dependency_overrides: dict[Callable, Callable] = {}
+        self._dependency_overrides: dict[Callable[..., Any], Callable[..., Any]] = {}
         # Cross-request cache of `(sub_plan, is_coro, is_gen, is_async_gen)`
         # for overridden dependencies. Hoisted to the app so each request's
         # fresh DependencyResolver doesn't pay the build + triple-probe cost.
@@ -1455,11 +1461,11 @@ class Veloce(
         # lambda, a hot-reloaded factory) does not pin its plan for the
         # process lifetime - strong-keyed callable caches become leaks
         # under test-suite churn.
-        self._override_subplans: weakref.WeakKeyDictionary[Callable, Any] = (
+        self._override_subplans: weakref.WeakKeyDictionary[Callable[..., Any], Any] = (
             weakref.WeakKeyDictionary()
         )
-        self._before_request_hooks: list[Callable] = []
-        self._before_first_request_hooks: list[Callable] = []
+        self._before_request_hooks: list[Callable[..., Any]] = []
+        self._before_first_request_hooks: list[Callable[..., Any]] = []
         # Single-fire guard: lock prevents concurrent first requests from
         # both seeing `_first_request_fired = False` and running hooks twice.
         # The lock itself is lazy-allocated on first use so it binds to the
@@ -1469,23 +1475,23 @@ class Veloce(
         # different loop when TestClient spins one up later).
         self._first_request_fired = False
         self._first_request_lock: asyncio.Lock | None = None
-        self._after_request_hooks: list[Callable] = []
-        self._teardown_request_hooks: list[Callable] = []
+        self._after_request_hooks: list[Callable[..., Any]] = []
+        self._teardown_request_hooks: list[Callable[..., Any]] = []
         # Blueprint hooks bucketed by blueprint name. Dispatch walks only
         # the bucket whose name matches the matched route's `endpoint` prefix,
         # so the cost is the matched blueprint's hooks and not O(B*H) gate
         # checks across every blueprint's.
-        self._bp_before_hooks: dict[str, list[Callable]] = {}
-        self._bp_after_hooks: dict[str, list[Callable]] = {}
-        self._bp_teardown_hooks: dict[str, list[Callable]] = {}
+        self._bp_before_hooks: dict[str, list[Callable[..., Any]]] = {}
+        self._bp_after_hooks: dict[str, list[Callable[..., Any]]] = {}
+        self._bp_teardown_hooks: dict[str, list[Callable[..., Any]]] = {}
         # Per-blueprint error handlers, kept out of the app-global tables so a
         # blueprint's handler only catches exceptions raised by its own (or a
         # nested descendant's) routes - consulted by `request.blueprints` before
         # the app-level tables, never across sibling blueprints.
-        self._bp_exception_handlers: dict[str, dict[type, Callable]] = {}
-        self._bp_status_handlers: dict[str, dict[int, Callable]] = {}
-        self._teardown_appcontext_hooks: list[Callable] = []
-        self._context_processors: list[Callable] = []
+        self._bp_exception_handlers: dict[str, dict[type[Any], Callable[..., Any]]] = {}
+        self._bp_status_handlers: dict[str, dict[int, Callable[..., Any]]] = {}
+        self._teardown_appcontext_hooks: list[Callable[..., Any]] = []
+        self._context_processors: list[Callable[..., Any]] = []
         # `(prefix, prefix + "/", sub_app)` - the second slot is the
         # boundary string the dispatcher compares against the request path,
         # precomputed once so the per-request loop avoids re-allocating it.
@@ -1500,11 +1506,11 @@ class Veloce(
         # `derive_tool` and registered with `add_mcp_tool`. Their schema is
         # whatever built them, so the registry adds them as they are.
         self._mcp_prebuilt_tools: list[Any] = []
-        self._http_middleware_funcs: list[Callable] = []  # @app.middleware("http") funcs
+        self._http_middleware_funcs: list[Callable[..., Any]] = []  # @app.middleware("http") funcs
         # Jinja2 helper registrations - applied to the env on each render.
-        self._template_filters: list[tuple[str, Callable]] = []
-        self._template_globals: list[tuple[str, Callable]] = []
-        self._template_tests: list[tuple[str, Callable]] = []
+        self._template_filters: list[tuple[str, Callable[..., Any]]] = []
+        self._template_globals: list[tuple[str, Callable[..., Any]]] = []
+        self._template_tests: list[tuple[str, Callable[..., Any]]] = []
         # Objects that report to `veloce check` without being middleware or a
         # static handler. A mounted MCP endpoint registers routes, so the audit
         # had nothing to ask about a tool-execution endpoint with no auth.
@@ -1512,25 +1518,25 @@ class Veloce(
         # URL processors: preprocessor runs after route match and
         # can mutate path_params (e.g. pop a lang segment into g); url_defaults
         # runs inside url_for/url_path_for and can inject default kwargs.
-        self._url_value_preprocessors: list[Callable] = []
-        self._url_default_funcs: list[Callable] = []
+        self._url_value_preprocessors: list[Callable[..., Any]] = []
+        self._url_default_funcs: list[Callable[..., Any]] = []
         # Blueprint-contributed URL processors, bucketed by the endpoint's
         # dotted blueprint name exactly as the request hooks are. Merged into
         # the app lists as gated closures, every blueprint's processor was
         # tested on every request - the O(blueprints * processors) of no-op
         # work the hook buckets exist to avoid - and one of them cost every
         # route in the app its straight-line dispatch.
-        self._bp_url_value_preprocessors: dict[str, list[Callable]] = {}
-        self._bp_url_default_funcs: dict[str, list[Callable]] = {}
+        self._bp_url_value_preprocessors: dict[str, list[Callable[..., Any]]] = {}
+        self._bp_url_default_funcs: dict[str, list[Callable[..., Any]]] = {}
         # `url_build_error_handlers` - list of `(error, endpoint, values)`
         # callbacks consulted when `url_for` can't build a URL.
-        self.url_build_error_handlers: list[Callable] = []
+        self.url_build_error_handlers: list[Callable[..., Any]] = []
         # `app.blueprints` view + `iter_blueprints()` iterator -
         # name -> Blueprint of every successfully registered blueprint.
         self._blueprints_map: dict[str, Any] = {}
         # `@app.shell_context_processor` registry - each function
         # returns a dict that's merged into `veloce shell`'s namespace.
-        self._shell_context_processors: list[Callable] = []
+        self._shell_context_processors: list[Callable[..., Any]] = []
         # Lazily-built `click.Group` for app-defined CLI commands. Built
         # on first `app.cli` access so `click` isn't a hard import.
         self._cli_group = None

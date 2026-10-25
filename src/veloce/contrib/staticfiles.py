@@ -42,6 +42,7 @@ from veloce._internal import (
     _preconditions_say_unchanged,
     guess_content_type,
 )
+from veloce._protocol_constants import HTTP_METHOD_GET
 from veloce.http.dates import http_date
 from veloce.http.request import Request
 from veloce.http.response import RedirectResponse, Response, StreamingResponse
@@ -612,7 +613,16 @@ class StaticFiles:
             # ── Range (RFC 9110 Sec. 14.2) ────────────────────────────
             # Range request - RFC 9110 Sec. 14.2. Single-range only; multi-range
             # would require multipart/byteranges which we don't ship yet.
-            range_spec = request.range
+            #
+            # `GET` is the only method range handling is defined for, and a
+            # `Range` on any other MUST be ignored. `HEAD` is included in that:
+            # the `Accept-Ranges` header already answers a client probing for
+            # range support (Sec. 14.3), while a 416 here would deny a download
+            # manager the full representation's `Content-Length` - the one
+            # number it issues a `HEAD` on an asset to learn. The method is
+            # compared before the header is read so a non-`GET` request pays one
+            # comparison rather than a parse.
+            range_spec = request.range if request.method == HTTP_METHOD_GET else None
             # If-Range (RFC 9110 Sec. 13.1.5): honor the Range only when the
             # client's validator still matches the current representation.
             # Otherwise the resource changed since the client last saw it, and

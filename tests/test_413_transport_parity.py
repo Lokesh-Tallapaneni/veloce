@@ -27,7 +27,8 @@ import pathlib
 
 from tests._asgi_drive import body_of, drive, headers_of, http_scope, status_of
 from tests._protocol import _FakeTransport, _run_until
-from veloce import Veloce
+from veloce import Response, StreamingResponse, Veloce
+from veloce.exceptions import RequestEntityTooLarge
 from veloce.http._body import too_large_payload
 from veloce.serving.protocol import HttpProtocol
 
@@ -60,7 +61,7 @@ async def _drive_asgi(body: bytes, app: Veloce | None = None) -> tuple[int, dict
     return status_of(messages), headers_of(messages), body_of(messages)
 
 
-def _drive_native_raw(body: bytes) -> tuple[bytes, bool]:
+def _drive_native_raw(body: bytes, app: Veloce | None = None) -> tuple[bytes, bool]:
     """Drive one raw POST through `HttpProtocol`; return the wire bytes and close flag.
 
     Split from `_drive_native` because the parsed form gives back a status
@@ -69,7 +70,7 @@ def _drive_native_raw(body: bytes) -> tuple[bytes, bool]:
     """
     loop = asyncio.new_event_loop()
     try:
-        proto = HttpProtocol(_app(), loop)
+        proto = HttpProtocol(app or _app(), loop)
         transport = _FakeTransport()
         proto.connection_made(transport)
         head = b"POST /up HTTP/1.1" + CRLF + b"Host: t" + CRLF
@@ -81,9 +82,9 @@ def _drive_native_raw(body: bytes) -> tuple[bytes, bool]:
         loop.close()
 
 
-def _drive_native(body: bytes) -> tuple[int, dict, bytes, bool]:
+def _drive_native(body: bytes, app: Veloce | None = None) -> tuple[int, dict, bytes, bool]:
     """Drive one raw POST through `HttpProtocol` and parse the reply off the wire."""
-    emitted, closed = _drive_native_raw(body)
+    emitted, closed = _drive_native_raw(body, app)
 
     head_bytes, _, payload = emitted.partition(CRLF + CRLF)
     lines = head_bytes.split(CRLF)
@@ -249,3 +250,129 @@ async def test_no_limit_accepts_a_large_body():
     status, _headers, body = await _drive_asgi(b"x" * 10_000, app=_unlimited_app())
     assert status == 200
     assert json.loads(body) == {"got": 10_000}
+
+
+# ── the app's own error handler shapes the refusal on both ───────────
+#
+# A registered `RequestEntityTooLarge` handler reshaped the refusal under ASGI
+# and was ignored by `app.run()`, which answered from the built-in builder. The
+# payload had been unified; the handler lookup above it had not, so the same
+# app served two ways still described the refusal two ways - the exact failure
+# this module was written for, one layer up.
+
+CUSTOM = b'{"error":"too big","retry":false}'
+
+
+def _handler_app() -> Veloce:
+    app = Veloce(openapi_url=None)
+    app.config["MAX_CONTENT_LENGTH"] = LIMIT
+
+    @app.post("/up")
+    async def up(request) -> dict:
+        return {"got": len(await request.body())}
+
+    @app.errorhandler(RequestEntityTooLarge)
+    async def too_big(request, exc) -> Response:
+        return Response(status_code=413, body=CUSTOM, content_type="application/json")
+
+    return app
+
+
+def test_native_runs_the_apps_error_handler_for_a_refusal():
+    status, headers, body, _closed = _drive_native(b"x" * 100, _handler_app())
+    assert status == 413
+    assert body == CUSTOM
+    assert headers["content-type"].startswith("application/json")
+
+
+def test_native_frames_the_handlers_body_correctly():
+    """A wrong Content-Length here corrupts the connection, not just the body."""
+    _status, headers, body, _closed = _drive_native(b"x" * 100, _handler_app())
+    assert int(headers["content-length"]) == len(body)
+
+
+def test_native_still_closes_after_a_handled_refusal():
+    """The body was refused unread; the connection still has to go."""
+    _status, headers, _body, closed = _drive_native(b"x" * 100, _handler_app())
+    assert headers["connection"].lower() == "close"
+    assert closed is True
+
+
+async def test_asgi_runs_the_apps_error_handler_for_a_refusal():
+    """The half that already worked, pinned so the parity test has two sides."""
+    status, _headers, body = await _drive_asgi(b"x" * 100, app=_handler_app())
+    assert status == 413
+    assert body == CUSTOM
+
+
+def test_both_transports_run_the_same_error_handler():
+    """The property the fix is for, stated directly."""
+    loop = asyncio.new_event_loop()
+    try:
+        asgi_status, _ah, asgi_body = loop.run_until_complete(
+            _drive_asgi(b"x" * 100, app=_handler_app())
+        )
+    finally:
+        loop.close()
+    native_status, _nh, native_body, _closed = _drive_native(b"x" * 100, _handler_app())
+    assert asgi_status == native_status == 413
+    assert asgi_body == native_body == CUSTOM
+
+
+def test_native_falls_back_to_the_builtin_body_with_no_handler_registered():
+    """The negative: the shared payload is still what an app without one sends."""
+    _status, _headers, body, _closed = _drive_native(b"x" * 100)
+    assert json.loads(body) == too_large_payload(LIMIT)
+
+
+def test_a_handler_that_raises_still_leaves_a_refusal_on_the_wire():
+    """A buggy handler must not cost the client its answer."""
+    app = Veloce(openapi_url=None)
+    app.config["MAX_CONTENT_LENGTH"] = LIMIT
+    app.config["PROPAGATE_EXCEPTIONS"] = False
+
+    @app.post("/up")
+    async def up(request) -> dict:
+        return {"got": 0}
+
+    @app.errorhandler(RequestEntityTooLarge)
+    async def broken(request, exc) -> Response:
+        raise RuntimeError("handler is broken")
+
+    status, _headers, body, closed = _drive_native(b"x" * 100, app)
+    assert status >= 400
+    assert body
+    assert closed is True
+
+
+def test_native_streams_a_handler_that_answers_with_a_stream():
+    """A refusal handler may stream its body, and the native path must send it.
+
+    The refusal was written with the buffered encoder, so a streamed response
+    put `Transfer-Encoding: chunked` on the wire and then closed without a
+    single chunk - a broken response rather than a refusal.
+    """
+    app = Veloce(openapi_url=None)
+    app.config["MAX_CONTENT_LENGTH"] = LIMIT
+
+    @app.post("/up")
+    async def up(request) -> dict:
+        return {"got": 0}
+
+    @app.errorhandler(RequestEntityTooLarge)
+    async def too_big(request, exc) -> StreamingResponse:
+        async def chunks():
+            yield b'{"error":'
+            yield b'"too big"}'
+
+        return StreamingResponse(chunks(), status_code=413, content_type="application/json")
+
+    emitted, closed = _drive_native_raw(b"x" * 100, app)
+    head, _, payload = emitted.partition(CRLF + CRLF)
+    assert b"413" in head.splitlines()[0]
+    assert b"chunked" in head
+    # The chunks themselves, and the terminating zero-length chunk.
+    assert b'{"error":' in payload
+    assert b'"too big"}' in payload
+    assert payload.endswith(b"0" + CRLF + CRLF)
+    assert closed is True

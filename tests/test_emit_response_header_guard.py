@@ -11,7 +11,7 @@ bare, so a `content_type` carrying CR or LF left it as a raw ASGI header value:
 The response's own headers were never exposed - all three paths build those
 through `_build_asgi_headers`, which guards them - so this was the framework
 default alone. It is still the general-purpose "emit an already-built Response"
-entry point, reached by the 413 and by `_emit_error`, and its own docstring
+entry point, reached by the 413 and by `_refuse_bad_request`, and its own docstring
 states the no-divergence invariant in prose.
 
 `test_emit_response_bodiless.py` holds the same invariant for the bodiless-status

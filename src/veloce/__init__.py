@@ -318,6 +318,7 @@ from veloce.websocket import WebSocket, WebSocketState
 # whether or not the application exposes a single tool.
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.context import MCPContext
+    from veloce.liveserver import LiveServer
 
 # `APIRouter` aliases `Router`, whose constructor takes the keyword
 # surface that name implies (`prefix=`, `tags=`, `dependencies=`,
@@ -500,6 +501,7 @@ __all__ = [
     "TestClient",
     "AsyncTestClient",
     "TestResponse",
+    "LiveServer",
     # Class-based views
     "View",
     "MethodView",
@@ -607,6 +609,7 @@ __all__ = [
 # lookup runs once per name per process, never on a per-request path.
 _LAZY_EXPORTS: dict[str, str] = {
     "MCPContext": "veloce.contrib.mcp.context",
+    "LiveServer": "veloce.liveserver",
 }
 
 

@@ -6,9 +6,11 @@ new failure mode is a new subclass rather than another `except` clause. A tool /
 resource / prompt handler author may `raise InvalidParamsError(...)` (and the
 other concrete subclasses) to surface a typed JSON-RPC error.
 
-Stream-drain failures stay a private `_InBandError` subtree: they surface
-in-band as an `isError` tool result, not on the JSON-RPC error channel, so they
-are not part of the public surface even though they share the base.
+`_InBandError` marks the other channel: those failures surface in-band as an
+`isError` tool result rather than as a JSON-RPC error. `ToolError` is its one
+public member - what a tool author raises to report a failure of the work the
+tool went on to do; the stream-drain and argument-validation members below stay
+private.
 
 Codes follow JSON-RPC 2.0 Sec. 5.1 plus the MCP server-defined codes for
 "resource not found" and "forbidden".
@@ -114,9 +116,31 @@ class MCPError(Exception):
 class _InBandError(MCPError):
     """A failure surfaced in-band as an `isError` tool result, not a JSON-RPC error.
 
-    Shares `MCPError` so the type relationship is explicit, but the stream-drain
-    paths report these as a tool result rather than routing them through
-    `to_error`, so the subtree stays private.
+    Shares `MCPError` so the type relationship is explicit, but the tool paths
+    report these as a tool result rather than routing them through `to_error`.
+    Only `ToolError` is public; the rest of the subtree is not.
+    """
+
+
+class ToolError(_InBandError):
+    """A tool failed at the work it was asked to do — reported as an `isError` result.
+
+    The spec keeps two failures apart: a *protocol* error (an unknown tool, a
+    request that does not satisfy the `CallToolRequest` schema, a server fault),
+    which travels as a JSON-RPC error, and a *tool execution* error, which
+    travels on the tool result as `isError`. Only the second is fed back to the
+    language model, so a tool that wants the agent to understand why it could
+    not finish - a locked record, a refused upstream, a precondition the caller
+    can satisfy and retry - raises this rather than any other `MCPError`
+    subclass, whose message would land on the channel the spec reserves for
+    protocol faults and never reach the model.
+
+    The message is surfaced verbatim, unlike an unexpected exception's: the
+    author wrote it for the agent to read, so there is nothing to redact. Write
+    it for the model, naming what failed and what would make a retry succeed.
+
+    Only the tool path has an in-band channel; raised from a resource read or a
+    prompt the same failure travels as the `-32603` its base carries.
     """
 
 

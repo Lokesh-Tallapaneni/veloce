@@ -42,7 +42,7 @@ import os
 import weakref
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
 from http import HTTPStatus
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import orjson
 
@@ -87,6 +87,13 @@ _WEB_MEDIA_TYPES: dict[str, str] = {
     ".wasm": "application/wasm",
 }
 
+#: The function a route or hook decorator is handed and returns unchanged.
+#: Bound to a callable and returned as itself, so `@app.get("/x")` leaves the
+#: handler's own signature visible to a type checker. Annotating the return as a
+#: bare `Callable` instead reads as `(...) -> Unknown`, which makes Pylance
+#: report `reportUntypedFunctionDecorator` and drop the decorator entirely.
+T_route = TypeVar("T_route", bound=Callable[..., Any])
+
 
 @functools.lru_cache(maxsize=512)
 
@@ -117,7 +124,7 @@ def guess_content_type(path: str) -> str:
     return mimetypes.guess_type(path)[0] or MIME_OCTET_STREAM
 
 
-def _require_slots(cls: type) -> None:
+def _require_slots(cls: type[Any]) -> None:
     """Raise unless `cls` declares its own `__slots__`.
 
     A slotted base whose subclass forgets `__slots__` silently regains a
@@ -161,20 +168,33 @@ def is_json_mimetype(mimetype: str) -> bool:
 
 
 def json_body_refused(mimetype: str) -> bool:
-    """Whether a declared content type forbids reading the body as JSON.
+    """Whether the declared content type forbids reading the body as JSON.
 
-    An absent header declares nothing and is not a refusal: plenty of clients
-    omit it, and a browser cannot omit it on a cross-origin send. A declared
-    non-JSON type is a refusal, which is what closes the CSRF avenue -
-    `text/plain`, `multipart/form-data` and `application/x-www-form-urlencoded`
-    are the types a cross-origin form or `fetch` may send with no CORS
-    preflight, so an endpoint that parses a body under one of them can be
-    driven through a cookie-authenticated victim's browser.
+    Media-type enforcement, first and foremost: a caller that asked for JSON and
+    declared something else is told so (415) rather than having its body parsed
+    on a guess. Anything that is not JSON is a refusal, an absent header
+    included - absence declares nothing, and a reader that accepts "nothing" is
+    guessing exactly as much as one that overrides `text/plain`.
 
-    Single source of the rule for every door that reads a request body as
-    JSON, so a new one cannot answer differently.
+    It narrows one CSRF avenue incidentally, and only one. `text/plain`,
+    `multipart/form-data` and `application/x-www-form-urlencoded` are the types
+    a cross-origin form or `fetch` may send with no preflight, and an absent
+    header needs none either - `fetch` with a `Blob` body typed `""` sends no
+    `Content-Type` at all, so there is no header for the safelist to reject.
+    Refusing all of them keeps a JSON endpoint off that path. It does nothing
+    about a same-origin attacker, a CORS-permissive app, a form or GET target,
+    or an attacker who simply declares `application/json` from an allowed
+    origin. `CSRFMiddleware` and `SameSite` cookies are the control; treating
+    this check as one is what justified allowing the absent header until a
+    `Blob` send proved it reachable.
+
+    `force=True` reads a refused body deliberately, which is where a client that
+    genuinely omits the header belongs.
+
+    Single source of WHICH bodies are refused, so no door can disagree about
+    that; what each door then DOES with a refusal is its own.
     """
-    return bool(mimetype) and not is_json_mimetype(mimetype)
+    return not is_json_mimetype(mimetype)
 
 
 # ── Async offload ─────────────────────────────────────────
@@ -468,8 +488,12 @@ def _file_etag(path: str, size: int, mtime: float) -> str:
     do not guarantee byte-for-byte identity. mtime-derived tags can
     collide within the same second across content-altering writes, so
     a weak validator is the only spec-compliant choice. Weak compare
-    (Sec. 8.8.3.2) still lets `If-None-Match` / `If-Range` work for cache
-    revalidation; strict `If-Match` correctly refuses these tags.
+    (Sec. 8.8.3.2) still lets `If-None-Match` work for cache revalidation;
+    strict `If-Match` correctly refuses these tags, and so does `If-Range`,
+    which Sec. 13.1.5 requires be compared strongly and forbids a client
+    from sending a weak tag in at all - a range resume off one of these
+    tags therefore serves the full representation, and a client that wants
+    to resume uses the `Last-Modified` date.
     """
     key = f"{path}:{size}:{mtime}".encode()
     # `usedforsecurity=False` so the cache validator does not raise on FIPS
@@ -672,6 +696,14 @@ _current_app_var: contextvars.ContextVar[Any] = contextvars.ContextVar(
 _current_request_var: contextvars.ContextVar[Any] = contextvars.ContextVar(
     "veloce_current_request", default=None
 )
+# True while an exception handler is running. A file a handler returns stands in
+# for the representation the client asked for rather than being it, and a
+# `Range` applies only to the target resource's own representation
+# (RFC 9110 Sec. 14.2) - so the send helpers stop opting that request into
+# range negotiation while this is set.
+_serving_error_page_var: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "veloce_serving_error_page", default=False
+)
 
 # Distinguishes "the handler-JSON serialiser has not been resolved yet" from a
 # resolved `None`, which means "take the direct path". Lives here because the
@@ -715,7 +747,7 @@ def dumps_current(payload: Any) -> bytes:
     return dumps_for(_current_app_var.get(), payload)
 
 
-def _require_methods(cls: type, base: type, names: tuple[str, ...]) -> None:
+def _require_methods(cls: type[Any], base: type[Any], names: tuple[str, ...]) -> None:
     """Refuse `cls` unless it supplies a real implementation of every name.
 
     Abstractness in this codebase is a `NotImplementedError` body rather than
@@ -935,3 +967,23 @@ def _readd_route(
             else None
         ),
     )
+
+
+def resolve_hint_target(obj: Any) -> Any:
+    """Return the object whose annotations describe `obj`'s call signature.
+
+    `inspect.signature` transparently follows `functools.partial` to its `func`,
+    a class to `__init__` and a callable instance to `type(obj).__call__`;
+    `get_type_hints` follows none of them and would read the class body instead.
+    Both the resolver and the OpenAPI builder need the same answer, and reading
+    hints off `obj` directly is why they disagreed: a callable-instance handler
+    published no parameters while the resolver bound and validated two.
+    """
+    real = obj
+    while isinstance(real, functools.partial):
+        real = real.func
+    if inspect.isclass(real):
+        return real.__init__
+    if not inspect.isfunction(real) and not inspect.ismethod(real) and callable(real):
+        return type(real).__call__
+    return real

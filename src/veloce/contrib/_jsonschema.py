@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any, Literal, Union, get_args, get_origin
 
 from pydantic import BaseModel, create_model
 
+from veloce._handler_plan import _fixed_shape_args
 from veloce._internal import _SCALAR_JSON_SCHEMAS
 from veloce._model_backend import (
     ModelBackend,
@@ -184,10 +185,31 @@ def _python_type_to_schema(annotation: Any) -> dict[str, Any]:
     # A model item is not reachable: `list[Tag]` 422s on a JSON-array string,
     # so the item schema falls through to `{"type": "string"}` rather than the
     # model's fields (the resolver only JSON-decodes a bare model annotation).
-    if origin in (list, set, tuple):
+    if origin in _SEQUENCE_ORIGINS:
         args = get_args(annotation)
+        positional = _fixed_shape_args(annotation)
+        if positional is not None:
+            # A fixed-shape tuple declares a type per position and a length, and
+            # this document is OpenAPI 3.1 - so JSON Schema 2020-12, where
+            # `prefixItems` says exactly that. Published as a homogeneous array
+            # of the first type, the schema described a shape the resolver
+            # refuses, and a client generated from it sent one.
+            fixed: dict[str, Any] = {
+                "type": "array",
+                "minItems": len(positional),
+                "maxItems": len(positional),
+            }
+            if positional:
+                # `prefixItems` must hold at least one schema, so `tuple[()]`
+                # is described by its length alone - which says the same.
+                fixed["prefixItems"] = [_python_type_to_schema(arg) for arg in positional]
+            return fixed
         item = _python_type_to_schema(args[0]) if args else {}
-        return {"type": "array", "items": item}
+        schema: dict[str, Any] = {"type": "array", "items": item}
+        if origin is set or origin is frozenset:
+            # The resolver drops duplicates, so the document has to say it does.
+            schema["uniqueItems"] = True
+        return schema
     # Parametrised `dict[K, V]` -> a bare object schema. A non-body dict
     # parameter is not wire-addressable at all: the resolver only JSON-decodes
     # a bare model annotation, so `dict[str, int]` (and `dict[str, Tag]`) 422s
@@ -888,30 +910,118 @@ def _response_model_to_schema(
     return None
 
 
+#: Types a default can take and still be written into a JSON document. Built
+#: once: an inline tuple here is not constant-folded, so it was rebuilt - and
+#: `type(None)` called - for every parameter of every document build.
+#: `type(None)` stays in it: the `publish_null` test above returns early only
+#: when null is NOT to be published, so a published `None` reaches this check.
+_JSON_PUBLISHABLE = (str, int, float, bool, type(None), list, dict)
+
+_NO_DEFAULT = object()
+
+
+def _publishable_default(value: Any, *, publish_null: bool) -> Any:
+    """Return the default to publish for a parameter, or `_NO_DEFAULT`.
+
+    The part both lowerings share, beside the constraint walk they already
+    share: a `default_factory` builds a per-call value with no single value to
+    publish, and a value with no JSON form cannot go in a document. It lived
+    inline in each and they had drifted - the OpenAPI copy filtered to scalars,
+    so `Field(default=(1, 2))` on a `tuple` was published by the agent door and
+    dropped by the HTTP one. A tuple normalises to the list it serialises to.
+
+    A factory is read off the value, not asked about separately. A marker
+    declaring one has `...` for its default - the two are mutually exclusive -
+    which is already the answer for a parameter with no default at all. Asking
+    whether `default_factory` is set instead withheld the default of every
+    *mutable* marker default, because the framework installs a copying factory
+    on one of those itself and keeps `self.default` precisely so the schema can
+    still show it.
+
+    `publish_null` is the part that genuinely differs, so each caller states it
+    rather than inheriting a guess, and today both of them withhold it:
+
+    - The OpenAPI lowering passes `False`. `_python_type_to_schema` unwraps
+      `Optional[T]` to T's schema with no null branch, so `default: null` would
+      not validate against the schema carrying it - OpenAPI 3.1 asks that it
+      does, and a typed generator emits an initialiser its own type rejects.
+      `required: false` is what carries the optionality there.
+    - The MCP lowering passes `False` for a bare Python default, whose null is
+      already fully described by the `anyOf` null branch its schema publishes,
+      and `d.is_optional` for a marker's default, where that same branch makes
+      the null valid and worth reading.
+
+    So the two documents differ on exactly one keyword, and because their
+    schemas differ rather than by accident: the agent door publishes
+    `{"default": null, "anyOf": [{...}, {"type": "null"}]}`, where the default
+    validates against the schema beside it, and the HTTP door publishes
+    `{"type": "string"}` with `required: false`, where it would not. Making them
+    identical means either dropping a true statement from the agent schema or
+    adding an invalid one to the document.
+    """
+    if value is ...:
+        return _NO_DEFAULT
+    if value is None and not publish_null:
+        return _NO_DEFAULT
+    if isinstance(value, tuple):
+        return list(value)
+    if isinstance(value, _JSON_PUBLISHABLE):
+        return value
+    # Anything else has no JSON form the document can carry.
+    return _NO_DEFAULT
+
+
 def _apply_marker_constraints(param_schema: dict[str, Any], marker: Any) -> None:
     """Copy validation / metadata keywords from a `ParamBase` marker onto `param_schema`."""
     if getattr(marker, "title", None):
         param_schema["title"] = marker.title
     if marker.description:
         param_schema["description"] = marker.description
+    # A repeated parameter (`tags: list[str] = Query(...)`) is an array, and an
+    # array's length is `minItems` / `maxItems` - `minLength` / `maxLength`
+    # constrain a string, so emitting them here documented a bound no client
+    # could satisfy. The remaining keywords describe one element, so they go on
+    # the `items` subschema. The resolver enforces the same split.
+    array = param_schema.get("type") == "array"
+    # Element keywords are collected first and placed afterwards, because where
+    # they belong depends on the array's shape: a homogeneous array has one
+    # `items` subschema, a fixed-shape tuple has one entry per position and no
+    # `items` at all. Writing `items` unconditionally added an empty subschema
+    # to every tuple schema that said nothing, and would have hung an element
+    # constraint off a keyword the tuple does not use.
+    scalar: dict[str, Any] = {} if array else param_schema
+
     if marker.ge is not None:
-        param_schema["minimum"] = marker.ge
+        scalar["minimum"] = marker.ge
     if marker.le is not None:
-        param_schema["maximum"] = marker.le
+        scalar["maximum"] = marker.le
     # OpenAPI 3.1 / JSON Schema 2020-12: gt/lt map to the
     # numeric `exclusiveMinimum` / `exclusiveMaximum`.
     if marker.gt is not None:
-        param_schema["exclusiveMinimum"] = marker.gt
+        scalar["exclusiveMinimum"] = marker.gt
     if marker.lt is not None:
-        param_schema["exclusiveMaximum"] = marker.lt
+        scalar["exclusiveMaximum"] = marker.lt
     if marker.min_length is not None:
-        param_schema["minLength"] = marker.min_length
+        param_schema["minItems" if array else "minLength"] = marker.min_length
     if marker.max_length is not None:
-        param_schema["maxLength"] = marker.max_length
+        param_schema["maxItems" if array else "maxLength"] = marker.max_length
     if getattr(marker, "multiple_of", None) is not None:
-        param_schema["multipleOf"] = marker.multiple_of
+        scalar["multipleOf"] = marker.multiple_of
     if marker.regex is not None:
-        param_schema["pattern"] = marker.regex
+        scalar["pattern"] = marker.regex
+    if array and scalar:
+        prefix = param_schema.get("prefixItems")
+        if prefix is not None:
+            # Every position carries them, which is where the resolver applies
+            # them: its per-element check runs over each member.
+            param_schema["prefixItems"] = [{**dict(entry), **scalar} for entry in prefix]
+        else:
+            # A bare `list` annotation's schema is a shallow copy of a shared
+            # table entry, so its `items` dict is shared with every other
+            # caller: replace it rather than writing through it.
+            items = param_schema.get("items")
+            base = dict(items) if isinstance(items, dict) else {}
+            param_schema["items"] = {**base, **scalar}
     # OpenAPI 3.1 / JSON Schema 2020-12 - `examples` is an array of
     # sample values on the schema object.
     if getattr(marker, "examples", None):

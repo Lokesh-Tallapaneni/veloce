@@ -184,7 +184,7 @@ class BackgroundTasksMixin(AppHost):
                 return False
             await asyncio.wait(tasks, timeout=remaining)
 
-    def _log_background_task_error(self, task: asyncio.Task) -> None:
+    def _log_background_task_error(self, task: asyncio.Task[Any]) -> None:
         """Report a finished task's failure, called from `_spawned_task_done`.
 
         Pulls the exception off the future (silencing

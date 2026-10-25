@@ -15,14 +15,18 @@ from typing import TYPE_CHECKING, Any, get_type_hints
 
 from veloce._constants import MIME_FORM_URLENCODED, MIME_JSON, MIME_MULTIPART_FORM_DATA
 from veloce._handler_plan import extract_annotated_marker
+from veloce._internal import resolve_hint_target
 from veloce._params import ParamBase
 from veloce._protocol_constants import HTTP_METHOD_QUERY
 from veloce._route_contract import RouteContract, iter_param_descriptors
+from veloce._warnings import _RegistrationWarning
 from veloce.contrib._jsonschema import (
+    _NO_DEFAULT,
     SchemaRegistry,
     _apply_marker_constraints,
     _is_model_type,
     _iter_dicts,
+    _publishable_default,
     _python_type_to_schema,
     _response_model_to_schema,
     _unique_component_name,
@@ -105,13 +109,17 @@ def _handler_intro(handler: Any) -> tuple[Any, dict[str, Any]]:
     except (TypeError, ValueError):
         sig = None
     hints: dict[str, Any] = {}
-    if hasattr(handler, "__annotations__"):
+    # The same target the resolver reads, via the shared helper: reading hints
+    # off `handler` directly published no parameters at all for a
+    # callable-instance or class handler while the resolver bound them.
+    hint_target = resolve_hint_target(handler)
+    if hasattr(hint_target, "__annotations__"):
         try:
             # `include_extras=True` keeps PEP 593 metadata: an
             # `Annotated[..., Security(...)]` parameter carries its marker there
             # and nowhere else, and stripping it published the route as
             # unauthenticated while the runtime still enforced it.
-            hints = get_type_hints(handler, include_extras=True)
+            hints = get_type_hints(hint_target, include_extras=True)
         except Exception:
             # `get_type_hints` raises a wide range (NameError on unresolved
             # forward refs, TypeError on bad annotations, recursion errors on
@@ -344,16 +352,16 @@ def _extract_parameters(info: Any, schemas_registry: SchemaRegistry) -> _RoutePa
             required = True
         elif marker is not None:
             required = _is_required(d, marker)
-            if marker.has_default and marker.default is not ...:
-                default_val = marker.default
-                if isinstance(default_val, (str, int, float, bool, type(None))):
-                    param_schema["default"] = default_val
+            if marker.has_default:
+                _default = _publishable_default(marker.default, publish_null=False)
+                if _default is not _NO_DEFAULT:
+                    param_schema["default"] = _default
         else:
             required = _is_required(d, None)
             if d.has_default:
-                default_val = d.default
-                if isinstance(default_val, (str, int, float, bool, type(None))):
-                    param_schema["default"] = default_val
+                _default = _publishable_default(d.default, publish_null=False)
+                if _default is not _NO_DEFAULT:
+                    param_schema["default"] = _default
 
         param_info: dict[str, Any] = {
             "name": param_alias,
@@ -1087,6 +1095,19 @@ def _validate_document(schema: dict[str, Any]) -> None:
 # one frame in.
 def get_openapi_schema(app: Any) -> dict[str, Any]:
     """Generate OpenAPI 3.1 schema from the app's registered routes."""
+    if not app.openapi_version.startswith("3.1"):
+        # The schema objects are written in JSON Schema 2020-12, the dialect
+        # OpenAPI 3.1 adopts, whatever this string says - `prefixItems` for a
+        # fixed-shape tuple and `examples` inside a schema are 3.1-only. A
+        # 3.0 consumer rejects such a document without explaining why, so the
+        # version that will not validate is named here instead.
+        warnings.warn(
+            f"openapi_version is {app.openapi_version!r}, and the document's schemas are "
+            "written in the JSON Schema 2020-12 dialect that OpenAPI 3.1 adopts; a 3.0 "
+            "consumer may reject it. The attribute sets the version string only.",
+            _RegistrationWarning,
+            stacklevel=2,
+        )
     schema: dict[str, Any] = {
         # `app.openapi_version` is documented as "the spec version string emitted
         # in the document", and was emitted nowhere: setting it changed the

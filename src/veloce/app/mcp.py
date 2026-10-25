@@ -17,7 +17,9 @@ from typing_extensions import Doc
 
 from veloce._internal import _refuse_string_scopes
 from veloce.app._host import AppHost
+from veloce.http.response import JSONResponse
 from veloce.principal import set_principal
+from veloce.status import HTTP_409_CONFLICT
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.icons import Icon
@@ -85,6 +87,29 @@ class MCPCompleterRegistration:
 class MCPMixin(AppHost):
     """Register MCP tools, prompts, completers and hooks, and mount a server."""
 
+    def _map_tool_error_to_conflict(self) -> None:
+        """Give `ToolError` an HTTP answer, unless the app already gave it one.
+
+        A route-backed tool raises the same `ToolError` whichever door called
+        it, and its message is written for the caller to read - the agent door
+        surfaces it verbatim. Over HTTP it was an unhandled exception, so the
+        author's refusal arrived as a server fault with the message dropped.
+        409 is the reading the agent door already records for it: the request
+        was well formed and the work was refused for a stated reason
+        (RFC 9110 Sec. 15.5.10).
+        """
+        from veloce.contrib.mcp.errors import ToolError
+
+        if ToolError in self._exception_handlers:
+            return
+
+        async def _tool_error_response(request: Any, exc: Exception) -> Any:
+            # The same text the agent door sends, in the shape every other
+            # refusal on this door answers with.
+            return JSONResponse({"detail": str(exc)}, status_code=HTTP_409_CONFLICT)
+
+        self._exception_handlers[ToolError] = _tool_error_response
+
     def mcp_tool(
         self,
         description: Annotated[
@@ -148,6 +173,7 @@ class MCPMixin(AppHost):
 
         def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
             require_mcp_description(name or func.__name__, description)
+            self._map_tool_error_to_conflict()
             # Validated here rather than at mount time, so a misspelled hint is
             # reported against the decorator that wrote it.
             declared = validate_tool_annotations(annotations)

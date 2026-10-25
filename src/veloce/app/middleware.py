@@ -165,8 +165,8 @@ class MiddlewareMixin(AppHost):
         return middleware
 
     def middleware(
-        self, middleware_class_or_type: type | str, **kwargs: Any
-    ) -> Callable[[Callable], Callable] | None:
+        self, middleware_class_or_type: type[Any] | str, **kwargs: Any
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]] | None:
         """Add middleware - supports both a class form and a decorator form.
 
         The two forms return different things: the decorator form returns the
@@ -196,7 +196,7 @@ class MiddlewareMixin(AppHost):
                     f"or to app.add_middleware(...)."
                 )
 
-            def decorator(func: Callable) -> Callable:
+            def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
                 self._register_feature_state(self._http_middleware_funcs, func)
                 return func
 

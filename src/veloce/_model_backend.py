@@ -88,7 +88,15 @@ def _return_annotation(handler: Callable[..., Any]) -> Any:
     string annotation still yields the real class.
     """
     try:
-        hints = typing.get_type_hints(handler)
+        # breaks _model_backend -> _internal -> encoders -> _model_backend
+        from veloce._internal import resolve_hint_target
+
+        # The same target `_inspect_handler` and `_handler_intro` read: a
+        # callable-instance or `functools.partial` handler published its
+        # parameters while getting no `response_model` and no MCP
+        # `outputSchema`, because this door read hints off the handler object.
+        # Registration-time only - nothing resolves a return model per request.
+        hints = typing.get_type_hints(resolve_hint_target(handler))
     except Exception:
         return None
     return hints.get("return")

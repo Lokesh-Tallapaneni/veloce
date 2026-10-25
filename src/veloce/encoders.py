@@ -74,7 +74,7 @@ def _decimal_to_json(obj: decimal.Decimal) -> int | float | str:
 # linear in cascade length. Subclasses (`pathlib.PosixPath`, custom
 # `IntEnum`, third-party `datetime` subclasses) intentionally miss the
 # fast-path and fall through to the isinstance chain below.
-_LEAF_TYPE_ENCODERS: dict[type, Callable[[Any], Any]] = {
+_LEAF_TYPE_ENCODERS: dict[type[Any], Callable[[Any], Any]] = {
     type(None): lambda _v: None,
     str: lambda v: v,
     int: lambda v: v,
@@ -93,7 +93,7 @@ _LEAF_TYPE_ENCODERS: dict[type, Callable[[Any], Any]] = {
 # in practice) and would otherwise leak internals via the `vars(obj)`
 # fallback (e.g. `ipaddress` networks carry a `_prefixlen` dict). Consulted
 # only after the leaf-table miss so the hot path stays zero-cost.
-_SCALAR_TYPE_ENCODERS: dict[type, Callable[[Any], Any]] = {
+_SCALAR_TYPE_ENCODERS: dict[type[Any], Callable[[Any], Any]] = {
     re.Pattern: lambda p: p.pattern,
     ipaddress.IPv4Address: str,
     ipaddress.IPv6Address: str,
@@ -107,14 +107,14 @@ _SCALAR_TYPE_ENCODERS: dict[type, Callable[[Any], Any]] = {
 # Process-level user registry, consulted by the MRO resolver before the
 # built-in scalar tables so a registered type wins over a built-in handler
 # for the same class. Empty by default, so the common path never touches it.
-_REGISTERED_ENCODERS: dict[type, Callable[[Any], Any]] = {}
+_REGISTERED_ENCODERS: dict[type[Any], Callable[[Any], Any]] = {}
 
 # Built-in leaf and scalar tables merged once at import. Their keys are
 # disjoint, so the merge preserves every entry and lets the MRO walk probe a
 # single dict per base instead of chaining two `.get(...)` calls. The user
 # registry is probed separately (and only when non-empty) so it keeps winning
 # over a built-in handler for the same class.
-_BUILTIN_TYPE_ENCODERS: dict[type, Callable[[Any], Any]] = {
+_BUILTIN_TYPE_ENCODERS: dict[type[Any], Callable[[Any], Any]] = {
     **_LEAF_TYPE_ENCODERS,
     **_SCALAR_TYPE_ENCODERS,
 }
@@ -128,7 +128,7 @@ _MISSING = object()
 # resolves to its base encoder once, then every later instance is a single dict
 # hit. Cleared whenever the user registry changes so a late `register_encoder`
 # cannot be shadowed by a stale cached miss.
-_RESOLVED_ENCODERS: dict[type, Callable[[Any], Any] | None] = {}
+_RESOLVED_ENCODERS: dict[type[Any], Callable[[Any], Any] | None] = {}
 
 # Cap the resolve cache so an app that mints many distinct runtime classes (a
 # hot-reloader, per-tenant dynamic models) cannot grow it without bound. A normal
@@ -137,7 +137,7 @@ _RESOLVED_ENCODERS: dict[type, Callable[[Any], Any] | None] = {}
 _MAX_RESOLVED_ENCODERS = 4096
 
 
-def _resolve_encoder(cls: type) -> Callable[[Any], Any] | None:
+def _resolve_encoder(cls: type[Any]) -> Callable[[Any], Any] | None:
     """Find the encoder for `cls` by walking its MRO, memoizing the result.
 
     Consulted only after the exact-type fast paths miss. Walks
@@ -171,7 +171,7 @@ def _resolve_encoder(cls: type) -> Callable[[Any], Any] | None:
     return resolved
 
 
-def register_encoder(type_: type, encoder: Callable[[Any], Any]) -> None:
+def register_encoder(type_: type[Any], encoder: Callable[[Any], Any]) -> None:
     """Register a process-level JSON encoder for `type_` and its subclasses.
 
     `encoder` receives one instance and must return a JSON-able value
@@ -193,7 +193,7 @@ def register_encoder(type_: type, encoder: Callable[[Any], Any]) -> None:
     _RESOLVED_ENCODERS.clear()
 
 
-def unregister_encoder(type_: type) -> None:
+def unregister_encoder(type_: type[Any]) -> None:
     """Remove a previously registered encoder for `type_`.
 
     No-op if `type_` was never registered.
@@ -203,7 +203,7 @@ def unregister_encoder(type_: type) -> None:
 
 
 def _resolve_custom(
-    obj: Any, custom_encoder: dict[type, Callable[[Any], Any]]
+    obj: Any, custom_encoder: dict[type[Any], Callable[[Any], Any]]
 ) -> Callable[[Any], Any] | None:
     """Resolve a per-call `custom_encoder` entry for `obj`.
 
@@ -304,7 +304,7 @@ def jsonable_encoder(
     exclude_unset: bool = False,
     exclude_defaults: bool = False,
     exclude_none: bool = False,
-    custom_encoder: dict[type, Callable[[Any], Any]] | None = None,
+    custom_encoder: dict[type[Any], Callable[[Any], Any]] | None = None,
     *,
     _seen: set[int] | None = None,
 ) -> Any:

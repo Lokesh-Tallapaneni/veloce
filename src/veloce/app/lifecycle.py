@@ -19,7 +19,7 @@ from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, cast
 
 from veloce._handler_plan import K_DEPENDS
-from veloce._internal import _BaseExceptionGroup, _is_async_callable, offload
+from veloce._internal import T_route, _BaseExceptionGroup, _is_async_callable, offload
 from veloce._protocol_constants import (
     LIFECYCLE_SHUTDOWN,
     LIFECYCLE_STARTUP,
@@ -186,14 +186,14 @@ class LifecycleMixin(AppHost):
 
     # ── Before/After request hooks ────────────────────────
 
-    def before_request(self, func: Callable) -> Callable:
+    def before_request(self, func: T_route) -> T_route:
         """Register a function to run before each request."""
         self._assert_mutable()
         self._before_request_hooks.append(func)
         self._gen += 1
         return func
 
-    def before_first_request(self, func: Callable) -> Callable:
+    def before_first_request(self, func: T_route) -> T_route:
         """Register a function to run exactly once on the first request.
 
         A legacy hook style - lifespan startup handlers are preferred,
@@ -206,14 +206,14 @@ class LifecycleMixin(AppHost):
         self._before_first_request_hooks.append(func)
         return func
 
-    def after_request(self, func: Callable) -> Callable:
+    def after_request(self, func: T_route) -> T_route:
         """Register a function to run after each request."""
         self._assert_mutable()
         self._after_request_hooks.append(func)
         self._gen += 1
         return func
 
-    def teardown_request(self, func: Callable) -> Callable:
+    def teardown_request(self, func: T_route) -> T_route:
         """Register a function to run after request teardown.
 
         Called with an optional exception argument, even if an exception
@@ -224,14 +224,14 @@ class LifecycleMixin(AppHost):
         self._gen += 1
         return func
 
-    def teardown_appcontext(self, func: Callable) -> Callable:
+    def teardown_appcontext(self, func: T_route) -> T_route:
         """Register a function to run on app-context teardown."""
         self._assert_mutable()
         self._teardown_appcontext_hooks.append(func)
         self._gen += 1
         return func
 
-    def _select_teardown_request_hooks(self, bp_name: str | None) -> list[Callable]:
+    def _select_teardown_request_hooks(self, bp_name: str | None) -> list[Callable[..., Any]]:
         """Return the `teardown_request` hooks to run, app-level first.
 
         A matched blueprint's hooks are appended after the app-level ones (gated
@@ -270,7 +270,7 @@ class LifecycleMixin(AppHost):
             )
 
     async def _run_teardown_hooks(
-        self, hooks: list[Callable], exc: BaseException | None, label: str
+        self, hooks: list[Callable[..., Any]], exc: BaseException | None, label: str
     ) -> None:
         """Run a list of teardown hooks, logging but never raising errors."""
         for hook in hooks:
@@ -284,7 +284,7 @@ class LifecycleMixin(AppHost):
 
     # ── Lifecycle events ──────────────────────────────────
 
-    def on_event(self, event: str) -> Callable:
+    def on_event(self, event: str) -> Callable[[T_route], T_route]:
         """Register startup/shutdown event handlers.
 
         Deprecated: use `@app.on_startup` / `@app.on_shutdown` instead.
@@ -299,7 +299,7 @@ class LifecycleMixin(AppHost):
             stacklevel=2,
         )
 
-        def decorator(func: Callable) -> Callable:
+        def decorator(func: T_route) -> T_route:
             self._register_lifecycle_event(event, func)
             return func
 
@@ -341,17 +341,17 @@ class LifecycleMixin(AppHost):
         self._extra_lifespans.append(factory)
         return factory
 
-    def on_startup(self, func: Callable) -> Callable:
+    def on_startup(self, func: T_route) -> T_route:
         """Register a startup event handler."""
         self._on_startup.append(func)
         return func
 
-    def on_shutdown(self, func: Callable) -> Callable:
+    def on_shutdown(self, func: T_route) -> T_route:
         """Register a shutdown event handler."""
         self._on_shutdown.append(func)
         return func
 
-    def add_event_handler(self, event: str, func: Callable) -> None:
+    def add_event_handler(self, event: str, func: Callable[..., Any]) -> None:
         """Imperative event-handler registration - ASGI shape.
 
         Deprecated: call `app.on_startup(fn)` / `app.on_shutdown(fn)`
@@ -369,15 +369,15 @@ class LifecycleMixin(AppHost):
     # (lifespan event); `after_serving` fires once at shutdown. They are
     # semantically equivalent to `on_startup` / `on_shutdown`; both name
     # pairs are accepted so either reads naturally at the call site.
-    def before_serving(self, func: Callable) -> Callable:
+    def before_serving(self, func: T_route) -> T_route:
         """Register a coroutine to run once at app startup. Alias of `on_startup`."""
         return self.on_startup(func)
 
-    def after_serving(self, func: Callable) -> Callable:
+    def after_serving(self, func: T_route) -> T_route:
         """Register a coroutine to run once at app shutdown. Alias of `on_shutdown`."""
         return self.on_shutdown(func)
 
-    def _register_lifecycle_event(self, event: str, func: Callable) -> None:
+    def _register_lifecycle_event(self, event: str, func: Callable[..., Any]) -> None:
         """Validate an event name and append the handler to its bucket.
 
         Shared by `on_event` and `add_event_handler` so the two register

@@ -46,7 +46,7 @@ class MCPDescriptor:
     # rather than each carrying its own; it defaults to an empty mapping so a
     # primitive without completers holds no extra state. Tools carry none - the
     # MCP spec defines completion references only for prompts and resources.
-    completers: dict[str, Callable] = field(default_factory=dict, kw_only=True)
+    completers: dict[str, Callable[..., Any]] = field(default_factory=dict, kw_only=True)
     # `_meta` the author attached to this primitive's definition. The protocol
     # reserves the field for metadata it does not itself define, which is how an
     # extension carries its own data on a tool, resource or prompt. It lives here

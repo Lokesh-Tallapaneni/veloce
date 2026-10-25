@@ -409,10 +409,13 @@ module = [
 ]
 ignore_missing_imports = true
 
-# Incremental strict burn-down: these modules still use bare generics
-# (`Callable`/`dict`/`list` without type parameters), return `Any`, or carry an
+# Incremental strict burn-down: these modules still return `Any` or carry an
 # untyped def. strict applies to every other module and all new code; remove a
 # module from this list once it type-checks clean under the strict defaults.
+# `disallow_any_generics` is deliberately NOT relaxed here: a generic without
+# its parameters reads as `Unknown`, and on a decorator that makes an editor
+# drop the decorator and lose the handler's own type, so the whole tree is held
+# to it and this is the check that enforces it in CI.
 [[tool.mypy.overrides]]
 module = [
     "veloce._handler_plan",
@@ -456,7 +459,6 @@ module = [
     "veloce.websocket",
     "veloce.workers",
 ]
-disallow_any_generics = false
 warn_return_any = false
 disallow_untyped_defs = false
 disallow_incomplete_defs = false

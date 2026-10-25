@@ -78,6 +78,7 @@ from veloce.contrib.mcp.errors import (
     MCPCapabilityError,
     MCPError,
     ResourceNotFoundError,
+    ToolError,
     UnsupportedProtocolVersionError,
     _error,
     _ForbiddenError,
@@ -345,6 +346,17 @@ def _in_band_status_for(error: _InBandError) -> int:
         # The call could not be completed because something it depended on - a
         # capability of the connected client - was not there to depend on.
         return status.HTTP_424_FAILED_DEPENDENCY
+    if isinstance(error, ToolError):
+        # A failure the author declared, not a fault: the request was well formed
+        # and the work was refused for a stated reason. RFC 9110 Sec. 15.5.10 -
+        # "could not be completed due to a conflict with the current state" - is
+        # the closest standard reading of a locked record or an unmet
+        # precondition, and the family matters more than the digits: recording a
+        # 5xx here puts every expected tool refusal into the server-fault rate an
+        # operator pages on.
+        return status.HTTP_409_CONFLICT
+    # The fallthrough is the server's own limits - a drained stream that overran
+    # the buffer or the deadline - which are genuine faults.
     return status.HTTP_500_INTERNAL_SERVER_ERROR
 
 
@@ -1525,13 +1537,15 @@ class MCPServer(TasksMixin, InvocationMixin):
         try:
             result = await self._run_invoke(tool, arguments, progress_token, request_meta)
         except _InBandError as exc:
-            # Surfaced verbatim, unlike a handler exception: an invalid argument
-            # names the offending field and what was expected, and an unavailable
-            # client capability names the capability - both derived from the
-            # tool's own declaration and the connection's own handshake, so there
-            # is nothing to redact. Redacting would leave the model with
-            # "internal error" and nothing to correct, which is the opposite of
-            # what an execution error is for.
+            # Surfaced verbatim, unlike a handler exception. An invalid argument
+            # names the offending field and what was expected and an unavailable
+            # client capability names the capability, both derived from the
+            # tool's own declaration and the connection's own handshake; a
+            # `ToolError` carries text the author wrote for the agent to read.
+            # Nothing on this path is an accidental message, so there is nothing
+            # to redact - and redacting would leave the model with "internal
+            # error" and nothing to act on, which is the opposite of what an
+            # execution error is for.
             await self._instrument(tool, started, _in_band_status_for(exc))
             return _text_result(str(exc), is_error=True)
         except asyncio.TimeoutError:
@@ -1573,7 +1587,11 @@ class MCPServer(TasksMixin, InvocationMixin):
             try:
                 await self._drain_stream(response)
             except _InBandError as exc:
-                await self._instrument(tool, started, status.HTTP_500_INTERNAL_SERVER_ERROR)
+                # Through the same mapping the pre-stream path uses: a refusal
+                # the author declared is a 409 whether it was raised before the
+                # body began or partway through it. The server's own drain
+                # limits still fall through that mapping to 500.
+                await self._instrument(tool, started, _in_band_status_for(exc))
                 return _text_result(str(exc), is_error=True)
             await self._instrument(tool, started, response.status_code)
             # A `before_request` / middleware short-circuit response never went
@@ -1595,7 +1613,7 @@ class MCPServer(TasksMixin, InvocationMixin):
                     return binary
             shaped = self._shape_result(tool, result)
         except _InBandError as exc:
-            await self._instrument(tool, started, status.HTTP_500_INTERNAL_SERVER_ERROR)
+            await self._instrument(tool, started, _in_band_status_for(exc))
             return _text_result(str(exc), is_error=True)
         # A pure tool's raw return that completed without error is a genuine 200.
         await self._instrument(tool, started, status.HTTP_200_OK)

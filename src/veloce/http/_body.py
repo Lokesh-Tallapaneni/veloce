@@ -26,6 +26,7 @@ there.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import deque
 from collections.abc import Callable
 from typing import Any
@@ -38,6 +39,8 @@ from veloce._protocol_constants import (
 )
 from veloce.exceptions import RequestEntityTooLarge
 from veloce.status import HTTP_413_CONTENT_TOO_LARGE
+
+_logger = logging.getLogger(__name__)
 
 # Bound on unconsumed body chunks. Reaching the high-water mark pauses socket
 # reading; draining back to the low-water mark resumes it. The gap (hysteresis)
@@ -86,18 +89,29 @@ class BodySource:
     the ASGI one pulls from a `receive` channel - so what they have in common is
     stated here rather than left for a consumer to probe for.
 
-    `disconnected` is the part that is easy to leave half-implemented: it is
-    `False` for a body that completed and `True` for one cut short by the peer
-    going away, and a source that cannot tell them apart makes
-    `request.is_disconnected()` answer `False` for a client that is gone.
+    `poll_disconnected` is the one a consumer calls - `request.is_disconnected()`
+    goes through it and nothing else - and it is the part that is easy to leave
+    half-implemented: it must be `False` for a body that completed and `True` for
+    one cut short by the peer going away. Reading a flag answers that only for a
+    transport that pushes the drop in; one that has to be asked - an ASGI receive
+    channel - needs the call to go and ask, which is why this is a coroutine
+    rather than a property.
+
+    `disconnected` is the same latch read without asking anything, for a caller
+    that has already consumed the body and only wants what the source knows.
+    Nothing in `src/` reads it today; the tests do, and both sources expose it,
+    so it stays as the cheap read while `poll_disconnected` carries the contract.
     """
 
     __slots__ = ()
 
     #: What a source must supply. Checked at definition rather than left to
     #: fail on the first streamed request: a source missing one of these works
-    #: until a handler reaches for it, and then fails mid-body.
-    _required = ("__aiter__", "__anext__", "read", "disconnected")
+    #: until a handler reaches for it, and then fails mid-body. `disconnected`
+    #: is deliberately absent - it is one concept with `poll_disconnected`, and
+    #: requiring both made an implementer write two members to answer one
+    #: question, only one of which a consumer calls.
+    _required = ("__aiter__", "__anext__", "read", "poll_disconnected")
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
@@ -118,6 +132,10 @@ class BodySource:
     @property
     def disconnected(self) -> bool:
         """`True` when the stream ended because the peer went away."""
+        raise NotImplementedError
+
+    async def poll_disconnected(self) -> bool:
+        """`True` when the peer has gone, asking the transport if it must."""
         raise NotImplementedError
 
 
@@ -264,9 +282,23 @@ class RequestBodySource(BodySource):
             self._disconnected = True
         self._event.set()
 
+    def mark_disconnected(self) -> None:
+        """Record that the peer went away, leaving the body's EOF state alone.
+
+        `feed_eof(disconnected=True)` is the mid-body case: it also ends the
+        stream a consumer is parked on. A handler streaming its *response* has a
+        body that already completed, so there is no stream left to end - only
+        the fact to record, for the `is_disconnected()` it is about to call.
+        """
+        self._disconnected = True
+
     @property
     def disconnected(self) -> bool:
         """`True` when the stream ended because the peer went away."""
+        return self._disconnected
+
+    async def poll_disconnected(self) -> bool:
+        """`True` when the peer has gone - the protocol pushes it, so just read it."""
         return self._disconnected
 
     def _maybe_resume(self) -> None:
@@ -332,6 +364,12 @@ class RequestBodySource(BodySource):
         self._chunks.clear()
 
 
+def _discard_outcome(task: asyncio.Future[Any]) -> None:
+    """Read an abandoned task's outcome so asyncio does not log it."""
+    if not task.cancelled():
+        task.exception()
+
+
 class ASGIBodySource(BodySource):
     """Pull-based body source over an ASGI `receive` channel.
 
@@ -347,15 +385,25 @@ class ASGIBodySource(BodySource):
     is refused mid-read rather than buffered whole - matching the native source's
     413 behaviour. A `http.disconnect` ends the stream (the consumer sees the
     body truncated at the bytes received so far).
+
+    `body_complete=True` builds one over a channel whose body is already in hand,
+    which is what a buffered route's `is_disconnected()` needs: nothing is left
+    to read, so the source exists only to poll the channel for the drop.
     """
 
     __slots__ = ("_receive", "_max", "_size", "_done", "_disconnected")
 
-    def __init__(self, receive: Callable[[], Any], max_content_length: int | None = None) -> None:
+    def __init__(
+        self,
+        receive: Callable[[], Any],
+        max_content_length: int | None = None,
+        *,
+        body_complete: bool = False,
+    ) -> None:
         self._receive = receive
         self._max = max_content_length
         self._size = 0
-        self._done = False
+        self._done = body_complete
         # `_done` covers both "body complete" and "peer vanished"; this keeps
         # the second apart so `Request.is_disconnected()` can answer truthfully
         # for a streaming route, where the client really can go away mid-handler.
@@ -365,6 +413,63 @@ class ASGIBodySource(BodySource):
     def disconnected(self) -> bool:
         """`True` when the stream ended because the peer went away."""
         return self._disconnected
+
+    async def poll_disconnected(self) -> bool:
+        """`True` when the peer has gone, asked of the channel without blocking.
+
+        An ASGI server reports the drop as an `http.disconnect` on the receive
+        channel and nowhere else, so a handler streaming a response - which has
+        no body left to read - can only learn it by asking. `receive()` runs as
+        a task for exactly one loop turn: a message already waiting is returned
+        within that first step and is seen here, while a channel with nothing to
+        say is still suspended and is cancelled, consuming nothing. The answer
+        latches, because a server is free to hand out its disconnect once.
+
+        The single turn bounds the peek rather than describing every channel:
+        a `receive` that awaits before it delivers - a wrapper forwarding
+        through a lock or a log - is still suspended when the task is
+        cancelled, and each later poll starts a fresh one, so the answer stays
+        `False`. Nothing is consumed either way, and a server that queues the
+        disconnect answers on the first poll. The in-memory test client's
+        channel outlasts exactly this peek, to tell a poll apart from a read
+        that is really waiting for input.
+
+        `False` while the body is still arriving: the handler consuming it owns
+        the channel and a poll would take the chunk it is waiting for. That
+        consumer sees the disconnect itself, through `disconnected`.
+        """
+        if self._disconnected:
+            return True
+        if not self._done:
+            return False
+        task = asyncio.ensure_future(self._receive())
+        await asyncio.sleep(0)
+        if not task.done():
+            task.cancel()
+            # The task is abandoned, so something has to read its outcome: a
+            # streaming handler polls this per event, and an unretrieved
+            # exception would log once per poll.
+            task.add_done_callback(_discard_outcome)
+            return False
+        if task.cancelled() or task.exception() is not None:
+            # No answer is not an answer: a channel that refuses or is cancelled
+            # from elsewhere says nothing about the peer, and reporting a live
+            # client as gone would abort the stream it is still reading.
+            return False
+        message = task.result()
+        if message.get("type") == ASGI_EVENT_HTTP_DISCONNECT:
+            self._disconnected = True
+            return True
+        # Nothing can be handed this: `__anext__` and `read` both short-circuit
+        # on `_done`, which is the precondition for polling at all. Logged
+        # rather than dropped, because the alternative symptom is a body that
+        # goes missing with nothing to point at.
+        _logger.warning(
+            "Disconnect poll consumed a %s message that no reader can take; "
+            "the receive channel is shared with another consumer",
+            message.get("type"),
+        )
+        return False
 
     def __aiter__(self) -> ASGIBodySource:
         return self

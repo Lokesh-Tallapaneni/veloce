@@ -135,14 +135,15 @@ already buffered or still streaming in.
 | `await request.get_data(as_text=True)` | the body decoded via the `Content-Type` charset. |
 
 !!! warning "A declared non-JSON body is not parsed"
-    `await request.json()` returns `None` when the request declares a
-    `Content-Type` that is not JSON. `text/plain`, `multipart/form-data` and
-    `application/x-www-form-urlencoded` are the types a cross-origin form or
-    `fetch` may send with **no CORS preflight**, so parsing a body under one of
-    them lets an attacker drive the endpoint through a cookie-authenticated
-    victim's browser. An absent header asserts nothing and is still parsed; a
-    `+json` suffix such as `application/vnd.api+json` is JSON. A JSON body model
-    applies the same rule and answers `422`.
+    `await request.json()` returns `None` when the request's `Content-Type` is
+    not JSON, an **absent** header included. `text/plain`,
+    `multipart/form-data` and `application/x-www-form-urlencoded` are the types
+    a cross-origin form or `fetch` may send with **no CORS preflight**, and an
+    absent header needs none either - `fetch` with a `Blob` body typed `""`
+    sends no `Content-Type` at all - so parsing a body under any of them lets an
+    attacker drive the endpoint through a cookie-authenticated victim's browser.
+    A `+json` suffix such as `application/vnd.api+json` is JSON. A JSON body
+    model applies the same rule and answers `422`.
 
 !!! note "Changed in version 0.18"
     `await request.json()` previously parsed the body whatever the
@@ -173,6 +174,45 @@ async def echo_json(request: Request):
     the in-memory and ASGI paths the await resolves immediately. The synchronous
     `request.get_json()` / `request.data` accessors exist for Flask muscle
     memory but raise `RuntimeError` if the body has not been buffered yet.
+
+### A body whose content type does not match
+
+`request.get_json()` raises `UnsupportedMediaType` (415) when the request
+declares a content type that is not JSON, so a caller can tell a wrong type
+apart from an empty body:
+
+```python title="app.py"
+from veloce import Request, Veloce
+
+app = Veloce()
+
+
+@app.post("/items")
+async def create(request: Request):
+    data = request.get_json()       # text/plain body -> 415, not None
+    return {"name": data["name"]}
+```
+
+Two escape hatches, both unchanged: `force=True` parses whatever arrived
+regardless of the declared type, and `silent=True` returns `None` instead of
+raising. An empty body still reads as `None` either way.
+
+A body sent with **no** `Content-Type` is refused with the rest. It used to be
+parsed, on the grounds that a browser cannot omit the header on a cross-origin
+send — it can, by sending a `Blob` body whose type is the empty string, which
+leaves no header for the CORS safelist to reject and so needs no preflight. If
+you talk to a client that genuinely omits the header, read its body with
+`request.get_json(force=True)`.
+
+The async `await request.json()` is unchanged: it returns `None` for a declared
+non-JSON body. A route that binds a body model reports the mismatch itself with
+a `422`, so that door already answers before the accessor is reached.
+
+!!! note "Overriding the policy"
+    `Request.on_json_loading_failed` is still the single place both outcomes are
+    decided, so a `Request` subclass can change either. It now receives `None`
+    when the content type was refused and the decode error when the body was
+    malformed — an override must accept `Exception | None`.
 
 ### Streaming the request body
 

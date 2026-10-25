@@ -162,7 +162,7 @@ class RouteInfo:
         mcp_scopes: Sequence[str] | None = None,
         mcp_icons: Sequence[Any] | None = None,
         mcp_task_support: bool = False,
-        excluded_middleware: tuple[frozenset[str], tuple[type, ...]] | None = None,
+        excluded_middleware: tuple[frozenset[str], tuple[type[Any], ...]] | None = None,
     ) -> None:
         self.handler = handler
         self.param_names = param_names
@@ -313,7 +313,7 @@ class RouteInfo:
         # (route, middleware-set) generation, not per request.
         #: A name matches `Middleware.middleware_name` exactly; a type matches by
         #: `isinstance`, so it covers subclasses.
-        self.excluded_middleware: tuple[frozenset[str], tuple[type, ...]] | None = (
+        self.excluded_middleware: tuple[frozenset[str], tuple[type[Any], ...]] | None = (
             excluded_middleware
         )
         self._mw_chain_cache: tuple[int, list[Any], list[Any]] | None = None

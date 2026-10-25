@@ -1010,7 +1010,7 @@ class WebSocket:
             return
         await self._raw_send(data, opcode=0x2)  # _OP_BINARY
 
-    async def _asgi_send_safe(self, message: dict) -> None:
+    async def _asgi_send_safe(self, message: dict[str, Any]) -> None:
         """Forward an ASGI send, normalizing a dead-peer OSError to a disconnect.
 
         Under an ASGI server a send to a peer that has gone away surfaces as an
@@ -1034,7 +1034,7 @@ class WebSocket:
         self._closed = True
         raise WebSocketDisconnect(WS_1006_ABNORMAL_CLOSURE) from exc
 
-    def _asgi_disconnected(self, msg: dict) -> NoReturn:
+    def _asgi_disconnected(self, msg: dict[str, Any]) -> NoReturn:
         """Record the peer's close from a `websocket.disconnect` and raise.
 
         The one place ASGI peer-close is turned into connection state, so the
@@ -1050,7 +1050,7 @@ class WebSocket:
         self.close_reason = msg.get("reason", "") or ""
         raise WebSocketDisconnect(code)
 
-    async def _asgi_recv_msg(self) -> dict:
+    async def _asgi_recv_msg(self) -> dict[str, Any]:
         msg = await self._asgi_receive()
         if msg["type"] == ASGI_EVENT_WS_DISCONNECT:
             self._asgi_disconnected(msg)
@@ -1258,7 +1258,7 @@ class WebSocket:
         if self._idle_timeout is not None and (timeout is None or eff == self._idle_timeout):
             await self._idle_close()
 
-    async def _asgi_recv_text_or_bytes(self, timeout: float | None) -> dict:
+    async def _asgi_recv_text_or_bytes(self, timeout: float | None) -> dict[str, Any]:
         """Receive one ASGI message, bounding the wait only when a deadline is set.
 
         The common case has neither a per-call `timeout` nor a configured

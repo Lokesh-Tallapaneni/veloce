@@ -106,7 +106,7 @@ class RouteContract:
             # finalized. Build it on demand from the same builder registration
             # uses, so the lowering still reads the IR rather than the signature.
 
-            plan = build_plan(info.handler)
+            plan = build_plan(info.handler, path_params=frozenset(info.param_names))
         return cls(
             plan=plan,
             param_names=tuple(info.param_names),
@@ -184,28 +184,36 @@ def describe_slot(slot: _Slot, param_names: tuple[str, ...]) -> ParamDescriptor 
             is_optional=slot.is_optional,
         )
     if kind == K_QUERY_LIST:
+        # A folded `Field(alias=...)` names the QUERY key; the path keeps the
+        # template's own name, which is what the radix tree stored. Published as
+        # served, or a generated client calls a key the route does not accept.
+        in_path = slot.name in param_names
         return ParamDescriptor(
             name=slot.name,
-            wire_name=slot.name,
-            location="path" if slot.name in param_names else "query",
+            wire_name=slot.name if in_path else (slot.lookup_name or slot.name),
+            location="path" if in_path else "query",
             target_type=slot.list_inner,
             is_list=True,
             model=None,
-            marker=None,
+            marker=slot.marker,
             is_file=False,
             has_default=slot.has_default,
             default=slot.default,
             is_optional=slot.is_optional,
         )
     if kind == K_QUERY:
+        # A folded `Field(alias=...)` names the QUERY key; the path keeps the
+        # template's own name, which is what the radix tree stored. Published as
+        # served, or a generated client calls a key the route does not accept.
+        in_path = slot.name in param_names
         return ParamDescriptor(
             name=slot.name,
-            wire_name=slot.name,
-            location="path" if slot.name in param_names else "query",
+            wire_name=slot.name if in_path else (slot.lookup_name or slot.name),
+            location="path" if in_path else "query",
             target_type=slot.target_type,
             is_list=False,
             model=None,
-            marker=None,
+            marker=slot.marker,
             is_file=False,
             has_default=slot.has_default,
             default=slot.default,

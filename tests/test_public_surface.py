@@ -98,6 +98,7 @@ VELOCE_ALL = {
     "JWTError",
     "Jinja2Templates",
     "LengthRequired",
+    "LiveServer",
     "LoggingMiddleware",
     "MCPContext",
     "Markup",

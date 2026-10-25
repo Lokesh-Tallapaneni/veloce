@@ -168,6 +168,20 @@ app.add_middleware(
 )
 ```
 
+The refusal status is `400`, which is the correct answer to a `Host` header the
+server cannot serve — the request is unusable as sent, not a permissions
+problem. Pass `status_code` where a deployment needs otherwise, for instance to
+keep a probe from an edge network out of a 4xx bucket it treats as client error:
+
+```python
+app.add_middleware(
+    TrustedHostMiddleware(allowed_hosts=["example.com"], status_code=403)
+)
+```
+
+Only a 4xx is accepted; anything else is refused at construction, since a
+redirect would be followed and a 5xx retried.
+
 !!! warning "No `www_redirect`"
     Unlike some other frameworks, `TrustedHostMiddleware` does not redirect a
     bare apex host to its `www.` form — there is no `www_redirect` option. The
@@ -354,6 +368,73 @@ the client that triggered the eviction, which would otherwise be a way to flush
 another client's counter. The same knob applies to the default backend on the
 `strategy=` form below; if you pass your own `backend`, set its `max_keys`
 instead.
+
+#### Naming the caller a limit applies to
+
+By default the limiter identifies a caller from the transport peer, then the
+closest proxy hop, then the `User-Agent`, and finally gives up and keys that one
+request alone — so a caller it cannot identify is unlimited rather than sharing
+a bucket with every other unidentified caller. That default is deliberate: one
+shared anonymous bucket is a trivial denial of service against everybody in it.
+
+A namer that cannot identify this caller should return `None` for exactly that
+reason: the limiter then falls back to the derivation above, giving that caller
+a bucket of its own rather than one shared with every other caller the namer
+declined. Returning a constant such as `"anonymous"` rebuilds the shared bucket
+this default exists to avoid.
+
+It also means the limiter is ineffective wherever none of those signals carry
+the identity you care about: behind a gateway that terminates identity and
+forwards no client address, or on a transport with no peer at all. Pass
+`key_func` to say what identifies a caller:
+
+```python
+from veloce import RateLimitMiddleware, Veloce
+
+app = Veloce()
+
+app.add_middleware(
+    RateLimitMiddleware(
+        max_requests=60,
+        window_seconds=60,
+        key_func=lambda request: (
+            request.headers.get("x-tenant-id")
+            or None
+        ),
+    )
+)
+```
+
+`key_func` receives the `Request` and returns the bucket key as a string. It
+replaces the whole default chain, and it applies to both construction forms —
+`max_requests=` and `strategy=`/`backend=` alike. Returning a constant limits
+every caller as one; that is occasionally what you want for a global ceiling,
+but it is the shared-bucket hazard above, so do it knowingly.
+
+A tool call arriving over MCP has no transport peer, so the default chain would
+reach its per-request fallback and limit nothing. When the call carries an
+authenticated identity, the limiter keys on that principal's subject instead:
+
+```python
+from veloce import RateLimitMiddleware, Veloce, current_principal
+
+app = Veloce()
+
+app.add_middleware(
+    RateLimitMiddleware(
+        max_requests=60,
+        window_seconds=60,
+        key_func=lambda request: (
+            (principal.subject if (principal := current_principal()) else None)
+            or None
+        ),
+    )
+)
+```
+
+An unauthenticated agent has no subject, and is keyed per request rather than
+collapsed with every other unauthenticated agent — the same reasoning as the
+default chain's last resort.
 
 Pass a `strategy` to choose the algorithm, and a `backend` to choose where the
 per-client state lives:

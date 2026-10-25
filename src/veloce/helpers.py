@@ -26,6 +26,7 @@ from veloce._internal import (
     MIME_HTML,
     _current_app_var,
     _current_request_var,
+    _serving_error_page_var,
     _unpack_response_tuple,
 )
 from veloce.exceptions import exception_for_status
@@ -262,10 +263,10 @@ class Aborter:
     so the default `exception_for_status` lookup applies.
     """
 
-    mapping: dict[int, type] = {}
+    mapping: dict[int, type[Any]] = {}
 
-    def __init__(self, extra_mapping: dict[int, type] | None = None) -> None:
-        self._mapping: dict[int, type] = {}
+    def __init__(self, extra_mapping: dict[int, type[Any]] | None = None) -> None:
+        self._mapping: dict[int, type[Any]] = {}
         if extra_mapping:
             self._mapping.update(extra_mapping)
 
@@ -418,6 +419,22 @@ def _finish_send_file(resp: Response, strip_etag: bool) -> Response:
     return resp
 
 
+def _range_negotiable_request() -> Any:
+    """Return the request a file helper may negotiate a `Range` against, if any.
+
+    `None` while an exception handler runs. These helpers serve the file the
+    current request asked for, which is what makes opting into range handling
+    right for them - but an error handler reaching for one is serving a stand-in
+    for a representation it could not produce, and a `Range` applies only to the
+    target resource's own representation (RFC 9110 Sec. 14.2). Without this a
+    client resuming a download of a URL that 404s received the error page sliced
+    to its byte offsets, or a bare `416` with the handler's body discarded.
+    """
+    if _serving_error_page_var.get():
+        return None
+    return _current_request_var.get()
+
+
 def send_file(
     path_or_file: Any,
     mimetype: str | None = None,
@@ -451,6 +468,11 @@ def send_file(
         filename=attachment_name,
         content_type=mimetype,
         headers=headers,
+        # This helper serves the file the current request asked for, so it is
+        # one of the callers that opts into `Range` handling. A hand-built
+        # `FileResponse` does not, because it may be standing in for something
+        # else entirely - an error page, most of all.
+        request=_range_negotiable_request(),
     )
     return _finish_send_file(resp, strip_etag)
 
@@ -479,6 +501,7 @@ async def async_send_file(
         filename=attachment_name,
         content_type=mimetype,
         headers=headers,
+        request=_range_negotiable_request(),
     )
     return _finish_send_file(resp, strip_etag)
 
@@ -678,6 +701,7 @@ def send_from_directory(
         path=resolved,
         filename=attachment_name,
         content_type=mimetype,
+        request=_range_negotiable_request(),
     )
 
 
@@ -702,6 +726,7 @@ async def send_from_directory_async(
         path=resolved,
         filename=attachment_name,
         content_type=mimetype,
+        request=_range_negotiable_request(),
     )
 
 

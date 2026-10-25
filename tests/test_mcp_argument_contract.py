@@ -13,11 +13,14 @@ undeclared names would reject calls that legitimately work.
 
 from __future__ import annotations
 
+import asyncio
+from typing import Annotated, Any
+
 import orjson
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from veloce import Depends, Query, Veloce
+from veloce import Body, Depends, Query, TestClient, Veloce
 from veloce.contrib.mcp.registry import build_registry
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.session import MCPSession
@@ -406,6 +409,23 @@ def _array_app() -> Veloce:
     async def nullable_members(items: list[str | None]) -> dict:
         return {"items": items}
 
+    @app.mcp_tool(description="Take a bounded list whose members may be null")
+    async def bounded_nullable_members(
+        items: Annotated[list[int | None], Field(min_length=1, ge=0)],
+    ) -> dict:
+        return {"items": items}
+
+    @app.mcp_tool(description="Take an explicitly marked bounded nullable list")
+    async def marked_nullable_members(
+        items: Annotated[list[int | None], Query(ge=0)],
+    ) -> dict:
+        return {"items": items}
+
+    @app.mcp_tool(description="Take a marked list carrying no bounds")
+    @app.get("/unbounded")
+    async def unbounded_marked(ids: list[int] = Query(default_factory=list)) -> dict:
+        return {"ids": ids, "types": [type(v).__name__ for v in ids]}
+
     return app
 
 
@@ -466,6 +486,50 @@ async def test_a_null_member_is_accepted_when_the_inner_type_is_nullable():
 async def test_a_nullable_member_list_still_refuses_a_wrong_type():
     failed, _ = await _call(_array_server(), "nullable_members", {"items": [42]})
     assert failed
+
+
+async def test_a_bound_does_not_make_a_nullable_member_refused():
+    """A `Field` bounds the list; it does not withdraw the declared null member.
+
+    The bounds ran against the raw values rather than the coerced ones, which
+    re-read each member against the still-optional inner type and refused the
+    null this signature declares.
+    """
+    failed, message = await _call(
+        _array_server(), "bounded_nullable_members", {"items": [1, None, 3]}
+    )
+    assert not failed, message
+    assert orjson.loads(message)["items"] == [1, None, 3]
+
+
+async def test_a_bounded_nullable_member_list_still_enforces_the_item_count():
+    failed, message = await _call(_array_server(), "bounded_nullable_members", {"items": []})
+    assert failed
+    assert "at least 1 items" in message
+
+
+async def test_a_bounded_nullable_member_list_still_enforces_the_member_bound():
+    failed, message = await _call(_array_server(), "bounded_nullable_members", {"items": [-1]})
+    assert failed
+    assert ">= 0" in message
+
+
+async def test_an_explicit_marker_bounds_a_nullable_member_list_the_same_way():
+    """The two spellings of a bounded list must accept the same values.
+
+    The explicit marker coerced each member against the declared member type
+    without unwrapping it, so `list[int | None]` refused the null that the
+    folded `Field` spelling of the same signature accepted.
+    """
+    failed, message = await _call(_array_server(), "marked_nullable_members", {"items": [1, None]})
+    assert not failed, message
+    assert orjson.loads(message)["items"] == [1, None]
+
+
+async def test_an_explicit_marker_on_a_nullable_member_list_still_bounds_members():
+    failed, message = await _call(_array_server(), "marked_nullable_members", {"items": [-1]})
+    assert failed
+    assert ">= 0" in message
 
 
 async def test_an_optional_array_accepts_an_explicit_null():
@@ -619,3 +683,259 @@ async def test_a_real_boolean_is_accepted_by_both_doors(value):
 async def test_a_tool_with_no_dependency_inputs_is_unaffected():
     server = MCPServer(_both_doors_app())
     assert await _call_flag(server, "top", True) is True
+
+
+# ── A marker carrying no bounds is still a declared element type ─────
+#
+# Element coercion was reached only when the marker also carried `minItems` /
+# `maxItems` / an element bound, because the bound was what the branch was
+# written for. A marker declaring nothing but `list[int]` fell through to
+# `marker.validate`, whose guards skip a list, so the handler was handed the
+# raw JSON members - `["1", "2"]` for a declared `list[int]`. The declared type
+# is the contract whether or not a bound accompanies it.
+
+
+async def test_an_unbounded_marked_list_coerces_its_members():
+    is_error, text = await _call(_array_server(), "unbounded_marked", {"ids": ["1", "2"]})
+    assert not is_error, text
+    assert orjson.loads(text) == {"ids": [1, 2], "types": ["int", "int"]}
+
+
+async def test_an_unbounded_marked_list_refuses_a_member_of_the_wrong_type():
+    """The negative: coercing must not mean accepting anything."""
+    is_error, text = await _call(_array_server(), "unbounded_marked", {"ids": ["abc"]})
+    assert is_error
+    assert "ids" in text
+
+
+async def test_a_bounded_marked_list_still_coerces_its_members():
+    """The case that already worked, so the shared path keeps working."""
+    is_error, text = await _call(_array_server(), "marked_nullable_members", {"items": ["1", None]})
+    assert not is_error, text
+    assert orjson.loads(text) == {"items": [1, None]}
+
+
+def test_both_doors_agree_on_an_unbounded_marked_list():
+    """The invariant the divergence broke: one handler, two doors, one answer.
+
+    Sync so the test client owns the loop it drives the HTTP door on; the MCP
+    call is run on its own.
+    """
+    app = _array_app()
+    is_error, text = asyncio.run(_call(MCPServer(app), "unbounded_marked", {"ids": ["1", "2"]}))
+    assert not is_error, text
+    over_mcp = orjson.loads(text)
+    with TestClient(app) as client:
+        over_http = client.get("/unbounded?ids=1&ids=2").json()
+    assert over_mcp == over_http
+
+
+async def test_a_body_list_bound_names_body_not_query_in_its_error():
+    """The agent reads the location: an MCP call has no query string to name.
+
+    Both the list-bound and the scalar-bound reports on this door were rooted
+    at `"query"` for every marker kind, so a `Body(...)` violation pointed the
+    model at a source it had never sent.
+    """
+    app = Veloce(title="LocProbe", openapi_url=None)
+
+    @app.mcp_tool(description="Take a bounded body list")
+    @app.post("/bulk")
+    async def bulk(payload: list[int] = Body(max_length=2)) -> dict:
+        return {"n": len(payload)}
+
+    is_error, text = await _call(MCPServer(app), "bulk", {"payload": [1, 2, 3]})
+    assert is_error
+    # The rendered text names the parameter rather than the loc root, so the
+    # assertion is that no wrong source is named - which is what the agent
+    # would otherwise be sent chasing.
+    assert "query" not in text
+    assert "payload" in text
+
+
+# ── the agent door reads the same declared shapes ────────────────────
+
+
+async def test_a_fixed_shape_tuple_argument_is_coerced_per_position():
+    """Holding every member to the first type argument refused the second."""
+    app = Veloce(title="ShapeProbe", openapi_url=None)
+
+    @app.mcp_tool(description="Take a pair")
+    async def pair(payload: tuple[int, str]) -> dict:
+        return {"payload": list(payload), "types": [type(v).__name__ for v in payload]}
+
+    is_error, text = await _call(MCPServer(app), "pair", {"payload": [1, "a"]})
+    assert not is_error, text
+    assert orjson.loads(text) == {"payload": [1, "a"], "types": ["int", "str"]}
+
+
+async def test_a_fixed_shape_tuple_argument_still_refuses_a_wrong_position():
+    app = Veloce(title="ShapeProbe2", openapi_url=None)
+
+    @app.mcp_tool(description="Take a pair")
+    async def pair(payload: tuple[int, str] = Query()) -> dict:
+        return {"payload": list(payload)}
+
+    is_error, _text = await _call(MCPServer(app), "pair", {"payload": ["a", "b"]})
+    assert is_error
+
+
+async def test_a_fixed_shape_tuple_argument_refuses_the_wrong_length():
+    app = Veloce(title="ShapeProbe3", openapi_url=None)
+
+    @app.mcp_tool(description="Take a pair")
+    async def pair(payload: tuple[int, str] = Query()) -> dict:
+        return {"payload": list(payload)}
+
+    is_error, text = await _call(MCPServer(app), "pair", {"payload": [1]})
+    assert is_error
+    assert "2" in text
+
+
+async def test_an_any_typed_list_argument_accepts_a_null_member():
+    """`Any` declares nothing to check, `None` included.
+
+    Making member coercion unconditional reached `list[Any]`, whose members had
+    no declared type to coerce onto - and a null was refused as "expected a Any".
+    """
+    app = Veloce(title="AnyProbe", openapi_url=None)
+
+    @app.mcp_tool(description="Take anything")
+    async def anything(vals: list[Any] = Query()) -> dict:
+        return {"vals": vals}
+
+    is_error, text = await _call(MCPServer(app), "anything", {"vals": [1, None, "x"]})
+    assert not is_error, text
+    assert orjson.loads(text) == {"vals": [1, None, "x"]}
+
+
+async def test_an_any_typed_list_argument_still_requires_an_array():
+    """The negative: `Any` members do not make the container itself optional."""
+    app = Veloce(title="AnyProbe2", openapi_url=None)
+
+    @app.mcp_tool(description="Take anything")
+    async def anything(vals: list[Any] = Query()) -> dict:
+        return {"vals": vals}
+
+    is_error, _text = await _call(MCPServer(app), "anything", {"vals": "not-an-array"})
+    assert is_error
+
+
+# ── a member that is itself a sequence ───────────────────────────────
+#
+# A nested member has its own members and its own container. Falling through to
+# the scalar branch handed the handler the raw list the decoder produced, so a
+# declared tuple member arrived mutable - and a `set` built from those lists
+# then raised the interpreter's own "unhashable type", which reached the agent
+# as a server fault where the HTTP door answers a validation error.
+
+
+async def test_a_nested_tuple_member_arrives_as_a_tuple():
+    app = Veloce(title="NestProbe", openapi_url=None)
+
+    @app.mcp_tool(description="pairs")
+    async def pairs(payload: list[tuple[int, int]] = Query()) -> dict:
+        return {"types": [type(item).__name__ for item in payload]}
+
+    is_error, text = await _call(MCPServer(app), "pairs", {"payload": [[1, 2]]})
+    assert not is_error, text
+    assert orjson.loads(text) == {"types": ["tuple"]}
+
+
+async def test_a_nested_member_of_the_wrong_shape_is_refused():
+    app = Veloce(title="NestProbe2", openapi_url=None)
+
+    @app.mcp_tool(description="pairs")
+    async def pairs(payload: list[tuple[int, int]] = Query()) -> dict:
+        return {"n": len(payload)}
+
+    is_error, _text = await _call(MCPServer(app), "pairs", {"payload": [[1, 2], 2]})
+    assert is_error
+
+
+async def test_a_set_of_hashable_nested_members_is_built():
+    app = Veloce(title="NestProbe3", openapi_url=None)
+
+    @app.mcp_tool(description="pairset")
+    async def pairset(payload: set[tuple[int, int]] = Query()) -> dict:
+        return {"n": len(payload)}
+
+    is_error, text = await _call(MCPServer(app), "pairset", {"payload": [[1, 2], [1, 2]]})
+    assert not is_error, text
+    assert orjson.loads(text) == {"n": 1}
+
+
+async def test_a_set_of_unhashable_members_is_a_validation_error():
+    """Not the interpreter's own text, and not a server fault."""
+    app = Veloce(title="NestProbe4", openapi_url=None)
+
+    @app.mcp_tool(description="dictset")
+    async def dictset(payload: set[dict] = Query()) -> dict:
+        return {"n": len(payload)}
+
+    is_error, text = await _call(MCPServer(app), "dictset", {"payload": [{"a": 1}]})
+    assert is_error
+    assert "unhashable" not in text
+    assert "payload" in text
+
+
+# ── a set's bounds are read after its duplicates are dropped ─────────
+
+
+async def test_a_set_bound_is_read_after_deduplication():
+    """The HTTP door bounds the set; this door bounded the list it came from.
+
+    `min_length=2` then admitted `["a", "a"]` as a one-member set, below the
+    minimum it published, and `max_length` refused what HTTP accepted.
+    """
+    app = Veloce(title="BoundProbe", openapi_url=None)
+
+    @app.mcp_tool(description="bounded")
+    async def bounded(payload: set[str] = Query(min_length=2)) -> dict:
+        return {"n": len(payload)}
+
+    is_error, text = await _call(MCPServer(app), "bounded", {"payload": ["a", "a"]})
+    assert is_error
+    assert "at least 2" in text
+
+
+async def test_a_set_within_its_bound_after_deduplication_is_accepted():
+    app = Veloce(title="BoundProbe2", openapi_url=None)
+
+    @app.mcp_tool(description="bounded")
+    async def bounded(payload: set[str] = Query(max_length=2)) -> dict:
+        return {"n": len(payload)}
+
+    is_error, text = await _call(MCPServer(app), "bounded", {"payload": ["a", "a", "b"]})
+    assert not is_error, text
+    assert orjson.loads(text) == {"n": 2}
+
+
+# ── a union member that includes null ────────────────────────────────
+
+
+async def test_a_null_member_of_a_wide_union_is_accepted():
+    """`_unwrap_optional` reads `T | None`; a wider union carries its `None`
+    as one member among several, and reading only the narrow form refused a
+    null the signature allows."""
+    app = Veloce(title="UnionProbe", openapi_url=None)
+
+    @app.mcp_tool(description="wide")
+    async def wide(vals: list[int | str | None] = Query()) -> dict:
+        return {"vals": vals}
+
+    is_error, text = await _call(MCPServer(app), "wide", {"vals": [1, "a", None]})
+    assert not is_error, text
+    assert orjson.loads(text) == {"vals": [1, "a", None]}
+
+
+async def test_a_wide_union_still_refuses_a_member_it_does_not_name():
+    app = Veloce(title="UnionProbe2", openapi_url=None)
+
+    @app.mcp_tool(description="wide")
+    async def wide(vals: list[int | str | None] = Query()) -> dict:
+        return {"vals": vals}
+
+    is_error, text = await _call(MCPServer(app), "wide", {"vals": [{}]})
+    assert is_error
+    assert "Union" not in text

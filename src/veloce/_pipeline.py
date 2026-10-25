@@ -117,10 +117,10 @@ class CompiledPipeline:
     # ASGI-wrap slot may hold several specs' lists, so it stays `object` and is
     # normalised by `flatten_asgi_wrap`. The flags are precomputed booleans.
     gen: int
-    http_pre: tuple[Callable, ...] | None
-    http_post: tuple[Callable, ...] | None
-    http_around: tuple[Callable, ...] | None
-    http_finish: tuple[Callable, ...] | None
+    http_pre: tuple[Callable[..., Any], ...] | None
+    http_post: tuple[Callable[..., Any], ...] | None
+    http_around: tuple[Callable[..., Any], ...] | None
+    http_finish: tuple[Callable[..., Any], ...] | None
     ws_handshake: WsHandshakeChecks | None
     asgi_wrap: object
     has_mounted_apps: bool
@@ -246,7 +246,7 @@ def _implements(mw: Any, hook: str) -> bool:
     return getattr(type(mw), hook, None) is not getattr(Middleware, hook)
 
 
-def build_response_middleware(app: Veloce) -> tuple[Callable, ...]:
+def build_response_middleware(app: Veloce) -> tuple[Callable[..., Any], ...]:
     """Build the response-phase chain: `process_response` bound methods, reversed.
 
     The reverse of registration order is computed ONCE here at compile time, so
@@ -261,7 +261,7 @@ def build_response_middleware(app: Veloce) -> tuple[Callable, ...]:
     )
 
 
-def build_request_middleware(app: Veloce) -> tuple[Callable, ...]:
+def build_request_middleware(app: Veloce) -> tuple[Callable[..., Any], ...]:
     """Build the request-phase chain: `process_request` bound methods, forward.
 
     Registration order is preserved (forward) so `process_request` runs in the

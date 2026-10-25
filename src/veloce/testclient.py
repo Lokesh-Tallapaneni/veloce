@@ -20,6 +20,8 @@ import asyncio
 import contextlib
 import mimetypes
 import secrets
+import socket
+import struct
 import sys
 from collections.abc import (
     AsyncIterable,
@@ -29,6 +31,7 @@ from collections.abc import (
     Iterable,
     Iterator,
     KeysView,
+    Mapping,
     Sequence,
 )
 from typing import TYPE_CHECKING, Any
@@ -179,8 +182,10 @@ _REDIRECT_TO_GET = frozenset((HTTP_301_MOVED_PERMANENTLY, HTTP_302_FOUND, HTTP_3
 
 async def _follow_redirects(
     *,
-    build_headers: Callable[[dict[str, str] | None], dict[str, str]],
-    send_one: Callable[[str, str, str, dict[str, str], bytes, Any | None], Awaitable[TestResponse]],
+    build_headers: Callable[[_HeadersArg], list[tuple[str, str]]],
+    send_one: Callable[
+        [str, str, str, list[tuple[str, str]], bytes, Any | None], Awaitable[TestResponse]
+    ],
     update_cookies: Callable[[TestResponse], None],
     max_redirects: int,
     base_url: str,
@@ -190,7 +195,7 @@ async def _follow_redirects(
     path: str,
     query_string: str,
     body: bytes,
-    headers: dict[str, str] | None,
+    headers: _HeadersArg,
     stream: StreamBody | None,
 ) -> TestResponse:
     """Drive the request/redirect loop shared by both test clients.
@@ -279,66 +284,128 @@ def _coerce_chunk(chunk: Any) -> bytes:
     raise TypeError(f"stream chunk must be bytes or str, got {type(chunk).__name__}")
 
 
-def _build_receive(body: bytes, stream: StreamBody | None) -> Any:
-    """Build the ASGI `receive` callable shared by both test clients.
+# Event-loop turns a read past end-of-body yields before it is told the client
+# is gone. It exists to outlast a *peek*, not to wait for anything:
+# `ASGIBodySource.poll_disconnected` starts a read and cancels it after a single
+# turn, so an answer given inside that turn would tell a streaming handler its
+# client had gone. A caller that is really waiting for input survives all of
+# these and is answered in microseconds - no timer, so an in-dispatch drain
+# (a mounted ASGI sub-app, a middleware that reads to `http.disconnect`) costs
+# nothing measurable. Three rather than two leaves room for a probe that needs
+# a second step before it cancels.
+_PEEK_TURNS = 3
 
-    With no `stream`, a single `http.request` frame carries the whole `body`
-    (the historical fast path). With a `stream`, each iterator chunk becomes a
-    `more_body: True` frame, followed by a terminal empty `more_body: False`
-    frame; reads past end-of-body return `http.disconnect`.
+
+class _ClientChannel:
+    """The ASGI `receive` channel both test clients hand the app.
+
+    With no `stream`, a single `http.request` frame carries the whole body (the
+    historical fast path). With a `stream`, each iterator chunk becomes a
+    `more_body: True` frame followed by a terminal empty `more_body: False` one.
+
+    A read past end-of-body is answered `http.disconnect` - there is no more
+    input, and this client has no socket, so nothing else can ever arrive - but
+    not within the turn a *peek* lasts. `request.is_disconnected()` cannot tell
+    a harness saying "no more input" from a server saying "the peer is gone", so
+    answering its one-turn poll aborted every streaming handler on its first
+    iteration and an SSE route emitted nothing under this client. Yielding
+    `_PEEK_TURNS` first separates the two callers by what they do rather than by
+    what they ask: a peek is gone by then, a real read is answered at once.
+
+    Once the exchange is finished the answer is immediate, with no yielding: the
+    response is complete, which is where a server does report the disconnect, and
+    a handler's own request object polled afterwards should see it.
     """
-    if stream is None:
-        body_sent = False
 
-        async def receive() -> dict[str, Any]:
-            nonlocal body_sent
-            if body_sent:
-                # ASGI middleware that legitimately reads past end-of-body
-                # (introspection, fan-out, replay) should see a clean
-                # `http.disconnect` rather than hang forever on a never-set
-                # Event.
-                return {"type": ASGI_EVENT_HTTP_DISCONNECT}
-            body_sent = True
-            return {"type": ASGI_EVENT_HTTP_REQUEST, "body": body, "more_body": False}
+    __slots__ = ("_body", "_chunks", "_body_sent", "_exhausted", "_finished")
 
-        return receive
+    def __init__(self, body: bytes, stream: StreamBody | None) -> None:
+        self._body = body
+        self._chunks = None if stream is None else _aiter_body_chunks(stream)
+        self._body_sent = False
+        self._exhausted = False
+        self._finished = asyncio.Event()
 
-    chunks = _aiter_body_chunks(stream)
-    exhausted = False
-    disconnected = False
+    def exchange_finished(self) -> None:
+        """Record that the response is complete, so a later read answers at once."""
+        self._finished.set()
 
-    async def stream_receive() -> dict[str, Any]:
-        nonlocal exhausted, disconnected
-        if disconnected:
-            return {"type": ASGI_EVENT_HTTP_DISCONNECT}
-        if exhausted:
-            disconnected = True
-            return {"type": ASGI_EVENT_HTTP_DISCONNECT}
-        try:
-            chunk = await chunks.__anext__()
-        except StopAsyncIteration:
-            exhausted = True
-            return {"type": ASGI_EVENT_HTTP_REQUEST, "body": b"", "more_body": False}
-        return {"type": ASGI_EVENT_HTTP_REQUEST, "body": chunk, "more_body": True}
+    async def __call__(self) -> dict[str, Any]:
+        chunks = self._chunks
+        if chunks is None:
+            if not self._body_sent:
+                self._body_sent = True
+                return {"type": ASGI_EVENT_HTTP_REQUEST, "body": self._body, "more_body": False}
+        elif not self._exhausted:
+            try:
+                chunk = await chunks.__anext__()
+            except StopAsyncIteration:
+                self._exhausted = True
+                return {"type": ASGI_EVENT_HTTP_REQUEST, "body": b"", "more_body": False}
+            return {"type": ASGI_EVENT_HTTP_REQUEST, "body": chunk, "more_body": True}
+        for _ in range(_PEEK_TURNS):
+            if self._finished.is_set():
+                break
+            await asyncio.sleep(0)
+        return {"type": ASGI_EVENT_HTTP_DISCONNECT}
 
-    return stream_receive
+
+#: What a caller may pass as `headers=`: a mapping, or ordered pairs when a
+#: header has to appear more than once. Private: callers pass the value, not
+#: the name of its type.
+_HeadersArg = Mapping[str, str] | Sequence[tuple[str, str]] | None
+
+
+def _header_pairs(headers: _HeadersArg) -> list[tuple[str, str]]:
+    """Normalise a headers argument to ordered `(name, value)` pairs.
+
+    A mapping cannot carry a header twice, and HTTP allows it - two
+    `Authorization` headers, several `X-Forwarded-For` hops. Collapsing a
+    sequence of pairs into a dict here left no way to send that through this
+    client, so behaviour that depends on it could only be tested by building an
+    ASGI scope by hand.
+    """
+    if headers is None:
+        return []
+    if isinstance(headers, Mapping):
+        return list(headers.items())
+    return [(name, value) for name, value in headers]
+
+
+def _has_header(pairs: list[tuple[str, str]], name: str) -> bool:
+    """True when `name` is already present, whatever its case."""
+    lowered = name.lower()
+    return any(key.lower() == lowered for key, _ in pairs)
+
+
+def _set_header(pairs: list[tuple[str, str]], name: str, value: str) -> None:
+    """Replace every occurrence of `name` with one pair carrying `value`."""
+    lowered = name.lower()
+    pairs[:] = [(key, existing) for key, existing in pairs if key.lower() != lowered]
+    pairs.append((name, value))
 
 
 def _build_request_headers(
     base: dict[str, str],
     cookies: dict[str, str],
-    extra: dict[str, str] | None,
-) -> dict[str, str]:
-    """Merge base headers, the cookie jar and per-call `extra` into one dict.
+    extra: _HeadersArg,
+) -> list[tuple[str, str]]:
+    """Merge base headers, the cookie jar and per-call `extra` into ordered pairs.
 
     The single home for the merge order, so the sync and async test clients
     stay in lockstep.
     """
-    merged = dict(base)
-    if cookies:
-        merged["cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items())
-    if extra:
-        merged.update(extra)
+    extra_pairs = _header_pairs(extra)
+    # A per-call header replaces a client-level one of the same name, and so
+    # does a per-call `cookie` replace the jar - but repeats within the call are
+    # all kept, which is the reason pairs are accepted at all. Dropping the
+    # overridden names first, rather than overwriting as each pair arrives,
+    # is what lets two of one name both survive.
+    overridden = {name.lower() for name, _ in extra_pairs}
+    merged = [(name, value) for name, value in base.items() if name.lower() not in overridden]
+    if cookies and "cookie" not in overridden:
+        merged.append(("cookie", "; ".join(f"{k}={v}" for k, v in cookies.items())))
+    merged.extend(extra_pairs)
     return merged
 
 
@@ -480,7 +547,7 @@ async def _send_one_request(
     method: str,
     path: str,
     query_string: str,
-    headers: dict[str, str],
+    headers: list[tuple[str, str]],
     body: bytes,
     stream: StreamBody | None = None,
 ) -> TestResponse:
@@ -490,8 +557,7 @@ async def _send_one_request(
     reach one and miss the other.
     """
     scope = _build_scope(method, path, query_string, headers)
-    receive = _build_receive(body, stream)
-    return await _collect_response(app, scope, receive)
+    return await _collect_response(app, scope, _ClientChannel(body, stream))
 
 
 def _prepare_body_request(
@@ -499,9 +565,9 @@ def _prepare_body_request(
     data: dict[str, str] | None,
     content: bytes | None,
     files: dict[str, Any] | None,
-    headers: dict[str, str] | None,
+    headers: _HeadersArg,
     stream: StreamBody | None,
-) -> tuple[dict[str, str], bytes | None]:
+) -> tuple[list[tuple[str, str]], bytes | None]:
     """Return `(headers, body)` for a body-carrying request.
 
     `body` is `None` when `stream` was given, which excludes every buffered
@@ -513,7 +579,7 @@ def _prepare_body_request(
         assert json is None and data is None and content is None and files is None, (
             "stream cannot be combined with json/data/content/files"
         )
-        return dict(headers or {}), None
+        return _header_pairs(headers), None
     body, hdrs = _assemble_body(json, data, content, files, headers)
     return hdrs, body
 
@@ -523,24 +589,26 @@ def _assemble_body(
     data: dict[str, str] | None,
     content: bytes | None,
     files: dict[str, Any] | None,
-    headers: dict[str, str] | None,
-) -> tuple[bytes, dict[str, str]]:
+    headers: _HeadersArg,
+) -> tuple[bytes, list[tuple[str, str]]]:
     """Encode one buffered request body and the content type it implies.
 
     Shared by both clients so the sync and async paths cannot drift on which
     argument wins or on the media type each form sets.
     """
-    hdrs = dict(headers or {})
+    hdrs = _header_pairs(headers)
     body = b""
     if files is not None:
         body, ct = _encode_multipart(files, data or {})
-        hdrs[HEADER_CONTENT_TYPE] = ct
+        _set_header(hdrs, HEADER_CONTENT_TYPE, ct)
     elif json is not None:
         body = orjson.dumps(json)
-        hdrs.setdefault(HEADER_CONTENT_TYPE, MIME_JSON)
+        if not _has_header(hdrs, HEADER_CONTENT_TYPE):
+            hdrs.append((HEADER_CONTENT_TYPE, MIME_JSON))
     elif data is not None:
         body = urlencode(data).encode()
-        hdrs.setdefault(HEADER_CONTENT_TYPE, MIME_FORM_URLENCODED)
+        if not _has_header(hdrs, HEADER_CONTENT_TYPE):
+            hdrs.append((HEADER_CONTENT_TYPE, MIME_FORM_URLENCODED))
     elif content is not None:
         body = content
     return body, hdrs
@@ -550,7 +618,7 @@ def _build_scope(
     method: str,
     path: str,
     query_string: str,
-    headers: dict[str, str],
+    headers: list[tuple[str, str]],
     client: tuple[str, int] = ("testclient", 50000),
     server: tuple[str, int] = ("testserver", 80),
     scheme: str = URL_SCHEME_HTTP,
@@ -559,7 +627,7 @@ def _build_scope(
     """Build an ASGI 3.0 HTTP scope. Header values are encoded latin-1 per spec."""
     raw_headers: list[tuple[bytes, bytes]] = []
     seen_host = False
-    for k, v in headers.items():
+    for k, v in headers:
         if k.lower() == "host":
             seen_host = True
         raw_headers.append((k.lower().encode("latin-1"), v.encode("latin-1")))
@@ -590,7 +658,9 @@ def _build_scope(
     }
 
 
-async def _collect_response(app: Any, scope: dict[str, Any], receive: Any) -> TestResponse:
+async def _collect_response(
+    app: Any, scope: dict[str, Any], receive: _ClientChannel
+) -> TestResponse:
     """Drive one ASGI request/response cycle and assemble a `TestResponse`.
 
     Shared by the sync and async clients' `_send_one_request` so the `send`
@@ -611,10 +681,54 @@ async def _collect_response(app: Any, scope: dict[str, Any], receive: Any) -> Te
             chunk = message.get("body", b"")
             if chunk:
                 body_chunks.append(chunk)
-            # `more_body` False signals end of response.
+            if not message.get("more_body", False):
+                # End of response: where a server starts reporting
+                # `http.disconnect`, so from here a read past end-of-body is
+                # answered without yielding and a poll of this request sees it.
+                receive.exchange_finished()
 
-    await app(scope, receive, send)
+    try:
+        await app(scope, receive, send)
+    finally:
+        # An app that raised, or ended without a terminal body message, never
+        # reached the branch above; the exchange is over either way.
+        receive.exchange_finished()
     return TestResponse(status_code, b"".join(body_chunks), raw_headers)
+
+
+#: `SO_LINGER` with `onoff=1, linger=0` - close sends RST instead of FIN, so the
+#: socket skips `TIME_WAIT` and its port is immediately reusable. Windows lays
+#: `linger` out as two `u_short` and POSIX as two `int`; packing the platform's
+#: own width keeps it correct rather than correct-by-byte-order.
+_ABORTIVE_CLOSE = struct.pack("HH" if sys.platform == "win32" else "ii", 1, 0)
+
+
+def _abort_self_pipe_on_close(loop: asyncio.AbstractEventLoop) -> None:
+    """Make the selector loop's wakeup pipe release its port on close.
+
+    The pipe is a loopback TCP socketpair, and a normal close leaves one end in
+    `TIME_WAIT` for minutes - one ephemeral port per client, against a dynamic
+    range only 16384 wide. The pipe carries wakeup bytes that nothing reads at
+    shutdown, so an abortive close loses nothing.
+
+    This covers the loops `_new_loop` builds and nothing else. A loop created
+    elsewhere - `pytest-asyncio`'s own, for one - makes its wakeup pipe the
+    same way and is not reached from here, so this reduces the rate at which
+    the range is consumed rather than removing the failure: a host whose
+    ephemeral pool is already saturated still refuses `bind(("127.0.0.1", 0))`
+    for every socket, and no cleanup on this side recovers it.
+
+    `_ssock` / `_csock` are CPython internals: a version that renames them gets
+    today's behaviour back rather than an exception.
+    """
+    for name in ("_ssock", "_csock"):
+        sock = getattr(loop, name, None)
+        if sock is not None:
+            # Best effort, like the attribute reads above: a socket family that
+            # refuses `SO_LINGER` - or a local policy that does - must not turn
+            # a port optimisation into a failure of every test on the platform.
+            with contextlib.suppress(OSError):
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, _ABORTIVE_CLOSE)
 
 
 def _new_loop() -> asyncio.AbstractEventLoop:
@@ -623,7 +737,11 @@ def _new_loop() -> asyncio.AbstractEventLoop:
     On Windows the default is the proactor loop, whose every iteration goes
     through an I/O completion port. The in-memory client opens no socket and
     spawns no process, so that machinery runs on each request and finds nothing
-    to do; the selector loop does the same work materially cheaper.
+    to do; the selector loop does the same work materially cheaper - measured at
+    15.5% more requests per second for this client.
+
+    What it costs is a socketpair for its wakeup pipe, whose port
+    `_abort_self_pipe_on_close` hands straight back.
 
     The one thing it cannot do is `asyncio.create_subprocess_*`, which on
     Windows requires the proactor loop. A test whose handler spawns a
@@ -631,7 +749,9 @@ def _new_loop() -> asyncio.AbstractEventLoop:
     loop=asyncio.ProactorEventLoop())`.
     """
     if sys.platform == "win32":
-        return asyncio.SelectorEventLoop()
+        loop = asyncio.SelectorEventLoop()
+        _abort_self_pipe_on_close(loop)
+        return loop
     return asyncio.new_event_loop()
 
 
@@ -875,7 +995,7 @@ class TestClient:
 
     # ── Header / cookie plumbing ──────────────────────────
 
-    def _build_headers(self, extra: dict[str, str] | None) -> dict[str, str]:
+    def _build_headers(self, extra: _HeadersArg) -> list[tuple[str, str]]:
         return _build_request_headers(self._base_headers, self._cookies, extra)
 
     def _update_cookies(self, response: TestResponse) -> None:
@@ -889,7 +1009,7 @@ class TestClient:
         method: str,
         path: str,
         query_string: str,
-        headers: dict[str, str],
+        headers: list[tuple[str, str]],
         body: bytes,
         stream: StreamBody | None = None,
     ) -> TestResponse:
@@ -899,7 +1019,7 @@ class TestClient:
         self,
         method: str,
         path: str,
-        headers: dict[str, str] | None = None,
+        headers: _HeadersArg = None,
         body: bytes = b"",
         query_string: str = "",
         follow_redirects: bool | None = None,
@@ -936,7 +1056,7 @@ class TestClient:
     def get(
         self,
         path: str,
-        headers: dict[str, str] | None = None,
+        headers: _HeadersArg = None,
         params: dict[str, str] | Sequence[tuple[str, str]] | None = None,
         follow_redirects: bool | None = None,
     ) -> TestResponse:
@@ -958,7 +1078,7 @@ class TestClient:
         data: dict[str, str] | None,
         content: bytes | None,
         files: dict[str, Any] | None,
-        headers: dict[str, str] | None,
+        headers: _HeadersArg,
         follow_redirects: bool | None,
         stream: StreamBody | None,
     ) -> TestResponse:
@@ -977,7 +1097,7 @@ class TestClient:
         path: str,
         json: Any = None,
         data: dict[str, str] | None = None,
-        headers: dict[str, str] | None = None,
+        headers: _HeadersArg = None,
         content: bytes | None = None,
         files: dict[str, Any] | None = None,
         follow_redirects: bool | None = None,
@@ -1006,7 +1126,7 @@ class TestClient:
         path: str,
         json: Any = None,
         data: dict[str, str] | None = None,
-        headers: dict[str, str] | None = None,
+        headers: _HeadersArg = None,
         content: bytes | None = None,
         files: dict[str, Any] | None = None,
         follow_redirects: bool | None = None,
@@ -1030,7 +1150,7 @@ class TestClient:
         path: str,
         json: Any = None,
         data: dict[str, str] | None = None,
-        headers: dict[str, str] | None = None,
+        headers: _HeadersArg = None,
         content: bytes | None = None,
         files: dict[str, Any] | None = None,
         follow_redirects: bool | None = None,
@@ -1052,7 +1172,7 @@ class TestClient:
     def delete(
         self,
         path: str,
-        headers: dict[str, str] | None = None,
+        headers: _HeadersArg = None,
         follow_redirects: bool | None = None,
     ) -> TestResponse:
         """Send a DELETE request and return the response."""
@@ -1063,7 +1183,7 @@ class TestClient:
     def head(
         self,
         path: str,
-        headers: dict[str, str] | None = None,
+        headers: _HeadersArg = None,
         follow_redirects: bool | None = None,
     ) -> TestResponse:
         """Send a HEAD request and return the response."""
@@ -1074,7 +1194,7 @@ class TestClient:
     def options(
         self,
         path: str,
-        headers: dict[str, str] | None = None,
+        headers: _HeadersArg = None,
         follow_redirects: bool | None = None,
     ) -> TestResponse:
         """Send an OPTIONS request and return the response."""
@@ -1088,7 +1208,7 @@ class TestClient:
         path: str,
         json: Any = None,
         data: dict[str, str] | None = None,
-        headers: dict[str, str] | None = None,
+        headers: _HeadersArg = None,
         content: bytes | None = None,
         files: dict[str, Any] | None = None,
         params: dict[str, str] | Sequence[tuple[str, str]] | None = None,
@@ -1137,7 +1257,7 @@ class TestClient:
         self,
         path: str,
         subprotocols: list[str] | None = None,
-        headers: dict[str, str] | None = None,
+        headers: _HeadersArg = None,
     ) -> _WebSocketSession:
         """Open an in-memory WebSocket against the app - context manager.
 
@@ -1211,7 +1331,7 @@ class _WebSocketSession:
         client: TestClient,
         path: str,
         subprotocols: list[str] | None,
-        headers: dict[str, str] | None,
+        headers: _HeadersArg,
     ) -> None:
         self._client = client
         self._path = path
@@ -1233,7 +1353,7 @@ class _WebSocketSession:
                     )
                 )
             seen_host = False
-            for k, v in self._headers.items():
+            for k, v in _header_pairs(self._headers):
                 if k.lower() == "host":
                     seen_host = True
                 scope_headers.append((k.lower().encode("latin-1"), v.encode("latin-1")))
@@ -1492,7 +1612,7 @@ class AsyncTestClient:
 
     # ── Header / cookie plumbing ──────────────────────────
 
-    def _build_headers(self, extra: dict[str, str] | None) -> dict[str, str]:
+    def _build_headers(self, extra: _HeadersArg) -> list[tuple[str, str]]:
         return _build_request_headers(self._base_headers, self._cookies, extra)
 
     def _update_cookies(self, response: TestResponse) -> None:
@@ -1505,7 +1625,7 @@ class AsyncTestClient:
         method: str,
         path: str,
         query_string: str,
-        headers: dict[str, str],
+        headers: list[tuple[str, str]],
         body: bytes,
         stream: StreamBody | None = None,
     ) -> TestResponse:
@@ -1515,7 +1635,7 @@ class AsyncTestClient:
         self,
         method: str,
         path: str,
-        headers: dict[str, str] | None = None,
+        headers: _HeadersArg = None,
         body: bytes = b"",
         query_string: str = "",
         follow_redirects: bool | None = None,
@@ -1557,7 +1677,7 @@ class AsyncTestClient:
     async def get(
         self,
         path: str,
-        headers: dict[str, str] | None = None,
+        headers: _HeadersArg = None,
         params: dict[str, str] | Sequence[tuple[str, str]] | None = None,
         follow_redirects: bool | None = None,
     ) -> TestResponse:
@@ -1579,7 +1699,7 @@ class AsyncTestClient:
         data: dict[str, str] | None,
         content: bytes | None,
         files: dict[str, Any] | None,
-        headers: dict[str, str] | None,
+        headers: _HeadersArg,
         follow_redirects: bool | None,
         stream: StreamBody | None,
     ) -> TestResponse:
@@ -1598,7 +1718,7 @@ class AsyncTestClient:
         path: str,
         json: Any = None,
         data: dict[str, str] | None = None,
-        headers: dict[str, str] | None = None,
+        headers: _HeadersArg = None,
         content: bytes | None = None,
         files: dict[str, Any] | None = None,
         follow_redirects: bool | None = None,
@@ -1627,7 +1747,7 @@ class AsyncTestClient:
         path: str,
         json: Any = None,
         data: dict[str, str] | None = None,
-        headers: dict[str, str] | None = None,
+        headers: _HeadersArg = None,
         content: bytes | None = None,
         files: dict[str, Any] | None = None,
         follow_redirects: bool | None = None,
@@ -1651,7 +1771,7 @@ class AsyncTestClient:
         path: str,
         json: Any = None,
         data: dict[str, str] | None = None,
-        headers: dict[str, str] | None = None,
+        headers: _HeadersArg = None,
         content: bytes | None = None,
         files: dict[str, Any] | None = None,
         follow_redirects: bool | None = None,
@@ -1673,7 +1793,7 @@ class AsyncTestClient:
     async def delete(
         self,
         path: str,
-        headers: dict[str, str] | None = None,
+        headers: _HeadersArg = None,
         follow_redirects: bool | None = None,
     ) -> TestResponse:
         """Send a DELETE request and return the response."""
@@ -1684,7 +1804,7 @@ class AsyncTestClient:
     async def head(
         self,
         path: str,
-        headers: dict[str, str] | None = None,
+        headers: _HeadersArg = None,
         follow_redirects: bool | None = None,
     ) -> TestResponse:
         """Send a HEAD request and return the response."""
@@ -1695,7 +1815,7 @@ class AsyncTestClient:
     async def options(
         self,
         path: str,
-        headers: dict[str, str] | None = None,
+        headers: _HeadersArg = None,
         follow_redirects: bool | None = None,
     ) -> TestResponse:
         """Send an OPTIONS request and return the response."""
@@ -1709,7 +1829,7 @@ class AsyncTestClient:
         path: str,
         json: Any = None,
         data: dict[str, str] | None = None,
-        headers: dict[str, str] | None = None,
+        headers: _HeadersArg = None,
         content: bytes | None = None,
         files: dict[str, Any] | None = None,
         params: dict[str, str] | Sequence[tuple[str, str]] | None = None,

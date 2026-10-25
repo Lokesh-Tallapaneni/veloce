@@ -57,7 +57,7 @@ ToolFilter = Callable[["MCPTool", Any], "bool | Awaitable[bool]"]
 class MCPTool(MCPDescriptor):
     """One registered MCP tool."""
 
-    handler: Callable
+    handler: Callable[..., Any]
     plan: HandlerPlan
     input_schema: dict[str, Any]
     # Set by a tool whose handler can produce a second message by a route the
@@ -260,7 +260,7 @@ class ToolRegistry(Registry[MCPTool]):
 
 
 def _output_schema_for(
-    handler: Callable, route_info: Any, schemas_registry: dict[str, dict[str, Any]]
+    handler: Callable[..., Any], route_info: Any, schemas_registry: dict[str, dict[str, Any]]
 ) -> tuple[dict[str, Any] | None, Any]:
     """Build the tool's MCP output schema and the model it was derived from.
 
@@ -313,7 +313,7 @@ def _tool_name_from_route_name(route_name: str) -> str:
 
 def _register_explicit_tool(
     registry: ToolRegistry,
-    handler: Callable,
+    handler: Callable[..., Any],
     *,
     name: str | None,
     description: str | None,
@@ -370,7 +370,11 @@ def _tool_from_route(
     """
     tool_name = _tool_name_from_route_name(info.name)
     desc = require_mcp_description(tool_name, info.mcp_description)
-    plan = info.handler_plan if info.handler_plan is not None else build_plan(info.handler)
+    plan = (
+        info.handler_plan
+        if info.handler_plan is not None
+        else build_plan(info.handler, path_params=frozenset(info.param_names))
+    )
     dependency_inputs: dict[str, Any] = {}
     schema = build_input_schema(
         plan, schemas_registry, info.path_template, dependency_inputs=dependency_inputs

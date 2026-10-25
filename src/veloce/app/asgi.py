@@ -33,7 +33,6 @@ from veloce._internal import (
     _encode_header_value,
     _extract_host,
     _reject_header_crlf,
-    dumps_for,
 )
 from veloce._pipeline import (
     CompiledPipeline,
@@ -67,6 +66,7 @@ from veloce._protocol_constants import (
 from veloce.app._host import AppHost
 from veloce.dependency import DependencyResolver
 from veloce.exceptions import (
+    BadRequest,
     RequestValidationError,
     WebSocketException,
     WebSocketRequestValidationError,
@@ -75,7 +75,6 @@ from veloce.helpers import g
 from veloce.http._body import ASGIBodySource
 from veloce.http.request import Request
 from veloce.http.response import (
-    JSONResponse,
     Response,
     advertised_length,
 )
@@ -232,10 +231,61 @@ def _build_asgi_headers(headers: Any) -> tuple[list[tuple[bytes, bytes]], bool, 
     return asgi_headers, has_ct, has_cl
 
 
+async def _emit_stream(send: Callable[..., Any], response: Response, method: str | None) -> None:
+    """Write a streamed response over ASGI: headers, chunks, terminal frame.
+
+    The one writer for both streaming paths - the hot one in `_asgi_app` and
+    the cold reject one in `_emit_response`. They were written out separately
+    and diverged three times: a streamed `204` once shipped its chunks, which a
+    client on a keep-alive connection read as the start of the next response,
+    and the hot copy discarded `has_ct` and appended the framework
+    `Content-Type` on top of one the response already carried, so a `text/csv`
+    download arrived as `application/octet-stream`.
+
+    No `Content-Length` is added - the server frames the chunks - but one the
+    response already set is kept, so a file whose size is known from its stat
+    stays length-delimited rather than silently becoming chunked.
+
+    Header values are CRLF-validated by `_build_asgi_headers`: this path
+    bypasses `Response.encode()`, so the splitting guard has to be applied
+    here too. Built-in content types hit the cache.
+    """
+    if response.headers:
+        headers, has_ct, _ = _build_asgi_headers(response.headers)
+    else:
+        headers, has_ct = [], False
+    # A bodiless status carries no payload and no default content-type
+    # (RFC 9110 Sec. 15.3.5 / 15.3.6 / 15.4.5).
+    allowed = status.status_permits_body(response.status_code)
+    if allowed and not has_ct:
+        # ASGI does not mandate header order, so append (O(1)) rather than
+        # insert at the front (O(n) list shift).
+        headers.append((RAW_HEADER_CONTENT_TYPE, _content_type_bytes(response.content_type)))
+    await send(
+        {
+            "type": ASGI_EVENT_HTTP_RESPONSE_START,
+            "status": response.status_code,
+            "headers": headers,
+        }
+    )
+    # A `HEAD` response carries the headers its `GET` would and no body
+    # (RFC 9110 Sec. 9.3.2).
+    if allowed and method != HTTP_METHOD_HEAD:
+        async for chunk in response._stream:
+            await send(
+                {
+                    "type": ASGI_EVENT_HTTP_RESPONSE_BODY,
+                    "body": chunk.encode("utf-8") if isinstance(chunk, str) else chunk,
+                    "more_body": True,
+                }
+            )
+    await send({"type": ASGI_EVENT_HTTP_RESPONSE_BODY, "body": b"", "more_body": False})
+
+
 async def _refuse_websocket(
-    receive: Callable,
-    send: Callable,
-    scope: dict | None = None,
+    receive: Callable[..., Any],
+    send: Callable[..., Any],
+    scope: dict[str, Any] | None = None,
     status_code: int | None = None,
 ) -> None:
     """Refuse an ASGI WebSocket handshake per the spec.
@@ -274,6 +324,31 @@ class AsgiMixin(AppHost):
 
     # ── Refusals and direct emits ───────────────────────
 
+    def _refusal_request(
+        self, method: str, path: str, query: str, raw_headers: Any, scope: Any
+    ) -> Request:
+        """Build the throwaway `Request` a pre-dispatch refusal is answered against.
+
+        Binds the app and the two contextvars as a request normally would. The
+        response phase runs against this request, so it has to look like one a
+        response middleware can work with: without them, any `process_response`
+        calling `current_app` raised `RuntimeError: Working outside of
+        application context` and that escaped to the client in place of the
+        refusal.
+
+        This binds only what the *response* phase and an error handler read. The
+        request phase is still not run - refusing before reading the body is the
+        point of this path - so a middleware that caches state in
+        `process_request` will not find it here, and must fall back, as
+        `CORSMiddleware` does for the `Origin` header. An error handler reads
+        the same request, so it sees neither a matched route nor that state.
+        """
+        request = Request(method, path, query, raw_headers, b"", scope=scope)
+        request.app = self
+        _current_app_var.set(self)
+        _current_request_var.set(request)
+        return request
+
     async def _refuse_too_large(
         self,
         send: Any,
@@ -295,27 +370,32 @@ class AsgiMixin(AppHost):
         fixed and the others not, which is what happened to the native
         transport's own 413.
         """
-        # The response phase runs against this request, so it has to look like
-        # one a response middleware can work with. Without `app` and the two
-        # contextvars, any `process_response` calling `current_app` raised
-        # `RuntimeError: Working outside of application context` and that
-        # escaped to the client in place of the 413.
-        #
-        # This binds only what the *response* phase reads. The request phase is
-        # still not run - refusing before reading the body is the point of this
-        # path - so a middleware that caches state in `process_request` will not
-        # find it here, and must fall back, as `CORSMiddleware` does for the
-        # `Origin` header.
-        request = Request(method, path, query, raw_headers, b"", scope=scope)
-        request.app = self
-        _current_app_var.set(self)
-        _current_request_var.set(request)
+        request = self._refusal_request(method, path, query, raw_headers, scope)
         await self._emit_response(
             send,
             await self._body_too_large_response(request, cp, max_size),
+            method,
         )
 
-    async def _emit_response(self, send: Callable, response: Response) -> None:
+    async def _refuse_bad_request(
+        self, send: Any, detail: str, method: str, path: str, raw_headers: Any, scope: Any, cp: Any
+    ) -> None:
+        """Emit the `400` for a request line that failed before dispatch.
+
+        Through the app's error handlers, like every other refusal: a malformed
+        query string is as much a client error as a missing route, and an
+        application that formats one formats the other with the same handler.
+        """
+        request = self._refusal_request(method, path, "", raw_headers, scope)
+        await self._emit_response(
+            send,
+            await self._http_exception_response(request, BadRequest(detail), cp),
+            method,
+        )
+
+    async def _emit_response(
+        self, send: Callable[..., Any], response: Response, method: str | None = None
+    ) -> None:
         """Emit an already-built `Response` over ASGI, headers included.
 
         The cold reject path. It carries the response's own headers - which is
@@ -329,6 +409,17 @@ class AsgiMixin(AppHost):
         intentional, but the *rules* must not diverge - keep the bodiless-status
         handling below in step with the buffered branch in `_asgi_app`.
         """
+        if response.is_streamed:
+            # A refusal runs the app's error handlers, so this response can be
+            # whatever one of them returned - and a handler may return a
+            # `StreamingResponse` or a `FileResponse`. Emitting only
+            # `response.body` dropped the payload: a stream reached the client
+            # as an empty body and a `FileResponse` as its real
+            # `Content-Length` with no bytes behind it, which desynchronises a
+            # keep-alive connection.
+            await _emit_stream(send, response, method)
+            return
+
         body = response.body
         headers, has_ct, has_cl = (
             _build_asgi_headers(response.headers) if response.headers else ([], False, False)
@@ -339,13 +430,21 @@ class AsgiMixin(AppHost):
         # body-permitting status, so nothing reaches it today - but this is the
         # general "emit an already-built Response" path, and the next caller
         # should not have to know the two branches disagreed.
+        #
+        # A `HEAD` response carries the headers its `GET` would and no body
+        # (RFC 9110 Sec. 9.3.2). The streaming branch above already honours
+        # `method`; leaving it out here shipped a payload on a refused `HEAD`,
+        # which a conforming client does not read - so those bytes stayed in
+        # the stream and desynchronised the next response on a keep-alive
+        # connection.
         body_allowed = status.status_permits_body(response.status_code)
+        send_body = body_allowed and method != HTTP_METHOD_HEAD
         # RFC 9110 Sec. 8.6 / 15.4.5: a 304 sends no body but may carry the
         # `Content-Length` the equivalent 200 would have, which is what both
         # `Response.encode` and the buffered branch advertise. 1xx, 204 and 205
         # have no representation, so their length is 0.
         length = advertised_length(response.status_code, body)
-        if not body_allowed:
+        if not send_body:
             body = b""
         if not has_cl and length is not None:
             headers.append((RAW_HEADER_CONTENT_LENGTH, str(length).encode("ascii")))
@@ -361,35 +460,9 @@ class AsgiMixin(AppHost):
         )
         await send({"type": ASGI_EVENT_HTTP_RESPONSE_BODY, "body": body})
 
-    async def _emit_error(self, send: Callable, status_code: int, payload: dict) -> None:
-        """Emit a JSON error response directly over ASGI, in the app's dialect.
-
-        Encoded through `dumps_for(self, ...)` rather than by letting
-        `JSONResponse` resolve it: this runs before dispatch binds the app
-        contextvar, so `dumps_current` found nothing and fell back to the direct
-        encoder. The app is not missing here - it is `self` - it simply was not
-        bound yet, and the result was a refusal whose shape depended on whether an
-        earlier request had happened to leave the contextvar set on this task.
-        """
-        response = JSONResponse._from_encoded(dumps_for(self, payload))
-        response.status_code = status_code
-        await self._emit_response(send, response)
-
-    async def _emit_400(self, send: Callable, detail: str) -> None:
-        """Emit a 400 response directly over ASGI.
-
-        Used for malformed request lines that fail before a `Request` object
-        exists, such as a `query_string` carrying raw non-ASCII bytes.
-        """
-        await self._emit_error(
-            send,
-            status.HTTP_400_BAD_REQUEST,
-            {"detail": detail, "status_code": status.HTTP_400_BAD_REQUEST},
-        )
-
     # ── The middleware stack ────────────────────────────
 
-    def _build_asgi_stack(self, cp: CompiledPipeline) -> Callable:
+    def _build_asgi_stack(self, cp: CompiledPipeline) -> Callable[..., Any]:
         """Wrap the core ASGI app with the compiled PH_ASGI_WRAP chain.
 
         The fused wrap slot is flattened into one ordered `(cls, options)`
@@ -398,7 +471,7 @@ class AsgiMixin(AppHost):
         request first and the response last, exactly as the historical
         `_asgi_middleware.insert(0, ...)` guaranteed.
         """
-        app: Callable = self._asgi_app
+        app: Callable[..., Any] = self._asgi_app
         for cls, options in reversed(flatten_asgi_wrap(cp.asgi_wrap)):
             app = cls(app, **options)
         return app
@@ -511,7 +584,9 @@ class AsgiMixin(AppHost):
 
     # ── The ASGI entry points ───────────────────────────
 
-    async def __call__(self, scope: dict[str, Any], receive: Callable, send: Callable) -> None:
+    async def __call__(
+        self, scope: dict[str, Any], receive: Callable[..., Any], send: Callable[..., Any]
+    ) -> None:
         """ASGI interface - allows running under uvicorn/hypercorn if desired.
 
         Any third-party ASGI middleware registered via `add_middleware` (and the
@@ -545,9 +620,9 @@ class AsgiMixin(AppHost):
 
     async def _asgi_app(
         self,
-        scope: dict,
-        receive: Callable,
-        send: Callable,
+        scope: dict[str, Any],
+        receive: Callable[..., Any],
+        send: Callable[..., Any],
         cp: CompiledPipeline | None = None,
     ) -> None:
         """Run the core ASGI application - HTTP, WebSocket and lifespan handling.
@@ -633,7 +708,19 @@ class AsgiMixin(AppHost):
             try:
                 query = scope["query_string"].decode("ascii")
             except UnicodeDecodeError:
-                await self._emit_400(send, MSG_INVALID_QUERY_STRING)
+                # Answered with an empty query string rather than a lossy
+                # decode: these bytes are not a query string, and U+FFFD
+                # placeholders would hand an error handler parameters the
+                # client never sent.
+                await self._refuse_bad_request(
+                    send,
+                    MSG_INVALID_QUERY_STRING,
+                    scope["method"],
+                    path,
+                    raw_headers,
+                    scope,
+                    cp,
+                )
                 return
 
             # A body over the limit is refused through the same builder the
@@ -677,6 +764,7 @@ class AsgiMixin(AppHost):
                     body=b"",
                     body_source=ASGIBodySource(receive, max_size),
                     scope=scope,
+                    receive=receive,
                 )
             else:
                 # Eager drain. Common case - one body chunk, no `more_body` -
@@ -723,6 +811,10 @@ class AsgiMixin(AppHost):
                     headers=raw_headers,
                     body=body,
                     scope=scope,
+                    # The channel a handler streaming its response polls for the
+                    # client going away; this route's body is already drained,
+                    # so nothing else is left holding it.
+                    receive=receive,
                 )
 
             # Both the declared Content-Length and the received bytes were
@@ -736,47 +828,10 @@ class AsgiMixin(AppHost):
 
             # No `content-length` by default: the ASGI server frames the chunks.
             if response.is_streamed:
-                # A streamed body usually has no length to advertise, but a
-                # file's is known from its stat - keep the one the response set
-                # so a streamed download stays length-delimited rather than
-                # silently becoming a chunked one.
-                # Guarded like the buffered branch below: an empty mapping has
-                # nothing to build, and the call is not free.
-                if response.headers:
-                    stream_headers, _, _ = _build_asgi_headers(response.headers)
-                else:
-                    stream_headers = []
-                # A bodiless status carries no payload and no default
-                # content-type, the same rule the buffered branch below
-                # applies. Without it a streamed 204 shipped its chunks, and a
-                # client on a keep-alive connection read them as the start of
-                # the next response.
-                _body_allowed = status.status_permits_body(response.status_code)
-                if _body_allowed:
-                    # CRLF-validate every header value - the ASGI emit path
-                    # bypasses `Response.encode()`, so the splitting guard must
-                    # be applied here too. Built-in content types hit the cache.
-                    _ct_bytes = _content_type_bytes(response.content_type)
-                    # ASGI does not mandate header order, so append (O(1))
-                    # rather than insert at the front (O(n) list shift).
-                    stream_headers.append((RAW_HEADER_CONTENT_TYPE, _ct_bytes))
-                await send(
-                    {
-                        "type": ASGI_EVENT_HTTP_RESPONSE_START,
-                        "status": response.status_code,
-                        "headers": stream_headers,
-                    }
-                )
-                if _body_allowed and scope["method"] != HTTP_METHOD_HEAD:
-                    async for chunk in response._stream:
-                        await send(
-                            {
-                                "type": ASGI_EVENT_HTTP_RESPONSE_BODY,
-                                "body": chunk.encode("utf-8") if isinstance(chunk, str) else chunk,
-                                "more_body": True,
-                            }
-                        )
-                await send({"type": ASGI_EVENT_HTTP_RESPONSE_BODY, "body": b"", "more_body": False})
+                # No `content-length` by default: the ASGI server frames the
+                # chunks. Shared with the cold reject path, so the rules cannot
+                # drift apart again.
+                await _emit_stream(send, response, scope["method"])
                 return
 
             # Bodiless statuses (1xx interim, 204, 205, 304) MUST NOT carry a

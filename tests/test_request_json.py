@@ -14,7 +14,7 @@ import pytest
 import veloce.http.request as reqmod
 from tests.conftest import make_request
 from veloce import Request
-from veloce.exceptions import BadRequest
+from veloce.exceptions import BadRequest, UnsupportedMediaType
 
 
 def _req(body: bytes = b"", content_type: str = "application/json") -> Request:
@@ -38,9 +38,23 @@ def test_empty_body_returns_none():
     assert _req(b"").get_json() is None
 
 
-def test_non_json_content_type_returns_none():
-    """Default behaviour: refuse non-JSON content types."""
-    assert _req(b'{"a": 1}', content_type="text/plain").get_json() is None
+def test_non_json_content_type_is_reported():
+    """Default behaviour: refuse non-JSON content types, and say so.
+
+    `tests/test_unsupported_media_type.py` holds the full contract.
+    """
+    with pytest.raises(UnsupportedMediaType):
+        _req(b'{"a": 1}', content_type="text/plain").get_json()
+
+
+def test_absent_content_type_is_refused():
+    with pytest.raises(UnsupportedMediaType):
+        _req(b'{"a": 1}', content_type="").get_json()
+
+
+def test_force_reads_a_body_sent_with_no_content_type():
+    """Where a client that genuinely omits the header belongs."""
+    assert _req(b'{"a": 1}', content_type="").get_json(force=True) == {"a": 1}
 
 
 # ── force ────────────────────────────────────────────────────────────

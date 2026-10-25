@@ -35,7 +35,7 @@ from typing import Annotated, Any, TypeVar
 
 from typing_extensions import Doc
 
-from veloce._internal import _readd_route
+from veloce._internal import T_route, _readd_route
 from veloce.exceptions import _error_handler_key_error
 from veloce.routing.router import RouteInfo, Router
 
@@ -98,9 +98,9 @@ def _endpoint_blueprint(endpoint: str | None) -> str | None:
 
 
 def _merge_scoped(
-    dst: dict[str, dict[_HandlerKey, Callable]],
-    child_own: dict[_HandlerKey, Callable],
-    child_scoped: dict[str, dict[_HandlerKey, Callable]],
+    dst: dict[str, dict[_HandlerKey, Callable[..., Any]]],
+    child_own: dict[_HandlerKey, Callable[..., Any]],
+    child_scoped: dict[str, dict[_HandlerKey, Callable[..., Any]]],
     child_name: str,
 ) -> None:
     """Merge a child's own + already-scoped handler tables into `dst`.
@@ -130,9 +130,9 @@ _SCOPED_LIST_CATEGORIES: tuple[tuple[str, str], ...] = (
 
 
 def _merge_scoped_lists(
-    dst: dict[str, list[Callable]],
-    child_own: list[Callable],
-    child_scoped: dict[str, list[Callable]],
+    dst: dict[str, list[Callable[..., Any]]],
+    child_own: list[Callable[..., Any]],
+    child_scoped: dict[str, list[Callable[..., Any]]],
     child_name: str,
 ) -> None:
     """Merge a child's own + already-scoped callable lists into `dst`.
@@ -154,8 +154,8 @@ def _merge_scoped_lists(
 
 
 def _resolve_scoped_chain(
-    own: list[Callable], scoped: dict[str, list[Callable]], suffix: str
-) -> list[Callable]:
+    own: list[Callable[..., Any]], scoped: dict[str, list[Callable[..., Any]]], suffix: str
+) -> list[Callable[..., Any]]:
     """Flatten the callables that apply to a descendant, outermost first.
 
     A route under `<bp>.<child>.<grandchild>` runs the hooks declared on the
@@ -237,21 +237,21 @@ class Blueprint(Router):
         self.url_prefix = url_prefix
         # Pending hook + handler registrations - applied to the app at
         # `register_blueprint` time.
-        self._before_request_hooks: list[Callable] = []
-        self._after_request_hooks: list[Callable] = []
-        self._teardown_request_hooks: list[Callable] = []
-        self._exception_handlers: dict[type, Callable] = {}
-        self._status_handlers: dict[int, Callable] = {}
+        self._before_request_hooks: list[Callable[..., Any]] = []
+        self._after_request_hooks: list[Callable[..., Any]] = []
+        self._teardown_request_hooks: list[Callable[..., Any]] = []
+        self._exception_handlers: dict[type[Any], Callable[..., Any]] = {}
+        self._status_handlers: dict[int, Callable[..., Any]] = {}
         # Nested-child error handlers, kept under each child's dotted name suffix
         # (relative to this blueprint) rather than flattened into the tables above,
         # so a sibling child's handler does not leak across to another child. The
         # app buckets these under `<this_bp_name>.<suffix>` at register time.
-        self._scoped_exception_handlers: dict[str, dict[type, Callable]] = {}
-        self._scoped_status_handlers: dict[str, dict[int, Callable]] = {}
+        self._scoped_exception_handlers: dict[str, dict[type[Any], Callable[..., Any]]] = {}
+        self._scoped_status_handlers: dict[str, dict[int, Callable[..., Any]]] = {}
         # URL processors registered on this blueprint. They're
         # gated to blueprint endpoints at register time.
-        self._url_value_preprocessors: list[Callable] = []
-        self._url_default_funcs: list[Callable] = []
+        self._url_value_preprocessors: list[Callable[..., Any]] = []
+        self._url_default_funcs: list[Callable[..., Any]] = []
         # A nested child's hooks and URL processors, kept under the child's
         # dotted suffix for the same reason its error handlers are: merged into
         # the lists above they became this blueprint's own, so a child's
@@ -259,11 +259,11 @@ class Blueprint(Router):
         # `url_value_preprocessor` rewrote a sibling's path params. Each entry
         # holds only that descendant's own callables; the app flattens the chain
         # at register time so one lookup per request still serves them.
-        self._scoped_before_hooks: dict[str, list[Callable]] = {}
-        self._scoped_after_hooks: dict[str, list[Callable]] = {}
-        self._scoped_teardown_hooks: dict[str, list[Callable]] = {}
-        self._scoped_url_value_preprocessors: dict[str, list[Callable]] = {}
-        self._scoped_url_default_funcs: dict[str, list[Callable]] = {}
+        self._scoped_before_hooks: dict[str, list[Callable[..., Any]]] = {}
+        self._scoped_after_hooks: dict[str, list[Callable[..., Any]]] = {}
+        self._scoped_teardown_hooks: dict[str, list[Callable[..., Any]]] = {}
+        self._scoped_url_value_preprocessors: dict[str, list[Callable[..., Any]]] = {}
+        self._scoped_url_default_funcs: dict[str, list[Callable[..., Any]]] = {}
 
     # ── Hook decorators ───────────────────────────────────
 
@@ -284,7 +284,7 @@ class Blueprint(Router):
         _reject_dotted(bound.arguments.get("name"), "Blueprint route name")
         return super().route(*args, **kwargs)
 
-    def before_request(self, func: Callable) -> Callable:
+    def before_request(self, func: T_route) -> T_route:
         """Register a function to run before each blueprint request.
 
         Fires only for requests that match a route declared on this
@@ -293,17 +293,17 @@ class Blueprint(Router):
         self._before_request_hooks.append(func)
         return func
 
-    def after_request(self, func: Callable) -> Callable:
+    def after_request(self, func: T_route) -> T_route:
         """Register a function to run after each blueprint request."""
         self._after_request_hooks.append(func)
         return func
 
-    def teardown_request(self, func: Callable) -> Callable:
+    def teardown_request(self, func: T_route) -> T_route:
         """Run after blueprint-routed request teardown, with optional exc."""
         self._teardown_request_hooks.append(func)
         return func
 
-    def errorhandler(self, exc_class_or_status: type | int) -> Callable:
+    def errorhandler(self, exc_class_or_status: type[Any] | int) -> Callable[[T_route], T_route]:
         """Blueprint-scoped error handler.
 
         Matches `app.errorhandler` semantics: integer keys go to the
@@ -313,7 +313,7 @@ class Blueprint(Router):
         order: blueprint wins on direct match).
         """
 
-        def decorator(func: Callable) -> Callable:
+        def decorator(func: T_route) -> T_route:
             if isinstance(exc_class_or_status, int):
                 self._status_handlers[exc_class_or_status] = func
             else:
@@ -334,7 +334,7 @@ class Blueprint(Router):
 
     exception_handler = errorhandler
 
-    def url_value_preprocessor(self, func: Callable) -> Callable:
+    def url_value_preprocessor(self, func: T_route) -> T_route:
         """Register a `fn(endpoint, values)` URL preprocessor on this blueprint.
 
         Mirrors `@app.url_value_preprocessor` - runs after route
@@ -345,7 +345,7 @@ class Blueprint(Router):
         self._url_value_preprocessors.append(func)
         return func
 
-    def url_defaults(self, func: Callable) -> Callable:
+    def url_defaults(self, func: T_route) -> T_route:
         """Register a `fn(endpoint, values)` URL-defaults injector for `url_for`.
 
         Mirrors `@app.url_defaults` - runs inside `url_for` /

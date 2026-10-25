@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import TYPE_CHECKING, Any
 
 import orjson
@@ -51,7 +51,8 @@ from veloce._internal import (
     json_body_refused,
 )
 from veloce._protocol_constants import SECURE_URL_SCHEMES, URL_SCHEME_HTTPS
-from veloce.exceptions import BadRequest, RequestEntityTooLarge
+from veloce.exceptions import BadRequest, RequestEntityTooLarge, UnsupportedMediaType
+from veloce.http._body import ASGIBodySource
 from veloce.http.cache_control import CacheControl
 from veloce.http.datastructures import (
     URL,
@@ -182,6 +183,7 @@ class Request:
         "_if_range",
         "_range",
         "_auth",
+        "_receive",
     )
 
     def __init__(
@@ -195,6 +197,7 @@ class Request:
         app: Any = None,
         scope: dict[str, Any] | None = None,
         body_source: Any = None,
+        receive: Callable[[], Any] | None = None,
     ) -> None:
         # ASGI servers and `Veloce.add_route` already feed an uppercase
         # method; skip the allocation when the caller already complies.
@@ -235,6 +238,11 @@ class Request:
         else:
             self._body = body
             self._body_drained = False
+        # The ASGI receive channel this request arrived on, kept for
+        # `is_disconnected()`: a buffered route has no body source to read the
+        # drop from, and the channel is the only place an ASGI server reports
+        # it. Nothing is polled until a handler asks.
+        self._receive = receive
         # Set by a transport that has already applied this app's
         # MAX_CONTENT_LENGTH to both the declared and the received length, so
         # dispatch does not repeat the work on every request. It stays False for
@@ -325,6 +333,7 @@ class Request:
             app=sub_app,
             scope=scope,
             body_source=body_source,
+            receive=parent._receive,
         )
 
     # ── Method, path and query ────────────────────────────
@@ -1291,18 +1300,26 @@ class Request:
     ) -> Any:
         """Parse the request body as JSON.
 
-        - `force=True` skips the `is_json` content-type check; useful when
-          the client sends JSON without setting `Content-Type` (e.g. some
-          XHR libraries). Default is to honour the content type and return
-          `None` for non-JSON requests.
-        - `silent=True` swallows `orjson.JSONDecodeError` and returns `None`.
-          Default raises so caller code can distinguish malformed JSON
-          from missing JSON.
+        A body whose `Content-Type` is not JSON raises `UnsupportedMediaType`
+        (415) through `on_json_loading_failed` rather than reading as `None`, so
+        a content-type mismatch is reported instead of leaving the caller to
+        infer it from a missing value. An absent header is not JSON either: a
+        cross-origin `fetch` can omit it with no preflight, so a body sent
+        without one is refused like any other non-JSON body. Pass `force=True`
+        to read a body from a client that does not send the header.
+
+        - `force=True` skips the content-type check entirely, parsing whatever
+          the body holds.
+        - `silent=True` returns `None` for both failures - a refused content
+          type and a malformed body - instead of raising. Default raises so
+          caller code can tell the two apart.
         - `cache=False` forces a re-parse on every call. Default caches
           the parsed value (one parse per request); cache invalidation
           is the caller's job when `cache=False`.
 
         Returns `None` for empty bodies regardless of `force` / `silent`.
+        The content-type check runs first, so an empty body under a refused
+        content type still raises.
 
         This is the synchronous accessor: it requires the
         body to already be buffered (the in-memory path), and raises
@@ -1314,8 +1331,10 @@ class Request:
                 "Request body is not yet buffered; use `await request.json()` "
                 "instead of the sync `request.get_json()` accessor"
             )
-        if not force and not self.is_json:
-            return None
+        if not force and json_body_refused(self.mimetype):
+            if silent:
+                return None
+            return self.on_json_loading_failed(None)
         body = self._body
         if not body:
             return None
@@ -1334,8 +1353,14 @@ class Request:
             self._json = parsed
         return parsed
 
-    def on_json_loading_failed(self, error: Exception) -> Any:
-        """Handle a failure to parse the body as JSON on a non-silent request.
+    def on_json_loading_failed(self, error: Exception | None) -> Any:
+        """Handle a failure to read the body as JSON on a non-silent request.
+
+        `error` is the decoder error, or `None` when the request declared a
+        content type that is not JSON. The two failures answer with different
+        status codes so a caller can tell them apart: a refused content type
+        raises `UnsupportedMediaType` (415), a malformed body `BadRequest`
+        (400).
 
         Raises `BadRequest` (400) with a stable, body-independent message so a
         malformed body cannot leak decoder internals (byte offsets derived from
@@ -1345,6 +1370,12 @@ class Request:
         the `JSON_ERRORS_VERBOSE` config flag is set. Override on a `Request`
         subclass to customise.
         """
+        if error is None:
+            # RFC 9110 Sec. 15.5.16: 415 is the status for a body whose media
+            # type the target does not accept. Same wording as the body-model
+            # door in `dependency.py`, so the two ways of asking for a JSON
+            # body report the mismatch alike.
+            raise UnsupportedMediaType(f"Expected a JSON body; got Content-Type {self.mimetype!r}")
         _logger.warning("JSON parse error: %s", error)
         cfg = self._config()
         # Surface the verbose reason when explicitly enabled OR in debug mode.
@@ -1412,14 +1443,17 @@ class Request:
         with the cached parse. The async signature exists so the
         `await request.json()` idiom does not blow up at runtime.
 
-        A body whose `Content-Type` declares it is not JSON reads as `None`
-        rather than being parsed, which is what stops a cross-origin
-        `text/plain` send from driving a JSON endpoint. An absent header
-        declares nothing and is still parsed.
+        A body whose `Content-Type` is not JSON reads as `None` rather than
+        being parsed, which is what stops a cross-origin `text/plain` send from
+        driving a JSON endpoint. An absent header is not JSON either, and is
+        refused the same way: a `fetch` whose body is a `Blob` typed `""` sends
+        no header at all, with no preflight to stop it.
 
         The synchronous `request.get_json()` accessor is available for callers
-        that prefer a sync API. It is stricter by default: it requires a
-        positive JSON declaration and takes `force=True` to parse regardless.
+        that prefer a sync API. It applies the same rule but reports a refused
+        content type as `UnsupportedMediaType` (415) instead of `None`; this
+        door keeps the `None` so a caller reading the body itself can fall
+        through to another representation.
         """
         if self._json is _UNPARSED:
             if json_body_refused(self.mimetype):
@@ -1560,7 +1594,7 @@ class Request:
         self._files = files
         return self._files
 
-    async def values(self) -> MultiDict:
+    async def values(self) -> MultiDict[Any]:
         """Merge the query string and form body - the `request.values` shape.
 
         Returns a fresh `MultiDict` with query-string entries first,
@@ -1569,7 +1603,7 @@ class Request:
         both sources. Form parsing is async (multipart may need
         executor reads), so this is an awaitable rather than a property.
         """
-        merged: MultiDict = MultiDict()
+        merged: MultiDict[Any] = MultiDict()
         for k, v in self.query_params.items():
             merged.add(k, v)
         form = await self.form()
@@ -1596,16 +1630,36 @@ class Request:
         _close_form_uploads(self._form)
 
     async def is_disconnected(self) -> bool:
-        """Whether the client has disconnected.
+        """Whether the client has gone away.
 
-        A non-streaming route has its body drained before the handler runs, so
-        the body is already received and the answer is always `False`. On a
-        `stream=True` route the client can genuinely go away mid-handler, and
-        this reports it once the consumer has seen the disconnect - reading the
-        flag the body source records rather than probing the transport.
+        Answers for a handler that is still streaming its response - the SSE and
+        long-poll case - as well as for a `stream=True` request body. On an ASGI
+        server the receive channel is polled, without blocking and without
+        consuming a message. Once the answer is `True` it stays `True`.
+
+        **On the native transport a streaming handler does not observe this.**
+        `connection_lost` records the drop and then cancels the task serving
+        the request in the same callback, so the handler's next resume raises
+        `CancelledError` at the point it would have polled. The handler does
+        stop producing for a client that is gone - that part works - but
+        through cancellation rather than through this method, so write the
+        cleanup in a `finally` rather than behind an `is_disconnected()` check
+        if the native server is the target.
         """
         source = self._body_source
-        return source is not None and source.disconnected
+        if source is None:
+            receive = self._receive
+            if receive is None:
+                # No channel to ask: a request built outside a transport.
+                return False
+            # The source a buffered route skipped, built on the first poll so a
+            # handler that never asks pays nothing for it. It owns the probe and
+            # latches the answer. The body accessors are unaffected: their bytes
+            # were buffered before dispatch, which is why this route had no
+            # source to begin with.
+            source = ASGIBodySource(receive, body_complete=True)
+            self._body_source = source
+        return await source.poll_disconnected()
 
     async def stream(self) -> AsyncIterator[bytes]:
         """Async-iterate the request body in chunks - ASGI shape.

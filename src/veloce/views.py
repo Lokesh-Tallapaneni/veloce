@@ -46,7 +46,7 @@ from veloce.exceptions import MethodNotAllowed
 _HTTP_METHODS = ("get", "post", "put", "patch", "delete", "head", "options")
 
 
-def _accepted_params(func: Callable) -> frozenset[str] | None:
+def _accepted_params(func: Callable[..., Any]) -> frozenset[str] | None:
     """Return the keyword names `func` accepts, or None when it takes `**kwargs`.
 
     Computed once at class-definition time so dispatch never inspects a
@@ -74,7 +74,7 @@ def _forward(params: dict[str, Any], accepted: frozenset[str] | None) -> dict[st
     return {name: value for name, value in params.items() if name in accepted}
 
 
-def _reject_unresolvable_defaults(cls: type, verb: str, method: Any) -> None:
+def _reject_unresolvable_defaults(cls: type[Any], verb: str, method: Any) -> None:
     """Refuse a verb method declaring a parameter marker or `Depends`.
 
     A `MethodView` is one route serving several verbs, so there is one handler
@@ -120,7 +120,7 @@ class View:
     # Shared mutable default: subclasses that want their own decorator chain
     # must assign a fresh list (`decorators = [auth]`) rather than mutating
     # this one in place, or every view class would share the same list.
-    decorators: ClassVar[list[Callable]] = []
+    decorators: ClassVar[list[Callable[..., Any]]] = []
     init_every_request: ClassVar[bool] = True
 
     #: The method a subclass must supply, checked at definition rather than left
@@ -134,7 +134,7 @@ class View:
         _require_methods(cls, View, View._required)
 
     @classmethod
-    def as_view(cls, name: str, *class_args: Any, **class_kwargs: Any) -> Callable:
+    def as_view(cls, name: str, *class_args: Any, **class_kwargs: Any) -> Callable[..., Any]:
         """Build a view function bound to this class.
 
         Honours `init_every_request` (fresh instance per request vs a

@@ -46,6 +46,7 @@ from veloce.contrib.mcp.errors import (
     ResourceNotFoundError,
     SessionNotFoundError,
     SessionRequiredError,
+    ToolError,
 )
 from veloce.contrib.mcp.icons import Icon
 from veloce.contrib.mcp.plan_bridge import JSON_SCHEMA_DIALECT
@@ -144,6 +145,7 @@ __all__ = [
     "ResourceNotFoundError",
     "SessionNotFoundError",
     "SessionRequiredError",
+    "ToolError",
     # Schema
     "JSON_SCHEMA_DIALECT",
 ]
