@@ -58,9 +58,8 @@ URL_SCHEME_HTTPS = "https"
 URL_SCHEME_WS = "ws"
 URL_SCHEME_WSS = "wss"
 
-# The schemes that mean "this connection is encrypted", in one place so no guard
-# can know one and miss the other. RFC 3986 Sec. 3.1 makes a scheme
-# case-insensitive, so these are compared against an already-lowercased scheme.
+# In one place so no guard can know one scheme and miss the other. Compared
+# against an already-lowercased scheme, case-insensitive per RFC 3986 Sec. 3.1.
 SECURE_URL_SCHEMES = frozenset({URL_SCHEME_HTTPS, URL_SCHEME_WSS})
 
 # Lower-case raw header bytes used on ASGI / protocol paths

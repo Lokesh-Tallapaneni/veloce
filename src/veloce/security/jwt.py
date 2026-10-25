@@ -38,9 +38,7 @@ _ALGORITHMS: dict[str, Any] = {
     "HS512": hashlib.sha512,
 }
 
-# The `typ` member of the JWS header (RFC 7515 Sec. 4.1.9). `encode_jwt`
-# builds the `{"alg": ..., "typ": _HEADER_TYP}` header per call so the
-# requested algorithm is reflected.
+# The `typ` member of the JWS header (RFC 7515 Sec. 4.1.9).
 _HEADER_TYP = "JWT"
 
 
@@ -147,10 +145,7 @@ def _validate_claims(
 ) -> None:
     """Apply the RFC 7519 Sec. 4.1 registered-claim rules to a verified payload.
 
-    A pure function of the payload and the caller's expectations, so the claim
-    rules can be read - and extended - without re-reading the crypto path that
-    produced the payload. `decode_jwt` calls it only after the signature has
-    been verified.
+    `decode_jwt` calls it only after the signature has been verified.
     """
     current = time.time() if now is None else now
 
@@ -176,11 +171,8 @@ def _validate_claims(
         claim_aud = payload.get("aud")
         if claim_aud is None:
             raise InvalidAudienceError("audience claim is missing")
-        # RFC 7519 Sec. 4.1.3: `aud` is either a single StringOrURI or an array
-        # of them. A malformed claim (number, object, list of non-strings) must
-        # fail as a clean auth error, not crash `set(...)` with a raw TypeError
-        # that would surface as a 500 in an auth dependency. Validate the shape
-        # before coercion.
+        # RFC 7519 Sec. 4.1.3: `aud` is one StringOrURI or an array of them. The
+        # shape is checked before coercion so a malformed claim is a 401, not a 500.
         if isinstance(claim_aud, str):
             present = {claim_aud}
         elif isinstance(claim_aud, Sequence) and all(isinstance(a, str) for a in claim_aud):
@@ -211,10 +203,7 @@ def decode_jwt(
         raise ValueError("algorithms allow-list is required and must be non-empty")
     secret_bytes = _coerce_secret_bytes(secret)
     # RFC 7519/RFC 2104: an empty HMAC key would verify tokens signed with the
-    # empty secret (e.g. an unset secret env var), so reject it symmetrically
-    # with encode_jwt. This is a configuration/programmer error, not a token
-    # error, so it raises ValueError (loud) rather than a JWTError that an auth
-    # dependency would swallow into a 401.
+    # empty secret, so it raises loudly rather than a JWTError swallowed as a 401.
     if not secret_bytes:
         raise ValueError("secret must be non-empty")
 
@@ -241,13 +230,8 @@ def decode_jwt(
     except (ValueError, OSError) as err:
         raise InvalidTokenError("malformed signature segment") from err
 
-    # The base64url segments are ASCII (RFC 7515 Sec. 2); a non-ASCII character
-    # means a malformed token, not an `ascii`-codec crash. `_b64decode` runs in
-    # binascii's relaxed mode and drops characters outside the alphabet, so a
-    # token carrying a stray non-ASCII byte still parses a valid header and
-    # reaches here - and `UnicodeEncodeError` is not a `JWTError`, so the
-    # documented `except JWTError` around an auth dependency did not catch it
-    # and the route answered 500 instead of 401. Mirrors `signing.py`.
+    # The segments are ASCII (RFC 7515 Sec. 2), but `_b64decode` is relaxed enough
+    # to parse a stray non-ASCII byte, so encoding here is a 401 and not a 500.
     try:
         signing_input = f"{header_b64}.{payload_b64}".encode("ascii")
     except UnicodeEncodeError as err:

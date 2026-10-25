@@ -21,17 +21,9 @@ and one for flashed messages:
 
 - `message_flashed(sender=app, message=..., category=...)`
 
-Receivers are stored as weakrefs by default so handlers don't pin
-their owners alive. Pass `weak=False` to keep a strong reference
-(useful for module-level functions that are anchored elsewhere).
-
-Implementation: weak-ref bookkeeping uses `weakref.WeakMethod` for
-bound methods and `weakref.ref` for plain functions. Dead refs are
-purged lazily on the next `send`.
-
-The implementation is deliberately small and self-contained. Keeping
-the surface minimal lets application code stay decoupled from the
-signal plumbing.
+Receivers are stored as weakrefs by default so handlers don't pin their owners
+alive; pass `weak=False` to keep a strong reference. Dead refs are purged lazily
+on the next `send`.
 """
 
 from __future__ import annotations
@@ -50,15 +42,11 @@ from veloce._internal import T_route
 
 _logger = logging.getLogger(__name__)
 
-# Sentinel for "connect to all senders" - the public API exports it so
-# callers can write `signal.connect(fn, sender=ANY_SENDER)` explicitly.
-# Identity comparison only; never construct another instance.
+# Sentinel for "connect to all senders", compared by identity only.
 ANY_SENDER: Any = object()
 
-# Shared return shape for `send`, `send_robust`, and `send_robust_async`.
-# Each entry is `(receiver, value)` where `value` is the receiver's
-# return value - or, for the `_robust` variants, the `Exception`
-# instance the receiver raised.
+# `(receiver, value)` per entry; for the `_robust` variants `value` may be the
+# `Exception` the receiver raised.
 SignalResult = list[tuple[Callable[..., Any], Any]]
 
 
@@ -71,8 +59,7 @@ def _matches(subscribed: Any, sent: Any) -> bool:
         return True
     if subscribed is sent:
         return True
-    # Fall back to equality so primitive senders ("login", 1, ...) work
-    # the way callers expect; guard against types whose `__eq__` raises.
+    # Equality so a primitive sender ("login", 1) works; `__eq__` may raise.
     try:
         return bool(subscribed == sent)
     except Exception:
@@ -89,40 +76,24 @@ async def _run_async_concurrently(
 ) -> list[Any]:
     """Run `coros` concurrently, each inside a copy of `context`.
 
-    `context` is the dispatch-time snapshot captured by the caller BEFORE
-    any sync receiver ran, so async receivers observe the original
-    request-local context rather than any value a sync receiver mutated.
-    Results are returned positionally, matching the order of `coros`.
+    `context` is the snapshot the caller took BEFORE any sync receiver ran, so
+    async receivers observe the original request-local context. Results come
+    back positionally.
 
-    Every coroutine always runs to completion - `gather` is driven with
-    `return_exceptions=True`, so a failing receiver yields its `Exception`
-    instance in place of a return value and never cancels the others. This
-    holds for BOTH the robust and non-robust callers: the non-robust
-    `asend` re-raises the first exception itself AFTER this function
-    returns, so by the time it raises no receiver is still running. Using
-    `return_exceptions=False` here would re-raise the first failure
-    immediately while the other already-scheduled tasks keep executing in
-    the background, leaking receivers past the point `asend` returns.
+    Every coroutine runs to completion: `return_exceptions=True` yields a
+    failing receiver's `Exception` in place of its return value and never
+    cancels the others, so no receiver is still running once the non-robust
+    `asend` re-raises.
     """
     if not coros:
         return []
     if sys.version_info >= (3, 11):
-        # `Task.__init__` gained a per-task `context=` in 3.11, so each
-        # receiver can run under its own copy of the dispatch-time
-        # snapshot. Drive the tasks through `gather`, which preserves
-        # positional ordering and, with `return_exceptions=True`, waits
-        # for every task to finish (no ExceptionGroup, no early cancel).
+        # 3.11's per-task `context=` gives each receiver its own copy.
         loop = asyncio.get_running_loop()
         tasks = [loop.create_task(coro, context=context.copy()) for coro in coros]
         return await asyncio.gather(*tasks, return_exceptions=True)
 
-    # 3.10 fallback: neither `asyncio.gather` nor `Task.__init__` accept a
-    # per-task `context=` before 3.11. A bare `gather` would create the
-    # tasks under whatever context is current now - which, after the sync
-    # receivers ran, may carry their mutations. Create the tasks from
-    # inside the dispatch-time snapshot so they capture it instead; the
-    # only 3.10 difference from 3.11 is that the tasks share that context
-    # rather than each getting an isolated copy.
+    # 3.10 has no per-task `context=`, so the tasks share this one instead.
     return await context.run(lambda: asyncio.gather(*coros, return_exceptions=True))
 
 
@@ -132,33 +103,22 @@ async def _run_async_concurrently(
 class Signal:
     """A named pub/sub signal - standard shape.
 
-    Receivers connect via `connect(receiver, sender=ANY_SENDER)` and
-    detach via `disconnect(receiver, sender=ANY_SENDER)`.
-    `send(sender, **kwargs)` fires every receiver subscribed for that
-    exact `sender` (compared by `is`, falling back to `==`) plus every
-    receiver subscribed for `ANY_SENDER`. Return values are collected
-    into a list of `(receiver, value)` tuples so callers can introspect
-    what fired, though veloce's own code ignores the return value.
+    `send(sender, **kwargs)` fires every receiver subscribed for that exact
+    `sender` (compared by `is`, falling back to `==`) plus every receiver
+    subscribed for `ANY_SENDER`, and returns `(receiver, value)` pairs.
 
-    `asend` and `send_robust_async` await async receivers concurrently
-    (sync receivers still run inline in registration order first).
+    `asend` and `send_robust_async` await async receivers concurrently, with
+    sync receivers still running inline in registration order first.
     """
 
     __slots__ = ("name", "doc", "_subs")
 
     def __init__(self, name: str = "", doc: str | None = None) -> None:
         self.name = name
-        #: What this signal is for, as given to `Namespace.signal(name, doc=...)`.
-        #: `None` when the signal was constructed directly without one.
+        #: As given to `Namespace.signal(name, doc=...)`; `None` without one.
         self.doc = doc
-        # Each subscription: (sender, ref_or_callable, is_weak, is_async).
-        # `sender` is `ANY_SENDER` for unfiltered receivers, else the
-        # sender itself (strong reference - typical senders are app
-        # singletons that already outlive the signal anyway). `is_async`
-        # is computed once at connect time via `iscoroutinefunction`; a
-        # runtime `iscoroutine(value)` fallback still catches custom
-        # callables that return coroutines without being coroutine
-        # functions, so the classification never regresses behavior.
+        # (sender, ref_or_callable, is_weak, is_async). `sender` is held
+        # strongly, and `is_async` is classified once at connect time.
         self._subs: list[tuple[Any, Any, bool, bool]] = []
 
     def connect(
@@ -170,10 +130,9 @@ class Signal:
     ) -> T_route:
         """Register `receiver` to fire when `send(sender)` runs.
 
-        `sender=ANY_SENDER` (the default) subscribes to every send.
-        Pass a specific sender to filter - the receiver then only fires
-        when `send` is called with that exact sender. Returns the
-        receiver unchanged so it can be used as a decorator.
+        `sender=ANY_SENDER` (the default) subscribes to every send; a specific
+        sender filters to it. Returns the receiver unchanged, so it can be used
+        as a decorator.
         """
         is_async = inspect.iscoroutinefunction(receiver)
         if weak:
@@ -189,25 +148,20 @@ class Signal:
     def disconnect(self, receiver: Callable[..., Any], *, sender: Any = ANY_SENDER) -> None:
         """Remove the subscription for `(receiver, sender)`.
 
-        Mirrors `connect` - to detach a per-sender subscription pass the
-        same `sender`. With the default `sender=ANY_SENDER` it removes
-        any subscription matching `receiver`, regardless of which sender
-        it was bound to (back-compat with the previous unfiltered API).
+        Mirrors `connect`; the default `sender=ANY_SENDER` removes any
+        subscription matching `receiver` whatever sender it was bound to.
 
-        Targeted detach matches the **stored** `sender` directly, not via
-        `_matches` - `_matches` is the `send`-time rule ("does this
-        subscription fire for that sender?"), where a stored
-        `ANY_SENDER` deliberately matches every send. Reusing that rule
-        in `disconnect` would silently delete an `ANY_SENDER`
-        subscription whenever the caller targeted a specific sender.
+        A targeted detach matches the **stored** `sender` directly rather than
+        through `_matches`, which is the `send`-time rule under which a stored
+        `ANY_SENDER` matches every send - reusing it here would delete an
+        `ANY_SENDER` subscription whenever the caller targeted one sender.
         """
         for i, (sub_sender, ref, is_weak, _is_async) in enumerate(self._subs):
             target = ref() if is_weak else ref
             if target != receiver:
                 continue
             if sender is ANY_SENDER:
-                # ANY_SENDER: drop the subscription whatever sender it was
-                # registered against.
+                # Whatever sender it was registered against.
                 del self._subs[i]
                 return
             # Targeted detach: match the stored sender directly.
@@ -224,11 +178,9 @@ class Signal:
     def send(self, sender: Any = None, **kwargs: Any) -> SignalResult:
         """Fire receivers subscribed for `sender` (and for ANY_SENDER).
 
-        Returns `(receiver, value)` pairs in registration order. With no
-        subscriptions the call short-circuits, so callers can invoke
-        `send` unconditionally rather than guarding with
-        `has_receivers_for` - a single live-scan then both fires and
-        prunes dead weakrefs.
+        Returns `(receiver, value)` pairs in registration order, and
+        short-circuits with no subscriptions so callers need not guard with
+        `has_receivers_for`. The single live-scan also prunes dead weakrefs.
         """
         if not self._subs:
             return []
@@ -237,17 +189,12 @@ class Signal:
     def send_robust(self, sender: Any = None, **kwargs: Any) -> SignalResult:
         """Like `send`, but never aborts on a failing receiver.
 
-        Returns `(receiver, value)` pairs in registration order. The
-        second tuple element is the receiver's return value, OR an
-        `Exception` instance if the receiver raised. Per-receiver
-        exceptions are logged at WARNING and substituted into the
-        result list so the caller can inspect failures while subsequent
-        receivers still fire.
+        Returns `(receiver, value)` pairs in registration order, where `value`
+        is the return value or the `Exception` the receiver raised; the
+        exception is also logged at WARNING.
 
-        Sync-only: if a receiver is an async function (or otherwise
-        returns a coroutine), the coroutine is closed and a `TypeError`
-        is recorded in the result list instead. Use `send_robust_async`
-        to await async receivers.
+        Sync-only: a receiver returning a coroutine has it closed and a
+        `TypeError` recorded instead. Use `send_robust_async` for async ones.
         """
         results: SignalResult = []
         for target in self._iter_live_targets(sender):
@@ -258,9 +205,7 @@ class Signal:
                 value = exc
             else:
                 if inspect.iscoroutine(value):
-                    # Async receiver with sync send - close coroutine to suppress
-                    # the "coroutine was never awaited" RuntimeWarning and surface
-                    # the misuse as a TypeError result entry.
+                    # Closed to suppress "coroutine was never awaited".
                     value.close()
                     name = getattr(target, "__qualname__", repr(target))
                     value = TypeError(
@@ -279,31 +224,20 @@ class Signal:
     async def asend(self, sender: Any = None, **kwargs: Any) -> SignalResult:
         """Async, non-robust send - awaits async receivers concurrently.
 
-        Returns `(receiver, value)` pairs in registration order. Sync
-        receivers run inline immediately, preserving registration order
-        and raising on the first sync error exactly like `send`. Async
-        receivers are collected and awaited concurrently, each inside a
-        copy of the dispatch-time context. Like `send`, the first failing
-        receiver propagates its exception (non-robust contract); use
-        `send_robust_async` to capture per-receiver failures instead.
+        Returns `(receiver, value)` pairs in registration order. Sync receivers
+        run inline and raise on the first error exactly like `send`; async ones
+        are awaited concurrently, each inside a copy of the dispatch-time
+        context. Use `send_robust_async` to capture per-receiver failures.
 
-        Even on the non-robust path every async receiver runs to
-        completion before this coroutine returns OR raises: the concurrent
-        run collects all results (failures included), and only afterwards
-        is the first exception, in receiver order, re-raised. This
-        guarantees no receiver is still touching request-scoped state once
-        `asend` has returned - a `return_exceptions=False` gather would
-        instead re-raise the first failure while later receivers kept
-        running in the background past teardown.
+        Every async receiver still runs to completion before this coroutine
+        returns or raises - the first exception, in receiver order, is re-raised
+        only once every result is in - so no receiver is still touching
+        request-scoped state afterwards.
         """
-        # No subscriptions: skip the context snapshot and scaffolding, exactly
-        # as `send` does, so callers can dispatch unconditionally.
+        # Short-circuits as `send` does, so callers can dispatch unconditionally.
         if not self._subs:
             return []
-        # Snapshot the dispatch-time context BEFORE any sync receiver runs.
-        # Sync receivers run inline below and may mutate ContextVars; async
-        # receivers must still observe the caller's original request-local
-        # context, so they run under this pre-mutation snapshot.
+        # Taken BEFORE the sync receivers, which may mutate ContextVars.
         dispatch_context = contextvars.copy_context()
         targets: list[tuple[Callable[..., Any], Any, bool]] = []
         coros: list[Coroutine[Any, Any, Any]] = []
@@ -318,9 +252,7 @@ class Signal:
             else:
                 targets.append((target, value, False))
         awaited = await _run_async_concurrently(coros, context=dispatch_context)
-        # All async receivers have now finished. Fill in their results, and
-        # remember the first one (in receiver/registration order) that raised
-        # so it can be re-raised below - after every task has completed.
+        # Every task has finished, so a raised result can now be re-raised.
         first_exc: BaseException | None = None
         for slot, result in zip(coro_slots, awaited, strict=True):
             target, _, _ = targets[slot]
@@ -334,23 +266,15 @@ class Signal:
     async def send_robust_async(self, sender: Any = None, **kwargs: Any) -> SignalResult:
         """Async variant of `send_robust` - awaits async receivers concurrently.
 
-        Returns `(receiver, value)` pairs in registration order. The
-        second tuple element is the receiver's return value, OR an
-        `Exception` instance if the receiver raised. Sync receivers run
-        inline first, in registration order, each wrapped so a raised
-        exception is recorded as its result. Async receivers (or any
-        receiver returning a coroutine) are then awaited concurrently;
-        one failing receiver never cancels the others. Per-receiver
-        exceptions, raised either at call time or while awaiting, are
-        logged at WARNING and substituted into the result list.
+        Returns `(receiver, value)` pairs in registration order, where `value`
+        is the return value or the `Exception` the receiver raised, at call time
+        or while awaiting; either is also logged at WARNING. One failing
+        receiver never cancels the others.
         """
-        # No subscriptions: skip the context snapshot and scaffolding, exactly
-        # as `send` does, so callers can dispatch unconditionally.
+        # Short-circuits as `send` does, so callers can dispatch unconditionally.
         if not self._subs:
             return []
-        # Snapshot the dispatch-time context BEFORE any sync receiver runs, so
-        # async receivers observe the caller's original context even if a sync
-        # receiver mutated a ContextVar (see `asend`).
+        # Taken before the sync receivers run, as in `asend`.
         dispatch_context = contextvars.copy_context()
         targets: list[tuple[Callable[..., Any], Any]] = []
         coros: list[Coroutine[Any, Any, Any]] = []
@@ -379,20 +303,16 @@ class Signal:
     def receiver_count(self) -> int:
         """How many receivers this signal holds, live or not yet pruned.
 
-        The counting counterpart to `has_receivers_for`, which answers the
-        *live* question and short-circuits. This counts what is stored, so a
-        weak reference whose target has been collected is still counted until
-        `send` prunes it - which is the distinction anyone debugging a leak, or
-        checking that pruning happened, actually needs.
+        Counts what is stored, so a weak reference whose target was collected is
+        still counted until `send` prunes it. `has_receivers_for` answers the
+        *live* question instead.
         """
         return len(self._subs)
 
     def has_receivers_for(self, sender: Any = None) -> bool:
         """`True` if any connected receiver would fire for `sender`.
 
-        A side-effect-free predicate that short-circuits on the first
-        live, matching receiver. Dead weakrefs are skipped but not pruned
-        here; pruning is left to `send` / `_iter_live_targets`.
+        Side-effect-free: dead weakrefs are skipped but not pruned here.
         """
         for sub_sender, ref, is_weak, _is_async in self._subs:
             target = ref() if is_weak else ref
@@ -405,11 +325,8 @@ class Signal:
     def _iter_live_pairs(self, sender: Any) -> Iterator[tuple[Callable[..., Any], bool]]:
         """Yield `(target, is_async)` for live matching receivers; prune dead refs.
 
-        Walks `self._subs` once, resolves weakrefs, drops dead entries,
-        and yields the resolved target plus its connect-time `is_async`
-        flag for each entry whose stored sender matches `sender` via
-        `_matches`. After iteration the subscription list contains no
-        dead refs.
+        One walk of `self._subs`, after which the subscription list holds no
+        dead refs. `is_async` is the flag recorded at connect time.
         """
         live: list[tuple[Any, Any, bool, bool]] = []
         for sub_sender, ref, is_weak, is_async in self._subs:
@@ -423,11 +340,7 @@ class Signal:
             self._subs = live
 
     def _iter_live_targets(self, sender: Any) -> Iterator[Callable[..., Any]]:
-        """Yield live receivers that match `sender`; prune dead weakrefs in place.
-
-        Thin wrapper over `_iter_live_pairs` that discards the `is_async`
-        flag, so the sync `send`/`send_robust` paths stay unchanged.
-        """
+        """Yield live receivers that match `sender`; prune dead weakrefs in place."""
         for target, _is_async in self._iter_live_pairs(sender):
             yield target
 
@@ -451,10 +364,8 @@ class Signal:
 class Namespace:
     """A factory that returns named `Signal` instances, one per name.
 
-    Calling `signal(name)` repeatedly with the same name returns the
-    same `Signal` object, so independent parts of an application can
-    obtain a shared signal by agreeing on a name rather than passing the
-    instance around.
+    Calling `signal(name)` repeatedly returns the same `Signal` object, so
+    independent parts of an application can share one by agreeing on a name.
 
     Usage::
 
@@ -478,13 +389,8 @@ class Namespace:
     def signal(self, name: str, doc: str | None = None) -> Signal:
         """Return the `Signal` named `name`, creating it on first use.
 
-        Repeated calls with the same `name` return the identical instance, and
-        the first call's `doc` is the one kept - a later call naming a different
-        one does not rewrite a signal other code already holds.
-
-        `doc` is recorded on the signal as `Signal.doc`, not accepted and
-        discarded - which would make it a silent no-op for anyone porting code
-        that passes it.
+        Repeated calls return the identical instance and keep the first call's
+        `doc`, which is recorded as `Signal.doc` rather than discarded.
         """
         existing = self._signals.get(name)
         if existing is not None:
@@ -500,14 +406,14 @@ class Namespace:
 # ── Standard signals ──────────────────────────────────────
 
 
-# Module-level singletons - apps subscribe via `request_started.connect(fn)`.
+# Singletons - apps subscribe via `request_started.connect(fn)`.
 request_started = Signal("request-started")
 request_finished = Signal("request-finished")
 request_tearing_down = Signal("request-tearing-down")
 got_request_exception = Signal("got-request-exception")
-# Fires for every `flash()` call - `flash(sender=app, message=..., category=...)`.
+# Fires for every `flash()` call.
 message_flashed = Signal("message-flashed")
-# App-context lifecycle - fire on `app.app_context()` enter/exit.
+# Fire on `app.app_context()` enter/exit.
 appcontext_pushed = Signal("appcontext-pushed")
 appcontext_popped = Signal("appcontext-popped")
 appcontext_tearing_down = Signal("appcontext-tearing-down")

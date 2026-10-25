@@ -1,14 +1,11 @@
 """Middleware registration — the three registration shapes, mixed into Veloce.
 
-Holds the registration funnel for the three middleware shapes Veloce accepts:
-request/response `Middleware` instances and subclasses (with priority ordering),
-standard ASGI middleware classes (wrapped when the ASGI stack is assembled), and
-`BaseHTTPMiddleware`-style `(request, call_next)` callables. A mixin on `Veloce`;
-everything here is setup-only and the ordered chain is resolved once at
-registration, so per-request dispatch pays no sorting cost.
-
-This is the app-side registration surface; the middleware base classes and the
-built-in middleware live in the separate `veloce.middleware` package.
+The registration funnel for the three shapes Veloce accepts: request/response
+`Middleware` instances and subclasses (with priority ordering), standard ASGI
+middleware classes (wrapped when the ASGI stack is assembled), and
+`BaseHTTPMiddleware`-style `(request, call_next)` callables. Setup-only, with
+the ordered chain resolved once at registration so dispatch pays no sorting
+cost. The base classes and built-in middleware live in `veloce.middleware`.
 """
 
 from __future__ import annotations
@@ -30,14 +27,8 @@ class MiddlewareMixin(AppHost):
         """The registered `Middleware` instances, in the order they will run.
 
         Registration order unless priorities were set, in which case this is the
-        priority order the pipeline actually uses. Checking whether a middleware
-        is installed - a plugin guarding against registering itself twice, or a
-        startup check that CORS is present - otherwise means reading a private
-        list.
-
-        Standard ASGI middleware classes are not here; they are wrapped around
-        the app when the ASGI stack is assembled rather than run per request by
-        this pipeline.
+        priority order the pipeline uses. Standard ASGI middleware classes are
+        not here; they wrap the app when the ASGI stack is assembled.
 
         Usage::
 
@@ -62,71 +53,48 @@ class MiddlewareMixin(AppHost):
           appended to the request/response pipeline.
         - `add_middleware(instance)` - append an already-built `Middleware`
           instance directly.
-        - `add_middleware(ASGIMiddlewareClass, **options)` - a class that
-          is *not* a `Middleware` subclass is treated as a standard ASGI
-          middleware: it wraps the whole application and is instantiated
-          as `ASGIMiddlewareClass(app, **options)` when the ASGI stack is
-          assembled. This is what lets third-party ASGI middleware
-          (observability, tracing, profiling, ...) plug in. Middleware
-          added first is the outermost wrapper.
+        - `add_middleware(ASGIMiddlewareClass, **options)` - a class that is
+          *not* a `Middleware` subclass is treated as standard ASGI middleware,
+          instantiated as `ASGIMiddlewareClass(app, **options)` when the stack
+          is assembled. Middleware added first is the outermost wrapper.
 
         Pass `name=` to override the instance's exclusion name (the identifier
-        `exclude_middleware=[...]` on a route references). The override is
-        applied *after* construction rather than forwarded into the subclass
-        constructor, so per-instance naming works for every `Middleware`
-        subclass - including user subclasses whose `__init__` does not accept a
-        `name` keyword.
+        `exclude_middleware=[...]` on a route references). It is applied *after*
+        construction, so per-instance naming works even for a subclass whose
+        `__init__` does not accept a `name` keyword.
 
         Pass `priority=` (an `int`, default `0`) to order this middleware
-        deterministically regardless of registration order. Higher priority
-        runs earlier in the request phase and correspondingly later in the
-        response phase; middleware of equal priority keeps registration order
-        (a stable tiebreak). The ordered chain is resolved once at registration
-        time, so per-request dispatch pays no sorting cost. When no middleware
-        sets a priority the behaviour is unchanged - the chain is the plain
-        registration order it has always been. `priority` applies to the
-        request/response `Middleware` pipeline only, not to ASGI-class
-        middleware (which is ordered by its own wrap nesting).
+        regardless of registration order. Higher priority runs earlier in the
+        request phase and later in the response phase, with equal priorities
+        keeping registration order. It applies to the request/response pipeline
+        only, not to ASGI-class middleware, which its wrap nesting orders.
         """
         self._assert_mutable()
-        # `priority` is a framework ordering concern, not a construction
-        # argument: pop it before any middleware is built so it is never
-        # forwarded into a `Middleware` subclass constructor.
+        # Popped before anything is built, so it never reaches a constructor.
         priority = options.pop("priority", 0)
         if isinstance(middleware, type):
             if issubclass(middleware, Middleware):
-                # The name override is a framework concern, not a construction
-                # argument: pop it so arbitrary subclass constructors (which may
-                # not accept `name`) build cleanly, then stamp it on the built
-                # instance via the base `name` attribute the exclusion lookup
-                # reads.
+                # Popped so a constructor without a `name` keyword still builds.
                 name = options.pop("name", None)
                 instance = middleware(**options)
                 if name is not None:
                     instance.name = name
                 self._register_middleware(instance, priority)
             elif issubclass(middleware, BaseHTTPMiddleware):
-                # `BaseHTTPMiddleware` is a dispatch-shape middleware, not
-                # an ASGI app - registering it as ASGI would wire the app
-                # in as its `dispatch` and fail at request time.
+                # As ASGI this would wire the app in as its `dispatch`.
                 raise TypeError(
                     f"{middleware.__name__} is a BaseHTTPMiddleware "
                     "(dispatch-shape) - register it with add_http_middleware(), "
                     "not add_middleware()."
                 )
             else:
-                # A standard ASGI middleware class - it needs the app it
-                # wraps, so defer construction until the stack is built. Bumping
-                # the generation counter invalidates the compiled wrap slot and,
-                # through the gen-keyed stack cache, the assembled stack too - no
-                # separate `_asgi_stack` reset needed.
+                # It needs the app it wraps, so construction waits for the
+                # stack; the bump invalidates the compiled wrap slot.
                 self._asgi_middleware.append((middleware, options))
                 self._gen += 1
         elif isinstance(middleware, Middleware):
-            # An already-built instance takes no construction arguments, so the
-            # only option it can honour is the name override - and it must, or
-            # `exclude_middleware=[name]` silently matches nothing and a route
-            # keeps a middleware the author believes they opted out of.
+            # The only option a built instance can honour - and must, or
+            # `exclude_middleware=[name]` silently matches nothing.
             name = options.pop("name", None)
             if name is not None:
                 middleware.name = name
@@ -138,9 +106,7 @@ class MiddlewareMixin(AppHost):
                 )
             self._register_middleware(middleware, priority)
         else:
-            # A bare ASGI middleware instance cannot be wired up - veloce
-            # has to supply the wrapped app, which only the class form
-            # allows.
+            # Only the class form lets veloce supply the wrapped app.
             raise TypeError(
                 f"add_middleware() received a {type(middleware).__name__} instance; "
                 "pass a Middleware instance, a Middleware subclass, or an ASGI "
@@ -169,10 +135,9 @@ class MiddlewareMixin(AppHost):
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]] | None:
         """Add middleware - supports both a class form and a decorator form.
 
-        The two forms return different things: the decorator form returns the
-        decorator, and the **class form returns `None`** because it is a
-        statement, not a decorator. Writing `@app.middleware(CORSMiddleware)`
-        therefore fails at decoration rather than silently doing nothing.
+        The decorator form returns the decorator; the **class form returns
+        `None`**, so `@app.middleware(CORSMiddleware)` fails at decoration
+        rather than silently doing nothing.
 
         Class form: app.middleware(CORSMiddleware, allow_origins=["*"])
         Decorator form:
@@ -184,11 +149,7 @@ class MiddlewareMixin(AppHost):
         """
         if isinstance(middleware_class_or_type, str) and middleware_class_or_type == "http":
             if kwargs:
-                # The decorator form registers a plain function and has nowhere to
-                # put a class-form option. Dropping them silently is the trap: the
-                # two most plausible - `priority=` and `name=` - are real
-                # `add_middleware` options, so an author gets unordered or unnamed
-                # middleware and nothing says so.
+                # Nowhere to put a class-form option, so it would be dropped.
                 names = ", ".join(sorted(kwargs))
                 raise TypeError(
                     f"@app.middleware('http') takes no options; got {names}. "
@@ -208,35 +169,27 @@ class MiddlewareMixin(AppHost):
                     "@app.middleware('http') is the decorator form"
                 )
             self.add_middleware(middleware_class_or_type, **kwargs)
-            # Explicit: the class form is a statement, and the annotation says
-            # so, so the `None` is written rather than left implicit.
+            # Written out: the class form is a statement, as the annotation says.
             return None
 
     def _register_middleware(self, instance: Middleware, priority: int) -> None:
         """Record a built `Middleware` instance and refresh the ordered chain.
 
-        Appends `(priority, sequence, instance)` to the registration ledger and
-        bumps the middleware generation counter (so per-route exclusion chains
-        recompute). While every registered priority is `0` the ordered chain is
-        just the append-order list, so `_middlewares` is updated by a plain
-        append and no sort runs - keeping the common no-priority case identical
-        to the previous behaviour. The first non-zero priority flips the app
-        into ordered mode and rebuilds `_middlewares` as a stable descending
-        sort by priority. All of this happens at registration time, never per
-        request.
+        While every registered priority is `0` the chain is the append-order
+        list and no sort runs; the first non-zero priority flips the app into
+        ordered mode and rebuilds it as a stable descending sort. Registration
+        time only, never per request.
         """
         seq = self._middleware_seq
         self._middleware_seq = seq + 1
         self._middleware_records.append((priority, seq, instance))
         self._mw_version += 1
-        # The middleware set drives the WS-handshake phase, so the middleware
-        # ledger funnel doubles as a pipeline-invalidation sink.
+        # The middleware set drives the WS-handshake phase too.
         self._gen += 1
         if priority and not self._any_priority:
             self._any_priority = True
         if self._any_priority:
-            # Stable sort by descending priority: Python's sort is stable, so
-            # within an equal priority the registration `seq` order is kept.
+            # Python's sort is stable, so an equal priority keeps `seq` order.
             ordered = sorted(self._middleware_records, key=lambda r: -r[0])
             self._middlewares = [rec[2] for rec in ordered]
         else:

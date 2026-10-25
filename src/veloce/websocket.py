@@ -1,11 +1,10 @@
 """WebSocket support — one `WebSocket` over two transports.
 
 The same object serves an ASGI `websocket` scope, where the server owns the
-framing and this sends `websocket.send` messages, and the built-in server's raw
-transport, where this does the RFC 6455 work itself: the handshake accept key,
-frame parsing and masking, fragmentation reassembly, incremental UTF-8
-validation of text payloads (RFC 6455 Sec. 5.6), the close handshake, and an
-opt-in heartbeat. `_is_asgi` is the branch between them.
+framing, and the built-in server's raw transport, where this does the RFC 6455
+work itself: the accept key, frame parsing and masking, fragmentation
+reassembly, incremental UTF-8 validation of text payloads (RFC 6455 Sec. 5.6),
+the close handshake, and an opt-in heartbeat. `_is_asgi` is the branch.
 """
 
 from __future__ import annotations
@@ -53,8 +52,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from collections.abc import Iterable
 
 
-# RFC 6455 Sec. 1.3: `Sec-WebSocket-Accept` is the base64 SHA-1 of the client's
-# `Sec-WebSocket-Key` concatenated with this GUID.
+# RFC 6455 Sec. 1.3: `Sec-WebSocket-Accept` is base64(SHA-1(key + GUID)).
 _WS_ACCEPT_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 
@@ -89,14 +87,14 @@ def _validate_heartbeat(heartbeat: float | None) -> None:
     _validate_positive_seconds(heartbeat, "heartbeat")
 
 
-# Close codes a peer may send (RFC 6455 Sec. 7.4). The reserved, undefined and
-# unassigned ones are a protocol error answered with 1002; >=3000 is taken as given.
+# Close codes a peer may send (RFC 6455 Sec. 7.4). Reserved, undefined and
+# unassigned ones answer 1002; >=3000 is taken as given.
 _PEER_CLOSE_CODES_OK = frozenset(
     {1000, 1001, 1002, 1003, 1007, 1008, 1009, 1010, 1011, 1012, 1013, 1014}
 )
 
-# RFC 6455 Sec. 5.2 frame opcodes, used by name on the cold paths. The per-frame
-# comparisons fold the literal and carry a `# _OP_*` tag, to skip the lookup.
+# RFC 6455 Sec. 5.2 frame opcodes, by name on the cold paths only: the
+# per-frame comparisons fold the literal and carry a `# _OP_*` tag instead.
 _OP_CONT = 0x0
 _OP_TEXT = 0x1
 _OP_BINARY = 0x2
@@ -108,8 +106,7 @@ _logger = logging.getLogger(__name__)
 
 
 #: Bytes unmasked per bignum XOR. Python's big-integer XOR is superlinear in
-#: operand size, so one XOR per frame is slower and far hungrier than fixed
-#: blocks. Benchmark host, min-of-7:
+#: operand size, so one XOR per frame costs more than fixed blocks (min-of-7):
 #:
 #:   frame   whole-frame   16 KiB blocks
 #:    16 KiB    28.4 us       28.4 us   (identical - below the threshold)
@@ -118,8 +115,8 @@ _logger = logging.getLogger(__name__)
 #:     4 MiB    12.1 ms        5.2 ms   -56.7%, peak 4.20x -> 2.00x frame
 #:    16 MiB    50.3 ms       22.7 ms   -55.0%, peak 70.5 MB -> 33.6 MB
 #:
-#: The memory bound is the point: at `MAX_FRAME_SIZE` one masked frame could put
-#: ~70 MB of transient bignums on the heap. 8 to 128 KiB measured within ~1%.
+#: The memory bound is the point: at `MAX_FRAME_SIZE` one masked frame could
+#: put ~70 MB of transient bignums on the heap. 8-128 KiB measure within ~1%.
 _UNMASK_BLOCK = 16 * 1024
 
 
@@ -253,10 +250,9 @@ class _Utf8Validator:
 class WebSocketState(enum.IntEnum):
     """Connection-state enum - ASGI shape.
 
-    `CONNECTING` is the initial state before `accept()` has been sent
-    (client side) or received (application side). `CONNECTED` once the
-    handshake completes; `DISCONNECTED` once a close frame has been
-    sent or received on the corresponding side.
+    `CONNECTING` until `accept()` is sent (client side) or received
+    (application side), `CONNECTED` once the handshake completes, and
+    `DISCONNECTED` once a close frame crosses that side.
     """
 
     CONNECTING = 0
@@ -280,34 +276,27 @@ class WebSocket:
                 async for message in ws.iter_text():
                     await ws.send_text(message)
 
-    Using ``async with ws:`` closes the connection on a clean exit with a
-    normal-closure 1000. If the block exits via an exception, ``__aexit__``
-    leaves the close to the dispatcher's error handling, which sends the
-    mapped close code (e.g. 1008 for a policy violation, 1011 for an
-    unhandled error) before the exception propagates.
+    ``async with ws:`` closes the connection with a normal-closure 1000 on a
+    clean exit. If the block exits via an exception, ``__aexit__`` leaves the
+    close to the dispatcher's error handling, which sends the mapped close code
+    (1008 for a policy violation, 1011 for an unhandled error) first.
 
-    Pass ``idle_timeout=<seconds>`` (default ``None`` -> disabled) to bound
-    how long a blocking receive (``receive``/``receive_text``/
-    ``receive_bytes``/``receive_json`` and the ``iter_*`` loops) waits for
-    the next message. When no message arrives within ``idle_timeout``
-    seconds the connection performs a clean RFC 6455 close with
-    ``1001 Going Away`` and the receive raises ``WebSocketDisconnect``, so
-    the handler loop unwinds exactly as it would on a peer-initiated close.
-    A per-call ``timeout`` still applies; whichever deadline is smaller
-    wins. Set it at construction via ``from_asgi(idle_timeout=...)`` or from
-    inside the handler with ``set_idle_timeout``. The window bounds each
-    complete message (in production, ASGI delivers complete messages and
-    owns ping/pong; the raw-transport path measures it the same way).
+    Pass ``idle_timeout=<seconds>`` (default ``None`` -> disabled) to bound how
+    long a blocking receive or ``iter_*`` loop waits for the next message. On
+    expiry the connection performs a clean RFC 6455 close with
+    ``1001 Going Away`` and the receive raises ``WebSocketDisconnect``, so the
+    handler unwinds as it would on a peer-initiated close. A per-call
+    ``timeout`` still applies and the smaller deadline wins. Set it via
+    ``from_asgi(idle_timeout=...)`` or, inside the handler,
+    ``set_idle_timeout``. The window bounds each complete message.
 
-    Pass ``heartbeat=<seconds>`` (raw-transport mode only, default ``None``
-    -> disabled) to proactively probe a silent peer. After ``accept()`` a
-    timer sends an application PING carrying a token every ``heartbeat``
-    seconds; the peer must answer with a PONG (or send any other frame)
-    before the next tick, otherwise the connection is dropped with a
-    ``1006`` close code recorded on ``ws.close_code``. Any inbound byte
-    defers the next probe, so busy connections send no needless pings. In
-    ASGI mode the server owns ping/pong, so the value is accepted for API
-    symmetry but never starts a timer.
+    Pass ``heartbeat=<seconds>`` (raw transport only, default ``None`` ->
+    disabled) to probe a silent peer: after ``accept()`` a timer sends a tokened
+    application PING every ``heartbeat`` seconds, and a peer that answers with
+    neither a PONG nor any other frame before the next tick is dropped with
+    ``1006`` recorded on ``ws.close_code``. Any inbound byte defers the next
+    probe. Accepted for symmetry in ASGI mode, which owns ping/pong, but starts
+    no timer there.
     """
 
     # One per live connection, so the `__dict__` is the fixed cost at concurrency.
@@ -355,12 +344,12 @@ class WebSocket:
     # Unbounded, a peer outpacing the handler grows this; at the cap `put` awaits.
     DEFAULT_RECV_QUEUE_MAXSIZE = 64
 
-    # A peer can declare a 64-bit payload length, so uncapped the parser would wait
-    # for an arbitrary amount of data. Over it, the connection closes with 1009.
+    # A peer may declare a 64-bit length, so uncapped the parser would wait for
+    # arbitrarily many bytes. Over this, the connection closes with 1009.
     MAX_FRAME_SIZE = 16 * 1024 * 1024
 
-    # The per-frame cap bounds one frame, but a peer can stream unboundedly many
-    # continuation frames, each under it, to grow the reassembly buffer.
+    # The per-frame cap bounds one frame; a peer could still stream unboundedly
+    # many continuations, each under it, to grow the reassembly buffer.
     MAX_MESSAGE_SIZE = 16 * 1024 * 1024
 
     # Declared for the readers that run before `_init_heartbeat` is seen.
@@ -370,8 +359,7 @@ class WebSocket:
     _hb_next_token: int
     _hb_saw_inbound: bool
 
-    # RFC 6455 Sec. 7.1.1 lets an endpoint drop the connection when the peer's
-    # close does not arrive in reasonable time.
+    # RFC 6455 Sec. 7.1.1 permits dropping a peer whose close never arrives.
     CLOSE_HANDSHAKE_TIMEOUT = 5.0
 
     def __init__(
@@ -413,8 +401,8 @@ class WebSocket:
         self._closed = False
         # The peer closed first (RFC 6455 Sec. 5.5.1), so `close()` need not wait.
         self._peer_closed = False
-        # Keying the write off this, not `_closed`, is what draws the reply RFC 6455
-        # Sec. 5.5.1 wants on a peer-initiated close.
+        # Keyed off this, not `_closed`, to draw the reply RFC 6455 Sec. 5.5.1
+        # wants on a peer-initiated close.
         self._close_frame_sent = False
         # Set by the frame parser on the peer's close; lazy, as ASGI never uses it.
         self._peer_close_event: asyncio.Event | None = None
@@ -656,24 +644,17 @@ class WebSocket:
     def check_origin(self, allowed: str | Iterable[str]) -> bool:
         """Return `True` when the handshake's `Origin` is in `allowed`.
 
-        Pass a single origin string or an iterable of allowed origins
-        (e.g. `["https://app.example.com", "https://admin.example.com"]`).
-        Normalisation matches `WebSocketOriginMiddleware`: each side is
-        lowercased *and* has any trailing slash stripped, so allow-lists
-        written for one API are interchangeable with the other.
+        Pass a single origin string or an iterable of them. Normalisation
+        matches `WebSocketOriginMiddleware` - each side lowercased and stripped
+        of a trailing slash - so an allow-list written for one works with the
+        other.
 
-        - **Wildcard.** `"*"` in `allowed` accepts any origin and is the
-          opt-in "I have my own check elsewhere" escape hatch - the
-          symmetric behaviour to `WebSocketOriginMiddleware`'s
-          `allowed_origins=["*"]`.
-        - **Missing `Origin`** (no header at all, or a literal
-          `Origin: null` from a sandboxed iframe / `file://` page) is
-          a non-match and returns `False`. Non-browser clients
-          legitimately omit the header - if you want to allow them,
-          branch on `ws.origin is None` explicitly. The
-          `WebSocketOriginMiddleware` middleware path also offers an
-          `allow_missing=True` switch; this in-handler helper is
-          deliberately strict-by-default.
+        - **Wildcard.** `"*"` in `allowed` accepts any origin, the opt-in "I
+          have my own check elsewhere" escape hatch.
+        - **Missing `Origin`** (absent, or a literal `Origin: null` from a
+          sandboxed iframe or `file://` page) returns `False`. Non-browser
+          clients legitimately omit it; branch on `ws.origin is None` to allow
+          them, or use `WebSocketOriginMiddleware`'s `allow_missing=True`.
 
         Usage::
 
@@ -685,12 +666,10 @@ class WebSocket:
                 await ws.accept()
                 ...
 
-        For the middleware-style check (registered once, runs before
-        the handler) reach for `veloce.SecurityHeadersMiddleware`'s
-        sibling `WebSocketOriginMiddleware`.
+        For a check registered once, before the handler, reach for
+        `WebSocketOriginMiddleware`.
         """
         allowed_set = frozenset((allowed,)) if isinstance(allowed, str) else frozenset(allowed)
-        # Accepts anything, a missing `Origin` included.
         if "*" in allowed_set:
             return True
         if self.origin is None or self.origin == "null":
@@ -1218,7 +1197,7 @@ class WebSocket:
             return
         self._note_heartbeat_inbound()
         self._recv_buffer += data
-        # A local offset per frame, compacting once at the end: slicing per frame would
+        # A local offset, compacted once at the end: slicing per frame would
         # memmove the tail repeatedly, making a multi-frame read O(k * n).
         pos = 0
         try:
@@ -1249,14 +1228,14 @@ class WebSocket:
         masked = bool(buf[start + 1] & 0x80)
         payload_len = buf[start + 1] & 0x7F
 
-        # RFC 6455 Sec. 5.2: RSV1-3 (mask 0x70) MUST be zero unless a defining extension
-        # was negotiated, and Veloce negotiates none. Rejected before allocation.
+        # RFC 6455 Sec. 5.2: RSV1-3 (0x70) MUST be zero without a defining
+        # extension, and Veloce negotiates none. Rejected before allocation.
         if buf[start] & 0x70:
             self._close_protocol_error()
             return 0
 
-        # RFC 6455 Sec. 5.1: every client-to-server frame MUST be masked, and a server
-        # receiving an unmasked one fails the connection with 1002.
+        # RFC 6455 Sec. 5.1: a client-to-server frame MUST be masked; an unmasked
+        # one fails the connection with 1002.
         if not masked:
             self._close_protocol_error()
             return 0
@@ -1278,14 +1257,14 @@ class WebSocket:
             self._close_too_big()
             return 0
 
-        # RFC 6455 Sec. 5.5: <=125 bytes and never fragmented, so a violation is 1002
-        # rather than, say, an oversized ping echoed back as a pong.
+        # RFC 6455 Sec. 5.5: <=125 bytes and never fragmented, so a violation is
+        # 1002 rather than an oversized ping echoed back as a pong.
         if opcode in (0x8, 0x9, 0xA) and (payload_len > 125 or not fin):
             self._close_protocol_error()
             return 0
 
-        # Unconditional: every unmasked frame returned above, so re-testing `masked`
-        # would leave two always-true branches on the per-frame path.
+        # Unconditional: every unmasked frame returned above, so re-testing
+        # `masked` would leave two always-true branches on the per-frame path.
         if n < offset + 4:
             return 0
         mask = buf[start + offset : start + offset + 4]
@@ -1300,8 +1279,8 @@ class WebSocket:
             payload = _unmask(payload, mask, payload_len)
 
         if opcode == 0x8:  # _OP_CLOSE
-            # Peer-initiated close (RFC 6455 Sec. 5.5.1). `_handle_close_frame` sends the
-            # reply, so the dispatcher's clean-exit `close()` emits no second frame.
+            # Peer-initiated close (RFC 6455 Sec. 5.5.1); `_handle_close_frame`
+            # replies, so a clean-exit `close()` emits no second frame.
             self._peer_closed = True
             if self._peer_close_event is not None:
                 self._peer_close_event.set()
@@ -1312,9 +1291,9 @@ class WebSocket:
             if gate is None or gate():
                 self._send_frame(payload, opcode=0xA)  # _OP_PONG
             else:
-                # RFC 6455 Sec. 5.5.3 permits replying to only the most recent PING. This reply
-                # cannot await the drain, so unbounded a peer that stops reading while flooding
-                # PINGs grows the write buffer by a PONG apiece.
+                # RFC 6455 Sec. 5.5.3 permits replying to only the most recent
+                # PING; a peer flooding PINGs while not reading would otherwise
+                # grow the un-awaitable write buffer by a PONG apiece.
                 self._pending_pong = payload
             return frame_len
         if opcode == 0xA:  # _OP_PONG
@@ -1488,11 +1467,9 @@ class WebSocket:
 
     # ── Heartbeat (raw-transport liveness) ────────────────────
     #
-    # A black-holed TCP connection - peer vanished without FIN/RST, common behind
-    # NAT - otherwise parks a handler in `receive_*` forever. A tokened PING per
-    # window must draw a PONG echoing that token; any inbound byte defers the next
-    # probe, and two silent windows mark the peer dead. Inert under ASGI, where the
-    # server owns ping/pong.
+    # A peer gone without FIN/RST would park a handler in `receive_*` forever, so
+    # a tokened PING per window must draw its PONG, and two silent windows mark
+    # the peer dead. Inert under ASGI.
 
     def _init_heartbeat(self, heartbeat: float | None) -> None:
         """Initialise heartbeat state; called from every constructor path."""
