@@ -178,10 +178,9 @@ def _wait_for_change_watchfiles(dirs: list[str]) -> str:
 def _wait_for_change(dirs: list[str], interval: float) -> str:
     """Block until a watched source file changes; pick the best backend."""
     try:
-        import watchfiles  # noqa: F401
+        return _wait_for_change_watchfiles(dirs)
     except ImportError:
         return _wait_for_change_stat(dirs, interval)
-    return _wait_for_change_watchfiles(dirs)
 
 
 def _announce(message: str) -> None:

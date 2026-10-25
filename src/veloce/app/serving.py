@@ -178,12 +178,13 @@ class ServingMixin(AppHost):
                 host,
             )
 
-        # uvloop is an optional extra and is unavailable on Windows, so the
-        # import failing is the ordinary path there rather than an error.
+        # uvloop is an optional extra and absent on Windows, so the import
+        # failing is the ordinary path there rather than an error.
+        new_loop = asyncio.new_event_loop
         try:
             import uvloop  # pyright: ignore[reportMissingImports]
 
-            asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+            new_loop = uvloop.new_event_loop
         except ImportError:
             pass
 
@@ -196,7 +197,7 @@ class ServingMixin(AppHost):
             # server writes the access log, and a second one would duplicate it.
             self._install_dev_access_log()
 
-        loop = asyncio.new_event_loop()
+        loop = new_loop()
         asyncio.set_event_loop(loop)
 
         try:

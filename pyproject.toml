@@ -388,6 +388,10 @@ typeCheckingMode = "standard"
 reportPrivateUsage = false
 # uvloop, brotli and brotlicffi are optional extras imported conditionally.
 reportMissingModuleSource = false
+# An optional dependency's absence is recorded in an UPPERCASE module constant
+# assigned in both the `try` and the `except`, which the uppercase-means-Final
+# heuristic reads as a redefinition.
+reportConstantRedefinition = false
 
 [tool.mypy]
 python_version = "3.10"

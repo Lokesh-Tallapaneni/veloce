@@ -34,7 +34,7 @@ import contextlib
 import logging
 import os
 import sys
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Awaitable, Callable, Generator
 from itertools import count
 from typing import IO, TYPE_CHECKING, Any
 
@@ -387,7 +387,7 @@ def _restore_wire(wire_in: int, wire_out: int) -> None:
 
 
 @contextlib.contextmanager
-def _isolated_wire() -> Iterator[tuple[IO[bytes], IO[bytes]]]:
+def _isolated_wire() -> Generator[tuple[IO[bytes], IO[bytes]], None, None]:
     """Yield the protocol (reader, writer) with descriptors 0 and 1 pointed away.
 
     While a stdio server is running the process's standard output *is* the

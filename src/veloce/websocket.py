@@ -394,7 +394,7 @@ class WebSocket:
             if recv_queue_maxsize is not None
             else self.DEFAULT_RECV_QUEUE_MAXSIZE
         )
-        self._receive_queue: asyncio.Queue[bytes | object] = asyncio.Queue(maxsize=maxsize)
+        self._receive_queue: asyncio.Queue[bytes | object] | None = asyncio.Queue(maxsize=maxsize)
 
     def _init_common(self) -> None:
         """Set every mode-independent default field shared by both constructors.
@@ -477,7 +477,7 @@ class WebSocket:
         ws._idle_timeout = idle_timeout
         ws._init_common()
         ws._init_heartbeat(None)
-        ws._receive_queue = None  # type: ignore[assignment]
+        ws._receive_queue = None
         ws._asgi_receive = receive
         ws._asgi_send = send
         ws.scope = scope
@@ -1052,11 +1052,12 @@ class WebSocket:
         `timeout` raises `asyncio.TimeoutError` unchanged.
         """
         eff = self._effective_timeout(timeout)
+        queue = cast("asyncio.Queue[bytes | object]", self._receive_queue)
         if eff is None:
-            item = await self._receive_queue.get()
+            item = await queue.get()
         else:
             try:
-                item = await asyncio.wait_for(self._receive_queue.get(), timeout=eff)
+                item = await asyncio.wait_for(queue.get(), timeout=eff)
             except (TimeoutError, asyncio.TimeoutError):
                 await self._maybe_idle_timeout(timeout, eff)
                 raise
@@ -1480,7 +1481,7 @@ class WebSocket:
         Protocol callback or growing the queue without bound.
         """
         try:
-            self._receive_queue.put_nowait(payload)
+            cast("asyncio.Queue[bytes | object]", self._receive_queue).put_nowait(payload)
         except asyncio.QueueFull:
             # Synchronous: no `await` is available from inside `feed_data`.
             self._close_too_big()

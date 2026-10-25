@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from veloce.app.core import Veloce
 from veloce.app.dispatch import (
-    _exc_handler_sig_cache,  # noqa: F401  - veloce.app._exc_handler_sig_cache
+    _exc_handler_sig_cache as _exc_handler_sig_cache,  # veloce.app._exc_handler_sig_cache
 )
 from veloce.app.plugins import Plugin
 from veloce.app.urls import URLMap, URLRule

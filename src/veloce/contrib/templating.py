@@ -5,7 +5,7 @@ from __future__ import annotations
 import contextvars
 import inspect
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from weakref import WeakKeyDictionary
 
 from veloce._internal import _current_app_var
@@ -140,10 +140,13 @@ def _sync_app_jinja_helpers(env: Environment) -> None:
     token = (id(app), len(filters), len(globs), len(tests))
     if getattr(env, _HELPER_SYNC_TOKEN_ATTR, None) == token:
         return
-    env.globals["url_for"] = app.url_for
-    env.globals["g"] = g
-    env.globals["current_app"] = current_app
-    env.globals["get_flashed_messages"] = get_flashed_messages
+    # `Environment.globals` carries the type of jinja2's default namespace, so
+    # it is read as a mapping of names to anything.
+    env_globals = cast("dict[str, Any]", env.globals)
+    env_globals["url_for"] = app.url_for
+    env_globals["g"] = g
+    env_globals["current_app"] = current_app
+    env_globals["get_flashed_messages"] = get_flashed_messages
     for fname, fn in filters:
         env.filters[fname] = fn
     for gname, fn in globs:

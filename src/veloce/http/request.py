@@ -1606,10 +1606,8 @@ class Request:
         merged: MultiDict[Any] = MultiDict()
         for k, v in self.query_params.items():
             merged.add(k, v)
-        form = await self.form()
-        if form is not None:
-            for k, v in form.items():
-                merged.add(k, v)
+        for k, v in (await self.form()).items():
+            merged.add(k, v)
         return merged
 
     async def text(self) -> str:

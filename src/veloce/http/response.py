@@ -1633,7 +1633,7 @@ class StreamingResponse(Response):
         )
         # Both branches go through an adapter that encodes `str`, so an async
         # generator yielding `str` cannot reach `_write_chunked` as text.
-        self._stream: AsyncIterator[bytes] = (
+        self._stream: AsyncIterator[bytes] | None = (
             self._aiter_async(content)
             if hasattr(content, "__aiter__")
             else self._aiter_sync(content)

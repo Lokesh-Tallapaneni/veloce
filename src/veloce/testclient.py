@@ -28,6 +28,7 @@ from collections.abc import (
     AsyncIterator,
     Awaitable,
     Callable,
+    Generator,
     Iterable,
     Iterator,
     KeysView,
@@ -940,7 +941,7 @@ class TestClient:
         return self._loop.run_until_complete(self.app.wait_for_background_tasks(timeout))
 
     @contextlib.contextmanager
-    def session_transaction(self) -> Iterator[Session]:
+    def session_transaction(self) -> Generator[Session, None, None]:
         """Mutate the session outside a request.
 
         Yields a `Session` dict pre-loaded from the current session

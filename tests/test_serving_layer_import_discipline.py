@@ -21,7 +21,8 @@ import pytest
 
 import veloce
 
-_SERVING = pathlib.Path(veloce.__file__).parent / "serving"
+_SRC = pathlib.Path(veloce.__file__).parent
+_SERVING = _SRC / "serving"
 _MODULES = sorted(_SERVING.glob("*.py"))
 
 
@@ -78,3 +79,28 @@ def test_a_deferred_import_is_not_an_offence():
 
 def test_a_sibling_veloce_import_is_not_an_offence():
     assert _runtime_app_imports("from veloce.websocket import WebSocket") == []
+
+
+# ── the event-loop policy API is not used ────────────────────────────
+#
+# `asyncio.set_event_loop_policy` is deprecated as of Python 3.14 and scheduled
+# for removal in 3.16, and 3.14 is in the CI matrix. `Veloce.run()` selects a
+# loop factory instead, so uvloop is still preferred where it is installed.
+# Source-level because the uvloop branch cannot run on a platform that excludes
+# it, which is where this is most often edited.
+
+
+def test_no_module_uses_the_deprecated_event_loop_policy_api():
+    offenders = [
+        f"{path.relative_to(_SRC).as_posix()}:{number}"
+        for path in sorted(_SRC.rglob("*.py"))
+        for number, line in enumerate(path.read_text(encoding="utf-8").split("\n"), 1)
+        if "set_event_loop_policy" in line or "EventLoopPolicy" in line
+    ]
+    assert offenders == []
+
+
+def test_the_run_path_still_prefers_uvloop():
+    source = (_SRC / "app" / "serving.py").read_text(encoding="utf-8")
+    assert "new_loop = uvloop.new_event_loop" in source
+    assert "loop = new_loop()" in source

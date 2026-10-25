@@ -64,6 +64,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `Veloce.run()` selects a loop factory instead of the event-loop policy API, deprecated in Python 3.14.
+- `StreamingResponse._stream` and `WebSocket._receive_queue` declare the `None` each already holds.
+
 - The native server runs the app's `RequestEntityTooLarge` handler for a `413`, as the ASGI path does.
 - Route and hook decorators preserve the decorated function's type for editors and type checkers.
 - `Depends()` and `Security()` are accepted as a parameter's default by a strict type checker.
