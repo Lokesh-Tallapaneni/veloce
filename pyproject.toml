@@ -247,7 +247,12 @@ dev = [
     "ciso8601>=2.3.3",
 ]
 docs = [
-    "mkdocs-material[imaging]>=9.5",
+    # The `imaging` extra pulls Pillow for the social-card plugin. Pillow's
+    # patched line requires 3.11, so a 3.10 resolution can only pin a
+    # vulnerable 12.x - the extra is asked for where a fixed Pillow exists,
+    # and the docs build runs on 3.12.
+    "mkdocs-material[imaging]>=9.5; python_full_version >= '3.11'",
+    "mkdocs-material>=9.5; python_full_version < '3.11'",
     "mkdocstrings[python]>=0.26",
     "mkdocs-llmstxt>=0.5",
     "mkdocs-redirects>=1.2",
