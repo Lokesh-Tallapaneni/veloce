@@ -111,7 +111,6 @@ _after_hook_sig_cache: weakref.WeakKeyDictionary[Callable[..., Any], _HookBindin
     weakref.WeakKeyDictionary()
 )
 
-# `request._state` key for a route's filtered response-phase chain.
 _MW_RESPONSE_CHAIN_KEY = "_mw_response_chain"
 
 
@@ -159,8 +158,7 @@ def _is_struct_list_model(model: Any) -> bool:
     return False
 
 
-# The type an annotation must name to claim the second value. `BaseException`
-# rather than the raised class, so any base of it matches alike.
+# `BaseException` rather than the raised class, so any base of it matches alike.
 _SECOND_VALUE_TYPES: dict[str, type[Any]] = {"response": Response, "exc": BaseException}
 
 
@@ -199,8 +197,7 @@ def _resolve_hook_binding(fn: Callable[..., Any], second_name: str) -> _HookBind
             elif second_key is None and issubclass(p.annotation, second_type):
                 second_key = p.name
 
-    # Position fills only a parameter with no value yet; a default is the author
-    # stating one, which the closure-capture idiom relies on.
+    # A default is the author stating a value, which closure capture relies on.
     fillable = [
         p.name
         for p in bindable
@@ -223,8 +220,7 @@ def _resolve_hook_binding(fn: Callable[..., Any], second_name: str) -> _HookBind
                     second_key = name
                 else:
                     break
-        # Left unbound deliberately, to reach the `unfillable` refusal below -
-        # which fires on the first request this hook runs for, not at registration.
+        # Left unbound, to reach the `unfillable` refusal on the first request.
 
     unfillable = [n for n in fillable if n != request_key and n != second_key]
     if unfillable:
@@ -329,8 +325,7 @@ class DispatchMixin(AppHost):
             except Exception:
                 self.logger.exception("request_started signal receiver raised")
 
-        # One latch drains `before_first_request` and decides the setup lock; the
-        # double-check guarantees single-fire under a race.
+        # One latch for both; the double-check guarantees single-fire under a race.
         if not self._first_request_fired:
             if self._first_request_lock is None:
                 self._first_request_lock = asyncio.Lock()
@@ -338,29 +333,26 @@ class DispatchMixin(AppHost):
                 if not self._first_request_fired:
                     for hook in self._before_first_request_hooks:
                         await self._call_handler(hook, {})
-                    # Frozen outside DEBUG/TESTING so hot-reload and test
-                    # monkeypatching can keep registering.
+                    # Frozen outside DEBUG/TESTING, so hot-reload keeps working.
                     self._setup_locked = self._setup_lock_enabled and not (
                         self.debug or _coerce_bool(self.config.get("TESTING"))
                     )
                     self._first_request_fired = True
 
-        # On the declared Content-Length and the buffered size; per RFC 9110
-        # Sec. 15.5.14 the status is 413. Skipped when the transport applied it.
+        # On the declared Content-Length and the buffered size; RFC 9110
+        # Sec. 15.5.14 makes it a 413.
         max_size = None if request._length_enforced else self.config.get("MAX_CONTENT_LENGTH")
         if max_size is not None:
             declared = request.content_length
             over = declared is not None and declared > max_size
-            # A streamed body has not arrived - draining it here would defeat
-            # streaming - and the source raises 413 mid-read instead.
+            # A streamed body has not arrived; its source raises 413 mid-read.
             if not over and request._body_drained:
                 buffered = await request.body()
                 over = len(buffered) > max_size
             if over:
                 return await self._body_too_large_response(request, cp, max_size)
 
-        # `None` exactly when `self._instrumentation` is empty, so an
-        # un-instrumented app does not even read the clock.
+        # Empty instrumentation means the clock is not even read.
         instrument = cp.http_finish is not None
         started = time.perf_counter() if instrument else 0.0
 
@@ -370,8 +362,7 @@ class DispatchMixin(AppHost):
             else:
                 response = await self._dispatch_request(request, cp, match)
         except Exception as exc:
-            # Recorded before the exception continues out, so an error request is
-            # never dropped from observability.
+            # Recorded before the exception continues out, or it is never seen.
             if instrument:
                 # Set by `_dispatch_request` before re-raising; unset elsewhere.
                 request._state.setdefault("_error_type", type(exc).__qualname__)
@@ -446,14 +437,12 @@ class DispatchMixin(AppHost):
         # Bound here so the `finally` reads it even when dispatch raises early.
         _scheduled_bg = False
         _bp_name: str | None = None
-        # Deferred until a non-trivial route demands it, and fresh per request: a
-        # shared one would let one request's `reset()` clobber another's teardowns.
+        # Fresh per request: a shared one's `reset()` would clobber the teardowns.
         resolver: DependencyResolver | None = None
         # A local, so the response phase skips a `_state` probe per response.
         excluded = False
         try:
-            # Matched before the middleware request phase, so a route's
-            # `exclude_middleware` opt-out can be honoured, and reused below.
+            # Before the request phase, so `exclude_middleware` can be honoured.
             _matched_path = request.path
             _matched_method = request.method
             if match is None:
@@ -462,15 +451,12 @@ class DispatchMixin(AppHost):
                 request.endpoint = match.route_info.name
                 request._state["url_rule"] = match.route_info.path_template
 
-            # Straight-line fast path: with no app-level feature active and a
-            # fast-eligible route, every phase skipped here is a no-op.
+            # Straight-line fast path: every phase skipped here is a no-op.
             if cp.is_bare and match is not None and match.route_info.is_fast_eligible:
                 route_info = match.route_info
-                # `is_bare` rules out url-value preprocessors and
-                # `is_fast_eligible` route `defaults`, so these params are final.
+                # No preprocessors and no route `defaults`, so these are final.
                 request.path_params = match.path_params
-                # A blueprint's processors apply to its own routes, so they cost
-                # the whole app only this lookup.
+                # A blueprint's processors cost the whole app only this lookup.
                 if cp.bp_url_procs is not None:
                     bp = _endpoint_blueprint(route_info.name)
                     bp_procs = cp.bp_url_procs.get(bp) if bp is not None else None
@@ -481,8 +467,7 @@ class DispatchMixin(AppHost):
                     result = await route_info.handler(**{route_info.request_param_name: request})
                 else:
                     result = await route_info.handler()
-                # `_build_response` reduces to this one call, because
-                # `is_fast_eligible` rules out every other branch of it.
+                # `is_fast_eligible` rules out every other `_build_response` branch.
                 response = self._coerce_response(result)
                 # `is_bare` leaves only the one-shot callbacks; probed inline.
                 if request._state and request._state.get("_after_this_request"):
@@ -499,8 +484,7 @@ class DispatchMixin(AppHost):
                 if early_response is not None:
                     return early_response
 
-            # With none registered the await is skipped, but `bp_name` is still
-            # derived: `_resolve_route` can exit early and the teardown needs it.
+            # `bp_name` is derived either way: the teardown below needs it.
             if self._before_request_hooks or self._bp_before_hooks:
                 early, _bp_name = await self._run_before_hooks(request)
                 if early is not None:
@@ -516,10 +500,8 @@ class DispatchMixin(AppHost):
             match = resolved
             _bp_name = _endpoint_blueprint(request.endpoint)
 
-            # The response-phase chain is NOT refreshed from the final matched
-            # route: the set that ran `process_request` is the set that unwinds.
-
-            # Bound before the handler call, so the `finally` sees it on a raise.
+            # Not refreshed from the final match: the set that ran
+            # `process_request` is the set that unwinds.
             kwargs, resolver = await self._resolve_dependencies(request, match)
             route_info = match.route_info
             result = await self._call_handler(
@@ -540,12 +522,10 @@ class DispatchMixin(AppHost):
             ):
                 response = await self._run_after_hooks(request, response, _bp_name)
 
-            # Fire-and-forget; a scheduled task owns releasing the spool files,
-            # because it may still be reading them.
+            # Fire-and-forget; a scheduled task releases the spool files itself.
             _scheduled_bg = self._schedule_background_tasks(request, response)
 
-            # `None` when no middleware is registered. A route that stashed a
-            # filtered chain takes the dynamic walk instead of the fused one.
+            # A route that stashed a filtered chain takes the dynamic walk.
             http_post = cp.http_post
             if http_post is not None:
                 if excluded:
@@ -568,14 +548,12 @@ class DispatchMixin(AppHost):
             # Inline, so the bare `raise` keeps the original traceback.
             if self._should_propagate_exceptions():
                 raise
-            # Logged here or it is lost: the exception does not leave the app, so
-            # no server ever sees it.
+            # Logged here or lost: the exception does not leave the app.
             self.log_exception(exc, request)
             return await self._shape_server_error(request, exc, cp, excluded)
         finally:
-            # Yield-dependency teardowns first - they wrap the request. A failure
-            # is logged; under PROPAGATE_EXCEPTIONS it re-raises at the END of
-            # this `finally`, so the hooks and signals below still run.
+            # A teardown failure is logged; under PROPAGATE_EXCEPTIONS it re-raises
+            # at the END of this `finally`, so the hooks and signals still run.
             _teardown_to_propagate: BaseException | None = None
             if resolver is not None and resolver._teardowns:
                 try:
@@ -616,7 +594,6 @@ class DispatchMixin(AppHost):
                 except Exception:
                     self.logger.exception("signal receiver raised an exception")
 
-            # Deferred from above, now that the hooks and signals have run.
             if _teardown_to_propagate is not None:
                 raise _teardown_to_propagate
 
@@ -779,15 +756,13 @@ class DispatchMixin(AppHost):
         and url_rule and run the URL value preprocessors. Raises `HTTPException`
         for the 404 / constraint-mismatch cases.
         """
-        # A linear prefix scan, kept deliberately: ~0.07 us per mount per request
-        # (measured min-of-7 over 5k requests each: 0 mounts 5.54 us, 1 mount
-        # 6.74 us, 3 mounts 6.91 us, 10 mounts 7.33 us, 50 mounts 10.14 us).
+        # A linear scan, kept deliberately: ~0.07 us per mount per request (min-of-7
+        # over 5k each: 0 mounts 5.54 us, 3 mounts 6.91 us, 50 mounts 10.14 us).
         if cp.has_mounted_apps:
             for prefix, prefix_slash, sub_app in self._mounted_apps:
                 if request.path.startswith(prefix_slash) or request.path == prefix:
                     sub_path = request.path[len(prefix) :] or "/"
-                    # Only the sub-app knows whether its route streams: hand the
-                    # body source over when it does, otherwise drain here.
+                    # Only the sub-app knows whether its route streams.
                     sub_match = sub_app.match(request.method, sub_path)
                     streams = sub_match is not None and sub_match.route_info.stream
                     # Stacks under the parent's root_path when it is mounted too.
@@ -808,12 +783,10 @@ class DispatchMixin(AppHost):
                 if response is not None:
                     return await self._run_response_middleware(request, response)
 
-        # Re-match only when a hook rewrote the path or method.
         if request.path != matched_path or request.method != matched_method:
             match = self.match(request.method, request.path)
 
-        # The host must be `{subdomain}.{SERVER_NAME}`; `"*"` accepts any. A
-        # mismatch is 404, not 405 - the path is reachable, not from this host.
+        # A mismatch is 404, not 405: the path is reachable, not from this host.
         if (
             match is not None
             and match.route_info.subdomain is not None
@@ -853,8 +826,7 @@ class DispatchMixin(AppHost):
         if match is None:
             allowed = self.get_allowed_methods(request.path)
             if allowed:
-                # RFC 9110 Sec. 9.3.7: OPTIONS auto-responds with `Allow:` and
-                # an empty body even when no handler is registered.
+                # RFC 9110 Sec. 9.3.7: OPTIONS answers `Allow:` with an empty body.
                 if request.method == HTTP_METHOD_OPTIONS:
                     response = self.make_default_options_response(
                         request.path, allowed_methods=allowed
@@ -885,8 +857,7 @@ class DispatchMixin(AppHost):
         request.endpoint = match.route_info.name
         request._state["url_rule"] = match.route_info.path_template
 
-        # Inline so a route with none pays no frame; MCP runs the chain via the
-        # helper below.
+        # Inline so a route with none pays no frame; MCP uses the helper below.
         if self._url_value_preprocessors:
             endpoint = match.route_info.name
             for proc in self._url_value_preprocessors:
@@ -966,8 +937,7 @@ class DispatchMixin(AppHost):
 
         response = self._coerce_response(result, route_info.response_class)
 
-        # Applies only while the response still carries the default 200, so one
-        # the handler set itself wins.
+        # Only while the response still carries the default 200, so a handler wins.
         if (
             route_info.status_code != status.HTTP_200_OK
             and response.status_code == status.HTTP_200_OK
@@ -1047,8 +1017,7 @@ class DispatchMixin(AppHost):
             return False
         tasks = [self.spawn(coro) for coro in coros]
 
-        # A done-callback rather than another spawned task: a failed task still
-        # counts as done, so a failure cannot strand the files.
+        # A done-callback, not a task: a failed task still counts as done.
         form = request._form
         if form is not None:
             remaining = len(tasks)
@@ -1080,18 +1049,17 @@ class DispatchMixin(AppHost):
             response = None
             if handler is not None:
                 response = await self._dispatch_exc_handler(handler, request, exc)
-                # A handler answering this same status inherits the refusal's
-                # headers: RFC 9110 Sec. 15.5.6 makes `Allow` a MUST on a 405.
+                # RFC 9110 Sec. 15.5.6 makes `Allow` a MUST on a 405, so a
+                # handler answering that same status inherits it.
                 if exc.headers and response.status_code == exc.status_code:
                     for _name, _value in exc.headers.items():
                         if not header_present(response.headers, _name):
                             response.headers[_name] = _value
         else:
-            # A `@bp.errorhandler(500)` wins over the app-level table. The class
-            # tables are deliberately not re-walked: the caller already missed them.
+            # A `@bp.errorhandler(500)` wins; the class tables are deliberately
+            # not re-walked, since the caller already missed them.
             handler = self._find_scoped_status_handler(status_code, request)
-            # Through the same guard, since a handler raising here has no outer
-            # `except`.
+            # Through the same guard: a handler raising here has no outer `except`.
             response = (
                 await self._dispatch_exc_handler(handler, request, exc)
                 if handler is not None
@@ -1205,13 +1173,11 @@ class DispatchMixin(AppHost):
                 if is_pydantic_model(inner):
                     dumped: list[Any] = []
                     for item in result:
-                        # Exactly the target model dumps directly, preserving the
-                        # fields-set markers `exclude_unset` reads.
+                        # Dumped directly, preserving what `exclude_unset` reads.
                         if type(item) is inner:
                             dumped.append(item.model_dump(**dump_kwargs))
                         else:
-                            # Dumped first: Pydantic does not revalidate an
-                            # instance that already satisfies the target.
+                            # Pydantic does not revalidate a satisfying instance.
                             payload = (
                                 item.model_dump() if isinstance(item, _PydanticBaseModel) else item
                             )
@@ -1225,10 +1191,9 @@ class DispatchMixin(AppHost):
                     ]
             return result
 
-        # Scalar Pydantic model.
         if is_pydantic_model(model):
-            # The roundtrip would erase the `__pydantic_fields_set__` info that
-            # drives `exclude_unset`, so a SUBCLASS must not take this path.
+            # A roundtrip erases the `__pydantic_fields_set__` info that drives
+            # `exclude_unset`, so a SUBCLASS must not take this path.
             if type(result) is model:
                 return result.model_dump(**dump_kwargs)
             # `exclude_unset` resets: the fields-set markers do not transfer.
@@ -1236,7 +1201,6 @@ class DispatchMixin(AppHost):
             validated = model.model_validate(payload)
             return validated.model_dump(**dump_kwargs)
 
-        # msgspec struct / dataclass / TypedDict shape through the shared shaper.
         # The exact type is tested first - `backend_of` walks an isinstance ladder.
         if type(result) is model:
             return result
@@ -1267,8 +1231,7 @@ class DispatchMixin(AppHost):
         JSON option, in which case that dialect applies here too.
         """
         dumps = self._json_dumps_override()
-        # `from_bytes` on both branches: encoding here rather than through
-        # `JSONResponse(data)` avoids resolving the dialect twice.
+        # Encoding here rather than in `JSONResponse(data)` resolves the dialect once.
         body = orjson.dumps(data, default=orjson_default) if dumps is None else dumps(data)
         return JSONResponse._from_encoded(body)
 
@@ -1287,12 +1250,10 @@ class DispatchMixin(AppHost):
         """Convert handler return value to a Response object."""
         if isinstance(result, Response):
             return result
-        # Gated on `response_class is None` so the JSONResponse-subclass branch
-        # below still owns dicts.
+        # Gated so the JSONResponse-subclass branch below still owns dicts.
         if type(result) is dict and response_class is None:
             return self._json_from_handler(result)
-        # A msgspec struct encodes in C with no intermediate dict; with a
-        # response_class it is normalized to builtins so that class renders it.
+        # A struct encodes in C; with a response_class it normalizes to builtins.
         if _HAS_MSGSPEC and _is_msgspec_payload(result):
             if response_class is None:
                 dumps = self._json_dumps_override()
@@ -1325,8 +1286,8 @@ class DispatchMixin(AppHost):
                 return response_class.from_bytes(dumps(result))
             if isinstance(result, (str, bytes)):
                 return response_class(result)
-            # Try, then translate: refusing before attempting would also turn
-            # away a user-defined serialiser that renders the value perfectly well.
+            # Try, then translate: refusing first would turn away a serialiser
+            # that renders the value perfectly well.
             try:
                 return response_class(result)
             except (AttributeError, TypeError) as exc:
@@ -1564,5 +1525,4 @@ class DispatchMixin(AppHost):
                 body=value.encode("utf-8"),
                 content_type=MIME_HTML,
             )
-        # JSON, matching what dispatch does with the same value from a handler.
         return jsonify(value)

@@ -1,9 +1,7 @@
 """Background-task supervision — the app's spawn / supervise machinery.
 
 Mixed into `Veloce`. These methods manage long-lived tasks the application
-spawns (not request handlers), operating on the app's `_spawned_named` /
-`_spawned_anon` registries and its logger, so they live off the per-request
-path.
+spawns, not request handlers, so they live off the per-request path.
 """
 
 from __future__ import annotations
@@ -32,18 +30,11 @@ class BackgroundTasksMixin(AppHost):
     ) -> asyncio.Task[Any]:
         """Schedule a long-lived, app-scoped background task.
 
-        Unlike per-request background tasks, a spawned task lives for the
-        application's lifetime: it is tracked with a strong reference (so the
-        loop cannot GC it mid-flight) and is cancelled-and-drained during
-        shutdown, honouring the `GRACEFUL_TASK_TIMEOUT` config budget per
-        task. Pass `name` to make the task retrievable and cancellable by
-        name via `get_spawned_task` / `cancel_spawned_task`; a duplicate name
-        raises. Failures are logged through the same path as request-scoped
-        background tasks, so app and request work surface uniformly.
-
-        Must be called with a running event loop (e.g. from within an
-        `on_startup` handler, the lifespan CM, or a request); calling it
-        before the loop exists raises `RuntimeError`.
+        A spawned task lives for the application's lifetime: it is tracked with
+        a strong reference, so the loop cannot GC it mid-flight, and is
+        cancelled-and-drained at shutdown within the `GRACEFUL_TASK_TIMEOUT`
+        budget. Pass `name` to make it retrievable and cancellable by name; a
+        duplicate name raises. Requires a running event loop.
 
         Usage::
 
@@ -97,31 +88,17 @@ class BackgroundTasksMixin(AppHost):
     ) -> asyncio.Task[Any]:
         """Run a long-lived coroutine, restarting it on failure.
 
-        `coro_factory` is a zero-argument callable that returns a fresh
-        coroutine each time it is invoked - the supervisor calls it to start
-        the task and again to restart after a crash, so a single coroutine
-        object (which cannot be re-awaited) is not accepted. The supervised
-        coroutine is expected to run for the application's lifetime; if it
-        returns normally the supervisor restarts it, and if it raises the
-        failure is logged and the coroutine is restarted after a bounded
-        backoff delay. `asyncio.CancelledError` is never suppressed, so the
-        task stops cleanly when cancelled at shutdown.
+        `coro_factory` returns a fresh coroutine on each call - the supervisor
+        calls it to start and again to restart, so a single coroutine object is
+        not accepted. A normal return is restarted too, a raise is logged and
+        restarted after a bounded backoff, and `asyncio.CancelledError` is never
+        suppressed.
 
-        A count-within-window circuit breaker bounds runaway restarts: at most
-        `max_restarts` restarts are allowed within any `restart_window` seconds.
-        The restart counter resets whenever the coroutine runs for longer than
-        the window without failing (a clean run), so steady-state restarts far
-        apart never trip the breaker; a tight crash loop does. When the breaker
-        trips the supervisor logs the give-up and stops restarting. `backoff`
-        is the initial delay between restarts and doubles up to `max_backoff`
-        on consecutive failures, resetting to `backoff` after a clean run.
-
-        The supervisor itself runs as an `app.spawn(...)` task, so it is tracked
-        with a strong reference and cancelled-and-drained on shutdown like any
-        other spawned task. `name` is required (the supervisor task is named so
-        it is retrievable / cancellable via `get_spawned_task` /
-        `cancel_spawned_task`); a duplicate name raises. Must be called with a
-        running event loop.
+        A count-within-window breaker bounds runaway restarts: at most
+        `max_restarts` within any `restart_window` seconds, with the counter and
+        the doubling `backoff` reset by any run longer than the window. The
+        supervisor itself runs as an `app.spawn(...)` task, so `name` is
+        required and a duplicate raises.
 
         Usage::
 
@@ -135,9 +112,8 @@ class BackgroundTasksMixin(AppHost):
                 "fresh coroutine (e.g. `lambda: worker()`), not a coroutine "
                 "object - a coroutine cannot be re-awaited after a restart."
             )
-        # Reject a duplicate name before building the supervisor coroutine so a
-        # rejected call leaves no un-awaited coroutine behind (spawn would also
-        # reject, but only after the coroutine object exists).
+        # Before building the supervisor coroutine, so a rejected call leaves no
+        # un-awaited coroutine behind.
         if name in self._spawned_named:
             raise ValueError(f"a spawned task named {name!r} already exists")
         return self.spawn(
@@ -155,15 +131,10 @@ class BackgroundTasksMixin(AppHost):
     async def wait_for_background_tasks(self, timeout: float | None = 5.0) -> bool:
         """Wait for every currently-spawned background task to finish.
 
-        Returns `True` when they all completed, `False` when `timeout` elapsed
-        first. Tasks are left running either way - this waits, it does not
-        cancel; `_drain_spawned_tasks` is the shutdown path that does.
-
-        A response's background task runs *after* the response is sent, which is
-        the point of it, so a caller that needs its effect - a test asserting the
-        email was queued, a script that must not exit early - otherwise has to
-        guess at a sleep or drive the loop by hand. Newly spawned tasks are
-        picked up too: a task that spawns another is waited for in full.
+        `True` when they all completed, `False` when `timeout` elapsed first.
+        Tasks are left running either way - this waits, it does not cancel.
+        Newly spawned tasks are picked up too, so a task that spawns another is
+        waited for in full.
 
         Usage::
 
@@ -187,11 +158,9 @@ class BackgroundTasksMixin(AppHost):
     def _log_background_task_error(self, task: asyncio.Task[Any]) -> None:
         """Report a finished task's failure, called from `_spawned_task_done`.
 
-        Pulls the exception off the future (silencing
-        `Task exception was never retrieved` warnings) and logs it via
-        `self.logger` so failures are observable instead of silently dropped.
-        Never re-raises: nothing awaits a spawned task, so there is no caller to
-        raise into.
+        Pulling the exception off the future also silences the
+        `Task exception was never retrieved` warning. Never re-raises: nothing
+        awaits a spawned task, so there is no caller to raise into.
         """
         if task.cancelled():
             return
@@ -220,9 +189,8 @@ class BackgroundTasksMixin(AppHost):
         """Drive `coro_factory` forever, restarting on failure with a breaker.
 
         Re-raises `asyncio.CancelledError` immediately so shutdown cancellation
-        propagates. Counts failures within a sliding window; once the count
-        reaches `max_restarts` the supervisor logs and returns rather than
-        restarting, so a crash loop cannot spin the loop unbounded.
+        propagates. Once the sliding window's failure count reaches
+        `max_restarts` the supervisor logs and returns rather than restarting.
         """
         failures = 0
         window_start = time.monotonic()
@@ -230,18 +198,16 @@ class BackgroundTasksMixin(AppHost):
         while True:
             started = time.monotonic()
             try:
-                # The factory may do synchronous setup before building the
-                # coroutine; if THAT raises it is a crash like any other and is
-                # restarted, not propagated out of the supervisor.
+                # A factory doing synchronous setup may raise, which is a crash
+                # like any other and is restarted rather than propagated.
                 awaitable = coro_factory()
             except asyncio.CancelledError:
                 raise
             except BaseException as exc:  # noqa: BLE001 - logged and restarted
                 self.logger.error("Supervised task %r crashed; will restart", name, exc_info=exc)
             else:
-                # A non-awaitable RETURN is a programmer error (the contract
-                # requires a fresh coroutine each call), not a crash: fail fast
-                # and surface it rather than retrying to the breaker.
+                # A non-awaitable RETURN is a programmer error, not a crash, so
+                # it fails fast rather than retrying to the breaker.
                 if not inspect.isawaitable(awaitable):
                     raise TypeError(
                         f"app.supervise() factory for {name!r} must return a fresh "
@@ -251,37 +217,33 @@ class BackgroundTasksMixin(AppHost):
                 try:
                     await awaitable
                 except asyncio.CancelledError:
-                    # Shutdown / explicit cancel - propagate so the spawned task
-                    # drains cleanly and is not "restarted" into a new coroutine.
+                    # Propagated, so the task drains rather than restarting.
                     raise
                 except BaseException as exc:  # noqa: BLE001 - logged and restarted
                     self.logger.error(
                         "Supervised task %r crashed; will restart", name, exc_info=exc
                     )
                 else:
-                    # A normal return is still treated as "needs restarting": a
-                    # supervised task is meant to run for the app's lifetime, so a
-                    # silent exit is logged rather than left dead.
+                    # A supervised task runs for the app's lifetime, so a silent
+                    # exit is logged rather than left dead.
                     self.logger.warning("Supervised task %r returned; restarting", name)
             now = time.monotonic()
-            # A run that lasted longer than the window is a clean run: reset the
-            # failure count and the backoff so only tight crash loops accumulate.
+            # A run longer than the window is a clean run, so only tight crash
+            # loops accumulate.
             if now - started >= restart_window:
                 failures = 0
                 window_start = now
                 delay = backoff
             else:
-                # Slide the window forward when it has elapsed since the first
-                # counted failure, so failures spaced further apart than the
-                # window never trip the breaker.
+                # Slid forward from the first counted failure, so failures spaced
+                # further apart than the window never trip the breaker.
                 if now - window_start >= restart_window:
                     failures = 0
                     window_start = now
                     delay = backoff
                 failures += 1
-                # `max_restarts` counts RESTARTS, not failed runs: allow N
-                # restarts, then give up on the (N+1)th failure. (`>=` here would
-                # make `max_restarts=1` retry zero times - off by one.)
+                # `max_restarts` counts RESTARTS, not failed runs; `>=` here
+                # would make `max_restarts=1` retry zero times.
                 if failures > max_restarts:
                     self.logger.error(
                         "Supervised task %r exceeded %d restarts within %.0fs; giving up",
@@ -297,12 +259,9 @@ class BackgroundTasksMixin(AppHost):
         """Cancel and await every spawned task within the per-task budget.
 
         Run twice by the shutdown lifecycle: once before the `on_shutdown`
-        handlers, and again in a `finally` after they and the lifespan stack have
-        unwound - so a task spawned by a teardown callback is drained too rather
-        than surviving past shutdown. Each task gets at most
-        `GRACEFUL_TASK_TIMEOUT` seconds to finish cancelling; a task that ignores
-        cancellation past that is abandoned so shutdown cannot hang
-        indefinitely.
+        handlers, and again in a `finally` after they and the lifespan stack
+        have unwound, so a task spawned by a teardown callback is drained too.
+        One that ignores cancellation past `GRACEFUL_TASK_TIMEOUT` is abandoned.
         """
         tasks = [*self._spawned_named.values(), *self._spawned_anon]
         if not tasks:
@@ -310,11 +269,8 @@ class BackgroundTasksMixin(AppHost):
         timeout = self.config.get("GRACEFUL_TASK_TIMEOUT", 10)
         for task in tasks:
             task.cancel()
-        # `wait` never raises for a task that errored or was cancelled - it just
-        # reports it done - so the drain observes completion without re-raising
-        # per-task failures (already logged by the done-callback). A task that
-        # ignores cancellation past the budget lands in `pending` and is left
-        # behind rather than hanging shutdown.
+        # `wait` reports an errored or cancelled task as done rather than
+        # raising, and one past the budget lands in `pending` and is left behind.
         await asyncio.wait(tasks, timeout=timeout)
         self._spawned_named.clear()
         self._spawned_anon.clear()

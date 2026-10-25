@@ -2,15 +2,12 @@
 
 These touch no `MCPServer` instance state: they shape tool / resource / prompt
 values into their MCP wire forms, map HTTP semantics onto MCP annotation hints,
-and carry the small marker objects the invocation path threads back to the
-dispatcher. `server.py` and the `TasksMixin` / `InvocationMixin` mixins import
-what they need from here, keeping the stateful dispatch core focused.
+and carry the markers the invocation path threads back to the dispatcher.
 
 The module also owns the `META_*` keys the modern revision reserves on the wire,
-the dispatch core's per-call ContextVars (the notifier, log level, request id,
-protocol era, in-flight registration and server->client requester), and the
-mutable `_InFlight` holder those vars carry. Being a leaf keeps them reachable
-from `session` and the transports without importing the dispatch core.
+the dispatch core's per-call ContextVars and the mutable `_InFlight` holder those
+vars carry. Being a leaf keeps them reachable from `session` and the transports
+without importing the dispatch core.
 """
 
 from __future__ import annotations
@@ -58,74 +55,40 @@ if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.resources import MCPResource
 
 
-# The `_meta` keys the modern revision reserves. Prefixed per the spec's naming
-# rules, so an application's own `_meta` entries cannot collide with them. They
-# live here rather than in `server` because `session` and the HTTP transport
-# read them too, and importing the dispatch core from a leaf for two string
-# constants is the wrong direction for the dependency to run.
+# Prefixed per the spec, so an application's own `_meta` cannot collide.
 META_PROTOCOL_VERSION = "io.modelcontextprotocol/protocolVersion"
 META_CLIENT_INFO = "io.modelcontextprotocol/clientInfo"
 META_CLIENT_CAPABILITIES = "io.modelcontextprotocol/clientCapabilities"
-# The modern revision sets the log level per request rather than per connection. A
-# request that omits it gets no `notifications/message` at all.
+# Per request, not per connection; omitting it means no notifications at all.
 META_LOG_LEVEL = "io.modelcontextprotocol/logLevel"
 META_SERVER_INFO = "io.modelcontextprotocol/serverInfo"
 
 
 # ── Per-call state ──────────────────────────────────────────
 
-# The per-call state the dispatch core owns. It is held in ContextVars rather
-# than on the server because many concurrent calls share one `MCPServer` on the
-# Streamable HTTP transport. The state a handler reaches through `MCPContext`
-# lives beside that class in `context`, so the two sets are split by who reads
-# them rather than by which module imports which.
+# ContextVars, because concurrent HTTP calls share one `MCPServer`.
 
-# The current call's outbound notification sink, scoped per request so a handler's
-# progress / log notifications reach the right client. A ContextVar (not an
-# instance attribute) keeps concurrent calls isolated on the Streamable HTTP
-# transport, where many requests share one `MCPServer`; the serial stdio transport
-# sets it once per serve task. `None` means no channel is wired (off-transport).
+# The current call's outbound notification sink; `None` means no channel is wired.
 _notifier_var: ContextVar[Callable[[dict[str, Any]], Awaitable[None]] | None] = ContextVar(
     "_mcp_notifier", default=None
 )
 
 
-# The current call's `logging/setLevel` minimum, scoped per request like the
-# notifier so one HTTP client's level change cannot raise the floor for another.
-# `None` until set (emit all). The serial stdio loop sets it once in its serve
-# task, where it persists for the connection.
+# The call's `logging/setLevel` minimum; `None` until set, meaning emit all.
 _log_level_var: ContextVar[str | None] = ContextVar("_mcp_log_level", default=None)
 
-# The current request's in-flight registration, set by `handle_message` for an
-# id-bearing (cancellable) request so the invocation can attach its `MCPContext`.
-# `None` for a notification or off-dispatch construction. A ContextVar keeps
-# concurrent HTTP calls isolated, exactly like the notifier / log-level vars.
+# Set for an id-bearing request so the invocation can attach its `MCPContext`.
 _inflight_var: ContextVar[_InFlight | None] = ContextVar("_mcp_inflight", default=None)
 
 
-# The JSON-RPC id of the request being dispatched. A `subscriptions/listen` needs
-# it because the spec defines the stream's subscription id as that id, and the
-# handler signature carries only params. Set once per message beside the session.
+# The spec defines a `subscriptions/listen` stream's subscription id as this id.
 _request_id_var: ContextVar[Any] = ContextVar("_mcp_request_id", default=None)
 
-# Whether the message being answered came from a modern client, resolved once by
-# `handle_message` and read by every function that shapes a result. It is a
-# ContextVar rather than an argument threaded through those functions because a
-# `modern=` parameter is one a new call site can be written without: that is how
-# `tasks/cancel` and the task status notification came to emit the handshake
-# field names to a modern client while creation and polling emitted the modern
-# ones. Per message, not per connection - the modern revision negotiates nothing
-# and states its version on every request, so one connection may carry both eras.
-# A detached task runner inherits the era of the request that created it, which
-# is what its notifications should carry. Defaults to the handshake era so a bare
-# `handle_message` call outside a transport still resolves.
+# Per message, not per connection: the revision negotiates nothing and states its
+# version on every request, so one connection may carry both eras.
 _era_modern_var: ContextVar[bool] = ContextVar("_mcp_era_modern", default=False)
 
-# The current call's server->client request issuer, set by a bidirectional
-# transport so a tool's `MCPContext.sample` / `elicit` / `roots` can call the
-# client and await the correlated reply. `None` off a bidirectional transport (the
-# one-way HTTP/stdio default), where those methods raise. A ContextVar keeps
-# concurrent connections' requesters isolated, like the notifier var.
+# Set by a bidirectional transport; `None` elsewhere, where `sample` raises.
 _requester_var: ContextVar[Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]] | None] = (
     ContextVar("_mcp_requester", default=None)
 )
@@ -148,19 +111,16 @@ def _attach_result_meta(result: dict[str, Any], meta: dict[str, Any]) -> dict[st
 class _InFlight:
     """One id-bearing request the client may cancel while it runs.
 
-    Holds the request's task and - once `_invoke` builds it - the call's
-    `MCPContext`. `cancel` flips the context flag (so a cooperative handler that
-    polls `ctx.cancelled` stops) and cancels the task (so a handler blocked on an
-    `await` unwinds). The `initialize` request is never registered: the spec
-    forbids cancelling it.
+    `cancel` flips the context flag, so a handler polling `ctx.cancelled` stops,
+    and cancels the task, so one blocked on an `await` unwinds. The `initialize`
+    request is never registered: the spec forbids cancelling it.
     """
 
     __slots__ = ("task", "context")
 
     def __init__(self, task: asyncio.Task[Any]) -> None:
         self.task = task
-        # Attached by `_invoke` when the tool context exists; `None` for a method
-        # (resources/read, prompts/get) that builds no `MCPContext` to expose.
+        # `None` for a method that builds no `MCPContext` to expose.
         self.context: MCPContext | None = None
 
     def cancel(self) -> None:
@@ -170,10 +130,7 @@ class _InFlight:
         self.task.cancel()
 
 
-# HTTP-method semantics mapped to MCP tool annotation hints. Read-only verbs do
-# not modify state; idempotent verbs are safe to retry; a mutating verb that is
-# not purely additive (PUT/PATCH/DELETE) is flagged destructive so a client can
-# prompt for consent. These are advisory hints a client may ignore.
+# HTTP-method semantics as MCP annotation hints, which a client may ignore.
 _READONLY_METHODS = frozenset(
     {HTTP_METHOD_GET, HTTP_METHOD_HEAD, HTTP_METHOD_OPTIONS, HTTP_METHOD_TRACE, HTTP_METHOD_QUERY}
 )
@@ -205,13 +162,8 @@ def _tool_annotations(methods: list[str], title: str | None) -> dict[str, Any] |
 
     A multi-verb route is rated conservatively across every verb it serves:
     read-only and idempotent only when *all* verbs qualify, destructive when
-    *any* verb is non-additive (so a `GET`+`DELETE` route is flagged
-    destructive, not read-only). `openWorldHint` is `False` only for a fully
-    read-only route - an operation over the server's own data is closed-world;
-    any mutating route is left to the spec's open-world default (omitted). The
-    human-facing `title`, when the route declares a summary, is carried too. A
-    pure `@app.mcp_tool` (no route) has no HTTP verb to map; it still gets a
-    `title`-only annotation block when an explicit title was set.
+    *any* verb is non-additive. A pure `@app.mcp_tool` has no HTTP verb to map,
+    so it gets a `title`-only annotation block when a title was set.
     """
     annotations: dict[str, Any] = {}
     if title:
@@ -222,9 +174,7 @@ def _tool_annotations(methods: list[str], title: str | None) -> dict[str, Any] |
         annotations["readOnlyHint"] = read_only
         annotations["idempotentHint"] = verbs <= _IDEMPOTENT_METHODS
         annotations["destructiveHint"] = not (verbs <= _NON_DESTRUCTIVE_METHODS)
-        # A read-only route operates only on the server's own resources, so it is
-        # a closed-world operation; a mutating route may reach external systems,
-        # which the spec's omitted (open-world) default already covers.
+        # A mutating route takes the spec's omitted open-world default instead.
         if read_only:
             annotations["openWorldHint"] = False
     return annotations or None
@@ -244,9 +194,7 @@ def _to_structured(value: Any) -> dict[str, Any] | None:
         dumped = model_dump(mode="json")
         if isinstance(dumped, dict):
             return dumped
-    # A dataclass instance carries the same object form its declared schema
-    # describes; dump it through the adapter so nested dates and enums render
-    # the way the schema says they will.
+    # Through the adapter, so nested dates and enums match the declared schema.
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         dumped = shape_through_model(value, type(value))
         if isinstance(dumped, dict):
@@ -257,10 +205,8 @@ def _to_structured(value: Any) -> dict[str, Any] | None:
 def _text_result(text: str, *, is_error: bool = False) -> dict[str, Any]:
     """Build a tool-call result whose content is a single text block.
 
-    Every successful-text and in-band-error tool result shares this single
-    text-content shape; routing them through `TextContent` keeps the wire form in
-    one place. An in-band failure (a timeout, a raised handler, a non-conforming
-    result) sets `isError`; a plain text success omits it.
+    An in-band failure (a timeout, a raised handler, a non-conforming result)
+    sets `isError`; a plain text success omits it.
     """
     result: dict[str, Any] = {"content": [TextContent(text).to_payload()]}
     if is_error:
@@ -271,16 +217,10 @@ def _text_result(text: str, *, is_error: bool = False) -> dict[str, Any]:
 def _content_blocks(value: Any) -> list[dict[str, Any]] | None:
     """Render a handler's content-block return as a result's content array.
 
-    A tool result carries a *list* of content blocks, so a handler that has more
-    than one thing to say - a caption beside an image, a chart beside the figures
-    behind it - returns the blocks it wants and they are emitted in order. A
-    single block is accepted as itself, since wrapping one block in a list to say
-    "just this" is noise.
-
-    Any other return is data and shapes as before, so this costs one `isinstance`
-    on the common path. A list is probed by its first element only: a
-    `list[int]` return must not pay a scan of every item to learn it is not
-    blocks.
+    A tool result carries a *list* of content blocks, emitted in order; a single
+    block is accepted as itself. Any other return is data, so this costs one
+    `isinstance` on the common path, and a list is probed by its first element
+    only rather than scanned.
     """
     if isinstance(value, ContentBlock):
         return [value.to_payload()]
@@ -288,8 +228,7 @@ def _content_blocks(value: Any) -> list[dict[str, Any]] | None:
         blocks = []
         for index, item in enumerate(value):
             if not isinstance(item, ContentBlock):
-                # Silently serialising the rest would emit an object repr as if it
-                # were the answer; name the offending position instead.
+                # Rather than emit an object repr as if it were the answer.
                 raise _InBandError(
                     "a tool returning content blocks must return only content "
                     f"blocks; item {index} is {type(item).__name__}"
@@ -303,11 +242,9 @@ def _binary_result(response: Response) -> dict[str, Any] | None:
     """Shape an image/audio response body into a typed MCP content block.
 
     MCP defines first-class `image` and `audio` content blocks carrying the bytes
-    as base64 with their media type. A body of either kind has no useful text
-    form, so it is emitted as that typed block instead of a garbled decoded-text
-    block; any other media type returns `None` and the caller shapes it as text /
-    structured content as before. A 4xx/5xx still flags `isError` so an error is
-    never read as a successful result.
+    as base64 with their media type; any other media type returns `None` and the
+    caller shapes it as text or structured content. A 4xx/5xx still flags
+    `isError`, so an error is never read as a successful result.
     """
     mimetype = response.mimetype
     if mimetype.startswith("image/"):
@@ -324,13 +261,7 @@ def _binary_result(response: Response) -> dict[str, Any] | None:
     return result
 
 
-# Response headers a route handler sets to deliver its MCP result as a resource
-# reference rather than inline content. Both are opt-in: a response without them
-# takes the unchanged text/structured/binary path, so the wire form is identical
-# for a route that uses neither. The link form references a resource the client
-# reads later (`resources/read`); the embedded form inlines the body's contents
-# so the agent reads the data without a follow-up call. The values are an MCP
-# resource URI; they are harmless custom headers on the HTTP door.
+# Opt-in headers carrying an MCP resource URI, harmless on the HTTP door.
 _HEADER_RESOURCE_LINK = "x-mcp-resource-link"
 _HEADER_EMBEDDED_RESOURCE = "x-mcp-embedded-resource"
 
@@ -338,10 +269,9 @@ _HEADER_EMBEDDED_RESOURCE = "x-mcp-embedded-resource"
 def _mcp_resource_header(response: Response, name: str) -> str | None:
     """Return a response header value by case-insensitive name, or `None`.
 
-    `Response.headers` is a plain dict keyed by the casing the handler chose, so
-    a fixed-case lookup would miss `X-MCP-Resource-Link` set as `x-mcp-...`. The
-    scan runs only on the MCP tool-call path (never the HTTP hot path) and over a
-    handful of headers, so the per-call cost is immaterial.
+    `Response.headers` is keyed by the casing the handler chose, so a fixed-case
+    lookup would miss `X-MCP-Resource-Link` set as `x-mcp-...`. The scan runs
+    only on the MCP tool-call path, never the HTTP hot path.
     """
     for key, value in response.headers.items():
         if key.lower() == name:
@@ -353,11 +283,9 @@ def _resource_result_from_response(tool: MCPTool, response: Response) -> dict[st
     """Emit a resource-link / embedded-resource result when the response asks for one.
 
     A route signals the intent with the `X-MCP-Resource-Link` /
-    `X-MCP-Embedded-Resource` header carrying the resource URI. The link form
-    references the URI (the client follows it with `resources/read`); the
-    embedded form inlines the body's contents at that URI. A response carrying
-    neither header returns `None`, leaving the caller's existing shaping path
-    untouched.
+    `X-MCP-Embedded-Resource` header carrying the resource URI: the link form
+    references it for a later `resources/read`, the embedded form inlines the
+    body's contents. Neither header returns `None`.
     """
     link_uri = _mcp_resource_header(response, _HEADER_RESOURCE_LINK)
     if link_uri:
@@ -399,10 +327,8 @@ def _build_resource_listing_entry(resource: MCPResource, uri_key: str) -> dict[s
 def _declared_mime_type(resource: MCPResource) -> str | None:
     """Return the media type the route declares for a resource, if any.
 
-    Only a declared type is advertised. The response class is picked from the
-    handler's actual return value, so a type inferred from its annotation could
-    disagree with what `resources/read` goes on to return - and a listing that
-    contradicts the read is worse than one that stays silent.
+    Only a declared type is advertised: an inferred one could contradict what
+    `resources/read` goes on to return, which is worse than staying silent.
     """
     route_info = resource.tool.route_info
     if route_info is None:
@@ -414,9 +340,8 @@ def _declared_mime_type(resource: MCPResource) -> str | None:
     media_type = getattr(response_class, "default_media_type", None)
     if not isinstance(media_type, str):
         return None
-    # A read reports the bare media type, so the listing drops any parameters
-    # (RFC 9110 Sec. 8.3.1) rather than advertising `text/html; charset=utf-8`
-    # against a read that answers `text/html`.
+    # A read reports the bare media type, so the listing drops the parameters
+    # RFC 9110 Sec. 8.3.1 allows rather than advertising a type the read will not.
     return media_type.split(";", 1)[0].strip() or None
 
 
@@ -441,11 +366,9 @@ def _resource_contents(
 ) -> dict[str, Any]:
     """Shape a resource route's response body into one MCP resource-contents entry.
 
-    A JSON or `text/*` body is returned as `text` (the value an agent reads); any
-    other media type is returned as a base64 `blob`. The entry carries the read
-    URI and the resource's media type: the one the route declared when it named
-    one, so a read reports what the listing advertised, and the response's own
-    otherwise.
+    A JSON or `text/*` body is returned as `text`, any other media type as a
+    base64 `blob`. The media type is the one the route declared when it named
+    one, so a read reports what the listing advertised.
     """
     mimetype = declared_mime_type or response.mimetype
     body = response.body or b""
@@ -485,8 +408,7 @@ def _user_text_message(text: str) -> dict[str, Any]:
     return {"role": "user", "content": TextContent(text).to_payload()}
 
 
-# Valid MCP prompt message roles; an unrecognised role from a handler-built
-# message falls back to "user".
+# An unrecognised role on a handler-built message falls back to "user".
 _PROMPT_ROLES = frozenset({"user", "assistant"})
 
 
@@ -521,18 +443,15 @@ def _normalize_prompt_messages(result: Any, dumps: Any = None) -> list[dict[str,
     return [_user_text_message(_stringify(result, dumps))]
 
 
-# Returned by a handler whose request is answered later rather than now. A
-# `subscriptions/listen` is a long-lived request: its response is the graceful
-# close, so the dispatcher must emit nothing when the handler returns.
+# A `subscriptions/listen` response is the graceful close, so nothing is emitted.
 _DEFERRED_RESPONSE = object()
 
 
 def _principal_lacks_scopes(required: frozenset[str]) -> bool:
     """Return whether the current principal is missing any of `required`.
 
-    A tool / resource with no required scopes is always allowed. Otherwise the
-    request principal (set by the transport's authentication) must hold every
-    required scope; an absent principal can satisfy no non-empty requirement.
+    A tool with no required scopes is always allowed; otherwise the request
+    principal must hold every one, and an absent principal satisfies none.
     """
     if not required:
         return False
@@ -543,23 +462,13 @@ def _principal_lacks_scopes(required: frozenset[str]) -> bool:
 def _route_path_params(route_info: Any, arguments: dict[str, Any]) -> dict[str, Any]:
     """Build `request.path_params` for a route-backed tool call.
 
-    The HTTP path fills `path_params` from the URL segments the router matched;
-    a tool call has no URL, so the equivalent values arrive as named entries in
-    the JSON `arguments`. Copy each argument whose name is one of the route's
-    declared path parameters, then fill any route `defaults` not supplied, so a
-    hook / dependency / handler that reads `request.path_params` sees the same
-    mapping it would on the HTTP path.
+    A tool call has no URL, so the values the router would have matched arrive
+    as named entries in the JSON `arguments`. Anything reading
+    `request.path_params` then sees the mapping it would on the HTTP path.
     """
     params = {name: arguments[name] for name in route_info.param_names if name in arguments}
-    # Run each value through the converter the router would have applied. The
-    # HTTP door guarantees a converter-validated, converter-typed value - a
-    # segment the converter refuses never dispatches at all - while this door
-    # copied the JSON argument verbatim, so a `{user_id:int}` route could
-    # receive a string, a dict, a bool or a list here. Anything reading
-    # `request.path_params` (a `before_request` hook, a route dependency, a
-    # handler that does not declare the parameter) then saw a type the tool's
-    # own `inputSchema` said was an integer. Refused in band, which is the same
-    # answer the HTTP door expresses as a non-match.
+    # Through the converter the router would have applied, so a `{user_id:int}`
+    # route cannot receive a string here. Refused in band, not as a non-match.
     for name, converter in path_param_converters(route_info.path_template).items():
         if name not in params:
             continue
@@ -576,8 +485,7 @@ def _progress_token(params: dict[str, Any]) -> str | int | None:
     """Return the call's `_meta.progressToken`, or `None` when none was sent.
 
     A client opts into progress notifications by attaching a `progressToken` to a
-    request's `_meta`; without one the server reports no progress (per the MCP
-    progress utility).
+    request's `_meta`; without one the server reports none.
     """
     meta = params.get("_meta")
     if isinstance(meta, dict):
@@ -592,9 +500,7 @@ def _response_body_value(response: Response) -> Any:
 
     A JSON-typed body is decoded back to a Python value so the tool result
     carries the same JSON the HTTP client would receive; any other body decodes
-    to its text. The body bytes are the already-rendered response body, so no
-    further response-model work is needed. A streamed response has been buffered
-    into its body by `_drain_stream` before this runs.
+    to its text. A streamed response was buffered by `_drain_stream` first.
     """
     body = response.body
     if not body:
@@ -611,30 +517,18 @@ def _stringify(result: Any, dumps: Any = None) -> str:
     """Serialise a handler return value to the text content of a tool result.
 
     `dumps` is the application's serialiser, or `None` when it configured none
-    and the direct encoder already emits the same bytes. `MCPServer` resolves it
-    once at construction, so this costs an argument rather than a per-call
-    lookup - the reason an earlier attempt was rejected was a `contextvar` read
-    here, 99ns against a 424ns render.
-
-    Without it, a tool declared with `@app.mcp_tool` returned stock JSON while a
-    tool exposed from a route returned the app's dialect - the route-backed one
-    only by accident, because its response body is encoded through the provider
-    and then decoded and re-encoded here. Two tools, one server, one payload,
-    two answers.
+    and the direct encoder already emits the same bytes, so a `@app.mcp_tool` and
+    a route-backed tool answer in one dialect. `MCPServer` resolves it once at
+    construction, so this costs an argument rather than a per-call lookup: a
+    `contextvar` read here measured 99ns against a 424ns render.
     """
     if isinstance(result, str):
         return result
-    # A bare byte string is the text form of the result, not a value inside it,
-    # so it is handed over as text rather than JSON-encoded into a quoted
-    # string. Bytes nested in a mapping or sequence go through the encoder's
-    # fallback below and are quoted like any other member.
+    # A bare byte string is the result's text form; nested bytes are quoted.
     if isinstance(result, (bytes, bytearray, memoryview)):
         return _bytes_to_text(result)
-    # No fallback to `str(result)`: the hook's own last resort already handles
-    # an unknown object, so what still fails here is a value the framework
-    # refuses outright (a `Secret`) or a structure it cannot represent (a cycle).
-    # Emitting a Python repr for either would put the shape this encoder exists
-    # to prevent into the model's context; failing the call reports it instead.
+    # No fallback to `str(result)`: a repr of a `Secret` or a cycle would put
+    # exactly what this encoder prevents into the model's context.
     if dumps is not None:
         encoded: bytes = dumps(result)
         return encoded.decode()
@@ -644,16 +538,10 @@ def _stringify(result: Any, dumps: Any = None) -> str:
 def encode_envelope(payload: Any) -> bytes:
     """Encode a JSON-RPC envelope, or any other MCP protocol document.
 
-    Protocol frames are not the application's to restyle. `json_provider` states
-    the rule for the framework's own wire formats - signed cookies, JWTs,
-    protocol frames - and stdio already followed it; the HTTP and SSE transports
-    did not, so a custom `json_provider_class` injected its keys into the
-    JSON-RPC envelope and `JSONIFY_PRETTYPRINT_REGULAR` inflated every SSE frame
-    into a dozen `data:` lines. The same server framed its protocol two ways
-    depending on which transport carried it.
-
-    The application's dialect still reaches the application's data - a tool
-    result's content - through `_stringify`. This is the envelope around it.
+    Protocol frames are not the application's to restyle, the rule `json_provider`
+    states for the framework's own wire formats. The application's dialect still
+    reaches a tool result's content through `_stringify`; this is the envelope
+    around it.
     """
     return orjson.dumps(payload, default=_orjson_default)
 
@@ -661,11 +549,9 @@ def encode_envelope(payload: Any) -> bytes:
 def _orjson_default(value: Any) -> Any:
     """Fallback serialiser for values orjson cannot encode natively.
 
-    Delegates to the framework's own encoder, so one handler answering both
-    doors produces the same JSON either way: a `set` is a list rather than a
-    Python repr, a `Decimal` keeps its numeric form, a registered encoder is
-    honoured, and a `Secret` is refused here exactly as it is refused on the
-    HTTP path. Bytes are the one deliberate difference - see `_bytes_to_text`.
+    Delegates to the framework's own encoder, so one handler answering both doors
+    produces the same JSON either way, down to a `Secret` being refused. Bytes
+    are the one deliberate difference - see `_bytes_to_text`.
     """
     if isinstance(value, (bytes, bytearray, memoryview)):
         return _bytes_to_text(value)
@@ -675,12 +561,10 @@ def _orjson_default(value: Any) -> Any:
 def _bytes_to_text(value: bytes | bytearray | memoryview) -> str:
     """Render a raw byte string as tool-result text.
 
-    A tool result carries text, so the bytes have to become a string. Decoded
-    UTF-8 is what a caller returning `b"..."` means; bytes that are not UTF-8
-    are binary and are base64-encoded rather than decoded with replacement,
-    which would corrupt them irrecoverably. This mirrors how a resource body
-    picks between `text` and a base64 `blob`, deciding on whether the bytes are
-    text rather than on a media type a bare return value does not carry.
+    Decoded UTF-8 is what a caller returning `b"..."` means; bytes that are not
+    UTF-8 are base64-encoded rather than decoded with replacement, which would
+    corrupt them irrecoverably. The same choice a resource body makes between
+    `text` and a `blob`, on the bytes rather than on a media type.
     """
     raw = bytes(value)
     try:
@@ -704,11 +588,8 @@ class _RouteResponse:
     Shaped and `after_request`-rewritten, or built by an exception handler.
 
     `model_filtered` records whether the route's `response_model` filter ran over
-    the value this response carries: `True` when `_build_response` built it from
-    a non-`Response` handler return, `False` when the handler returned its own
-    `Response` (or an exception handler built it). The server uses it to decide
-    whether the decoded body may be advertised as schema-conformant
-    `structuredContent`.
+    the value this response carries, which decides whether the decoded body may
+    be advertised as schema-conformant `structuredContent`.
     """
 
     __slots__ = ("response", "model_filtered")
@@ -721,11 +602,8 @@ class _RouteResponse:
 def transport_route_name(base: str, path: str) -> str:
     """Build a route name unique to one mount of one transport.
 
-    A transport's internal routes took their name from the handler function, so
-    the name was fixed however many times the transport was mounted. Mounting at
-    two paths - which `mount_mcp` supports and the guide documents - therefore
-    left the first mount unreachable by name, with `url_for` silently resolving
-    to the second. These routes carry `include_in_schema=False`; the name exists
-    for `url_for` and diagnostics, so qualifying it by path costs nothing.
+    `mount_mcp` supports mounting at two paths, so a name taken from the handler
+    function alone would leave the first mount unreachable by name. These routes
+    carry `include_in_schema=False`, so qualifying the name by path costs nothing.
     """
     return f"{base}:{path}"

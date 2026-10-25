@@ -1,24 +1,17 @@
 """MCPContext — request-scoped handle passed to an MCP tool invocation.
 
-One `MCPContext` is constructed per `tools/call`, mirroring how a `Request` is
-constructed per HTTP request. A tool handler (or one of its `Depends`) may declare
-a parameter typed `MCPContext` to receive it (detected by that type annotation,
-never by parameter name, so a plain argument named ``ctx`` / ``context`` stays a
-normal tool input). The context carries the calling tool name and the raw argument
-mapping, and - when the server is served over a transport with an outbound
-notification channel - its `log` and `report_progress` methods send live
-``notifications/message`` and ``notifications/progress`` to the client. Off a
-transport (a bare construction) they are inert. When the client sends a
-``notifications/cancelled`` naming this call's request id, the server marks the
-context cancelled (so a cooperative handler can poll `cancelled` and stop) and
-cancels the in-flight task.
+One `MCPContext` is constructed per `tools/call`. A tool handler (or one of its
+`Depends`) receives it by declaring a parameter typed `MCPContext` - detected by
+that annotation, never by parameter name, so an argument named ``ctx`` stays a
+normal tool input. Over a transport with an outbound notification channel `log`
+and `report_progress` send live ``notifications/message`` and
+``notifications/progress``; off a transport they are inert.
 
 Over a bidirectional transport the context also issues server->client requests:
 `sample` (``sampling/createMessage``), `elicit` (``elicitation/create``), and
 `roots` (``roots/list``). Each is gated on the client having advertised the
-matching capability in ``initialize``; a handler calling one against a client that
-did not advertise it raises `MCPCapabilityError`, and a handler calling one off a
-bidirectional transport raises `RuntimeError`.
+matching capability in ``initialize``, raising `MCPCapabilityError` when it did
+not and `RuntimeError` off a bidirectional transport.
 """
 
 from __future__ import annotations
@@ -43,68 +36,48 @@ if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.server import MCPServer
     from veloce.contrib.mcp.session import MCPSession
 
-# What a sampling request may ask the client to attach to the prompt. The client
-# MAY ignore the request, so this is a hint; a value outside the set is a typo the
-# client would silently drop, so it is refused here.
+# A value outside the set is a typo the client would silently drop.
 _SAMPLING_CONTEXT_MODES = frozenset({"none", "thisServer", "allServers"})
 
-# Told to a connection whose visibility changed, one per kind of primitive whose
-# listing actually changed. Sending all three would announce a change to lists
-# that did not change - and, on a server exposing no prompts or resources, would
-# use capabilities `initialize` never negotiated, which the lifecycle rules
-# forbid. Ordered so a client sees them in a stable order.
+# One per kind of primitive whose listing changed: sending all three would use
+# capabilities `initialize` never negotiated, which the lifecycle rules forbid.
 _LIST_CHANGED_BY_KIND = (
     ("tools", "notifications/tools/list_changed"),
     ("prompts", "notifications/prompts/list_changed"),
     ("resources", "notifications/resources/list_changed"),
 )
 
-# Bytes of entropy in a minted `elicitationId`. The id names one interaction so a
-# later `notifications/elicitation/complete` can be matched to it; it travels to
-# the client, so it is unguessable rather than sequential.
+# A minted `elicitationId` travels to the client, so it is unguessable.
 _ELICITATION_ID_ENTROPY_BYTES = 16
 
 # ── Per-call state a handler reads through `MCPContext` ─────
 
-# Each of these backs a property on the class below, so they are declared beside
-# it; the dispatch core's own per-call vars (notifier, log level, request id,
-# protocol era) live in `_helpers`, which every transport can reach without
-# importing the dispatch core.
+# The dispatch core's own per-call vars live in `_helpers` instead.
 
 # Whether the current call is running as a background task rather than inline.
-# Set by the task runner; read by `MCPContext.is_background_task` and by the stdio
-# transport.
 _in_task_var: ContextVar[bool] = ContextVar("_mcp_in_task", default=False)
 
-# The id of the task this call is running as, and the id of the `tools/call`
-# that created it. Both are set by the task runner alongside `_in_task_var`, and
-# both stay `None` for an inline call.
+# The task this call runs as, and the `tools/call` that created it.
 _task_id_var: ContextVar[str | None] = ContextVar("_mcp_task_id", default=None)
 _origin_request_id_var: ContextVar[Any] = ContextVar("_mcp_origin_request_id", default=None)
 
-# The name of the transport serving this call, set once by each transport when
-# it starts serving. `None` for a bare off-transport construction.
+# Set once by each transport; `None` for a bare off-transport construction.
 _transport_var: ContextVar[str | None] = ContextVar("_mcp_transport", default=None)
 
-# `_meta` the handler asked to send back on this call's result. `None` means the
-# handler asked for nothing, which is the common case and costs one lookup.
+# `_meta` to send back on this call's result; `None` when none was asked for.
 _result_meta_var: ContextVar[dict[str, Any] | None] = ContextVar("_mcp_result_meta", default=None)
 
-# The session of the connection being served, when the transport keeps one.
-# `None` off a stateful transport, where there is no connection to carry state.
+# The connection being served, or `None` off a stateful transport.
 _session_var: ContextVar[MCPSession | None] = ContextVar("_mcp_session", default=None)
 
 
 # ── Logging levels ──────────────────────────────────────────
 
-# Suppresses every `notifications/message`, whatever its level. The modern revision
-# sets the log level per request and requires a server to send no log notifications
-# for a request that named none, which no RFC 5424 level can express.
+# Suppresses every `notifications/message`: the spec requires a server to send
+# none for a request that named no level, which no RFC 5424 level can express.
 LOG_LEVEL_OFF = "off"
 
-# RFC 5424 severity order, the scale MCP uses for ``logging/setLevel`` and
-# ``notifications/message``. A log message below the client's set minimum level is
-# dropped.
+# RFC 5424 severity order, the scale MCP uses for ``logging/setLevel``.
 _LOG_RANKS = {
     "debug": 0,
     "info": 1,
@@ -165,39 +138,24 @@ class MCPContext:
         request_id: Any = None,
     ) -> None:
         self.tool_name = tool_name
-        # The raw, un-coerced argument mapping the client sent in ``tools/call``.
-        # The resolver coerces individual values onto the handler signature; this
-        # stays available for handlers that want the untouched payload.
+        # The raw, un-coerced mapping the client sent in ``tools/call``.
         self.arguments: dict[str, Any] = arguments or {}
         self._cancelled = False
-        # Outbound notification sink (wired by the transport; `None` for a bare
-        # off-transport construction), the call's progress token, and the current
-        # minimum log level - together they make `log` / `report_progress` live.
+        # `None` off a transport, which makes `log` / `report_progress` inert.
         self._notifier = notifier
         self._progress_token = progress_token
-        # The `_meta` the client sent with this request, verbatim. The protocol
-        # reserves it for what the spec does not define, so what it holds is
-        # between the client and whatever reads it here.
+        # The `_meta` the client sent with this request, verbatim.
         self._request_meta = request_meta
-        # The JSON-RPC id of the call being served, passed in rather than read
-        # from a var here: the var lives in `_helpers`, which imports this
-        # module, so the dependency has to run the other way.
+        # Not read from the `_helpers` var, since that module imports this one.
         self._request_id = request_id
         self._log_level = log_level
-        # Server->client request issuer (wired only by a bidirectional transport;
-        # `None` for a one-way or off-transport construction) and the capabilities
-        # the client advertised in `initialize` - together they make `sample` /
-        # `elicit` / `roots` live, gated on the matching client capability.
+        # Wired only by a bidirectional transport, which is what makes `sample` /
+        # `elicit` / `roots` available, gated on the matching client capability.
         self._requester = requester
-        # The dispatching connection and the serving `MCPServer`. Both are held as
-        # references rather than unpacked into fields: every value they expose is a
-        # property computed on access, so a call that never asks pays nothing beyond
-        # the two assignments. `None` off a stateful transport / bare construction.
+        # References, so a call that never asks pays only the two assignments.
         self._session = session
         self._server = server
-        # Resolved once here rather than on every capability gate. A direct
-        # attribute read rather than `getattr` with a default: `session` is either a
-        # session or `None`, and this runs on every tool call.
+        # Resolved once here rather than on every capability gate.
         if client_capabilities is not None:
             self._client_capabilities: dict[str, Any] = client_capabilities
         elif session is not None:
@@ -219,9 +177,7 @@ class MCPContext:
         """Scratch space shared by everything resolving this one call.
 
         The same object a handler declaring `request: Request` reaches through
-        `request.state`, so a dependency and the handler holding this context
-        read and write one store rather than two that could disagree. Scoped to
-        the call: a later `tools/call` starts clean.
+        `request.state`. Scoped to the call: a later `tools/call` starts clean.
 
         Usage::
 
@@ -245,10 +201,9 @@ class MCPContext:
     def session_id(self) -> str | None:
         """The dispatching connection's id, or None on the stateless path.
 
-        Unique across processes, so it stays a safe key for per-client state
-        under a multi-worker server. It identifies a *connection*, not a client:
-        a reconnecting client gets a new one, and under HTTP without a shared
-        `session_backend` a client that lands on another worker does too.
+        Unique across processes, so it is a safe key for per-client state under a
+        multi-worker server. It identifies a *connection*, not a client, so a
+        reconnecting client gets a new one.
         """
         session = self._session
         return session.public_id if session is not None else None
@@ -274,8 +229,7 @@ class MCPContext:
         """The `_meta` the client sent with this request, or an empty mapping.
 
         The protocol reserves `_meta` for metadata it does not define - a
-        progress token, a trace id, an extension's own block - so a handler that
-        needs to read or relay what the client attached finds it here.
+        progress token, a trace id, an extension's own block.
         """
         return self._request_meta or {}
 
@@ -283,9 +237,8 @@ class MCPContext:
     def client_id(self) -> str | None:
         """The authenticated caller's id, or None when the call is unauthenticated.
 
-        The subject of the principal the transport established - for a
-        client-credentials token that is the registered MCP client. `client_info`
-        is what the client *said* it was at `initialize`; this is what it proved.
+        The subject of the principal the transport established. `client_info` is
+        what the client *said* it was at `initialize`; this is what it proved.
         """
         principal = current_principal()
         return getattr(principal, "subject", None) if principal is not None else None
@@ -317,9 +270,8 @@ class MCPContext:
     def transport(self) -> str | None:
         """The transport serving this call - `"stdio"`, `"http"` or `"sse"`.
 
-        `None` off a transport. A handler that needs to know whether a
-        server-initiated request can reach the client should ask
-        `client_supports(...)` instead; this is for logging and diagnostics.
+        `None` off a transport. For whether a server-initiated request can reach
+        the client, ask `client_supports(...)`; this is for diagnostics.
         """
         return _transport_var.get()
 
@@ -327,9 +279,9 @@ class MCPContext:
     def lifespan_context(self) -> Any:
         """The application state established at startup.
 
-        The same `app.state` an HTTP handler reaches, so a connection pool or a
-        client opened in a lifespan hook is reached the same way through either
-        door. `None` off a server.
+        The same `app.state` an HTTP handler reaches, so a pool opened in a
+        lifespan hook is reached the same way through either door. `None` off a
+        server.
         """
         server = self._server
         return getattr(server.app, "state", None) if server is not None else None
@@ -419,9 +371,8 @@ class MCPContext:
         """Read one of this server's registered resources by URI.
 
         Goes through the same handler `resources/read` serves, so the resource's
-        declared scopes are enforced against the calling principal exactly as they
-        would be for a direct client read - a tool cannot reach a resource its
-        caller could not have read itself.
+        declared scopes are enforced against the calling principal: a tool cannot
+        reach a resource its caller could not have read itself.
         """
         server = self._require_server("read_resource")
         contents: dict[str, Any] = await server._resources_read({"uri": uri})
@@ -445,11 +396,9 @@ class MCPContext:
     def list_resources(self) -> list[dict[str, Any]]:
         """List this server's registered resources, as `resources/list` reports them.
 
-        Routed through the one listing builder rather than a private twin, so a
-        primitive this connection hid with `hide()` is absent here too - the
-        twin applied scope narrowing and not the hidden set, so a handler
-        enumerating the catalogue contradicted what the client's own listing
-        showed. Unpaged: a handler cannot ask again for the next page.
+        Routed through the one listing builder, so a primitive this connection
+        hid with `hide()` is absent here too. Unpaged: a handler cannot ask again
+        for the next page.
         """
         server = self._require_server("list_resources")
         resources: list[dict[str, Any]] = server._resource_listing({}, page_size=None)["resources"]
@@ -551,10 +500,8 @@ class MCPContext:
         is fed back as the next message. Returns a `SamplingRun` carrying the
         answer, the transcript, and every tool call made.
 
-        `max_tool_rounds` caps how many times tools are executed. On the round
-        after the cap the model is asked to answer without tools, so a run ends
-        with an answer rather than an unanswered request; a client that ignores
-        that instruction ends the run where it stands.
+        `max_tool_rounds` caps how many times tools are executed; on the round
+        after the cap the model is asked to answer without tools.
 
         Requires a client that advertised ``sampling.tools``.
         """
@@ -566,8 +513,7 @@ class MCPContext:
         calls: list[SampledToolCall] = []
         for round_index in range(max_tool_rounds + 1):
             final_round = round_index == max_tool_rounds
-            # A copy per round: the request holds this list until it is written,
-            # and the loop appends to the transcript as soon as it returns.
+            # A copy per round: the request holds it while the loop appends.
             result = await self.sample(
                 list(transcript),
                 max_tokens=max_tokens,
@@ -582,10 +528,8 @@ class MCPContext:
             blocks = content_blocks(result)
             requested = [block for block in blocks if block.get("type") == "tool_use"]
             if not requested or final_round:
-                # The answer closes the transcript. Returning it without the final
-                # turn would make `messages` unusable for the thing it is offered
-                # for - extending into another run - by dropping the reply from
-                # the history the next run is built on.
+                # The answer closes the transcript, so `messages` can extend
+                # into another run.
                 transcript.append({"role": "assistant", "content": blocks})
                 return SamplingRun(
                     content=tuple(blocks),
@@ -606,10 +550,7 @@ class MCPContext:
                     "content": call.result.get("content") or [],
                     "isError": call.is_error,
                 }
-                # A tool declaring an output schema answers with the value itself,
-                # and the block has a field for it. Sending only the text would
-                # hand the model a different shape than a direct `tools/call`
-                # caller gets for the same tool.
+                # So the model sees the shape a direct `tools/call` caller gets.
                 structured = call.result.get("structuredContent")
                 if structured is not None:
                     answer["structuredContent"] = structured
@@ -635,9 +576,8 @@ class MCPContext:
     ) -> SampledToolCall:
         """Execute one tool the model asked for, as `tools/call` would.
 
-        A failure comes back as an error result rather than propagating: the
-        model asked for this call and can correct itself given the reason,
-        whereas raising would end the handler on a bad argument it generated.
+        A failure comes back as an error result rather than propagating, so the
+        model can correct an argument it generated badly.
         """
         name = block.get("name")
         arguments = block.get("input")
@@ -687,18 +627,14 @@ class MCPContext:
 
         URL mode also carries the `elicitationId` the spec requires, which names
         the interaction in a later `notifications/elicitation/complete`. One is
-        minted per call; pass `elicitation_id` to use an identifier the URL flow
-        already knows, so the completion can be correlated with whatever happens
-        out of band.
+        minted per call; pass `elicitation_id` to reuse the URL flow's own.
         """
         if requested_schema is not None and url is not None:
             raise ValueError("elicit takes either requested_schema (form) or url, not both")
         params: dict[str, Any] = {"message": message}
         if url is not None:
-            # A client advertising `elicitation` without `url` cannot open one, and
-            # the spec forbids sending a mode the client did not declare. An empty
-            # `elicitation: {}` means form-only, which this rejects correctly - so
-            # only URL mode is gated, never form.
+            # The spec forbids sending a mode the client did not declare, and an
+            # empty `elicitation: {}` means form-only, so only URL mode is gated.
             self._require_sub_capability("elicitation", "url")
             params["mode"] = "url"
             params["url"] = url
@@ -757,8 +693,7 @@ class MCPContext:
         changed = before.symmetric_difference(session.hidden)
         if not changed:
             return
-        # Only this connection is told: the change was made for it alone, and
-        # only about the lists the changed names actually belong to.
+        # Only this connection, and only about the lists that changed.
         kinds = self._changed_kinds(changed)
         for kind, method in _LIST_CHANGED_BY_KIND:
             if kind in kinds:
@@ -767,10 +702,9 @@ class MCPContext:
     def _changed_kinds(self, names: set[str]) -> frozenset[str]:
         """Return which listings the given names appear in.
 
-        A hidden name is a tool or prompt name, or a resource URI; which one it
-        is decides who needs telling. Off a server - a bare context - nothing can
-        be resolved, so every listing is treated as affected rather than
-        silently telling no one.
+        A hidden name is a tool or prompt name, or a resource URI. Off a server
+        nothing can be resolved, so every listing is treated as affected rather
+        than silently telling no one.
         """
         server = self._server
         if server is None:
@@ -791,8 +725,7 @@ class MCPContext:
     def result_meta(self) -> dict[str, Any]:
         """Scratch `_meta` sent back on this call's result.
 
-        The protocol reserves `_meta` for metadata it does not define, so this is
-        where a handler puts what its client agreed to read - a cost, a trace id,
+        A handler puts here what its client agreed to read - a cost, a trace id,
         an extension's own block. Mutated in place::
 
             ctx.result_meta["io.example/trace"] = trace_id
@@ -802,9 +735,8 @@ class MCPContext:
         """
         meta = _result_meta_var.get()
         if meta is None:
-            # Only outside a served call - the server binds the slot before the
-            # handler runs, so a write from a sync (offloaded) handler mutates a
-            # dict both contexts share rather than one this copy would discard.
+            # Only outside a served call: the server binds the slot first, so an
+            # offloaded sync handler writes to a dict both contexts share.
             meta = {}
             _result_meta_var.set(meta)
         return meta
@@ -815,9 +747,8 @@ class MCPContext:
         """Issue a server->client request, gated on the client's advertised capability."""
         if self._requester is None:
             raise RuntimeError(f"{method} requires a bidirectional transport")
-        # Through `client_supports`, so the two really are one lookup: a plain
-        # `in` test accepted a client that advertised `"sampling": false`, which
-        # is a client explicitly declining, and issued the request anyway.
+        # Through `client_supports`, so a client advertising `"sampling": false` -
+        # explicitly declining - is not read as having the capability.
         if not self.client_supports(capability):
             raise MCPCapabilityError(capability)
         return await self._requester(method, params)

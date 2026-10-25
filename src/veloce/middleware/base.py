@@ -19,11 +19,9 @@ if TYPE_CHECKING:  # pragma: no cover
 
     from veloce.audit import AuditContext, Finding
 
-# The `call_next` argument type, so user dispatch functions can annotate it.
 CallNext = Callable[[Request], Awaitable[Response]]
 
-#: A `dispatch(request, call_next)` coroutine - the shape `BaseHTTPMiddleware`
-#: accepts as `dispatch=`.
+#: The `dispatch(request, call_next)` shape `BaseHTTPMiddleware` takes.
 DispatchFunction = Callable[[Request, CallNext], Awaitable[Response]]
 
 
@@ -36,12 +34,10 @@ class Auditable:
 
     __slots__ = ()
 
-    # Set True by a component that adds hardening headers to every response;
-    # the audit warns when nothing in the stack claims it.
+    # Set True by a component adding hardening headers; the audit warns if none does.
     sets_hardening_headers: ClassVar[bool] = False
 
-    # Set True when `audit` reads the route table, so the audit defers this
-    # component until the table is final rather than reporting absent routes.
+    # Set True when `audit` reads the route table, so it is deferred until final.
     audit_needs_routes: ClassVar[bool] = False
 
     def audit(self, ctx: AuditContext) -> Iterable[Finding]:
@@ -64,7 +60,6 @@ class Middleware(Auditable):
     two instances of the same class must be addressed independently.
     """
 
-    # Identifier a route references to opt out of this middleware.
     name: str = ""
 
     def __init__(self, *, name: str | None = None) -> None:
@@ -115,8 +110,7 @@ class BaseHTTPMiddleware(Auditable):
     """
 
     def __init__(self, dispatch: DispatchFunction | None = None) -> None:
-        # Invoked with (request, call_next) directly from `__call__`; a bare
-        # function binding receives no automatic `self`.
+        # Called from `__call__`; a bare function binding gets no `self`.
         self._dispatch_override: DispatchFunction | None = dispatch
 
     async def dispatch(self, request: Request, call_next: CallNext) -> Response:

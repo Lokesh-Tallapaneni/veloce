@@ -1,26 +1,15 @@
 """Debug — development-mode HTML traceback page.
 
-When an unhandled exception escapes a handler and the application is running
-in debug mode, Veloce renders the traceback as a styled HTML page instead of
-the plain "Internal Server Error" body. The page shows the exception type and
-message, each frame's file path, line number and function name, a short
-source-context window read from ``linecache``, and - for syntax errors - the
-offending source line with a caret marking the failing column. Chained
-exceptions, PEP 678 notes, and PEP 654 exception groups are all rendered.
+When an unhandled exception escapes a handler in debug mode, Veloce renders the
+traceback as a styled HTML page instead of the plain "Internal Server Error"
+body, including a ``linecache`` source window per frame, a caret for syntax
+errors, chained exceptions, PEP 678 notes and PEP 654 exception groups.
 
-Scope note: this is a *read-only* traceback viewer, not an interactive
-in-browser console. It deliberately stops short of Werkzeug-style behaviour -
-no evaluating shell, no frame-local inspection over the wire, no PIN
-authentication, no endpoint that executes user-supplied code. Those features
-turn a debug page into a remote-code-execution surface, so they are out of
-scope until they can ship behind an explicit security review. The page emits no
-``<form>``, no ``<input>``, no JavaScript that posts back, and makes no network
-calls. The "interactive debugger" feature is therefore delivered as a navigable
-HTML traceback; live evaluation remains intentionally unimplemented.
-
-Every value interpolated into the markup - file paths, source lines, the
-exception message - is escaped with ``html.escape`` so exception content cannot
-inject markup (reflected XSS).
+The page is a *read-only* viewer: no evaluating shell, no frame-local inspection
+over the wire, no endpoint that executes user-supplied code, because those turn a
+debug page into a remote-code-execution surface. Every interpolated value is
+escaped with ``html.escape`` so exception content cannot inject markup
+(reflected XSS).
 """
 
 from __future__ import annotations
@@ -49,10 +38,8 @@ _CONTEXT_MESSAGE = "During handling of the above exception, another exception oc
 def _safe_str(value: object) -> str:
     """Return ``str(value)``, falling back to a placeholder if it raises.
 
-    A handler may surface an exception whose ``__str__`` itself raises (or
-    returns a non-string). Rendering must never raise a second exception, so on
-    any failure we emit the same placeholder the stdlib ``traceback`` module
-    uses rather than propagating.
+    Rendering must never raise a second exception, so a ``__str__`` that itself
+    raises gets the placeholder the stdlib ``traceback`` module uses.
     """
     try:
         result = str(value)
@@ -147,12 +134,9 @@ def _exc_label(exc: BaseException) -> str:
 def _render_syntax_caret(exc: SyntaxError) -> str:
     """Return the offending source line and a caret marker for a syntax error.
 
-    ``SyntaxError`` (and its ``IndentationError`` / ``TabError`` subclasses)
-    carry the failing source text and column on ``exc.text`` / ``exc.offset``
-    rather than in a traceback frame, so ``traceback.extract_tb`` never surfaces
-    them. This mirrors the stdlib ``traceback`` rendering: it strips the common
-    leading whitespace, then underlines the failing column (or column span when
-    ``end_offset`` is available) with carets.
+    ``SyntaxError`` carries the failing source text and column on ``exc.text`` /
+    ``exc.offset`` rather than in a traceback frame, so ``traceback.extract_tb``
+    never surfaces them.
     """
     text = exc.text
     if not text:
@@ -220,11 +204,9 @@ def _exc_chain(exc: BaseException) -> list[tuple[BaseException, str]]:
 def _render_exception(exc: BaseException, seen: set[int]) -> str:
     """Render one exception's label, frames, notes and any group children.
 
-    For a ``BaseExceptionGroup`` (PEP 654), each contained exception is rendered
-    with its own cause/context chain inside an indented block, so async
-    ``TaskGroup`` failures surface every nested error rather than just the group
-    wrapper. ``seen`` carries the set of already-rendered exception ids to guard
-    against cycles shared across the cause/context/group edges.
+    For a ``BaseExceptionGroup`` (PEP 654) each contained exception is rendered
+    with its own cause/context chain inside an indented block. ``seen`` carries
+    the already-rendered exception ids, guarding against cycles.
     """
     frames = [
         _render_frame(f.filename, f.lineno or 0, f.name)
@@ -272,15 +254,9 @@ def _render_chain(exc: BaseException, seen: set[int]) -> str:
 def render_traceback_html(exc: BaseException) -> str:
     """Render an exception and its traceback as a self-contained HTML page.
 
-    The returned string is a complete ``text/html`` document. It is read-only:
-    it contains no scripts, forms, inputs, or any affordance that evaluates
-    code or contacts the server. Intended for development use only; never serve
+    The returned string is a complete ``text/html`` document, read-only and free
+    of scripts, forms and inputs. Intended for development use only; never serve
     it from a production deployment.
-
-    Chained exceptions (``raise ... from``, implicit context), PEP 654
-    exception groups, and per-exception ``__notes__`` are preserved, matching
-    the structure of the plain-text ``traceback`` output the debug response
-    previously produced.
     """
     body = _render_chain(exc, set())
 

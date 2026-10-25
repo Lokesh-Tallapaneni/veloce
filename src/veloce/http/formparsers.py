@@ -17,27 +17,21 @@ from veloce.http.datastructures import FormData, Headers, UploadFile
 if TYPE_CHECKING:  # pragma: no cover
     from python_multipart.multipart import MultipartCallbacks
 
-# Multipart-parsing safety limits - guard against algorithmic-complexity
-# DoS from a body crafted with pathologically many or oversized parts.
+# Safety limits against a body with pathologically many or oversized parts.
 DEFAULT_MAX_MULTIPART_PARTS = 1000
 DEFAULT_MAX_MULTIPART_PART_SIZE = 10 * 1024 * 1024  # 10 MiB per part
 # Spool threshold: in memory until this size, then rolls to a temp file.
 MULTIPART_SPOOL_MAX_SIZE = 1024 * 1024  # 1 MiB
 
-# RFC 2046 Sec. 5.1.1 boundary token grammar: 1-70 characters drawn from the
-# bcharsnospace set plus space, with no trailing space. Validating the
-# extracted boundary up front rejects a malformed Content-Type before it
-# reaches the underlying parser, where an over-long or non-ASCII boundary
-# would otherwise surface as an opaque parse error.
+# RFC 2046 Sec. 5.1.1: 1-70 bcharsnospace characters plus space, none trailing.
+# Checked up front, where the parser would report only an opaque failure.
 _BOUNDARY_BCHARS = frozenset(
     "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'()+_,-./:=? "
 )
 _MAX_BOUNDARY_LENGTH = 70
 
-# RFC 7578 Sec. 5.1.2 leaves the field encoding to the part's own charset
-# parameter. Only a small, well-understood set is honored; anything else is
-# rejected rather than silently decoded with replacement characters, keeping
-# the strict-by-default posture for the field text path.
+# RFC 7578 Sec. 5.1.2 leaves the field encoding to the part's own charset;
+# anything outside this set is rejected rather than decoded with U+FFFD.
 _ALLOWED_PART_CHARSETS = frozenset({"ascii", "us-ascii", "utf-8", "iso-8859-1"})
 
 
@@ -89,8 +83,7 @@ def _decode_with_fallback(
 
     `"replace"` substitutes U+FFFD, any other codec name decodes with
     replacement, and `None` refuses the body with `message`. Part headers and
-    field values share this triage so a change to one policy cannot leave the
-    other decoding differently within the same request.
+    field values share this triage.
     """
     if charset_fallback == "replace":
         return raw.decode("utf-8", errors="replace")
@@ -103,14 +96,12 @@ class _MultipartCollector:
     """The parser's working state and callbacks for one multipart body.
 
     `python_multipart` drives parsing through six callbacks that share the
-    in-flight part's state and every size/count cap the body is held to.
-    Holding them as methods puts the caps in one `__init__` signature rather
-    than in seven closed-over locals no callback's signature mentions, so a
-    reader can see which limits a phase consults without reading the others.
+    in-flight part's state and every size/count cap the body is held to; as
+    methods, those caps sit in one `__init__` signature rather than in seven
+    closed-over locals no callback's signature mentions.
 
-    Slotted, so a typo is an `AttributeError` at the first write rather than a
-    silently created attribute, and so the per-request allocation is a fixed
-    object rather than a growable dict.
+    Slotted, so a typo is an `AttributeError` at the first write and the
+    per-request allocation is fixed rather than a growable dict.
     """
 
     __slots__ = (
@@ -155,15 +146,13 @@ class _MultipartCollector:
         self.max_fields = max_fields
         self.max_field_memory = max_field_memory
         self.charset_fallback = charset_fallback
-        # A file/field-specific size limit overrides the shared per-part cap
-        # for that part kind; otherwise the shared cap applies to both.
+        # A per-kind limit overrides the shared cap for that kind only.
         self.file_size_cap = max_file_size if max_file_size is not None else max_part_size
         self.field_size_cap = max_field_size if max_field_size is not None else max_part_size
 
         self.result = FormData()
-        # True between a part's begin and its end. A body that stops mid-part
-        # leaves it set, which is how a truncated upload is told apart from a
-        # complete one - the parser itself reports no error for either.
+        # Set between a part's begin and end, since the parser reports no error
+        # for a body that stops mid-part.
         self.part_open = False
         self.parts_seen = 0
         self.files_seen = 0
@@ -174,14 +163,11 @@ class _MultipartCollector:
         self.headers: dict[str, str] = {}
         self.spool: Any = None
         self.part_size = 0
-        # Whether the current part is a file, resolved at the header->data
-        # transition so the per-byte path can pick the right size cap.
+        # Resolved at the header->data transition, for the per-byte size cap.
         self.is_file = False
         self.size_cap = self.field_size_cap
         self.disposition_parsed = False
-        # Parsed Content-Disposition params, cached at the header->data
-        # transition so `on_part_end` reuses them instead of re-walking the
-        # quoted-string-aware header a second time per part.
+        # Cached there too, so `on_part_end` does not re-walk the header.
         self.disposition_params: dict[str, str] = {}
 
     @property
@@ -278,8 +264,7 @@ class _MultipartCollector:
                     content_type=self.headers.get("content-type", MIME_TEXT_PLAIN),
                     file=spool,
                     size=self.part_size,
-                    # Snapshot the per-part headers so the UploadFile owns its
-                    # own copy, decoupled from the reused parser state.
+                    # Snapshotted, so the UploadFile does not share parser state.
                     headers=Headers(self.headers),
                 ),
             )
@@ -288,8 +273,7 @@ class _MultipartCollector:
         raw_bytes = spool.read()
         spool.close()
         value = self._decode_field(name, raw_bytes)
-        # Count field-name bytes toward the resident-memory ceiling so a
-        # flood of large-named empty fields is bounded too.
+        # Field names count too, so large-named empty fields stay bounded.
         max_field_memory = self.max_field_memory
         if max_field_memory is not None:
             self.field_memory += len(name.encode("utf-8"))
@@ -302,14 +286,13 @@ class _MultipartCollector:
     def _too_large(self, message: str) -> NoReturn:
         """Raise `RequestEntityTooLarge`; never returns.
 
-        Annotated `NoReturn` so its call sites read as terminating, and so
-        mypy narrows what follows them.
+        Annotated `NoReturn` so its call sites read as terminating and mypy
+        narrows what follows them.
         """
         raise RequestEntityTooLarge(message)
 
     def _resolve_part_kind(self) -> None:
-        # Headers are complete once part data begins; classify the part as a
-        # file or text field so the right count/size limits apply per byte.
+        # Headers are complete once data begins, so the per-byte caps resolve here.
         disposition = self.headers.get("content-disposition", "")
         _, params = _parse_content_disposition(disposition)
         self.disposition_params = params
@@ -329,16 +312,10 @@ class _MultipartCollector:
         self.disposition_parsed = True
 
     def _decode_field(self, name: str, raw_bytes: bytes) -> str:
-        # A part may declare its own charset (RFC 7578 Sec. 5.1.2); honor it
-        # before falling back to the global UTF-8 / charset_fallback path.
+        # A part's own charset (RFC 7578 Sec. 5.1.2) wins over the global path.
         part_charset = _part_charset(self.headers.get("content-type", ""))
         if part_charset is not None:
-            # A part that *declares* a charset is asserting its bytes are
-            # valid in that encoding, so decode strictly: bytes that don't
-            # match (invalid UTF-8 under charset=utf-8, a byte > 0x7f under
-            # charset=ascii) are a client error, not text to silently
-            # corrupt with U+FFFD. The global charset_fallback path below
-            # still tolerates undeclared parts as before.
+            # A declared charset asserts validity, so a mismatch is a client error.
             try:
                 return raw_bytes.decode(part_charset)
             except UnicodeDecodeError as exc:
@@ -372,43 +349,27 @@ def parse_multipart_form(
     """Parse multipart/form-data into FormData with UploadFile support.
 
     `max_parts` caps the total number of parts; `None` disables the cap,
-    matching what `MAX_FORM_PARTS = None` means for a urlencoded body. `max_files` and
-    `max_fields`, when set, additionally cap file parts and text-field
-    parts independently, so a form may allow many small fields while
-    permitting only a few uploads (or vice versa).
+    matching what `MAX_FORM_PARTS = None` means for a urlencoded body.
+    `max_files` and `max_fields` cap file and text-field parts independently.
 
-    `max_part_size` caps each part's body size. `max_file_size` and
-    `max_field_size`, when set, override it for file parts and text
-    fields respectively, expressing the common "small fields, large
-    files" policy. `max_field_memory`, when set, caps the cumulative
-    resident bytes of all text fields (value bytes plus field-name
-    bytes), a ceiling that `max_field_size` alone cannot express.
+    `max_part_size` caps each part's body size, and `max_file_size` /
+    `max_field_size` override it per part kind. `max_field_memory` caps the
+    cumulative resident bytes of all text fields, value plus field-name bytes -
+    a ceiling `max_field_size` alone cannot express.
 
-    Exceeding any limit raises `RequestEntityTooLarge` (413), so a
-    maliciously structured form cannot exhaust memory or CPU even when
-    its total size is within `MAX_CONTENT_LENGTH`.
+    Exceeding any limit raises `RequestEntityTooLarge` (413), so a maliciously
+    structured form cannot exhaust memory or CPU within `MAX_CONTENT_LENGTH`.
+    A missing `boundary`, or one violating the RFC 2046 grammar, raises
+    `BadRequest` (400) rather than silently yielding an empty form.
 
-    A missing `boundary` parameter, or one violating the RFC 2046
-    boundary grammar, raises `BadRequest` (400) rather than silently
-    yielding an empty form.
-
-    `charset_fallback` controls how non-UTF-8 field bytes are handled
-    when a part declares no `charset` of its own. The default (`None`)
-    rejects them with `BadRequest` (400). Pass `"replace"` to substitute
-    U+FFFD (the pre-0.1.4 behaviour) or `"latin-1"` to decode as
-    ISO-8859-1 for legacy clients. A part that declares its own
-    `Content-Type` charset (RFC 7578 Sec. 5.1.2) is decoded with that charset
-    instead, provided it is one of `ascii`, `us-ascii`, `utf-8`, or
-    `iso-8859-1`. A declared charset is decoded strictly: bytes that are
-    invalid in it raise `BadRequest` (400) rather than being corrupted with
-    U+FFFD, since the part asserted its own encoding.
+    `charset_fallback` handles non-UTF-8 field bytes where a part declares no
+    `charset`: the default `None` rejects them with `BadRequest` (400), while
+    `"replace"` substitutes U+FFFD and `"latin-1"` decodes as ISO-8859-1. A part
+    declaring its own charset (RFC 7578 Sec. 5.1.2, one of `ascii`, `us-ascii`,
+    `utf-8`, `iso-8859-1`) is decoded strictly with it, so invalid bytes raise
+    `BadRequest` rather than being corrupted.
     """
-    # The boundary is a Content-Type parameter, so extract it with the same
-    # quoted-string-aware walker used for the part headers below
-    # (`parse_header_params`) rather than an ad-hoc `split(";")` + quote strip.
-    # This keeps boundary parsing consistent with the rest of the module and
-    # handles a quoted or whitespace-padded `boundary=...` (RFC 2046 / RFC 7578)
-    # the same way every other Content-Type parameter is parsed.
+    # The same walker as the part headers, so a quoted `boundary=` parses alike.
     _, ct_params = parse_header_params(content_type, delimiter=";", unescape=True)
     boundary_present = "boundary" in ct_params
     boundary = ct_params.get("boundary", "")
@@ -435,17 +396,10 @@ def parse_multipart_form(
             parser.write(body)
             parser.finalize()
         except FormParserError as exc:
-            # A mid-body parse failure (truncated part, malformed delimiter)
-            # leaves the form incomplete. Returning the partial result with a
-            # 200 would silently drop the missing fields/files, so reject the
-            # whole body with 400 — the same posture as a malformed boundary.
+            # A 200 with the partial form would silently drop the missing fields.
             raise BadRequest("multipart/form-data body is malformed") from exc
         if collector.part_open:
-            # The body ended inside a part: no closing delimiter, and for the
-            # underlying parser that is simply the end of input rather than an
-            # error. Accepting it would return 200 with the truncated part's
-            # field missing, so the caller could not tell a short upload from a
-            # form that genuinely omitted it.
+            # The parser reads a missing closing delimiter as the end of input.
             raise BadRequest("multipart/form-data body is truncated")
     except BaseException:
         for value in result.values():

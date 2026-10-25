@@ -30,10 +30,7 @@ from veloce.status import HTTP_206_PARTIAL_CONTENT
 if TYPE_CHECKING:  # pragma: no cover
     from collections.abc import AsyncIterator
 
-# Default compressible content types - text formats and JSON/XML/JS.
-# Image/video/audio/zip are intentionally absent: those formats already
-# carry their own compression, and re-gzipping just burns CPU for no
-# wire savings.
+# Image/video/audio/zip are absent: they carry their own compression already.
 _DEFAULT_COMPRESSIBLE = (
     "text/",
     MIME_JSON,
@@ -50,10 +47,8 @@ class _Codec:
     """One content coding: how to compress a whole body, and a stream of chunks.
 
     `stream` returns an object exposing `frame(bytes) -> bytes` and
-    `finish() -> bytes`. Every codec buffers internally, so `frame` must flush
-    whatever the codec is holding into output the client can decode on arrival -
-    otherwise a long-lived chunked stream stalls until EOF - without ending the
-    compression context, so later chunks keep the shared dictionary.
+    `finish() -> bytes`. `frame` must flush what the codec is holding - or a
+    long-lived chunked stream stalls until EOF - without ending the context.
     """
 
     name: str
@@ -76,7 +71,6 @@ class _ZlibStream:
         return self._co.compress(data) + self._co.flush(zlib.Z_SYNC_FLUSH)
 
     def finish(self) -> bytes:
-        # `Z_FINISH` writes the gzip CRC/length trailer.
         return self._co.flush(zlib.Z_FINISH)
 
 
@@ -105,10 +99,7 @@ def _brotli_codec() -> _Codec | None:
         def finish(self) -> bytes:
             return self._co.finish()
 
-    # Quality 4, not the library default of 11. Brotli's top qualities trade
-    # orders of magnitude of CPU for a few percent of ratio - a setting for
-    # assets compressed once at build time, not for a response being produced
-    # now. Around 4 it is competitive with gzip on speed and better on ratio.
+    # Quality 4, not 11: brotli's top qualities cost orders of magnitude of CPU.
     return _Codec("br", 4, lambda data, level: brotli.compress(data, quality=level), _BrotliStream)
 
 
@@ -138,11 +129,7 @@ def _zstd_codec() -> _Codec | None:
     )
 
 
-# Resolved once at import: the optional packages are imported here or not at all,
-# so a per-response path never pays an import attempt. A coding whose package is
-# absent is absent from this mapping too, so every value here is usable and no
-# consumer has to narrow one; `_CODECS_PACKAGE` below is the registry of every
-# coding the middleware knows, installed or not.
+# Resolved once at import, so a per-response path never pays an import attempt.
 _CODECS: dict[str, _Codec] = {
     name: codec
     for name, codec in (
@@ -153,15 +140,10 @@ _CODECS: dict[str, _Codec] = {
     if codec is not None
 }
 
-# Server preference when the caller names none: best ratio first. Every entry is
-# filtered against what is installed, and gzip is always there.
+# Server preference when the caller names none: best ratio first.
 _DEFAULT_ALGORITHMS = ("zstd", "br", "gzip")
 
-# Every content coding this middleware knows, mapped to the package to install
-# for it - the error a caller sees when the only coding they asked for has none,
-# and the set an unrecognised coding name is checked against. The single copy: a
-# `package` field on `_Codec` as well would be set by every factory, read by
-# nothing, and maintained in parallel with the one an operator is actually shown.
+# Every coding this knows, installed or not, and the package to install for it.
 _CODECS_PACKAGE = {"zstd": "zstandard", "br": "brotli", "gzip": "gzip (stdlib)"}
 
 
@@ -169,9 +151,8 @@ def _quality(pieces: list[str]) -> float:
     """Read the `q` weight of one media range, defaulting to 1 (RFC 9110 Sec. 12.4.2).
 
     Both spellings, since RFC 5234 Sec. 2.3 makes the ABNF literal
-    case-insensitive. A malformed weight is ignored rather than fatal - a header
-    is client input, and the conservative reading of an unparseable weight is
-    the default the client would have got by omitting it.
+    case-insensitive. A malformed weight falls back to the default rather than
+    failing, since the header is client input.
     """
     for param in pieces[1:]:
         param = param.strip()
@@ -183,8 +164,7 @@ def _quality(pieces: list[str]) -> float:
     return 1.0
 
 
-# Distinct `Accept-Encoding` strings a deployment sees in practice number in the
-# dozens; this is generous headroom before the memo is recycled.
+# Distinct `Accept-Encoding` strings a deployment sees number in the dozens.
 _MAX_NEGOTIATED = 256
 
 
@@ -192,15 +172,13 @@ def _negotiate(accept: str, offered: tuple[str, ...]) -> str | None:
     """Pick the content coding to use, or `None` to send the body unencoded.
 
     The client's weights rank the candidates and the server's `offered` order
-    breaks ties, so a client that states a preference gets it and one that lists
-    bare tokens gets the deployment's choice. `q=0` is a refusal; `*` supplies a
-    weight for any coding the header does not name.
+    breaks ties. `q=0` is a refusal; `*` supplies a weight for any coding the
+    header does not name.
     """
     if not accept:
         return None
 
-    # Fast path for the shape browsers actually send - bare tokens, no weights -
-    # where the answer is simply the first offered coding the client listed.
+    # Fast path for the shape browsers actually send - bare tokens, no weights.
     if ";" not in accept:
         listed = {part.strip().lower() for part in accept.split(",")}
         if "*" in listed:
@@ -227,8 +205,7 @@ def _negotiate(accept: str, offered: tuple[str, ...]) -> str | None:
     best_weight = 0.0
     for coding in offered:
         weight = weights.get(coding, wildcard if wildcard is not None else 0.0)
-        # Strictly greater, so `offered` order breaks a tie: the first coding at
-        # the winning weight is the server's most preferred one.
+        # Strictly greater, so `offered` order breaks a tie.
         if weight > best_weight:
             best, best_weight = coding, weight
     return best
@@ -239,11 +216,8 @@ class CompressionMiddleware(Middleware):
 
     Offers zstd, brotli and gzip - whichever of their packages are installed -
     and picks one per response from `Accept-Encoding`. The client's `q` weights
-    rank the candidates; `algorithms` order breaks ties, so a deployment states
-    its own preference for clients that express none.
-
-    Compression above `min_stream_chunk_offload` bytes runs in the thread pool
-    to avoid holding the event loop.
+    rank the candidates; `algorithms` order breaks ties. Compression above
+    `min_stream_chunk_offload` bytes runs in the thread pool.
 
     Usage::
 
@@ -271,33 +245,18 @@ class CompressionMiddleware(Middleware):
         super().__init__(name=name)
         self.minimum_size = minimum_size
         self.algorithms, self.levels = self._resolve_codings(algorithms, levels, compresslevel)
-        # `_negotiate` splits, strips, lowers and builds a set per response, but
-        # clients send one of a handful of stable `Accept-Encoding` strings and
-        # `self.algorithms` is fixed at construction - so the answer is a pure
-        # function of the header. Memoised here rather than globally because the
-        # offered tuple is per-instance. Bounded and cleared wholesale on
-        # overflow rather than merely refusing new entries, so a flood of junk
-        # headers cannot permanently occupy it and lock the real values out.
+        # A pure function of the header, since `self.algorithms` is fixed here.
+        # Cleared wholesale on overflow, so junk headers cannot lock it up.
         self._negotiated: dict[str, str | None] = {}
-        # `include_types` is matched as a prefix (so `"text/"` covers
-        # every text/* media type). None means "use the default
-        # compressible set". `exclude_types` always wins on collision.
+        # Matched as a prefix, so `"text/"` covers every text/* media type.
         self.include_types: tuple[str, ...] = (
             tuple(include_types) if include_types is not None else _DEFAULT_COMPRESSIBLE
         )
         self.exclude_types: tuple[str, ...] = tuple(exclude_types)
-        # Streaming bodies are compressed chunk-by-chunk through a single
-        # `zlib.compressobj`. A chunk at or above this many bytes is offloaded
-        # to the thread-pool executor (CPU-bound); smaller frames compress
-        # inline to avoid task-scheduling overhead on the common case.
-        # One threshold for both halves. A buffered body and a streamed chunk
-        # ask the same question - "is this big enough that the pool beats
-        # holding the loop?" - so a caller who tunes it gets it applied to both
-        # rather than to half the middleware.
+        # One threshold for both halves: a buffered body and a streamed chunk
+        # ask the same question of the pool.
         self.min_stream_chunk_offload = min_stream_chunk_offload
-        # Bare content types that must never be buffered through compression:
-        # SSE (`text/event-stream`) trades wire size for per-event latency, and
-        # routing it through `compressobj` would merge/delay events.
+        # SSE trades wire size for per-event latency, so it is never buffered.
         self.latency_sensitive_types = latency_sensitive_types
 
     @classmethod
@@ -309,11 +268,9 @@ class CompressionMiddleware(Middleware):
     ) -> tuple[tuple[str, ...], dict[str, int]]:
         """Validate the requested codings and settle a level for each.
 
-        An algorithm whose package is missing is dropped rather than made fatal:
-        a deployment that lists three codings and installs two should serve the
-        two. Asking *only* for a missing one is different - there is nothing left
-        to compress with, and silently serving plaintext would hide it - so that
-        raises, naming the package to install.
+        An algorithm whose package is missing is dropped rather than made fatal.
+        Asking *only* for a missing one raises, naming the package to install,
+        since silently serving plaintext would hide it.
         """
         requested = tuple(algorithms) if algorithms is not None else cls._supported
         if not requested:
@@ -335,8 +292,7 @@ class CompressionMiddleware(Middleware):
         for name in available:
             resolved[name] = _CODECS[name].default_level
         if compresslevel is not None:
-            # The pre-existing single-level argument. It names gzip's scale, so
-            # it applies to gzip; a multi-coding deployment uses `levels`.
+            # It names gzip's scale; a multi-coding deployment uses `levels`.
             resolved["gzip"] = compresslevel
         if levels:
             unknown_levels = [name for name in levels if name not in _CODECS_PACKAGE]
@@ -347,16 +303,8 @@ class CompressionMiddleware(Middleware):
 
     async def process_response(self, request: Request, response: Response) -> Response:
         """Compress the response body with the coding the client accepts."""
-        # This middleware negotiates content on Accept-Encoding, so every
-        # response it touches varies on that header - including the ones it
-        # leaves uncompressed (no offered coding in Accept-Encoding, below
-        # `minimum_size`, a 206 / Content-Range, an incompressible type, an
-        # already-encoded body). Declaring `Vary: Accept-Encoding` up front,
-        # before any short-circuit, keeps the encoding dimension visible to
-        # every cache layer end-to-end (RFC 9110 Sec. 12.5.5) rather than only on the
-        # compressed path. The streamed path is reached via the delegation
-        # below, so it inherits this marker too; `add_vary` de-duplicates, so
-        # the success path does not re-add it.
+        # Every response this touches varies on Accept-Encoding, uncompressed
+        # ones too, and RFC 9110 Sec. 12.5.5 makes that a cache's input.
         response.add_vary(HEADER_ACCEPT_ENCODING)
         accept = request.headers.get(HEADER_ACCEPT_ENCODING, "")
         memo = self._negotiated
@@ -370,10 +318,7 @@ class CompressionMiddleware(Middleware):
         if coding is None:
             return response
 
-        # Streaming bodies have no materialised `response.body`, so the
-        # `minimum_size` gate (a buffered-only heuristic) does not apply.
-        # Compress the stream lazily, chunk-by-chunk, and fall through to the
-        # buffered path only for non-streamed responses.
+        # No materialised `response.body`, so the `minimum_size` gate cannot apply.
         if response.is_streamed:
             return self._process_stream(request, response, coding)
 
@@ -383,21 +328,11 @@ class CompressionMiddleware(Middleware):
         if self._skip_compression(response):
             return response
 
-        # Offloading is not free: it costs a handoff per response, and under
-        # load every compressing request queues on the same pool. Compressing
-        # inline holds the loop, which is the cost that matters - but for a
-        # small body that hold is short, while the handoff is paid in full.
-        #
         # Measured at 32 concurrent requests, completed requests per second,
         # inline vs offloaded: 2 KiB 15795 vs 5684, 6 KiB 12489 vs 5393,
         # 32 KiB 5432 vs 4102, 48 KiB 4043 vs 4101, 128 KiB 1348 vs 2814,
-        # 512 KiB 316 vs 1045. The crossover is near 48 KiB: below it the
-        # handoff and pool contention dominate, above it zlib releases the GIL
-        # for long enough that the pool genuinely parallelises and the loop is
-        # better off free. The threshold sits below the crossover deliberately,
-        # so the offload starts before inline compression becomes the slower
-        # choice. It is the threshold the streaming path already applies per
-        # chunk.
+        # 512 KiB 316 vs 1045. The crossover is near 48 KiB, and the threshold
+        # sits below it so the offload starts before inline becomes slower.
         codec = _CODECS[coding]
         level = self.levels[coding]
         body = response.body
@@ -416,13 +351,10 @@ class CompressionMiddleware(Middleware):
     def _process_stream(self, request: Request, response: Response, coding: str) -> Response:
         """Wrap a streaming response's body in a lazy compressor.
 
-        Shares `_skip_compression` with the buffered path and additionally
-        skips real-time latency-sensitive streams (SSE) so events are not
-        buffered through `compressobj`.
+        Shares `_skip_compression` with the buffered path, and additionally
+        skips latency-sensitive streams (SSE), whose frames a buffering
+        compressor would merge or delay.
         """
-        # SSE and other latency-sensitive streams trade wire size for
-        # per-event delivery; routing them through a buffering compressor would
-        # merge or delay frames.
         if response.is_event_source or response.mimetype in self.latency_sensitive_types:
             return response
 
@@ -430,30 +362,19 @@ class CompressionMiddleware(Middleware):
             return response
 
         response._stream = self._compress_stream(response._stream, coding)
-        # A streamed gzip body is chunked / `more_body`-framed; any declared
-        # length describes the uncompressed representation, so finalize with no
-        # Content-Length (the native chunked path relies on Transfer-Encoding).
+        # Framed as chunks, and a declared length describes the uncompressed body.
         self._finalize_encoding_headers(response, coding, content_length=None)
         return response
 
     def _skip_compression(self, response: Response) -> bool:
         """True when the response must not be compressed, on range, type or encoding grounds.
 
-        The one home of the skip rules, shared by the buffered and streaming
-        paths so neither can drift from the other.
-
-        A partial-content (206) response, or any response carrying a
-        Content-Range, is served whole and uncompressed: compressing changes the
-        body bytes while Content-Range / Accept-Ranges / ETag keep describing
-        the uncompressed representation, producing a protocol-invalid response
-        (RFC 9110 Sec. 14).
-
-        A non-compressible content type, or a response that already declares a
-        non-identity Content-Encoding, is passed through untouched. Stacking
-        encodings produces a payload no client will decode and violates RFC 9110
-        Sec. 8.4 (each Content-Encoding identifies one transformation; doubling
-        them is a bug). Field names are case-insensitive (RFC 9110 Sec. 5.1), so
-        any casing is honored.
+        A 206, or any response carrying Content-Range, is served uncompressed:
+        compressing changes the bytes while Content-Range / Accept-Ranges / ETag
+        keep describing the uncompressed representation (RFC 9110 Sec. 14). A
+        non-identity Content-Encoding is passed through untouched, since
+        RFC 9110 Sec. 8.4 gives each one transformation. Field names are
+        case-insensitive (RFC 9110 Sec. 5.1), so any casing is honored.
         """
         if response.status_code == HTTP_206_PARTIAL_CONTENT or header_present(
             response.headers, HEADER_CONTENT_RANGE
@@ -471,21 +392,17 @@ class CompressionMiddleware(Middleware):
     ) -> None:
         """Rewrite headers after the body bytes have been compressed.
 
-        Field names are case-insensitive (RFC 9110 Sec. 5.1): a handler may have
-        stored Content-Encoding / Content-Length under any casing, so drop every
-        existing spelling first and write the canonical key once - otherwise a
-        stale mixed-case length would describe the uncompressed body.
-        `content_length` is the compressed byte count for the buffered path, or
-        `None` for the streaming path where the chunked/`more_body` framing
-        carries no declared length.
+        Field names are case-insensitive (RFC 9110 Sec. 5.1), so every existing
+        spelling is dropped first - a stale mixed-case length would describe the
+        uncompressed body. `content_length` is `None` on the streaming path,
+        whose framing carries no declared length.
         """
         self._drop_header(response, HEADER_CONTENT_ENCODING)
         self._drop_header(response, HEADER_CONTENT_LENGTH)
         response.headers[HEADER_CONTENT_ENCODING] = coding
         if content_length is not None:
             response.headers[HEADER_CONTENT_LENGTH] = str(content_length)
-        # `Vary: Accept-Encoding` is already set by `process_response` at entry,
-        # ahead of every short-circuit, so it is not re-added here.
+        # `Vary: Accept-Encoding` is set by `process_response` at entry.
         response._encoded = None
         self._weaken_strong_etag(response)
 
@@ -493,10 +410,8 @@ class CompressionMiddleware(Middleware):
     def _drop_header(response: Response, name: str) -> None:
         """Remove every casing of `name` from the response headers.
 
-        Field names are case-insensitive (RFC 9110 Sec. 5.1), so a handler may
-        have stored the header under any spelling. `header_key` resolves the
-        actual stored key; loop until none remain to also clear accidental
-        duplicates before the compression path writes its canonical value.
+        Field names are case-insensitive (RFC 9110 Sec. 5.1), so the loop runs
+        until none remain and accidental duplicates go too.
         """
         while (key := header_key(response.headers, name)) is not None:
             del response.headers[key]
@@ -505,17 +420,13 @@ class CompressionMiddleware(Middleware):
         """Compress a chunk stream lazily, reusing one compressor across chunks.
 
         Each input chunk becomes its own deliverable frame, so a long-lived
-        chunked stream (NDJSON, a log tail) is decodable as it arrives rather
-        than stalling until EOF, while later chunks still benefit from the
-        shared compression context. The codec's `finish` writes whatever
-        trailer the coding requires - gzip's CRC/length, brotli's and zstd's
-        end-of-stream markers.
+        stream is decodable as it arrives rather than stalling until EOF, while
+        later chunks still benefit from the shared compression context.
         """
         codec = _CODECS[coding]
         compressor = codec.stream(self.levels[coding])
         async for chunk in stream:
-            # Downstream chunked / ASGI emit paths expect bytes; streams may
-            # yield str (see `StreamingResponse._aiter_sync`).
+            # Downstream emit paths expect bytes; streams may yield str.
             b = chunk.encode("utf-8") if isinstance(chunk, str) else chunk
             if len(b) < self.min_stream_chunk_offload:
                 out = compressor.frame(b)
@@ -530,11 +441,9 @@ class CompressionMiddleware(Middleware):
     def _weaken_strong_etag(self, response: Response) -> None:
         """Downgrade a strong ETag to weak after the wire bytes change.
 
-        Compression changes the bytes on the wire, so a STRONG ETag
-        (RFC 9110 Sec. 8.8.1 - byte-identical representations) no longer
-        describes them. Already-weak or malformed (non-quoted) tags are left
-        untouched so we never fabricate a validator. `headers` is a plain dict,
-        so accept either spelling and rewrite whichever key holds the tag.
+        A strong ETag means byte-identical representations (RFC 9110
+        Sec. 8.8.1), which compression breaks. Already-weak or malformed
+        (non-quoted) tags are left untouched, so no validator is fabricated.
         """
         etag_key = header_key(response.headers, HEADER_ETAG)
         if etag_key is not None:
@@ -553,8 +462,6 @@ class CompressionMiddleware(Middleware):
 
 class GZipMiddleware(CompressionMiddleware):
     """GZip compression for responses above a size threshold.
-
-    Compression runs in the thread pool executor to avoid blocking the event loop.
 
     Offers gzip and nothing else, so a client asking for brotli or zstd is
     served an uncompressed body. Use

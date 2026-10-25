@@ -20,8 +20,7 @@ class Capability:
 
     __slots__ = ()
 
-    #: Methods the modern revision retired; the server refuses them there with
-    #: method-not-found, beside the `advertise(modern=True)` that withholds them.
+    #: Methods the modern revision retired, refused there with method-not-found.
     handshake_only_methods: frozenset[str] = frozenset()
 
     def __init_subclass__(cls, **kwargs: Any) -> None:

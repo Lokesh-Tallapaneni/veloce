@@ -41,8 +41,7 @@ class RequestMetrics:
     streamed: bool = False
     end_time_ns: int | None = None
     error_type: str | None = None
-    # Inbound trace headers as a carrier dict, for a bridge to extract a parent
-    # context from; `None` when absent. The core never interprets it.
+    # Inbound trace headers as a carrier dict; the core never interprets it.
     parent_context: object | None = None
 
     def __repr__(self) -> str:

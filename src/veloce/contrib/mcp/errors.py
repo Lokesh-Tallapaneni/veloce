@@ -22,16 +22,13 @@ _JSONRPC_INTERNAL_ERROR = -32603
 # MCP "Resource not found" - server-defined, outside the JSON-RPC reserved range.
 _JSONRPC_RESOURCE_NOT_FOUND = -32002
 
-# Server-defined "forbidden" - the JSON-RPC analogue of HTTP 403
-# insufficient_scope, for a principal missing a required scope.
+# Server-defined "forbidden" - the JSON-RPC analogue of HTTP 403.
 _JSONRPC_FORBIDDEN = -32003
 
-# The 2026-07-28 revision reserves -32020 to -32099 for the specification and
-# allocates -32022 to `UnsupportedProtocolVersion`.
+# The 2026-07-28 revision allocates -32022 within its reserved -32020..-32099.
 _JSONRPC_UNSUPPORTED_PROTOCOL_VERSION = -32022
 
-# Allocated in the same reserved range, for a missing, disagreeing or
-# unencodable standard request header.
+# Same reserved range: a missing, disagreeing or unencodable standard header.
 _JSONRPC_HEADER_MISMATCH = -32020
 
 
@@ -81,8 +78,7 @@ class MCPError(Exception):
     # Class-level default; each subclass overrides with its JSON-RPC code.
     code: int = _JSONRPC_INTERNAL_ERROR
 
-    # HTTP status a transport-level violation maps to when raised before
-    # dispatch; only the transport pre-dispatch subclasses override it.
+    # HTTP status for a transport-level violation raised before dispatch.
     http_status: int = 400
 
     def __init__(self, message: str, *, data: Any = None) -> None:

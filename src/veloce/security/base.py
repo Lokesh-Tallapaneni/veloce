@@ -21,23 +21,19 @@ if TYPE_CHECKING:  # pragma: no cover
 class SecurityScheme:
     """Base contract for callable authentication schemes.
 
-    Owns the `auto_error` field and documents the resolver's expected shape:
-    a `__call__(self, request)` that returns the extracted credential, or
-    `None` when authentication is absent and `auto_error` is `False`. Not an
-    `abc.ABC`: the hook raises `NotImplementedError` so subclasses that forget
-    to override fail loudly without pulling in the ABC machinery.
+    Owns the `auto_error` field and the resolver's expected shape: a
+    `__call__(self, request)` returning the extracted credential, or `None`
+    when authentication is absent and `auto_error` is `False`. Not an
+    `abc.ABC`: the hook raises `NotImplementedError` instead.
     """
 
-    # `auto_error` is the only field common to every scheme; owning the slot
-    # here keeps subclasses' own `__slots__` free of it.
+    # The only field common to every scheme, so subclasses need not declare it.
     __slots__ = ("auto_error",)
 
     auto_error: bool
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
-        # Mirror the `__slots__` guard the security schemes already rely on:
-        # a subclass that omits `__slots__` would regain a per-instance
-        # `__dict__`, defeating the slotted layout the base establishes.
+        # A subclass omitting `__slots__` would regain a per-instance `__dict__`.
         super().__init_subclass__(**kwargs)
         _require_slots(cls)
 
@@ -49,14 +45,10 @@ class SecurityScheme:
         """Describe this scheme as an OpenAPI Security Scheme Object.
 
         Return the object published under `components.securitySchemes`, or
-        `None` when the scheme cannot be described. A route guarded by an
-        undescribed scheme is published with no security requirement - which
-        asserts the endpoint is open - so the schema build warns rather than
-        doing that silently.
-
-        Only the scheme knows what it reads and how a client should send it,
-        so it answers for itself: a subclass adding a new authentication style
-        implements this and is published like a built-in.
+        `None` when the scheme cannot be described - a route guarded by an
+        undescribed scheme publishes no security requirement, which asserts the
+        endpoint is open, so the schema build warns rather than doing it
+        silently. A subclass implementing this is published like a built-in.
 
         Usage::
 
@@ -73,14 +65,12 @@ class _BearerScheme(SecurityScheme):
     """Shared `Authorization: Bearer` extraction.
 
     Subclasses set `_bearer_scheme` (the advertised auth-scheme token) and
-    inherit this `__call__`, so the one-line delegation to
-    `_extract_bearer_token` is written exactly once.
+    inherit this `__call__`.
     """
 
     __slots__ = ()
 
-    # The auth-scheme token clients send (`Bearer` by default); subclasses may
-    # override to advertise a different scheme name.
+    # The auth-scheme token clients send; `Bearer` unless a subclass overrides.
     _bearer_scheme: str
 
     def __call__(self, request: Request) -> str | None:

@@ -1,25 +1,13 @@
 """MCP tool registry — the name -> tool table the server serves.
 
-A `ToolRegistry` is assembled once, at `mount_mcp` time, from two sources:
-
-- explicit `@app.mcp_tool(...)` registrations (MCP-only tools), and
-- a walk of the app's `RouteInfo` list, keeping every route flagged
-  `expose_as_mcp_tool=True`.
-
-Each entry carries the handler, its precompiled `HandlerPlan` (reused from
-route registration, or built on demand for an MCP-only tool), the derived
-input JSON Schema, and the LLM-facing description.
+Assembled once at `mount_mcp` time from explicit `@app.mcp_tool(...)`
+registrations plus every route flagged `expose_as_mcp_tool=True`.
 
 The safety policy is **default-closed, not verb-based**: nothing is exposed
-unless its author passes `expose_as_mcp_tool=True`, and a route that does pass
-it is exposed **whatever its HTTP method** - a `DELETE` becomes a tool exactly
-as a `GET` does. What the registry enforces is the one registration-time rule
-in `safety.py`: every exposed handler must carry a non-empty description.
-
-There is no verb-based gate here: the HTTP method a route is registered for has
-no bearing on whether it can be exposed. Exposure is per-route and explicit, so
-an author exposing a `DELETE` is taking that decision themselves - `safety.py`
-holds the checks that do apply.
+unless its author opts in.
+An opted-in route is then exposed whatever its HTTP method is.
+The one registration-time rule the registry enforces is `safety.py`'s: every
+exposed handler must carry a non-empty description.
 """
 
 from __future__ import annotations
@@ -46,10 +34,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from veloce._handler_plan import HandlerPlan
 
 
-# A `tools/list` visibility policy: given a registered tool and the request
-# principal, return whether that caller may see it. Sync or async; a sync policy is
-# offloaded so a blocking permission lookup cannot stall the event loop. It narrows
-# the scope-checked set and can never widen it.
+# A `tools/list` visibility policy, sync or async: it narrows, and never widens.
 ToolFilter = Callable[["MCPTool", Any], "bool | Awaitable[bool]"]
 
 
@@ -60,109 +45,44 @@ class MCPTool(MCPDescriptor):
     handler: Callable[..., Any]
     plan: HandlerPlan
     input_schema: dict[str, Any]
-    # Set by a tool whose handler can produce a second message by a route the
-    # plan cannot show - above all one that dispatches OTHER tools, whose own
-    # handlers may take a context this tool's signature never mentions. The walk
-    # reads a signature; it cannot read where a handler sends the call next.
+    # Set by a tool that dispatches OTHER tools; a signature cannot show that.
     dispatches_tools: bool = False
-    # Whether a call to this tool can produce more than its own single response;
-    # see `_needs_stream`, which is where it is read. Derived in `__post_init__`
-    # from the plan, the route dependency plans and the flag above, never passed
-    # in - `init=False` so a caller cannot assert a tool is streamless that is
-    # not, and out of `repr`/`compare` like the sibling derived field below.
+    # Read by `_needs_stream`; `init=False` so no caller can claim streamlessness.
     may_stream: bool = field(default=True, init=False, repr=False, compare=False)
-    # Route-level dependencies (`dependencies=[...]` on the route / router /
-    # blueprint). These run before the handler's own `Depends` graph, exactly
-    # as the HTTP and WebSocket dispatch paths run them, so a route-level guard
-    # protects the agent-facing call too. Empty for `@app.mcp_tool` tools,
-    # which have no route.
+    # Route-level `dependencies=`, run before the handler's own `Depends` graph.
     route_dep_plans: list[Any] = field(default_factory=list)
-    # The `RouteInfo` this tool was derived from, or `None` for a pure
-    # `@app.mcp_tool`. When present the server runs the handler return through
-    # the same response shaping the HTTP path applies for that route - the
-    # route `response_model` filtering (so excluded fields never leak over MCP)
-    # and `Response`/`JSONResponse` body extraction (so a returned response
-    # object yields its decoded body, not an object repr).
+    # The return runs through the route's response shaping, so excluded fields
+    # never leak over MCP.
     route_info: Any = None
-    # The route's primary HTTP method (the first method entry the router walk
-    # yielded for this `RouteInfo`). Bound onto the synthetic `Request.method`
-    # so a handler / dependency / `before_request` hook that branches on
-    # `request.method` sees the route's real verb, not the MCP origin. `None`
-    # for a pure `@app.mcp_tool`, which keeps the synthetic MCP method.
+    # Bound onto the synthetic `Request.method`, so hooks see the route's real verb.
     route_method: str | None = None
-    # The published inputs declared inside a `Depends` sub-dependency, by name.
-    # `bind_arguments` coerces its own top-level slots but seeds these onto the
-    # synthetic request for the HTTP resolver to read, and that resolver reads a
-    # query string - where "1" and "yes" have to mean true. An agent sends typed
-    # JSON, and this tool's own `inputSchema` says so, so the door holds them to
-    # the declared type rather than to query-string rules.
+    # Held to their declared type, not the query-string rules the resolver applies.
     dependency_inputs: dict[str, Any] = field(default_factory=dict)
-    # Every HTTP method the route serves (a multi-verb route yields several).
-    # The annotation hints are computed conservatively across this whole set so
-    # a `GET`+`DELETE` route is flagged destructive even though its leading verb
-    # is `GET`. Empty for a pure `@app.mcp_tool`, which has no HTTP verb.
+    # Hints span the whole set, so `GET`+`DELETE` is flagged destructive.
     route_methods: list[str] = field(default_factory=list)
-    # The MCP `outputSchema`: a standalone JSON Schema for the structured result,
-    # derived from the route `response_model` (or, failing that, the handler's
-    # Pydantic return type). `None` when the result has no object schema (a
-    # scalar / list return, or an untyped handler), in which case `tools/call`
-    # returns only the text content block.
+    # `None` when the result has no object schema; `tools/call` then returns text.
     output_schema: dict[str, Any] | None = None
-    # The Pydantic model the `output_schema` was derived from, kept so a pure
-    # `@app.mcp_tool` (which has no route `response_model` to re-filter through)
-    # can validate / coerce its raw return into a value that conforms to the
-    # advertised schema before it is emitted as `structuredContent`. `None`
-    # whenever `output_schema` is `None`.
+    # Lets a pure `@app.mcp_tool` coerce its return to the advertised schema.
     output_model: Any = None
-    # MCP authorization scopes the request principal must hold to invoke this
-    # tool / read this resource. Empty means no per-tool requirement; a non-empty
-    # set is checked before invocation and a miss yields an authorization error.
+    # Checked before invocation; empty means no per-tool requirement.
     required_scopes: frozenset[str] = frozenset()
-    # Server-side labels for grouping tools, read by a `mount_mcp(tool_filter=)`
-    # policy. A route-backed tool inherits its route's `tags`. Not advertised in
-    # `tools/list`: the spec defines no tag field on a tool, so publishing one
-    # would invent wire data a client cannot interpret.
+    # Read by a `mount_mcp(tool_filter=)` policy; the spec has no tag field to emit.
     tags: frozenset[str] = frozenset()
-    # Whether this tool may be invoked as a background task (task-augmented
-    # `tools/call`). `False` (the default) advertises no task support and rejects
-    # a task-augmented call; `True` lets a client run the call detached and poll
-    # it via `tasks/get` / `tasks/result`. Opt-in per tool so the synchronous
-    # path stays unchanged for every tool that does not ask for it.
+    # `True` lets a client run the call detached and poll `tasks/result`. Opt-in.
     task_support: bool = False
-    # Behaviour hints the author declared (`readOnlyHint` and friends). A
-    # route-backed tool derives these from its HTTP verb; a tool with no route has
-    # no verb to read from, so it either says what it does or says nothing. `None`
-    # leaves the spec's own defaults in force, which assume the cautious reading.
+    # `readOnlyHint` and friends; `None` leaves the spec's cautious defaults.
     annotations: dict[str, Any] | None = None
-    # True for a tool that forwards to another MCP server. Its handler returns the
-    # upstream's own result object, which is relayed unchanged - re-shaping it
-    # would nest a complete result inside a text block and lose the `isError` and
-    # `structuredContent` the upstream reported.
+    # An upstream result is relayed unchanged; re-shaping would lose `isError`.
     passthrough_result: bool = False
-    # Set on a tool built by `derive_tool`: the argument translation that maps the
-    # published surface back to what the original handler takes. `None` for a tool
-    # whose arguments are its handler's own.
+    # On a `derive_tool` tool: published surface -> original handler arguments.
     derived_from: Any = None
-    # The label this registration was published under, when the author declared
-    # one. Tools sharing a name and differing in version are all registered; the
-    # highest is the one listed and the one a call without a version reaches.
+    # Every version of a name is registered; the highest answers a bare call.
     version: str | None = None
-    # Every version registered under this tool's name, ascending. Set on the
-    # listed tool as its siblings arrive; empty for an unversioned tool.
-    #
-    # Excluded from `__init__` for the same reason `listing_entry` is, and with a
-    # sharper consequence: it is only meaningful alongside the registry's own
-    # sibling map, which a copy does not inherit. `dataclasses.replace` skips an
-    # `init=False` field, so a tool copied by `derive_tool`, by a namespaced
-    # mount or by anything else starts with an empty history rather than
-    # advertising versions the copy's registry cannot serve.
+    # Ascending. `init=False`: meaningful only with the sibling map a copy lacks.
     version_history: tuple[str, ...] = field(default=(), init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        # Decided once, here, rather than per call: whether a tool can reach the
-        # context is a property of its plan, and the plan is fixed from
-        # registration onward. A copy made by `dataclasses.replace` re-derives
-        # rather than carrying a value its new plan may not support.
+        # A property of the plan, so a `replace` copy re-derives against its own.
         self.may_stream = (
             self.dispatches_tools
             or _plan_reaches_context(self.plan)
@@ -170,25 +90,17 @@ class MCPTool(MCPDescriptor):
         )
 
 
-# Where a tool's version is published in its `_meta`, and where a call names the
-# version it wants. The spec defines no version field, so both live under one
-# framework-namespaced key rather than inventing wire fields a client would not
-# recognise. It lives here, beside the versioning it names, because every site
-# that copies or relays a tool has to know not to carry it across.
+# The spec defines no version field, so publishing and naming one share this key.
 VERSION_META_KEY = "veloce"
 
 
 def _version_key(version: str | None) -> tuple[int, tuple[int, ...], int, str]:
     """Order two version labels, comparing dotted integers numerically.
 
-    ``"10.0"`` follows ``"2.0"``, which a plain string sort gets backwards. A
-    label carrying a suffix precedes the release it is a suffix of, so
-    ``"1.0.0-beta"`` sits below ``"1.0.0"`` rather than above every number - a
-    prerelease is not what a call naming no version should reach. Among suffixes
-    the comparison is textual, which happens to order ``alpha`` before ``beta``
-    before ``rc`` but is not semantic-versioning precedence and does not claim to
-    be. A label with no numeric stem at all is ordered as text, below every
-    numeric one, so an ordering exists whatever the author chose to write.
+    ``"10.0"`` follows ``"2.0"``, and ``"1.0.0-beta"`` sits below ``"1.0.0"`` so a
+    call naming no version never reaches a prerelease. Suffixes compare textually,
+    which is not semantic-versioning precedence; a label with no numeric stem is
+    ordered as text below every numeric one.
     """
     if version is None:
         return (0, (), 0, "")
@@ -204,15 +116,13 @@ def _version_key(version: str | None) -> tuple[int, tuple[int, ...], int, str]:
 class ToolRegistry(Registry[MCPTool]):
     """Name -> `MCPTool`, plus the shared JSON Schema component registry.
 
-    `schemas` holds Pydantic-model components shared across tool input
-    schemas (mirroring OpenAPI `components.schemas`); a tool input schema
-    references them by `$ref`.
+    `schemas` holds Pydantic-model components shared across tool input schemas
+    and referenced by `$ref`, mirroring OpenAPI `components.schemas`.
     """
 
     tools: dict[str, MCPTool] = field(default_factory=dict)
     schemas: dict[str, dict[str, Any]] = field(default_factory=dict)
-    # Only a name registered under more than one version has an entry here, so an
-    # unversioned server carries none.
+    # Only a name with more than one version has an entry, so most servers none.
     versions: dict[str, dict[str, MCPTool]] = field(default_factory=dict)
 
     @property
@@ -232,9 +142,8 @@ class ToolRegistry(Registry[MCPTool]):
     def add(self, tool: MCPTool) -> None:
         """Register `tool`, rejecting a name already taken by the same version.
 
-        Two registrations sharing a name and declaring different versions are
-        both kept: the higher one is listed and answers a call naming no
-        version, and either answers a call naming its own.
+        Two registrations sharing a name under different versions are both kept:
+        the higher is listed, and either answers a call naming its own.
         """
         existing = self.tools.get(tool.name)
         if existing is None or existing.version is None or tool.version is None:
@@ -264,18 +173,11 @@ def _output_schema_for(
 ) -> tuple[dict[str, Any] | None, Any]:
     """Build the tool's MCP output schema and the model it was derived from.
 
-    A route `response_model` is the authoritative output contract and wins; a
-    pure `@app.mcp_tool` (or a route with no `response_model`) falls back to the
-    handler's Pydantic return type. A non-model output (scalar, list, untyped)
-    has no object schema and yields `(None, None)`. The model is returned
-    alongside the schema so a pure tool can validate its raw return against it.
+    A route `response_model` wins; otherwise the handler's Pydantic return type.
+    A non-model output has no object schema and yields `(None, None)`.
     """
     model: Any = None
-    # The schema's alias usage must match how the structured value is dumped: a
-    # route `response_model` is dumped with the route's `response_model_by_alias`
-    # (default False), while a return-type model and a pure tool dump with field
-    # names. Build the schema with the matching `by_alias` so `structuredContent`
-    # conforms to the advertised `outputSchema`.
+    # Alias usage must match the dump, so `structuredContent` matches `outputSchema`.
     by_alias = False
     if route_info is not None:
         response_model = route_info.response_model
@@ -287,11 +189,7 @@ def _output_schema_for(
     if model is None:
         return None, None
     schema = build_output_schema(model, schemas_registry, by_alias=by_alias)
-    # `response_model_include` / `response_model_exclude` make field presence
-    # conditional, so the bare model's `required` no longer matches the dumped
-    # value (an excluded required field is absent). Drop `required` so a partial
-    # object still conforms to the advertised schema; the value only ever omits
-    # fields, never adds undeclared ones, so the looser schema stays sound.
+    # Include/exclude makes presence conditional; the value omits, never adds.
     if (
         schema is not None
         and route_info is not None
@@ -304,8 +202,7 @@ def _output_schema_for(
 def _tool_name_from_route_name(route_name: str) -> str:
     """Derive a tool name from a route name, mapping the blueprint dot to ``_``.
 
-    A blueprint route is named `<blueprint>.<handler>`; the MCP tool name
-    namespaces it as `<blueprint>_<handler>` so it is a single valid
+    `<blueprint>.<handler>` becomes `<blueprint>_<handler>`, a single valid
     identifier the client can call.
     """
     return route_name.replace(".", "_")
@@ -360,13 +257,9 @@ def _tool_from_route(
 ) -> MCPTool:
     """Build the `MCPTool` for one exposed route.
 
-    Shared by the tool registry walk and the resource registry (a resource is a
-    read-only route invoked through the same handler-replay path as a tool), so
-    both derive the tool name, description, input/output schema, and the
-    route-replay fields (`route_info`, `route_method`, `route_dep_plans`) one
-    way. `methods` is the route's full verb set (a multi-verb route shares one
-    `RouteInfo`); its leading verb drives the synthetic request method and the
-    whole set drives the conservative annotation hints.
+    Shared with the resource registry, so both derive the name, schemas and
+    route-replay fields one way. `methods` is the route's full verb set: its
+    leading verb drives the synthetic request method, the whole set the hints.
     """
     tool_name = _tool_name_from_route_name(info.name)
     desc = require_mcp_description(tool_name, info.mcp_description)
@@ -406,8 +299,6 @@ def build_registry(app: Any) -> ToolRegistry:
     """Assemble the tool registry from explicit tools plus exposed routes."""
     registry = ToolRegistry()
 
-    # Explicit `@app.mcp_tool` registrations, recorded on the app at decoration
-    # time as `MCPToolRegistration` records.
     for tool in getattr(app, "_mcp_tools", ()):
         _register_explicit_tool(
             registry,
@@ -424,22 +315,8 @@ def build_registry(app: Any) -> ToolRegistry:
             version=tool.version,
         )
 
-    # Routes flagged for exposure. Walk every route (including those hidden
-    # from the OpenAPI schema) so an exposed-but-unlisted route still becomes
-    # a tool; skip WebSocket routes, which have no request/response tool shape.
-    #
-    # A route declared with several methods (`methods=["GET", "POST"]`) shares a
-    # single `RouteInfo` object across its method entries, so the walk yields it
-    # once per method. Group by `RouteInfo` identity, preserving first-seen
-    # order, to expose that one route a single time: its leading verb drives the
-    # synthetic request method and its full verb set drives the conservative
-    # annotation hints.
-    #
-    # By identity, never by the handler callable - that would silently drop a
-    # function intentionally mounted as two distinct named routes (or on two
-    # blueprints). Two distinct routes deriving the same tool name still collide
-    # at `registry.add`, so duplicate-tool-name detection is unaffected.
-    # Exposure stays default-closed (`expose_as_mcp_tool=True`).
+    # Hidden routes are walked too; WebSocket routes have no tool shape. A
+    # multi-verb route shares one `RouteInfo`, so group by identity, not handler.
     exposed: dict[int, Any] = {}
     methods_by_route: dict[int, list[str]] = {}
     for method, _path, info in app.iter_routes(include_hidden=True):
@@ -454,14 +331,10 @@ def build_registry(app: Any) -> ToolRegistry:
     for route_id, info in exposed.items():
         registry.add(_tool_from_route(info, methods_by_route[route_id], registry.schemas))
 
-    # Tools discovered from an upstream server: already built, so they are added
-    # rather than derived.
     for proxied in getattr(app, "_mcp_prebuilt_tools", ()):
         registry.add(proxied)
 
-    # Sub-apps mounted with `expose_mcp=True` contribute their tools under the
-    # mount's namespace. Building a sub-app's registry merges its own mounts
-    # first, so nesting composes.
+    # A sub-app's registry merges its own mounts first, so nesting composes.
     for namespace, sub_app in mcp_mounts(app):
         for tool in build_registry(sub_app).tools.values():
             registry.add(renamed(tool, namespace))

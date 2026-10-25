@@ -28,8 +28,7 @@ from veloce.http.dates import http_date
 # minus CTLs and the separators ()<>@,;:\"/[]?={} plus SP/HT, one-or-more.
 _COOKIE_NAME_TOKEN = re.compile(r"[!#$%&'*+\-.0-9A-Z^_`a-z|~]+").fullmatch
 
-# Cookie-attribute keywords (lowercased). A cookie name equal to one of these
-# can be misread as a Set-Cookie attribute by a lenient parser, so reject it.
+# A name equal to one of these can be misread as a Set-Cookie attribute.
 _RESERVED_COOKIE_NAMES = frozenset(
     {"expires", "max-age", "domain", "path", "secure", "httponly", "samesite", "partitioned"}
 )
@@ -47,8 +46,7 @@ def iter_cookies(header: str | None) -> Iterator[tuple[str, str]]:
         return
     seen: set[str] = set()
     for chunk in header.split(";"):
-        # `partition` already reports whether a separator was there, so skipping
-        # a separator-less segment costs no second scan of the chunk.
+        # `partition` reports the separator, so the skip costs no second scan.
         name, eq, value = chunk.partition("=")
         if not eq:
             continue
@@ -57,8 +55,7 @@ def iter_cookies(header: str | None) -> Iterator[tuple[str, str]]:
             continue
         seen.add(name)
         value = value.strip()
-        # A value carrying neither marker is already what it decodes to. The strip
-        # above has to stay for it, since `unquote_value` is what does it here.
+        # A value with neither marker decodes to itself, so the strip above stays.
         if "%" in value or '"' in value:
             value = unquote(unquote_value(value))
         yield name, value
@@ -101,8 +98,7 @@ def dump_cookie(
       `domain`, emitting `__Host-<key>`.
     """
     if prefix is not None:
-        # RFC 6265bis Sec. 4.1.3 - validate against the BARE key, then derive the
-        # wire name, whose framework-owned prefix already conforms.
+        # RFC 6265bis Sec. 4.1.3 - validated against the BARE key.
         if prefix == "secure":
             if secure is not True:
                 raise ValueError("__Secure- cookie prefix requires secure=True")
@@ -120,8 +116,7 @@ def dump_cookie(
     else:
         wire_key = key
     _reject_header_crlf(key, MSG_LABEL_COOKIE_NAME)
-    # An RFC 6265 token that is not a cookie-attribute keyword; either would let
-    # the name inject an attribute into the header.
+    # Either would let the name inject an attribute into the header.
     if not _COOKIE_NAME_TOKEN(key):
         raise ValueError(
             f"cookie name {key!r} is not a valid RFC 6265 token "
@@ -154,8 +149,7 @@ def dump_cookie(
         parts.append("HttpOnly")
     if samesite is not None:
         _reject_header_crlf(samesite, MSG_LABEL_COOKIE_SAMESITE)
-        # The whole rule lives in the one function that renders a `Set-Cookie`,
-        # so no caller can normalise it differently on the way in.
+        # Here alone, so no caller normalises it differently on the way in.
         normalised = samesite.strip().capitalize()
         if not normalised:
             return "; ".join(parts)

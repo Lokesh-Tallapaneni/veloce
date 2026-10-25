@@ -20,8 +20,8 @@ from veloce._internal import _write_chunked, dumps_current
 from veloce.http.response import Response
 from veloce.status import HTTP_200_OK
 
-# A colon-prefixed comment line the spec requires clients to ignore, sent so an
-# idle connection survives proxy and load-balancer read timeouts.
+# A `:`-prefixed comment the spec has clients ignore, so an idle connection
+# survives proxy read timeouts.
 _PING_FRAME = b": ping\r\n\r\n"
 
 # What an SSE source iterator may yield; `_encode_event` has the accepted forms.
@@ -41,9 +41,8 @@ class ServerSentEvent:
         retry: int | None = None,
         comment: str | None = None,
     ) -> None:
-        # WHATWG SSE: `event` and `id` are single-line fields, and a NUL in `id`
-        # makes the client ignore it, breaking Last-Event-ID reconnection.
-        # `data` stays permissive, and may be None for a comment-only event.
+        # WHATWG SSE: `event` and `id` are single-line, and a NUL in `id` breaks
+        # Last-Event-ID reconnection. `data` stays permissive and may be None.
         if event is not None:
             event = str(event)
             if "\n" in event or "\r" in event:
@@ -56,8 +55,7 @@ class ServerSentEvent:
         self.event = event
         self.id = id
         self.retry = retry
-        # WHATWG SSE: a `:`-prefixed line is a comment, line-split like `data`,
-        # so the field stays permissive.
+        # WHATWG SSE: a comment is line-split like `data`, so this is permissive.
         self.comment = comment
 
     @classmethod
@@ -75,8 +73,7 @@ class ServerSentEvent:
         string.
         """
         return cls(
-            # The shared encoder, so a streamed event carries the same JSON
-            # dialect the application's responses do.
+            # The shared encoder, so one JSON dialect reaches both doors.
             data=dumps_current(payload).decode("utf-8"),
             event=event,
             id=id,
@@ -87,8 +84,7 @@ class ServerSentEvent:
         """Encode the event as an SSE-formatted byte string."""
         lines = []
         if self.comment is not None:
-            # Line-split like `data`, so an embedded newline emits one `: ` line
-            # per segment instead of a mangled single line.
+            # Line-split like `data`, one `: ` line per segment.
             c = self.comment.replace("\r\n", "\n").replace("\r", "\n")
             if "\n" not in c:
                 lines.append(f": {c}")
@@ -96,8 +92,7 @@ class ServerSentEvent:
                 for line in c.split("\n"):
                     lines.append(f": {line}")
         if self.id is not None:
-            # `id`/`event` were validated single-line at construction, so emit
-            # them directly without a per-encode strip.
+            # Validated single-line at construction, so no per-encode strip.
             lines.append(f"id: {self.id}")
         if self.event is not None:
             lines.append(f"event: {self.event}")
@@ -105,8 +100,7 @@ class ServerSentEvent:
             lines.append(f"retry: {self.retry}")
         if self.data is not None:
             data = self.data.replace("\r\n", "\n").replace("\r", "\n")
-            # Single-line payloads - by far the common case - skip the
-            # `split("\n")` allocation and emit the field directly.
+            # The common case, skipping the `split` allocation.
             if "\n" not in data:
                 lines.append(f"data: {data}")
             else:
@@ -156,18 +150,15 @@ class EventSourceResponse(Response):
         if ping_comment is not None:
             if ping is None:
                 raise ValueError("ping_comment is only meaningful when ping is set")
-            # Reuse the event-field single-line rule: the keep-alive frame is a
-            # single comment line, so a CR/LF would split it on the wire.
+            # The keep-alive frame is one comment line, which a CR/LF would split.
             if "\n" in ping_comment or "\r" in ping_comment:
                 raise ValueError("ping_comment must not contain a newline")
-            # Built directly rather than via `ServerSentEvent.encode` to keep the
-            # CRLF framing `_PING_FRAME` uses.
+            # Direct, to keep the CRLF framing `_PING_FRAME` uses.
             self._ping_frame = f": {ping_comment}\r\n\r\n".encode()
         else:
             self._ping_frame = _PING_FRAME
         hdrs = dict(headers) if headers else {}
-        # `Connection` is deliberately not set: it is the transport's decision,
-        # which `encode()` takes.
+        # `Connection` is the transport's decision, which `encode()` takes.
         hdrs.update(
             {
                 HEADER_CACHE_CONTROL: HEADER_VALUE_NO_CACHE,
@@ -246,8 +237,7 @@ class EventSourceResponse(Response):
             return item.encode("utf-8")
         if isinstance(item, (bytes, bytearray)):
             return bytes(item)
-        # Coerced rather than left to crash the chunk writer, and through the
-        # shared encoder so one stream cannot carry two JSON dialects.
+        # Through the shared encoder, so one stream carries one JSON dialect.
         data = dumps_current(item).decode("utf-8") if isinstance(item, Mapping) else str(item)
         return ServerSentEvent(data=data).encode()
 
@@ -264,8 +254,7 @@ class EventSourceResponse(Response):
         content: AsyncIterator[_SSEItem],
         ping: float,
     ) -> AsyncIterator[bytes]:
-        # One task wraps each `__anext__` and is awaited again on the next loop,
-        # so a ping-window timeout does not cancel into the source generator.
+        # One task per `__anext__`, re-awaited, so a timeout cancels nothing.
         it = content.__aiter__()
         pending: Any = None
         try:

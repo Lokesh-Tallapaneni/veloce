@@ -50,8 +50,7 @@ class URLMap:
         self._by_endpoint: dict[str, list[URLRule]] | None = None
 
     def _build(self) -> list[URLRule]:
-        # The app drops this whole instance via `_invalidate_route_caches()` on
-        # any route mutation, so the cache cannot go stale.
+        # The app drops this instance on any route mutation, so it cannot stale.
         cached = self._cached
         if cached is not None:
             return cached

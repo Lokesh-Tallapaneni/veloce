@@ -85,15 +85,12 @@ from veloce.status import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover
-    # Type-only: a runtime import closes a
-    # response -> request -> exceptions -> response cycle.
+    # Type-only: a runtime import closes a response->request->exceptions cycle.
     from veloce.http.request import Request
 
 # ── Case-insensitive response-header access ──────────────────────────
-# `Response.headers` is a plain case-SENSITIVE `dict`, but HTTP field names are
-# case-insensitive (RFC 9110 Sec. 5.1), so an exact-key lookup would miss a
-# header a handler or middleware stored in non-canonical casing. These helpers
-# fold the lookup without allocating a new dict on the hot path.
+# `Response.headers` is case-SENSITIVE but HTTP field names are not (RFC 9110
+# Sec. 5.1), so these fold the lookup without allocating a dict per call.
 
 
 def header_key(headers: Mapping[str, str], name: str) -> str | None:
@@ -105,9 +102,7 @@ def header_key(headers: Mapping[str, str], name: str) -> str | None:
     if name in headers:
         return name
     lowered = name.lower()
-    # A first-byte guard before the `.lower()` measured slower: the header dict
-    # is short enough that the extra test costs more than the allocations it
-    # avoids.
+    # A first-byte guard before the `.lower()` measured slower on a short dict.
     for key in headers:
         if key.lower() == lowered:
             return key
@@ -194,9 +189,7 @@ def _open_file_binary(path: str, start: int = 0) -> BinaryIO:
     return handle
 
 
-#: Bytes per chunk when streaming a file off disk. Large enough that the
-#: per-chunk executor hop is amortised, small enough that a concurrent download
-#: holds this rather than the whole file.
+#: Bytes per chunk off disk: amortises the executor hop, bounds the download.
 FILE_STREAM_CHUNK = 64 * 1024
 
 
@@ -223,9 +216,7 @@ def advertised_length(status_code: int, body: bytes) -> int | None:
     return 0
 
 
-# Merged `Vary` values, keyed by `(existing_header, names_being_added)`. See
-# `Response.add_vary`: the merge is pure, and a given application asks the same
-# handful of questions on every response because its middleware order is fixed.
+# Merged `Vary` values keyed by `(existing_header, names_added)`; a pure merge.
 _VARY_MERGES: dict[tuple[str, tuple[str, ...]], str] = {}
 _MAX_VARY_MERGES = 256
 
@@ -255,10 +246,7 @@ class Response:
         "_ct_params",
     )
 
-    #: Whether this response is a Server-Sent Events stream; `EventSourceResponse`
-    #: overrides it to `True`. A class attribute, so the transport and compression
-    #: paths read it directly rather than through a `getattr` default, which on a
-    #: slotted class pays CPython's full exception setup: ~38 ns per response.
+    #: An SSE stream. A class attribute: a `getattr` default on slots costs ~38 ns.
     is_event_source = False
 
     def __init__(
@@ -273,33 +261,23 @@ class Response:
         self._encoded: bytes | None = None
         self._body = body
         self.content_type = content_type
-        # Copied, not aliased: middleware and `set_cookie` mutate this mapping in
-        # place, so a handler-held constant (`HEADERS = {...}` reused across
-        # routes) would accumulate one request's `Set-Cookie` and ship a signed
-        # session cookie belonging to a different user on every later response.
+        # Copied: a shared `HEADERS = {...}` would ship one user's session cookie on.
         self.headers = dict(headers) if headers else {}
-        # Coerced rather than stored raw: the dispatch cascade recognises only
-        # `run` / `run_all`, so an unsupported value would be dropped silently
-        # and the response served as if the task had run. `None` is answered by
-        # the comparison rather than the call, which measured 72 ns against a
-        # 432 ns `Response()`.
+        # Coerced, not stored raw: the dispatch cascade knows only `run` / `run_all`,
+        # so another value would serve as if the task had run. The `None`
+        # comparison measured 72 ns of a 432 ns `Response()`.
         self.background = None if background is None else coerce_background(background)
-        # `StreamingResponse` rewrites this with an async iterator; staying
-        # `None` here keeps `is_streamed` a direct attribute load.
+        # `StreamingResponse` rewrites this; `None` keeps `is_streamed` an attr load.
         self._stream: Any = None
-        # Value-keyed parse cache for `mimetype` / `charset` / `mimetype_params`.
-        # `content_type` is a bare public slot with no setter hook, so the cache
-        # is keyed on the value it was built from; `None` equals no real
-        # content-type string, so the first access always parses.
+        # `content_type` has no setter hook, so the parse cache keys on its value.
         self._ct_cache_key: str | None = None
         self._mimetype: str = ""
         self._charset: str = ""
         self._ct_params: dict[str, str] = {}
 
     # ── `body` ────────────────────────────────────────────────
-    # Backed by `_body` so the setter can invalidate the encode cache: without
-    # it, a middleware assigning `response.body` after a prior `.encode()` would
-    # emit stale bytes and a wrong `Content-Length`.
+    # Backed by `_body` so the setter invalidates the encode cache: a middleware
+    # assigning after an `.encode()` would otherwise emit stale bytes.
 
     @property
     def body(self) -> bytes:
@@ -373,9 +351,7 @@ class Response:
         self._mimetype = media.strip().lower()
         params = dict(parse_media_type_params(rest)) if semi else {}
         self._ct_params = params
-        # Read off the shared parser's output rather than re-scanned, so the
-        # charset honours RFC 9110 Sec. 8.3.1 case-insensitive parameter names
-        # and Sec. 5.6.6 whitespace, and cannot disagree with `mimetype_params`.
+        # Off the shared parser, so the charset honours RFC 9110 Sec. 8.3.1 and 5.6.6.
         self._charset = params.get("charset", "utf-8")
         self._ct_cache_key = ct
 
@@ -392,8 +368,7 @@ class Response:
     @mimetype.setter
     def mimetype(self, value: str) -> None:
         """Set the mimetype."""
-        # The presence test reads the parsed parameter map, not the raw header,
-        # so a `Charset=` spelling is carried over too (RFC 9110 Sec. 8.3.1).
+        # Read off the parsed map, so a `Charset=` carries (RFC 9110 Sec. 8.3.1).
         cs = self.charset
         had_charset = "charset" in self.mimetype_params
         self.content_type = f"{value}; charset={cs}" if had_charset else value
@@ -439,10 +414,9 @@ class Response:
         if keep_alive and self._encoded is not None:
             return self._encoded
 
-        # Bodiless statuses (1xx/204/205/304) carry no payload and no default
-        # content-type; a handler-set one in `self.headers` still wins. A 304
-        # may advertise the would-be-200 `Content-Length` while sending no body
-        # (RFC 9110 Sec. 8.6); 1xx/204/205 advertise 0.
+        # Bodiless statuses (1xx/204/205/304) get no default content-type; a
+        # handler-set one still wins. A 304 may advertise the would-be-200
+        # `Content-Length` (RFC 9110 Sec. 8.6), while 1xx/204/205 advertise 0.
         body_allowed = status_permits_body(self.status_code)
         body = self.body if body_allowed else b""
         length = advertised_length(self.status_code, self.body)
@@ -506,8 +480,7 @@ class Response:
         contain CR, LF, or NUL - untrusted data must not be able to inject
         additional cookies or response headers.
         """
-        # `dump_cookie` accepts datetime and numeric timestamps, not
-        # pre-formatted strings.
+        # `dump_cookie` takes datetime and numeric stamps, not formatted strings.
         expires_str: str | None = None
         dump_expires: int | float | datetime | date | None = None
         if isinstance(expires, str):
@@ -670,9 +643,8 @@ class Response:
         existing = header_get(self.headers, HEADER_SET_COOKIE) or ""
         if not existing:
             return out
-        # Only the leading `name=value` segment of each entry is the cookie; the
-        # rest are attributes. `iter_cookies` is the inverse of `dump_cookie`'s
-        # percent-quoting, and the parser `Request.cookies` reads with.
+        # Only the leading `name=value` is the cookie; `iter_cookies` inverts
+        # `dump_cookie`.
         for line in existing.split(SET_COOKIE_JOINER):
             out.update(iter_cookies(line.split(";", 1)[0]))
         return out
@@ -699,8 +671,7 @@ class Response:
                     _reject_header_crlf(cookie, MSG_LABEL_SET_COOKIE_VALUE)
                     result.append((k, cookie))
             else:
-                # The per-header failure label is an f-string, so build it only
-                # on the path that actually raises.
+                # The f-string label is built only on the path that raises.
                 if _header_value_has_crlf(k) or _header_value_has_crlf(v):
                     _reject_header_crlf(k, MSG_LABEL_HEADER_NAME)
                     _reject_header_crlf(v, f"{k} header value")
@@ -785,37 +756,28 @@ class Response:
         existing entries.
         """
         headers = self.headers
-        # Every casing, not just `Vary` and `vary`: both emit paths fold
-        # duplicate field names and keep the last write, so a missed casing puts
-        # `VARY: Cookie` on the wire as `Vary: Accept-Encoding` alone - and a
-        # `Vary: Cookie` a shared cache never sees is how one user's response
-        # gets served to another.
+        # Every casing, not just `Vary` and `vary`: both emit paths keep the last
+        # write, and a `Vary: Cookie` a shared cache never sees is how one
+        # user's response gets served to another.
         stored_key = header_key(headers, HEADER_VARY)
-        # Fast path - a single clean token with no existing `Vary` round-trips
-        # through `HeaderSet` unchanged, so skip the parse and the list+set
-        # allocation. This runs on every session-touched response.
+        # A lone clean token with no existing `Vary` round-trips; skip the parse.
         if len(header_names) == 1 and stored_key is None:
             value = header_names[0]
             headers[HEADER_VARY] = value
             self._encoded = None
             return value
         existing = headers[stored_key] if stored_key is not None else ""
-        # The merge is pure and both inputs are fixed per application, since
-        # middleware order does not change between requests. Measured at 5.3 us
-        # for the second and third calls against 0.5 us for the first, which
-        # takes the fast path above.
+        # Pure, inputs fixed per app. Measured 5.3 us against 0.5 us on the fast path.
         cache_key = (existing, header_names)
         cached = _VARY_MERGES.get(cache_key)
         if cached is not None:
             value = cached
         else:
-            # Dedup + ordering through `HeaderSet` so the case-insensitive merge
-            # cannot drift from the `vary` property's own datastructure.
+            # Through `HeaderSet`, so the merge cannot drift from the `vary` property.
             merged = HeaderSet(existing)
             merged.update(header_names)
             value = merged.to_header()
-            # Bounded because a handler may write `response.headers["Vary"]`
-            # from user input, so `existing` is not always framework-controlled.
+            # Bounded: a handler may write `response.headers["Vary"]` from input.
             if len(_VARY_MERGES) >= _MAX_VARY_MERGES:
                 _VARY_MERGES.clear()
             _VARY_MERGES[cache_key] = value
@@ -872,8 +834,7 @@ class Response:
         if value is None:
             header_pop(self.headers, HEADER_WWW_AUTHENTICATE)
         else:
-            # A caller-supplied challenge may interpolate a realm or token68, so
-            # this low-level setter rejects CRLF too.
+            # A challenge may interpolate a realm or token68, so CRLF is rejected.
             _reject_header_crlf(value, HEADER_WWW_AUTHENTICATE)
             self.headers[HEADER_WWW_AUTHENTICATE] = value
         self._encoded = None
@@ -1180,10 +1141,7 @@ class Response:
         return (body[i : i + size] for i in range(0, len(body), size))
 
     if TYPE_CHECKING:  # pragma: no cover
-        # Declared for the type only - the streaming subclasses define it, and
-        # the built-in server cannot name them because `serving/` must not
-        # import `sse`. No runtime method, so a buffered response still has no
-        # `stream_to` to call by mistake.
+        # Type-only, because `serving/` must not import `sse`; no runtime method.
         async def stream_to(
             self,
             transport: Any,
@@ -1213,8 +1171,7 @@ class Response:
         `weak=True` prepends `W/`. Overwrites any `ETag` already set; pass the
         explicit one in `__init__(headers=...)` to skip this. Returns the value.
         """
-        # `usedforsecurity=False`: this MD5 is an opaque cache validator, not a
-        # security primitive, so it must not raise on FIPS builds.
+        # `usedforsecurity=False`: an opaque cache validator must not raise on FIPS.
         digest = hashlib.md5(self.body, usedforsecurity=False).hexdigest()
         etag = f'"{digest}"' if not weak else f'W/"{digest}"'
         self.headers[HEADER_ETAG] = etag
@@ -1236,13 +1193,11 @@ class Response:
         Handles `If-None-Match: *` (matches any current representation
         of the resource) and the weak/strong ETag comparison rules.
         """
-        # Field names are case-insensitive (RFC 9110 Sec. 5.1), so a
-        # handler-set `Etag`/`etag` is honored too.
+        # Field names are case-insensitive (RFC 9110 Sec. 5.1), so `Etag` is honored.
         ours_etag = header_get(self.headers, HEADER_ETAG) or ""
         inm = getattr(request, "if_none_match", ())
         if inm:
-            # An `If-None-Match` the response cannot answer (no ETag of its own)
-            # is not a match, and per Sec. 13.2 it still supersedes the date.
+            # With no ETag it is not a match, and Sec. 13.2 still ranks it first.
             if ours_etag and _preconditions_say_unchanged(inm, None, ours_etag, None):
                 self._downgrade_to_304()
             return self
@@ -1274,12 +1229,9 @@ class Response:
         """
         if_match = getattr(request, "if_match", ())
         if not if_match:
-            # RFC 9110 Sec. 13.2.2: `If-Unmodified-Since` is evaluated only when
-            # `If-Match` is absent.
+            # RFC 9110 Sec. 13.2.2: evaluated only when `If-Match` is absent.
             return self._check_unmodified_since(request)
-        # `If-Match: *` is an existence precondition (RFC 9110 Sec. 13.1.1):
-        # the handler producing this response means the resource exists, so it
-        # is satisfied regardless of whether an ETag was attached.
+        # `If-Match: *` is an existence precondition (RFC 9110 Sec. 13.1.1).
         if if_match == ("*",):
             return self
         # `headers` is a plain dict; accept either spelling, as other helpers do.
@@ -1303,12 +1255,10 @@ class Response:
             return self
         raw = header_get(self.headers, HEADER_LAST_MODIFIED)
         if not raw:
-            # Nothing to compare against, so the precondition cannot be
-            # evaluated and is not a reason to refuse.
+            # Nothing to compare, so this is not a reason to refuse.
             return self
         parsed = parse_date(raw)
-        # Compared as whole seconds - an HTTP-date carries no finer resolution,
-        # so anything else fails within the same second.
+        # Whole seconds: an HTTP-date carries no finer resolution.
         if parsed is None or int(parsed.timestamp()) <= int(since):
             return self
         from veloce.exceptions import PreconditionFailed  # response <-> exceptions cycle
@@ -1317,23 +1267,18 @@ class Response:
 
     def _downgrade_to_304(self) -> None:
         """Strip body + flip status to 304. Used by `make_conditional`."""
-        # RFC 9110 Sec. 8.6: a 304 may carry the `Content-Length` a 200 would
-        # have carried, so it is recorded before the body is dropped - a length
-        # recomputed from the emptied body claims zero bytes, which RFC 9111
-        # Sec. 4.3.4 has caches write over their stored length.
-        # Idempotent, because a handler and a conditional-GET middleware may each
-        # call `make_conditional`; the second pass must not re-record zero.
+        # RFC 9110 Sec. 8.6: a 304 may carry the `Content-Length` a 200 would have,
+        # so it is recorded before the body is dropped - a zero recomputed from
+        # the emptied body is written over the cache's stored length (RFC 9111
+        # Sec. 4.3.4). Idempotent: two callers must not re-record that zero.
         if self.status_code == HTTP_304_NOT_MODIFIED:
             return
-        # A streamed response has an empty `body`, so its length comes from the
-        # header the producer set. A generator-backed stream knows nothing, and
-        # an unknown length is omitted rather than reported as zero.
+        # A streamed length comes from the producer's header; unknown is omitted.
         declared = header_get(self.headers, HEADER_CONTENT_LENGTH)
         representation_length = declared if self._stream is not None else str(len(self.body))
         self.status_code = HTTP_304_NOT_MODIFIED
         self.body = b""
-        # A 304 carries no content, so the stream is dropped with the body;
-        # otherwise its chunks stay queued behind a bodiless status line.
+        # A 304 carries no content, so the stream drops with the body.
         self._stream = None
         header_pop(self.headers, HEADER_CONTENT_LENGTH)
         if representation_length is not None:
@@ -1406,9 +1351,7 @@ class JSONResponse(Response):
 
     __slots__ = ()
 
-    # Class-level default Content-Type, overridable by a subclass to change what
-    # both `__init__` and `from_bytes` emit. Named distinctly from
-    # `Response.media_type` so it does not shadow that instance property.
+    # Class default Content-Type, named apart from `Response.media_type`.
     default_media_type: str = MIME_JSON
 
     def __init__(
@@ -1419,9 +1362,7 @@ class JSONResponse(Response):
         background: Any = None,
     ) -> None:
         try:
-            # Through the app's provider, not a bare `orjson.dumps`, so a
-            # `JSON_SORT_KEYS` or custom `json_provider_class` reaches this class
-            # too and one application cannot emit two dialects.
+            # Through the app's provider, so `JSON_SORT_KEYS` reaches this class.
             body = dumps_current(data)
         except TypeError as exc:
             raise ValueError(f"JSONResponse data is not JSON-serializable: {exc}") from exc
@@ -1583,10 +1524,9 @@ class RedirectResponse(Response):
         headers: dict[str, str] | None = None,
     ) -> None:
         hdrs = headers or {}
-        # Reject CR/LF in the target and percent-encode it, so a crafted
-        # URL or Host header cannot inject extra response headers. The
-        # safe set keeps URL-structural characters (RFC 3986) and `%`
-        # so an already-encoded URL is not double-encoded.
+        # Reject CR/LF and percent-encode, so a crafted URL or Host header cannot
+        # inject response headers. The safe set keeps RFC 3986 structural
+        # characters and `%`, so an encoded URL is not double-encoded.
         _reject_header_crlf(url, "redirect URL")
         hdrs[HEADER_LOCATION] = quote(url, safe="/:?#[]@!$&'()*+,;=%~")
         super().__init__(
@@ -1631,8 +1571,7 @@ class StreamingResponse(Response):
             content_type=content_type,
             headers=headers,
         )
-        # Both branches go through an adapter that encodes `str`, so an async
-        # generator yielding `str` cannot reach `_write_chunked` as text.
+        # Both branches go through an adapter that encodes `str`.
         self._stream: AsyncIterator[bytes] | None = (
             self._aiter_async(content)
             if hasattr(content, "__aiter__")
@@ -1680,17 +1619,14 @@ class StreamingResponse(Response):
         the high-water mark, so the fast path pays one already-set check.
         """
         transport.write(self.encode(keep_alive=keep_alive))
-        # A downgrade to 304 drops the stream with the body (RFC 9110
-        # Sec. 15.4.5); this path writes chunks without consulting the status.
+        # A 304 drops the stream with the body (RFC 9110 Sec. 15.4.5).
         if self._stream is not None:
             await _write_chunked(transport, self._stream, drain)
 
 
-# Files at or below this size are read inline by `FileResponse.from_path`;
-# larger ones go to a thread-pool executor so a big read never stalls the loop.
-# A thread-pool hop costs ~100 us (measured), which dominates the
-# few-microsecond read of a small static asset, and 64 KiB keeps the worst-case
-# inline read sub-millisecond while covering most per-request assets.
+# At or below this size `FileResponse.from_path` reads inline; above it, a
+# thread-pool executor. The hop costs ~100 us measured, dominating the
+# few-microsecond read of a small asset, and 64 KiB stays sub-millisecond.
 _INLINE_READ_MAX = 64 * 1024
 
 
@@ -1728,18 +1664,14 @@ def _build_file_headers(
     if content_type is None:
         content_type = guess_content_type(path)
 
-    # Copied, not aliased: every write below is this one file's validator, so an
-    # aliased `HEADERS = {...}` shared across routes would ship the first file's
-    # `ETag` and have `ConditionalMiddleware` answer `304` for a body the client
-    # has never seen.
+    # Copied: a shared `HEADERS = {...}` would answer `304` for an unseen body.
     hdrs = dict(headers) if headers else {}
     if filename:
         hdrs[HEADER_CONTENT_DISPOSITION] = _format_content_disposition(
             content_disposition_type, filename
         )
     elif content_disposition_type != HEADER_VALUE_ATTACHMENT:
-        # The default `attachment` stays unset without a filename, so a plain
-        # `FileResponse(path)` does not force a download on every file.
+        # Unset without a filename, so `FileResponse(path)` forces no download.
         hdrs[HEADER_CONTENT_DISPOSITION] = content_disposition_type
 
     if HEADER_LAST_MODIFIED not in hdrs and "last-modified" not in hdrs:
@@ -1747,9 +1679,7 @@ def _build_file_headers(
     if HEADER_ETAG not in hdrs and "etag" not in hdrs:
         hdrs[HEADER_ETAG] = _file_etag(path, st.st_size, st.st_mtime)
     if advertise_ranges and HEADER_ACCEPT_RANGES not in hdrs and "accept-ranges" not in hdrs:
-        # A client only attempts a resumable download when the first response
-        # advertised the capability (RFC 9110 Sec. 14.3). Guarded so a caller can
-        # answer `none` and opt the file out.
+        # A client resumes only if the first response advertised it (RFC 9110 14.3).
         hdrs[HEADER_ACCEPT_RANGES] = HEADER_VALUE_BYTES
     return content_type, hdrs
 
@@ -1763,8 +1693,7 @@ def _resolve_byte_range(span: tuple[int | None, int | None], size: int) -> tuple
     """
     start, end = span
     if start is None:
-        # Suffix range: the last `end` bytes, clamped, so `bytes=-500` over a
-        # 200-byte file is the whole file.
+        # Suffix range: `bytes=-500` over a 200-byte file is the whole file.
         suffix = min(end or 0, size)
         return (size - suffix, size - 1) if suffix > 0 else None
     if start >= size:
@@ -1810,23 +1739,17 @@ def _negotiate_file_range(
 
     spec = request.range
     if spec is None or spec.unit != HEADER_VALUE_BYTES or len(spec.ranges) != 1:
-        # RFC 9110 Sec. 14.2 lets a recipient ignore a `Range` it will not act
-        # on: no `multipart/byteranges` body is emitted here, so a multi-range
-        # request, a non-`bytes` unit and an unparsable header are served whole.
+        # RFC 9110 Sec. 14.2 lets a recipient ignore a `Range` it will not act on.
         return True, None
 
-    # If-Range (RFC 9110 Sec. 13.1.5): a stale validator means the client would
-    # splice these bytes onto a different version of the representation, so the
-    # range is dropped for the full body rather than honoured.
+    # If-Range (RFC 9110 Sec. 13.1.5): a stale validator drops the range.
     if_etag, if_date = request.if_range
     if if_etag:
-        # Strong comparison is mandated: a weak validator promises semantic
-        # equivalence, not the byte-level identity a resume depends on.
+        # Strong comparison: a resume needs byte identity, not equivalence.
         if not _etag_matches_strong(header_get(hdrs, HEADER_ETAG) or "", if_etag):
             return True, None
     elif if_date is not None and int(mtime) != int(if_date):
-        # An exact date match, unlike the "not later than" test
-        # `If-Unmodified-Since` uses, at whole-second HTTP-date resolution.
+        # An exact date match, not the "not later than" `If-Unmodified-Since` test.
         return True, None
 
     span = _resolve_byte_range(spec.ranges[0], size)
@@ -1871,9 +1794,7 @@ class FileResponse(Response):
             advertise_ranges=request is not None,
         )
 
-        # Warn when called on a running loop - a 50 MB read there pauses every
-        # other request. A warning rather than a raise so the established sync
-        # helpers keep working; the next major bump tightens this to an error.
+        # On a running loop a 50 MB read stalls everything; a warning, not a raise.
         try:
             asyncio.get_running_loop()
         except RuntimeError:
@@ -1913,8 +1834,7 @@ class FileResponse(Response):
             headers=hdrs,
         )
         if served is not None:
-            # Onto the response's own headers: this describes one slice of one
-            # request, so nothing outliving the response should hold it.
+            # Onto its own headers: this describes one slice of one request.
             self.set_content_range(*served)
 
     async def stream_to(
@@ -1934,9 +1854,7 @@ class FileResponse(Response):
         outrunning a slow client in both cases.
         """
         if header_get(self.headers, HEADER_CONTENT_LENGTH) is None:
-            # Through `_encode_streaming_head`: `encode()` would default a
-            # `Content-Length` from `len(self.body)` and emit
-            # `Content-Length: 0` beside the chunked framing.
+            # `encode()` would emit `Content-Length: 0` beside the chunked framing.
             transport.write(
                 self._encode_streaming_head(
                     {
@@ -2008,11 +1926,9 @@ class FileResponse(Response):
             status = HTTP_206_PARTIAL_CONTENT
             served = (start, end, st.st_size)
 
-        # The threshold applies to the slice being served, not to the file it
-        # came from: a bounded range off a large asset is still one small read.
+        # Applied to the slice served, not the file: a bounded range is one read.
         if length <= _INLINE_READ_MAX:
-            # ASYNC230: a bounded inline read is deliberate - the slice is
-            # <= 64 KiB, so it avoids the ~100 us thread-pool hop (measured).
+            # ASYNC230: a deliberate <= 64 KiB read, avoiding the ~100 us hop.
             with open(path, "rb") as f:  # noqa: ASYNC230
                 if span is None:
                     body = f.read()
@@ -2027,11 +1943,9 @@ class FileResponse(Response):
                 resp.set_content_range(*served)
             return resp
 
-        # A larger file is streamed off disk rather than read whole: reading it
-        # whole made resident memory scale with (file size x concurrent
-        # requests) - four concurrent 32 MiB downloads measured at 134 MB RSS.
-        # The length is known from the stat, so the response stays
-        # length-delimited rather than switching to chunked encoding.
+        # Streamed off disk, because reading whole made RSS scale with (file size x
+        # concurrent requests) - four concurrent 32 MiB downloads measured
+        # 134 MB RSS. The stat gives the length, so it stays length-delimited.
         resp = Response.__new__(cls)
         Response.__init__(
             resp, status_code=status, body=b"", content_type=content_type, headers=hdrs
@@ -2039,7 +1953,6 @@ class FileResponse(Response):
         if served is not None:
             resp.set_content_range(*served)
         resp.headers[HEADER_CONTENT_LENGTH] = str(length)
-        # The same length the header declares, so the two cannot disagree if the
-        # file grows between this stat and the reads below.
+        # The length the header declares, so a growing file cannot disagree.
         resp._stream = _stream_file(path, loop, length, start)
         return resp

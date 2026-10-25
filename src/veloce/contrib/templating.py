@@ -21,16 +21,9 @@ if TYPE_CHECKING:  # pragma: no cover
 class _CSPNonceGlobal:
     """Template global resolving the current request's CSP nonce.
 
-    Renders as the nonce itself so a template writes the natural
-    `<script nonce="{{ csp_nonce }}">`; calling it (`{{ csp_nonce() }}`)
-    yields the same string for templates that prefer the call form used by
-    `get_flashed_messages()`. Supporting the bare form is a correctness
-    requirement rather than sugar: a call-only global renders its own repr
-    into the attribute, which a browser rejects as silently as the empty
-    nonce this replaces.
-
-    Resolves to the empty string when no nonce is armed - with CSP disabled
-    a page must still render rather than raise mid-template.
+    Renders as the nonce itself, so the bare `<script nonce="{{ csp_nonce }}">`
+    works; a call-only global would render its own repr into the attribute.
+    Empty string when no nonce is armed, so a CSP-less page still renders.
     """
 
     __slots__ = ()
@@ -51,12 +44,8 @@ class _CSPNonceGlobal:
 # Stateless, so one instance serves every environment and every request.
 _CSP_NONCE_GLOBAL = _CSPNonceGlobal()
 
-# Request-scoped names templates may reference without the caller threading
-# them through the render context. They are resolved on lookup rather than
-# installed into `env.globals`, because Jinja copies the globals mapping into
-# a fresh context dict on every single render - two more entries there is a
-# measurable per-render tax on templates that never mention them, while a
-# miss-time lookup costs only the templates that do.
+# Resolved on lookup, not installed into `env.globals`, which Jinja copies per
+# render - taxing templates that never name them.
 _LAZY_TEMPLATE_NAMES: dict[str, Any] = {
     "request": request,
     "csp_nonce": _CSP_NONCE_GLOBAL,
@@ -64,8 +53,7 @@ _LAZY_TEMPLATE_NAMES: dict[str, Any] = {
 
 
 # Built on first environment construction, not at import: `veloce` imports this
-# module eagerly, and touching `jinja2.runtime` at module scope would drag Jinja
-# into every process that never renders a template.
+# module eagerly, and Jinja must not load in a process that never renders.
 _context_class: Any = None
 
 
@@ -79,9 +67,8 @@ def _veloce_context_class() -> Any:
         class _VeloceContext(Context):
             """Render context that falls back to Veloce's request-scoped names.
 
-            `resolve_or_missing` is Jinja's documented lookup hook. The explicit
-            render context and `env.globals` are both consulted first, so a
-            caller passing `{"request": request}` still wins over the default.
+            The explicit render context and `env.globals` are consulted first, so
+            a caller passing `{"request": request}` still wins.
             """
 
             __slots__ = ()
@@ -96,18 +83,13 @@ def _veloce_context_class() -> Any:
     return _context_class
 
 
-# Sentinel attribute name written onto each Jinja Environment to memoize
-# the result of `_sync_app_jinja_helpers`. Holds a (id(app), filter/global/
-# test counts) tuple - bumps invalidate the cache when the user registers
-# a new filter / global / test after init.
+# Memoizes `_sync_app_jinja_helpers`; the token's counts invalidate it when a
+# filter is registered after init.
 _HELPER_SYNC_TOKEN_ATTR = "_veloce_helper_sync_token"
 
-# Memoized transient Jinja Environment for `render_template_string`'s
-# no-app fallback path. Built once on first fallback render and reused
-# thereafter so repeated string renders skip per-call env construction.
+# `render_template_string`'s no-app fallback env, built once and reused.
 _fallback_env: Environment | None = None
-# One transient environment per app, so an app's filters never resolve in
-# another app's render. Weak-keyed: an app that goes away takes its env with it.
+# One env per app, weak-keyed, so one app's filters never reach another's render.
 _app_fallback_envs: WeakKeyDictionary[Any, Any] = WeakKeyDictionary()
 
 
@@ -118,18 +100,11 @@ def _sync_app_jinja_helpers(env: Environment) -> None:
     `current_app`, and `get_flashed_messages` - so templates can
     `{{ url_for('endpoint') }}`, `{{ g.user }}`, and
     `{% for m in get_flashed_messages() %}` without manual context plumbing.
-    `request` and `csp_nonce` are deliberately *not* installed here: Jinja
-    copies this mapping into a fresh dict on every render, so each entry taxes
-    templates that never mention it. They resolve through the environment's
-    `context_class` instead (see `_veloce_context_class`), which costs only the
-    templates that reference them.
+    `request` and `csp_nonce` are deliberately *not* installed here; they resolve
+    through `context_class` instead, which costs only the templates naming them.
 
-    Memoized per (env, app) - re-syncing is idempotent but it still
-    runs three loops and several attribute lookups per render, which
-    is wasted work on every request once filters are stable. The
-    token includes the registration-list lengths, so adding a new
-    filter / global / test through `@app.template_filter` etc.
-    invalidates the cache and the next render re-syncs.
+    Memoized per (env, app), on a token carrying the registration-list lengths,
+    so a later `@app.template_filter` still invalidates it.
     """
     app = _current_app_var.get()
     if app is None:
@@ -140,8 +115,7 @@ def _sync_app_jinja_helpers(env: Environment) -> None:
     token = (id(app), len(filters), len(globs), len(tests))
     if getattr(env, _HELPER_SYNC_TOKEN_ATTR, None) == token:
         return
-    # `Environment.globals` carries the type of jinja2's default namespace, so
-    # it is read as a mapping of names to anything.
+    # jinja2 types `Environment.globals` as its own default namespace.
     env_globals = cast("dict[str, Any]", env.globals)
     env_globals["url_for"] = app.url_for
     env_globals["g"] = g
@@ -159,13 +133,8 @@ def _sync_app_jinja_helpers(env: Environment) -> None:
 def _gather_context_processors(extra: dict[str, Any] | None = None) -> dict[str, Any]:
     """Run the current app's `@app.context_processor`s and merge the results.
 
-    With no app bound (rendering outside a request context) there is nothing to
-    run, so the caller's own `extra` is returned unchanged rather than
-    discarded.
-
-    context-processor outputs are merged in registration order;
-    the caller's explicit context (passed to `TemplateResponse`) wins over
-    any conflicting key.
+    Outputs merge in registration order, and the caller's own `extra` wins over
+    any conflicting key. With no app bound, `extra` is returned unchanged.
     """
     app = _current_app_var.get()
     if app is None:
@@ -174,11 +143,8 @@ def _gather_context_processors(extra: dict[str, Any] | None = None) -> dict[str,
     merged: dict[str, Any] = {}
     for processor in getattr(app, "_context_processors", ()):
         result = processor()
-        # The sync template path cannot await, so an async context processor's
-        # values are skipped here; close the coroutine to avoid a "coroutine was
-        # never awaited" ResourceWarning. Use the async render path
-        # (`render_async` / `_gather_context_processors_async`) to run async
-        # context processors.
+        # The sync path cannot await, so an async processor is skipped; close it
+        # to avoid a "coroutine was never awaited" ResourceWarning.
         if inspect.iscoroutine(result):
             result.close()
             continue
@@ -193,9 +159,8 @@ def _gather_context_processors(extra: dict[str, Any] | None = None) -> dict[str,
 async def _gather_context_processors_async(extra: dict[str, Any] | None = None) -> dict[str, Any]:
     """Async variant of `_gather_context_processors` for the async render path.
 
-    Awaits `async def` context processors instead of discarding them, so they
-    contribute values during `render_async`. Sync processors are called
-    directly; the caller's explicit context still wins over their defaults.
+    Awaits `async def` processors instead of discarding them; sync ones are
+    called directly, and the caller's explicit context still wins.
     """
     app = _current_app_var.get()
     if app is None:
@@ -254,12 +219,7 @@ class Jinja2Templates:
     (caller's explicit context wins on collisions).
     """
 
-    # Per-instance bound on the resolved-fallback-list cache. Each entry is a
-    # distinct candidate sequence resolved in production (`auto_reload` False).
-    # Candidate lists come from code, so the key space is normally tiny, but a
-    # caller that builds fallback lists from request-derived names could grow
-    # the dict without bound - cap it the same way the static ETag cache is.
-    # Eviction only costs a re-run of `select_template` on a cold key.
+    # A candidate list built from request-derived names would grow unbounded.
     RESOLVED_CACHE_MAX = 1024
 
     def __init__(
@@ -274,23 +234,15 @@ class Jinja2Templates:
             raise ImportError(
                 "jinja2 is required for templating. Install it with: pip install jinja2"
             ) from err
-        # the built-in default: autoescape HTML-shaped extensions. Matches
-        # `select_autoescape(["html", "htm", "xhtml", "xml"])`. Pass an
-        # explicit `autoescape=` to override (bool or callable).
+        # The built-in default: autoescape HTML-shaped extensions.
         if autoescape is None:
             autoescape = select_autoescape(["html", "htm", "xhtml", "xml"])
-        # `auto_reload=None` (the default) tracks the bound app's `debug`
-        # flag at render time - on in development, off in production,
-        # where the per-render template `stat` is pure overhead. Pass an
-        # explicit `True`/`False` to pin it. The Environment starts
-        # `auto_reload=True` so standalone (no-app) rendering still
-        # hot-reloads.
+        # `None` tracks the app's `debug` at render time, so production skips the
+        # per-render `stat`; the Environment starts `True` for no-app rendering.
         self._auto_reload = auto_reload
         initial_reload = auto_reload if auto_reload is not None else True
-        # `enable_async=False` so `Template.render(...)` is plain sync -
-        # required because `TemplateResponse` is invoked inside an
-        # already-running event loop, and `render` with `enable_async=True`
-        # would `asyncio.run()` internally and crash.
+        # `enable_async=False` keeps `render` sync: it is called inside an
+        # already-running event loop, where the async form `asyncio.run`s and crashes.
         self.env = Environment(
             loader=FileSystemLoader(directory),
             auto_reload=initial_reload,
@@ -298,23 +250,19 @@ class Jinja2Templates:
             autoescape=autoescape,
         )
         self.env.context_class = _veloce_context_class()
-        # Lazily-built async-enabled twin used by `render_async`. Built
-        # on first use so apps that never render async pay nothing.
+        # The async twin for `render_async`, built on first use.
         self._async_directory = directory
         self._async_auto_reload = initial_reload
         self._async_autoescape = autoescape
         self._async_env: Environment | None = None
-        # Memoizes the winning name of a resolved fallback list per
-        # `(id(env), candidates)` when `env.auto_reload` is False, so a
-        # production render of a candidate sequence skips Jinja's
-        # `select_template` stat walk after the first resolution.
+        # With `auto_reload` False, memoizes a fallback list's resolved winner.
         self._resolved_cache: dict[tuple[int, tuple[str, ...]], str] = {}
 
     def _prepare_env(self, env: Environment) -> None:
         """Bring `env` up to date for one render.
 
-        Every render entry point opens with this, so a step added to render
-        setup - a new implicit global, a new env tweak - reaches all of them.
+        Every render entry point opens with this, so a step added here reaches
+        all of them.
         """
         self._apply_auto_reload(env)
         _sync_app_jinja_helpers(env)
@@ -350,15 +298,7 @@ class Jinja2Templates:
         winner = self._resolved_cache.get(key)
         if winner is None:
             tpl = env.select_template(list(candidates))
-            # Bound the cache: evict the oldest entries (a plain dict preserves
-            # insertion order, so the first key is the oldest) down to below the
-            # cap before inserting. `RESOLVED_CACHE_MAX <= 0` disables the cache
-            # entirely - a natural way for a user to turn it off - and the
-            # `>= 1` guard means `next(iter(...))` is never called on an empty
-            # dict; the `while` also absorbs the cap being lowered at runtime.
-            # `select_template` resolves one of the candidate *names*, so what it
-            # returns always carries one; Jinja types `Template.name` as optional
-            # for the loader-less construction this path cannot produce.
+            # Evict oldest-first; `RESOLVED_CACHE_MAX <= 0` disables the cache.
             winner_name = tpl.name
             if self.RESOLVED_CACHE_MAX >= 1 and winner_name is not None:
                 while len(self._resolved_cache) >= self.RESOLVED_CACHE_MAX:
@@ -551,12 +491,8 @@ def render_template_string(source: str, **context: Any) -> str:
     if templates is not None:
         return templates.render_string(source, context or {})
 
-    # Fallback path: no `Jinja2Templates` bound. Build a minimal env once and
-    # reuse it so the helper stays usable in scripts / tests without
-    # reconstructing the environment on every call. The app's registered
-    # filters / globals / tests are synced onto it - without that, a template
-    # using `@app.template_filter` raised `No filter named ...` and surfaced as
-    # a 500 with nothing pointing at the cause.
+    # No `Jinja2Templates` bound: a minimal env, built once, carrying the app's
+    # filters so they still resolve.
     if app is None:
         global _fallback_env
         if _fallback_env is None:

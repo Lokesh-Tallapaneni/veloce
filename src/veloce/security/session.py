@@ -4,14 +4,11 @@
 schemes: it reads the identity a login handler stored on `request.session` and
 publishes it through `set_principal`, so a permission check written against
 `current_principal()` behaves the same whether the caller arrived over HTTP
-with a session cookie or over MCP with a token.
+with a session cookie or over MCP with a token. Without it a session-logged-in
+user resolves to `current_principal() is None`, and any guard written against
+the principal sees an anonymous caller.
 
-Without it, `request.session` and `Principal` are two unrelated notions of
-"who is calling": a session-logged-in user resolves to `current_principal()
-is None`, and any guard written against the principal sees an anonymous
-caller.
-
-Session cookie security attributes are RFC 6265 section 4.1.2; the id rotation
+Session cookie security attributes are RFC 6265 Sec. 4.1.2; the id rotation
 performed at login is the session-fixation defence (OWASP Session Management).
 """
 
@@ -30,20 +27,15 @@ from veloce.security.base import SecurityScheme
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.http.request import Request
 
-# Default session key holding the authenticated subject. It is the default on
-# both sides of the contract - `SessionAuth(subject_key=...)` reads it and
-# `login_session(subject_key=...)` writes it - so an application that overrides
-# one has to pass the same key to the other.
+# The default on both sides of the contract - `SessionAuth(subject_key=...)`
+# reads it and `login_session(subject_key=...)` writes it.
 SESSION_SUBJECT_KEY = "_auth_subject"
 
-# Default session key holding the granted scopes, stored as a list because a
-# session payload round-trips through JSON. Overridable on both sides like
-# `SESSION_SUBJECT_KEY`.
+# A list, because a session payload round-trips through JSON.
 SESSION_SCOPES_KEY = "_auth_scopes"
 
-# The cookie `SessionMiddleware` writes by default. `SessionAuth` cannot read the
-# middleware's configuration - it is constructed independently of it - so this is
-# what it advertises in the schema unless told otherwise.
+# `SessionAuth` is constructed independently of `SessionMiddleware` and cannot
+# read its configuration, so this is what the schema advertises by default.
 DEFAULT_SESSION_COOKIE_NAME = "session"
 
 
@@ -69,27 +61,20 @@ class SessionAuth(SecurityScheme):
             return {"user": principal.subject}
 
     Returns the `Principal` and publishes it via `set_principal`, so
-    `current_principal()` resolves for anything further down the request -
-    including a dependency shared with an MCP-exposed handler.
+    `current_principal()` resolves for anything further down the request.
 
     With `auto_error=False` an anonymous request resolves to `None` instead of
-    raising, for routes that render differently when signed in. A missing
-    `SessionMiddleware` is a configuration error rather than an anonymous
-    request, and still raises under either setting.
+    raising. A missing `SessionMiddleware` is a configuration error rather than
+    an anonymous request, and still raises under either setting.
 
-    Pass `loader=` to build a richer principal from the stored subject (a
-    database lookup, say); it receives `(request, subject)` and returns a
-    `Principal`, or `None` to reject the session.
+    Pass `loader=` to build a richer principal from the stored subject; it
+    receives `(request, subject)` and returns a `Principal`, or `None` to
+    reject the session. Pass `cookie_name=` when `SessionMiddleware` uses a
+    non-default name, so the published document names the cookie a client sends.
 
-    The OpenAPI document describes this as an `apiKey` credential read from the
-    session cookie. Pass `cookie_name=` when `SessionMiddleware` is configured
-    with a name other than the default, so the document names the cookie a
-    client actually has to send.
-
-    `subject_key=` / `scopes_key=` name the session slots this reads. They are
-    the same slots `login_session` writes, so an application that overrides
-    either must pass the matching key to `login_session` too - otherwise the
-    scheme reads a slot the login never wrote and every request is anonymous.
+    `subject_key=` / `scopes_key=` are the same slots `login_session` writes, so
+    overriding either here means passing the matching key there too - otherwise
+    the scheme reads a slot the login never wrote and every request is anonymous.
     """
 
     __slots__ = ("cookie_name", "loader", "scopes_key", "subject_key")
@@ -126,12 +111,8 @@ class SessionAuth(SecurityScheme):
 
     def __call__(self, request: Request) -> Principal | None:
         """Return the session's `Principal`, publishing it for the request."""
-        # `Request.session` raises an actionable RuntimeError when
-        # SessionMiddleware is missing, and that is left to surface: a scheme
-        # that treated the absence as "anonymous" would report every caller as
-        # signed out forever, which is a silent authentication failure.
-        # `auto_error=False` covers an anonymous *request*, not an unconfigured
-        # application.
+        # A missing SessionMiddleware is left to raise: treating it as
+        # "anonymous" is a silent authentication failure for every caller.
         session: Any = request.session
         subject = session.get(self.subject_key)
         if not subject:
@@ -157,8 +138,7 @@ class SessionAuth(SecurityScheme):
         """Describe the session credential, as a cookie-borne API key.
 
         OpenAPI has no session-specific scheme type; a cookie credential is an
-        `apiKey` read from `cookie`, which is how `APIKeyCookie` describes the
-        same transport.
+        `apiKey` read from `cookie`.
         """
         return {"type": "apiKey", "in": "cookie", "name": self.cookie_name}
 
@@ -175,11 +155,9 @@ def login_session(
     """Sign `subject` into the request's session and publish the principal.
 
     Rotates the session id first, so a session id planted before login cannot
-    be replayed against the now-authenticated session.
-
-    `subject_key` / `scopes_key` must name the same slots as the `SessionAuth`
-    that reads the session back. A scheme built with a non-default key reads a
-    slot this helper never wrote, and every request resolves anonymous.
+    be replayed against the now-authenticated session. `subject_key` /
+    `scopes_key` must name the same slots as the `SessionAuth` that reads it
+    back, or every request resolves anonymous.
     """
     session = request.session
     session.regenerate_id()
@@ -197,9 +175,8 @@ def login_session(
 def logout_session(request: Request) -> None:
     """Clear the session's identity and the request's principal.
 
-    Clears the whole session rather than only the identity keys: leftover
-    per-user state on a session that has changed hands is a data-leak shape,
-    not a convenience.
+    The whole session, not only the identity keys: leftover per-user state on a
+    session that has changed hands is a data leak.
     """
     session = request.session
     session.clear()

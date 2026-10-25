@@ -104,8 +104,7 @@ _RAW_LAST_EVENT_ID = _LAST_EVENT_ID_HEADER.lower().encode("latin-1")
 # Ids for the non-resumable priming event: process-local, no replay window kept.
 _event_id = count(1)
 
-# URL-safe base64 keeps the id inside the SSE-id visible-ASCII range and free of the
-# `.` separator, so an event id splits unambiguously into (stream, sequence).
+# URL-safe base64 keeps the id free of the `.` that splits (stream, sequence).
 _STREAM_ID_ENTROPY_BYTES = 12
 
 _STREAM_END = object()
@@ -142,7 +141,6 @@ def register_http_transport(
     `resumable` opts into SSE resumability, so a `GET` carrying `Last-Event-ID`
     replays that stream's missed events. The default keeps no ids or history.
     """
-    # A terminated id reclaims the session's subscription connection and its tasks.
     store = (
         HttpSessionStore(on_evict=server.evict_session, backend=session_backend)
         if sessions
@@ -151,8 +149,7 @@ def register_http_transport(
     event_store = SSEEventStore() if resumable else None
 
     async def mcp_endpoint(request: Request) -> Response:
-        # Above the verb switch, not inside each verb's handler: a check that lives
-        # in a handler is one a newly added verb can be written without.
+        # Above the verb switch: a check inside a handler is one a new verb can omit.
         try:
             _validate_origin(request, allowed_origins)
             _validate_protocol_version(request)
@@ -166,7 +163,6 @@ def register_http_transport(
             principal, challenge = await _authenticate(auth, request)
             if challenge is not None:
                 return challenge
-            # So the dispatched tool reads it through `current_principal`.
             set_principal(principal)
 
         if request.method == "DELETE":
@@ -204,11 +200,9 @@ async def _handle_http(
     except Exception:
         return _protocol_response(parse_error(), status_code=status.HTTP_400_BAD_REQUEST)
     if not request.data:
-        # No body is no JSON document to read, which is the parse failure.
         return _protocol_response(parse_error(), status_code=status.HTTP_400_BAD_REQUEST)
     if not isinstance(message, dict):
-        # JSON-RPC keeps these apart: -32700 says the text could not be read, -32600
-        # says what was read is not a Request object.
+        # JSON-RPC: -32700 is unreadable text, -32600 is not a Request object.
         return _protocol_response(invalid_request_error(), status_code=status.HTTP_400_BAD_REQUEST)
 
     # The headers label a body a proxy forwarded without parsing it.
@@ -229,11 +223,9 @@ async def _handle_http(
         session = MCPSession(persistent=False)
 
     is_request = "id" in message and isinstance(message.get("method"), str)
-    # Through the framework's own parser rather than a substring test, which read
-    # `text/event-streaming` as a match and ignored `q=0`; `*/*` does not count.
+    # The real parser: a substring test reads `text/event-streaming` as a match.
     accepts_sse = request.accept_mimetypes.quality_explicit("text/event-stream") > 0
-    # Inside the branch so a JSON-only client never pays for it. A client that
-    # offered the stream but NOT JSON must not get the streamless shortcut.
+    # In the branch, so a client offering the stream but not JSON keeps the stream.
     if (
         is_request
         and accepts_sse
@@ -253,8 +245,7 @@ async def _handle_http(
     if response is None:
         # A notification or a response carries no reply (JSON-RPC 2.0 Sec. 4.1).
         return _with_session(Response(status_code=status.HTTP_202_ACCEPTED), session_id)
-    # An insufficient-scope failure is a 403 with an RFC 6750 challenge so a client
-    # can drive step-up authorization. An SSE reply has already committed its 200.
+    # A 403 with an RFC 6750 challenge; an SSE reply has committed its 200.
     error = response.get("error")
     if isinstance(error, dict) and error.get("code") == _JSONRPC_FORBIDDEN:
         scopes = (error.get("data") or {}).get("requiredScopes") or []
@@ -373,8 +364,7 @@ _NAME_BEARING_METHODS = {
     "resources/read": "uri",
 }
 
-# A value that is not plain printable ASCII travels base64 between these markers,
-# which the revision requires spelled exactly this way, in lowercase.
+# Non-ASCII values travel base64 between these markers, lowercase as required.
 _NAME_B64_PREFIX = "=?base64?"
 _NAME_B64_SUFFIX = "?="
 
@@ -420,8 +410,7 @@ def _needs_stream(
     if event_store is not None:
         return True
     if getattr(server, "_connections", None) is not None:
-        # `GET` here only serves a resumption, so an open POST stream is a
-        # subscribed client's only delivery window for a resource update.
+        # `GET` only resumes, so an open POST stream is the only delivery window.
         return True
     if message.get("method") != "tools/call":
         return True
@@ -429,8 +418,7 @@ def _needs_stream(
     if not isinstance(params, dict):
         return True
     if "task" in params:
-        # A task-augmented call emits `notifications/tasks/status` after its reply,
-        # so a lone JSON document is how a client stops hearing its task finished.
+        # A task emits `notifications/tasks/status` after its reply.
         return True
     meta = params.get("_meta")
     if isinstance(meta, dict) and meta.get("progressToken") is not None:
@@ -438,7 +426,6 @@ def _needs_stream(
     name = params.get("name")
     if not isinstance(name, str):
         return True
-    # An unknown name falls through to the error path, a single message either way.
     tool = server.registry.resolve(name, _requested_version(params))
     return tool is None or tool.may_stream
 
@@ -457,15 +444,13 @@ def _validate_standard_headers(request: Request, message: dict[str, Any]) -> Non
     """
     method = message.get("method")
     if not isinstance(method, str):
-        # Not a request object at all - the shape check downstream owns it.
         return
     header_version = request._peek_header_key(b"mcp-protocol-version")
     params = message.get("params")
     meta = params.get("_meta") if isinstance(params, dict) else None
     raw_body_version = meta.get(META_PROTOCOL_VERSION) if isinstance(meta, dict) else None
     body_version = raw_body_version if isinstance(raw_body_version, str) else None
-    # The gate opens on the revision each half *names*, not on the presence of a
-    # `_meta` version: a handshake-era body never defined these headers.
+    # Gated on the revision each half names, not on a `_meta` version's presence.
     if not is_modern_version(header_version) and not is_modern_version(body_version):
         return
 
@@ -541,11 +526,9 @@ def _stream_response(
     disconnect are still available.
     """
     queue: asyncio.Queue[Any] = asyncio.Queue()
-    # A disconnect deliberately does NOT cancel the call, so without this every
-    # notification a chatty tool emits would be buffered for nothing.
+    # A disconnect does not cancel the call, so a chatty tool would buffer forever.
     draining = True
-    # A long-lived `subscriptions/listen` waits on this: its request is answered by
-    # its own close, so nothing else would hold the dispatch task open.
+    # A `subscriptions/listen` is answered by its own close, nothing else.
     client_gone = asyncio.Event()
     # `seq` advances per payload; 0 is the priming event, so the replay base is known.
     stream_id = secrets.token_urlsafe(_STREAM_ID_ENTROPY_BYTES) if event_store is not None else None
@@ -569,8 +552,7 @@ def _stream_response(
         set_principal(principal)
         try:
             response = await server.handle_message(message, session)
-            # `initialize` arrives here too, so persisting only on the JSON path
-            # wrote a record with no capabilities that `resolve` copied back.
+            # `initialize` lands here too, with the capabilities to persist.
             if store is not None and session_id is not None:
                 await store.persist(session_id, session)
             if response is not None:
@@ -578,8 +560,7 @@ def _stream_response(
                 if draining:
                     await queue.put((response_id, response))
             elif message.get("id") in session.listen_streams:
-                # A listen stream is answered when it closes, so the task is held
-                # until the client goes away and the fan-out has somewhere to go.
+                # Held until the client goes away, so the fan-out has a target.
                 await client_gone.wait()
         except asyncio.CancelledError:
             # Cancelled deliberately: close without an error frame, as it expects.
@@ -598,11 +579,9 @@ def _stream_response(
 
     async def events() -> AsyncIterator[ServerSentEvent]:
         nonlocal draining
-        # Disconnection is not cancellation (MCP transport), so the dispatch task is
-        # never cancelled here; the binding keeps it from being collected mid-flight.
+        # Disconnection is not cancellation (MCP transport); the binding holds it.
         runner_task = asyncio.ensure_future(runner())
-        # An id plus an empty data field marks the stream open. The separator belongs
-        # to `SSEEventStore`, which parses these ids apart with `rpartition`.
+        # An id plus empty data marks the stream open; `SSEEventStore` owns the sep.
         prime_id = f"{stream_id}{_EVENT_ID_SEP}0" if stream_id is not None else str(next(_event_id))
         try:
             yield ServerSentEvent(data="", id=prime_id)

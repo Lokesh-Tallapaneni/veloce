@@ -48,18 +48,10 @@ from veloce.config import _parse_env_lines
 
 # ── Constants ─────────────────────────────────────────────
 
-# Default dotenv filename auto-loaded by `run`/`shell`/`custom` when the
-# file exists in the CWD and `--no-env-file` was not passed.
+# Auto-loaded by `run`/`shell`/`custom` unless `--no-env-file` was passed.
 _DEFAULT_ENV_FILE = ".env"
 
-# Entry-point group third-party packages advertise CLI subcommands under.
-# A distribution exposes a plugin via, e.g. in its pyproject.toml::
-#
-#     [project.entry-points."veloce.commands"]
-#     deploy = "mypkg.cli:register"
-#
-# where `mypkg.cli:register` is a callable taking the argparse subparsers
-# action and adding one parser (with a `func` default) to it.
+# Each value is a callable taking the subparsers action and adding one parser.
 _COMMAND_ENTRY_POINT_GROUP = "veloce.commands"
 
 
@@ -67,9 +59,7 @@ _COMMAND_ENTRY_POINT_GROUP = "veloce.commands"
 
 
 def _resolve_version() -> str:
-    # Not `from veloce import __version__`, so `veloce --version` does not drag
-    # the whole framework into sys.modules to print a string. Both spellings
-    # resolve through the same helper, so their fallbacks cannot drift.
+    # `veloce --version` must not drag the framework in to print a string.
     return resolve_version()
 
 
@@ -123,8 +113,7 @@ def _apply_env_file(args: argparse.Namespace) -> None:
         # Auto-discovery: an absent default `.env` is fine.
         return
     except OSError as err:
-        # Permission denied, "is a directory", etc. are real failures even
-        # for the auto-discovered default - never boot with silent loss.
+        # Permission denied and friends are real failures even for the default.
         raise SystemExit(f"Could not read env file {path!r}: {err}") from err
     for key, value in _parse_env_lines(lines, source=path).items():
         os.environ.setdefault(key, value)
@@ -199,16 +188,14 @@ def _cmd_run(args: argparse.Namespace) -> int:
         )
         return 0
 
-    # uvicorn absent: serve with the built-in development server, which carries
-    # its own auto-reloader, so `--reload` works without uvicorn.
+    # The built-in server carries its own reloader, so `--reload` needs no uvicorn.
     if not callable(getattr(app, "run", None)):
         raise SystemExit(
             f"{args.app!r} has no built-in server to fall back to; install "
             "veloceframework[uvicorn] to serve it under uvicorn."
         )
     # The built-in server is single-process; --workers>1 needs uvicorn or the
-    # gunicorn VeloceWorker, so warn and run one process rather than passing a
-    # count `run()` would reject.
+    # gunicorn VeloceWorker, so warn and run one rather than pass a rejected count.
     if args.workers > 1:
         print(
             f"--workers {args.workers} is ignored by the built-in server (single "
@@ -256,19 +243,13 @@ def _cmd_custom(args: argparse.Namespace) -> int:
     _apply_env_file(args)
     app = _load_app(args.app)
     _require_app_attr(app, "cli", "`.cli`")
-    # `click` backs the optional `[cli]` extra. It is imported here, not at
-    # module top, because it is guaranteed present once `app.cli` exists but
-    # must not be a hard dependency of the `veloce` entry point.
+    # The optional `[cli]` extra: present once `app.cli` exists, never required.
     import click
 
     with app.app_context():
-        # `app.cli` is a `click.Group`. Call it with the remaining argv and
-        # `standalone_mode=False` so we own the exit-code path - which means
-        # reproducing the handling Click's standalone mode would otherwise do:
-        # `--help` and `ctx.exit()` raise `SystemExit`; a usage problem or the
-        # no-arguments group help (Click's `NoArgsIsHelpError`, a `ClickException`
-        # that is NOT a `SystemExit`) is shown via `.show()` and returns its
-        # `.exit_code`; an interrupted prompt raises `Abort`.
+        # `standalone_mode=False` so we own the exit code, which means reproducing
+        # what Click's standalone mode does: `--help` and `ctx.exit()` raise
+        # `SystemExit`, a `ClickException` is shown and returns its `.exit_code`.
         try:
             return int(app.cli.main(args.cli_args, standalone_mode=False) or 0)
         except SystemExit as exc:  # Click raises on --help etc.
@@ -310,16 +291,13 @@ def _cmd_routes(args: argparse.Namespace) -> int:
 
 def _cmd_check(args: argparse.Namespace) -> int:
     """`veloce check` - run a pre-deploy security audit of the app."""
-    # The audit predicts deployed configuration, so it has to import the app
-    # under the environment the deployment will use - otherwise it reports on a
-    # different app than `veloce run` builds.
+    # Imported under the deployment's own environment, or it audits another app.
     _apply_env_file(args)
     app = _load_app(args.app)
     _require_app_attr(app, "security_audit", "`.security_audit()`")
 
-    # The structured form, not `app.security_audit()`: severity is what decides
-    # the exit code, so an informational finding is reported without failing a
-    # deploy that is otherwise sound.
+    # The structured form: severity decides the exit code, so an informational
+    # finding must not fail an otherwise sound deploy.
     findings = audit_run(app)
     failing = [f for f in findings if f.at_least("warning")]
     if findings:
@@ -353,8 +331,7 @@ def _cmd_mcp_run(args: argparse.Namespace) -> int:
     app.mount_mcp(transport="http", path=args.path, sessions=args.sessions)
     uvicorn = _import_uvicorn()
     if uvicorn is not None:
-        # The app object is passed rather than its import string: the mount above
-        # happened on *this* instance, and re-importing would serve one without it.
+        # The object, not its import string: the mount above was on this instance.
         uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
         return 0
 
@@ -403,8 +380,7 @@ def _cmd_mcp_list(args: argparse.Namespace) -> int:
 
 def _cmd_new(args: argparse.Namespace) -> int:
     """`veloce new` - scaffold a new project directory."""
-    # Imported lazily: scaffolding is a one-shot command, so the framework load
-    # it triggers is acceptable here but must not happen for `--version`/`--help`.
+    # Lazy: a one-shot command may load the framework, `--version` may not.
     from veloce._scaffold import ScaffoldError, scaffold_project
 
     dest_root = Path(args.dir)
@@ -417,9 +393,7 @@ def _cmd_new(args: argparse.Namespace) -> int:
     print(f"Created {args.template} project: {project_dir}")
     for path in written:
         print(f"  {path.relative_to(dest_root)}")
-    # The generated project is uv-native (pyproject with `[tool.uv] package=false`,
-    # no requirements.txt). Print the real path (correct under `--dir`) and the
-    # uv commands its README documents.
+    # uv-native, so print the real path - correct under `--dir` - and uv commands.
     print("\nNext steps:")
     print(f"  cd {project_dir}")
     print("  uv run veloce run app:app --reload")
@@ -485,10 +459,8 @@ def _split_custom_argv(argv: list[str]) -> tuple[list[str], list[str] | None]:
     """
     if not argv or argv[0] != "custom":
         return argv, None
-    # Locate the `app` positional: the first non-flag token after `custom`.
-    # A space-separated `--env-file PATH` placed before `app` consumes its
-    # value token, so skip that value too - otherwise PATH is mistaken for
-    # the app reference and the real reference is pushed into the tail.
+    # The `app` positional is the first non-flag token after `custom`; a preceding
+    # `--env-file PATH` consumes its value, so that token is skipped too.
     idx = 1
     while idx < len(argv) and argv[idx].startswith("-") and argv[idx] != "--":
         if argv[idx] == "--env-file":
@@ -576,8 +548,7 @@ def _load_plugin_command(
     back - so the built-in commands always remain usable.
     """
     if name in reserved:
-        # A plugin may not shadow a built-in. Warn that the entry point is
-        # being skipped - but do not load it: the built-in handles this name.
+        # A plugin may not shadow a built-in: warn, and do not even load it.
         for ep in _iter_command_entry_points():
             if ep.name == name:
                 warnings.warn(
@@ -586,13 +557,8 @@ def _load_plugin_command(
                     stacklevel=2,
                 )
         return
-    # Entry points are sorted (see `_iter_command_entry_points`), so the
-    # candidates for this name are enumerated in a stable order. The first
-    # one that registers a runnable command wins; any further entry point
-    # sharing the name is a collision - warn and skip it deterministically
-    # so behaviour never depends on install order.
-    # Sort candidates by (name, value) so precedence and the collision warning
-    # are deterministic regardless of entry-point iteration / install order.
+    # Sorted by (name, value), so precedence and the collision warning do not
+    # depend on install order.
     matches = sorted(
         (ep for ep in _iter_command_entry_points() if ep.name == name),
         key=lambda ep: (ep.name, ep.value),
@@ -605,9 +571,7 @@ def _load_plugin_command(
             stacklevel=2,
         )
     for ep in matches[:1]:
-        # `BaseException` (not just `Exception`): a plugin must not be able to
-        # kill the CLI by raising `SystemExit` / `KeyboardInterrupt` from its
-        # import or registration. The boundary swallows everything and skips.
+        # `BaseException`, so a plugin cannot kill the CLI with `SystemExit`.
         try:
             register = ep.load()
         except BaseException as err:  # noqa: BLE001 - a bad plugin must not break the CLI
@@ -637,10 +601,7 @@ def _load_plugin_command(
         added = sub.choices.get(name)
         registered_func = getattr(added, "_defaults", {}).get("func") if added else None
         if added is None or not callable(registered_func):
-            # A well-behaved plugin adds a parser named `name` with a CALLABLE
-            # `func` default. Without it, `main()` would crash; roll the
-            # registration back and skip instead (a non-callable `func=123`
-            # is treated the same as a missing one).
+            # Without a callable `func` default `main()` would crash: roll back.
             _rollback_subparsers(sub, keep=existing)
             warnings.warn(
                 f"veloce CLI plugin {name!r} (from {ep.value!r}) did not register a runnable "
@@ -665,8 +626,7 @@ class _VeloceArgumentParser(argparse.ArgumentParser):
     ) -> tuple[argparse.Namespace, list[str]]:
         argv = list(sys.argv[1:] if args is None else args)
         head, tail = _split_custom_argv(argv)
-        # argparse builds a `Namespace` when given none, so handing it one
-        # is the same call and keeps the return type a `Namespace`.
+        # argparse builds one when given none, so this keeps the return type.
         parsed, extras = super().parse_known_args(head, namespace or argparse.Namespace())
         if tail is not None:
             parsed.cli_args = tail
@@ -813,15 +773,10 @@ def build_parser(plugin_command: str | None = None) -> argparse.ArgumentParser:
     )
     p_custom.add_argument("app", help=MSG_APP_REFERENCE_FORM)
     _add_env_file_args(p_custom)
-    # The forwarded Click argv is peeled off after a literal `--` by
-    # `_VeloceArgumentParser.parse_known_args`; argparse only ever sees the
-    # head. Default to no extra args when `--` is absent.
+    # `parse_known_args` peels the Click argv off after a literal `--`.
     p_custom.set_defaults(func=_cmd_custom, cli_args=[])
 
-    # Built-in names are reserved; a plugin may not shadow them. `sub.choices`
-    # holds every subparser registered above, so it stays correct as commands
-    # are added or removed without a hand-maintained list. Only the selected
-    # plugin command (if any) is loaded - never the whole entry-point group.
+    # `sub.choices` is every subparser above, so reserved names need no list.
     if plugin_command is not None:
         _load_plugin_command(sub, reserved=frozenset(sub.choices), name=plugin_command)
 
@@ -908,9 +863,7 @@ def _builtin_command_names() -> frozenset[str]:
 
 def main(argv: list[str] | None = None) -> int:
     """Entry point for the veloce CLI."""
-    # First pass (plugin-free) validates argv; only a clean, unknown subcommand
-    # becomes a plugin candidate. `-h`, `--version`, and invalid argv never
-    # load a plugin - they fall straight through to the real parse below.
+    # A plugin-free first pass, so only a clean unknown subcommand is a candidate.
     plugin_command = _candidate_plugin_command(argv)
     parser = build_parser(plugin_command=plugin_command)
     args = parser.parse_args(argv)

@@ -21,43 +21,27 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-# Status codes
 from veloce import status
-
-# Parameter markers
 from veloce._params import Body, Cookie, File, Form, Header, Path, Query
 from veloce._warnings import VeloceDeprecationWarning
 from veloce.app import Plugin, URLMap, URLRule, Veloce
 from veloce.audit import AuditContext, AuditFailed, Finding, Severity
-
-# Background tasks
 from veloce.background import BackgroundTask, BackgroundTasks
 from veloce.blueprints import Blueprint
 from veloce.cache import Cache, InMemoryCache, cached
-
-# Configuration
 from veloce.config import Config
-
-# Static files
 from veloce.contrib.staticfiles import StaticFiles
 
-# Templating - top-level shortcuts. The full Jinja2Templates
-# class stays under veloce.contrib.templating for callers that want the
-# class-based API.
+# Top-level shortcuts; the `Jinja2Templates` class-based API stays under
+# `veloce.contrib.templating`.
 from veloce.contrib.templating import (
     Jinja2Templates,
     render_template,
     render_template_string,
     stream_template,
 )
-
-# Dependency injection
 from veloce.dependency import Depends, Security, SecurityScopes
-
-# Encoders
 from veloce.encoders import jsonable_encoder, register_encoder, unregister_encoder
-
-# Exceptions
 from veloce.exceptions import (
     BadGateway,
     BadRequest,
@@ -101,12 +85,9 @@ from veloce.exceptions import (
     request_validation_exception_handler,
 )
 
-# Liveness / readiness endpoints. The Prometheus and OpenTelemetry
-# instrumentors stay under veloce.metrics / veloce.otel - importing them costs
-# ~72 ms and ~32 ms, which every user would otherwise pay at `import veloce`.
+# The Prometheus and OpenTelemetry instrumentors stay under veloce.metrics /
+# veloce.otel: importing them costs ~72 ms and ~32 ms at `import veloce`.
 from veloce.health import HealthPlugin
-
-# Helpers
 from veloce.helpers import (
     Aborter,
     abort,
@@ -129,8 +110,6 @@ from veloce.helpers import (
     stream_with_context,
     url_for,
 )
-
-# Data structures
 from veloce.http.datastructures import (
     URL,
     AcceptHeader,
@@ -144,8 +123,6 @@ from veloce.http.datastructures import (
     State,
     UploadFile,
 )
-
-# HTTP
 from veloce.http.request import Request
 from veloce.http.response import (
     FileResponse,
@@ -159,18 +136,12 @@ from veloce.http.response import (
     UJSONResponse,
 )
 from veloce.instrumentation import RequestMetrics
-
-# JSON provider
 from veloce.json_provider import (
     DefaultJSONProvider,
     JSONProvider,
     config_orjson_options,
 )
-
-# HTML-safe strings
 from veloce.markup import Markup, escape
-
-# Middleware
 from veloce.middleware import (
     BaseHTTPMiddleware,
     CallNext,
@@ -196,11 +167,7 @@ from veloce.middleware import (
     csp_nonce,
     rotate_csrf_token,
 )
-
-# Observability
 from veloce.observability import instrument_access_log, log_requests_as_json
-
-# Password hashing helpers
 from veloce.passwords import (
     hash_password,
     hash_password_async,
@@ -211,11 +178,7 @@ from veloce.passwords import (
     verify_password,
     verify_password_async,
 )
-
-# Principal (authenticated identity, shared across HTTP and MCP)
 from veloce.principal import Principal, current_principal, set_principal
-
-# Rate-limit algorithms and backends (selectable via RateLimitMiddleware)
 from veloce.ratelimit import (
     FixedWindow,
     InMemoryRateLimitBackend,
@@ -228,17 +191,9 @@ from veloce.ratelimit import (
     rate_limit,
 )
 from veloce.routing.converters import Converter, register_converter, unregister_converter
-
-# Routing
 from veloce.routing.router import Router
-
-# Filesystem-safety helpers
 from veloce.safe import constant_time_compare, safe_join, secure_filename
-
-# Secret wrapper
 from veloce.secret import Secret
-
-# Security
 from veloce.security import (
     APIKeyCookie,
     APIKeyHeader,
@@ -273,11 +228,7 @@ from veloce.security import (
     logout_session,
     make_reset_token,
 )
-
-# Sessions
 from veloce.sessions import InMemorySessionStore, Session, SessionStore
-
-# Signals
 from veloce.signals import (
     Namespace,
     Signal,
@@ -291,39 +242,21 @@ from veloce.signals import (
     request_started,
     request_tearing_down,
 )
-
-# HMAC-signed value serialiser
 from veloce.signing import BadData, BadSignature, BadTimeSignature, Signer
-
-# Server-Sent Events
 from veloce.sse import EventSourceResponse, ServerSentEvent
-
-# Testing
 from veloce.testclient import AsyncTestClient, TestClient, TestResponse
-
-# Class-based views
 from veloce.views import MethodView, View
-
-# Event-loop watchdog
 from veloce.watchdog import EventLoopWatchdog
-
-# WebSocket
 from veloce.websocket import WebSocket, WebSocketState
 
-# MCP (Model Context Protocol) - the per-call context handle a tool handler
-# may declare. The server / transport classes stay under veloce.contrib.mcp.
-# Resolved on first access rather than at import: reaching it eagerly
-# initialises the whole MCP subpackage - server, registries, tasks, both
-# transports - for one re-exported name, which every `import veloce` paid for
-# whether or not the application exposes a single tool.
+# Resolved on first access: reaching `MCPContext` eagerly would initialise the
+# whole MCP subpackage at every `import veloce`, for one re-exported name.
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.context import MCPContext
     from veloce.liveserver import LiveServer
 
-# `APIRouter` aliases `Router`, whose constructor takes the keyword
-# surface that name implies (`prefix=`, `tags=`, `dependencies=`,
-# `responses=`). Route groups that need a name, hooks, or scoped error
-# handlers use `Blueprint`; both register via `app.include_router`.
+# `APIRouter` aliases `Router` (`prefix=`, `tags=`, `dependencies=`,
+# `responses=`); a route group needing a name or hooks uses `Blueprint`.
 APIRouter = Router
 
 __all__ = [
@@ -605,8 +538,7 @@ __all__ = [
 ]
 
 
-# Names resolved on first access. Each maps to the module that defines it; the
-# lookup runs once per name per process, never on a per-request path.
+# Each name maps to the module that defines it; resolved once per process.
 _LAZY_EXPORTS: dict[str, str] = {
     "MCPContext": "veloce.contrib.mcp.context",
     "LiveServer": "veloce.liveserver",
@@ -616,10 +548,8 @@ _LAZY_EXPORTS: dict[str, str] = {
 def __getattr__(name: str) -> Any:
     """Import the module owning a lazily-exported name, then cache it here."""
     if name == "__version__":
-        # Reading the installed package metadata walks the distribution's files
-        # and costs real time on a cold interpreter, which every CLI invocation
-        # and every serverless cold start would otherwise pay to produce a
-        # string almost nothing asks for.
+        # Reading the installed package metadata walks the distribution's files,
+        # which every CLI invocation and cold start would otherwise pay for.
         from veloce._version import resolve_version
 
         globals()["__version__"] = value = resolve_version()

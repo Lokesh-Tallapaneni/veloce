@@ -29,8 +29,7 @@ from veloce._internal import _refuse_string_scopes
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.principal import Principal
 
-# A token verifier returns the authenticated `Principal`, or `None` to reject. It
-# may be sync or async.
+# Returns the authenticated `Principal`, or `None` to reject; sync or async.
 TokenVerifier = Callable[[str], "Principal | None | Awaitable[Principal | None]"]
 
 # RFC 9728 well-known path for OAuth 2.0 Protected Resource Metadata.
@@ -55,19 +54,15 @@ class MCPAuth:
 
     # Must verify the token's audience is this server.
     verify: TokenVerifier
-    # Scopes every request to the MCP endpoint must carry (a `403` otherwise).
-    # Per-tool scopes (`@app.mcp_tool(scopes=...)`) are checked additionally.
+    # Required of every request; per-tool scopes are checked additionally.
     required_scopes: Iterable[str] = ()
-    # The canonical resource URI of this MCP server (RFC 8707 / RFC 9728), echoed
-    # in the protected-resource metadata as `resource`.
+    # The canonical resource URI (RFC 8707 / RFC 9728), echoed as `resource`.
     resource_server_url: str | None = None
-    # Authorization server issuer URLs advertised in the metadata so a client can
-    # discover where to obtain a token.
+    # Issuer URLs advertised so a client can discover where to get a token.
     authorization_servers: Iterable[str] = ()
     # Scopes advertised in the metadata as available for this resource.
     scopes_supported: Iterable[str] = field(default_factory=tuple)
-    # Static-token mode: no protected-resource metadata is served, and none is
-    # required of the configuration. Set it through `MCPAuth.bearer`.
+    # Static-token mode, set through `MCPAuth.bearer`: no metadata is served.
     bearer_only: bool = False
 
     def __post_init__(self) -> None:
@@ -78,8 +73,7 @@ class MCPAuth:
         if isinstance(self.scopes_supported, (str, bytes)):
             _refuse_string_scopes(self.scopes_supported, "MCPAuth.scopes_supported")
         self.scopes_supported = tuple(self.scopes_supported)
-        # Bearer-only mode serves no metadata document, so asking for both modes
-        # at once would silently drop the OAuth fields rather than serve them.
+        # Asking for both modes would silently drop the OAuth fields.
         if self.bearer_only:
             if self.resource_server_url or self.authorization_servers:
                 raise ValueError(
@@ -138,7 +132,6 @@ class MCPAuth:
             document["authorization_servers"] = list(self.authorization_servers)
         if self.scopes_supported:
             document["scopes_supported"] = list(self.scopes_supported)
-        # RFC 9728 Sec. 2: the transport reads the `Authorization` header and
-        # nothing else, the MCP spec forbidding a token in the query string.
+        # RFC 9728 Sec. 2; the MCP spec forbids a token in the query string.
         document["bearer_methods_supported"] = ["header"]
         return document
