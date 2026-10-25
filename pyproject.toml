@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "veloceframework"
-version = "0.20.0"
+version = "0.21.0"
 description = "Async Python web framework where one route is an HTTP endpoint, an OpenAPI operation and an MCP tool"
 readme = "README.md"
 license = "MIT"
