@@ -1,12 +1,8 @@
 """A route's record, and what a match hands back.
 
 The record layer of `routing/`: what a registration is remembered as, the MCP
-options hanging off it, and the tuple a lookup returns. Separated from
-`router.py` because a reader looking for the match algorithm was scrolling past
-close to 350 lines of response-model and MCP metadata to reach it.
-
-`router.py` re-imports these, so `veloce.routing.router.RouteInfo` still
-resolves.
+options hanging off it, and the tuple a lookup returns. `router.py` re-imports
+these, so `veloce.routing.router.RouteInfo` still resolves.
 """
 
 from __future__ import annotations
@@ -26,17 +22,10 @@ RouteHandler = Callable[..., Coroutine[Any, Any, Any]]
 class MCPRouteOptions:
     """Everything a route declares for `contrib.mcp`, in one record.
 
-    Eleven fields in one record rather than eleven slots on `RouteInfo`. The
-    router reads none of them - they exist for an optional integration - and
-    carried flat each has to be enumerated in five places: `RouteInfo.__slots__`,
-    its `__init__` signature, its assignment block, the copy-construction in
-    `_merge_node`, and `_ROUTE_IDENTITY_SLOTS`. A twelfth would mean editing all
-    five, and missing one is silent.
-
-    `RouteInfo.mcp` is `None` for a route that declares no MCP exposure, which
-    is almost every route, so an app that never mounts MCP carries one slot
-    rather than eleven. The individual names stay readable as properties on
-    `RouteInfo`, so nothing reading `info.mcp_scopes` had to change.
+    Eleven fields in one record rather than eleven slots on `RouteInfo`, which
+    the router reads none of. `RouteInfo.mcp` is `None` for a route declaring no
+    MCP exposure - almost every route - so an app that never mounts MCP carries
+    one slot rather than eleven, and the names stay readable as properties.
     """
 
     expose_as_mcp_tool: bool = False
@@ -55,16 +44,11 @@ class MCPRouteOptions:
     def build(cls, **options: Any) -> MCPRouteOptions | None:
         """Return the options, or `None` when the route declares no MCP exposure.
 
-        `mcp_scopes` and `mcp_icons` are normalised here - to a `frozenset` and a
-        tuple - so the record is immutable all the way down and the MCP registry
-        reads them directly.
+        `mcp_scopes` and `mcp_icons` are normalised to a `frozenset` and a tuple,
+        so the record is immutable all the way down.
         """
-        # Almost every route declares nothing, so that case allocates nothing
-        # and compares nothing: every value is falsy exactly when it is the
-        # default (two `False` flags, nine `None`s), so one `any()` over the
-        # values settles it. Building the record and comparing it against an
-        # all-defaults instance costs eleven field comparisons per route, which
-        # is measurable at registration on an app with many routes.
+        # Every value is falsy exactly when it is the default, so one `any()`
+        # settles it without the eleven field comparisons a record would cost.
         if not any(options.values()):
             return None
         scopes = options["mcp_scopes"]
@@ -187,13 +171,7 @@ class RouteInfo:
         self.response_model_exclude_defaults = response_model_exclude_defaults
         self.response_model_by_alias = response_model_by_alias
         self.response_model_exclude_none = response_model_exclude_none
-        # The `model_dump` options this route will pass on every response. They
-        # are constructor arguments and nothing assigns them afterwards, so the
-        # mapping is fixed here rather than rebuilt per response - which the
-        # dispatcher did on every request, on most routes, since a return
-        # annotation supplies a response model without one being declared.
-        # A falsy option is omitted rather than passed as False, preserving the
-        # exact call the per-request build produced.
+        # Fixed here rather than rebuilt per response; a falsy option is omitted.
         dump_kwargs: dict[str, Any] = {}
         if response_model_exclude_unset:
             dump_kwargs["exclude_unset"] = True
@@ -208,9 +186,8 @@ class RouteInfo:
         if self.response_model_exclude:
             dump_kwargs["exclude"] = self.response_model_exclude
         self.response_dump_kwargs = dump_kwargs
-        # How to shape this route's responses, classified once. `get_origin` and
-        # the backend probe are pure functions of `response_model`, and they
-        # measured 457 ns and 624 ns - paid on every response before this.
+        # Classified once: `get_origin` and the backend probe measured 457 ns
+        # and 624 ns, and both are pure functions of `response_model`.
         self.response_model_origin = get_origin(response_model) if response_model else None
         self.response_model_backend = (
             backend_of(response_model)
@@ -221,76 +198,35 @@ class RouteInfo:
         self.responses = responses or {}
         # Falls back to the route name during schema emission.
         self.operation_id = operation_id
-        # An arbitrary dict deep-merged into this route's OpenAPI operation
-        # object (lets users inject vendor extensions, custom requestBody
-        # examples, etc.).
+        # Deep-merged into this route's OpenAPI operation object.
         self.openapi_extra = openapi_extra
-        # The routing-rule `defaults`: fixed values merged into
-        # `path_params` at dispatch (without overriding URL-matched
-        # params), so two rules can share one handler with one rule
-        # supplying a default for a segment the other carries in the URL.
+        # Merged into `path_params` at dispatch, never overriding a URL match.
         self.defaults = defaults or {}
-        # OpenAPI `callbacks` - a dict of named Callback objects emitted
-        # verbatim into the operation's `callbacks` field (OpenAPI 3.1
-        # Sec. 4.8.8 - out-of-band requests the API issues back to a caller).
+        # Emitted verbatim into the operation's `callbacks` (OpenAPI 3.1 Sec. 4.8.8).
         self.callbacks = callbacks
-        # Subdomain constraint - matched against the request's host at
-        # dispatch time. `None` means "any host"; `"*"` means "any
-        # subdomain of SERVER_NAME but not the apex".
+        # Matched against the request's host at dispatch. `None` is any host;
+        # `"*"` is any subdomain of SERVER_NAME but not the apex.
         self.subdomain = subdomain
-        # Host constraint - the full `Host` header must equal this value
-        # exactly (case-insensitive). `None` means "any host". Broader
-        # than `subdomain`, which only constrains the leftmost label.
-        # Normalised to lower case here so dispatch can compare without
-        # re-lowering on every request.
+        # Lower-cased here so dispatch compares without re-lowering per request.
         self.host = host.lower() if host is not None else None
-        # Pre-computed reflection plan - filled in by Router.add_route once
-        # this RouteInfo has been constructed. Tests that build RouteInfo
-        # directly will see `None` here and the resolver will fall back to
-        # the build-plan-on-demand path.
+        # `None` leaves the resolver on its build-plan-on-demand path.
         self.handler_plan: Any = None
         self.route_dep_plans: list[Any] = []
-        # True when the handler takes no injected parameters and the route
-        # carries no dependencies - the dispatcher then skips the
-        # dependency resolver entirely (the "trivial-route" fast path).
-        # Set by `_finalize_plans`, which `add_route` calls once the plans
-        # are built.
+        # No injected parameters and no dependencies: dispatch skips the resolver.
         self.is_trivial_plan = False
         self.is_request_only_plan = False
-        #: The handler's parameter name for the injected `Request` on a
-        #: request-only plan, so dispatch binds it without walking
-        #: `handler_plan.slots[0].name` per request. Fixed at registration.
+        #: So dispatch binds the injected `Request` without walking the plan.
         self.request_param_name = "request"
-        # True when this route can take the straight-line dispatch fast path:
-        # an async trivial/request-only plan with no response_model, custom
-        # response_class, non-default status, subdomain/host constraint,
-        # defaults, or middleware exclusion. Set by `_finalize_plans`; left
-        # False for synthetic routes that bypass it.
+        # An async trivial/request-only plan with no other per-route shaping.
         self.is_fast_eligible = False
-        # Opt-in request-body streaming (ASGI path). When True, the dispatch
-        # layer does NOT eagerly buffer the body before the handler, so the
-        # handler can consume `request.stream()` incrementally; the synchronous
-        # body accessors (`.get_json()`/`.form`/`.data`) are unavailable on such
-        # a route until the body is drained. Set by `add_route`; default False
-        # preserves the buffer-before-handler behaviour every other route has.
+        # Opt-in request-body streaming: dispatch does not eagerly buffer, so
+        # the synchronous body accessors are unavailable until it is drained.
         self.stream = False
-        # What this channel's messages are, for a typed `websocket_listener`.
-        # `None` on every other route - raw websockets, untyped listeners,
-        # `text`/`bytes` listeners, and all HTTP routes - so a route that
-        # declares no message contract carries one `None` and nothing else.
-        # Set by `_finalize_plans`, read off the handler the listener wrapper
-        # built, so every registration path carries it without forwarding it.
+        # The message contract of a typed `websocket_listener`, else `None`.
         self.ws_messages: Any = None
-        # The slash-matching mode this route was declared with. It shapes the
-        # radix node and the regex route rather than the request, so it lived
-        # only on those - and `_readd_route`, which rebuilds a route from its
-        # `RouteInfo`, had nothing to read. A blueprint route declared
-        # `strict_slashes=False` therefore lost it on registration while the
-        # same route reached through `include_router` kept it.
+        # Carried here so `_readd_route` can rebuild the route without losing it.
         self.strict_slashes: bool | None = None
-        # Every MCP option in one record. See `MCPRouteOptions`: the router
-        # reads none of them, and carried flat they had to be enumerated in five
-        # places. `None` when the route declares no MCP exposure.
+        # Every MCP option in one record; `None` when the route declares none.
         self.mcp = MCPRouteOptions.build(
             expose_as_mcp_tool=expose_as_mcp_tool,
             mcp_description=mcp_description,
@@ -304,27 +240,16 @@ class RouteInfo:
             mcp_icons=mcp_icons,
             mcp_task_support=mcp_task_support,
         )
-        # Named middleware this route opts out of. `None` (the common case)
-        # means "run every registered middleware" - the dispatch hot path
-        # then iterates the app's middleware list directly with zero extra
-        # work. A non-`None` frozenset triggers the filtered-chain path,
-        # whose result is memoised in `_mw_chain_cache` keyed on the app's
-        # middleware-list version so the filter runs at most once per
-        # (route, middleware-set) generation, not per request.
-        #: A name matches `Middleware.middleware_name` exactly; a type matches by
-        #: `isinstance`, so it covers subclasses.
+        # `None` lets the hot path iterate the app's list directly.
+        #: A name matches exactly; a type matches by `isinstance`.
         self.excluded_middleware: tuple[frozenset[str], tuple[type[Any], ...]] | None = (
             excluded_middleware
         )
         self._mw_chain_cache: tuple[int, list[Any], list[Any]] | None = None
 
     # ── MCP options, read through the one record that holds them ──
-    #
-    # Each accessor repeats its field's declared type from `MCPRouteOptions`
-    # rather than widening to `Any`: `RouteInfo` is subpackage-public, and
-    # `contrib.mcp` reads every one of these through the property. The
-    # no-record branch needs no widening - `False` and `None` already
-    # inhabit the field type each one returns.
+    # Each accessor repeats its field's declared type rather than widening to
+    # `Any`: `RouteInfo` is subpackage-public and `contrib.mcp` reads all of it.
 
     @property
     def expose_as_mcp_tool(self) -> bool:

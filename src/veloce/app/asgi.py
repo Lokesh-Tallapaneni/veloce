@@ -81,8 +81,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from veloce._pipeline import WsHandshakeChecks
 
 
-# Pre-encoded content-type bytes for the built-in response classes. These values
-# are trusted (they originate in response.py), so a hit skips the CRLF/NUL check.
+# Trusted values from response.py, so a hit skips the CRLF/NUL check.
 _CT_BYTES_CACHE: dict[str, bytes] = {
     MIME_JSON: MIME_JSON.encode("ascii"),
     MIME_HTML: MIME_HTML.encode("ascii"),
@@ -96,20 +95,16 @@ _CL_SMALL_MAX = 2048
 _CL_BYTES_SMALL: tuple[bytes, ...] = tuple(str(i).encode("ascii") for i in range(_CL_SMALL_MAX))
 
 
-# Encoded `(name, value) -> (name_bytes, value_bytes)` pairs: a header is usually
-# one a middleware precomputed once, so the same two `str` objects arrive every
-# request and the scan collapses to one dict hit. The cap clears outright.
+# Encoded `(name, value)` pairs, so a precomputed header is one dict hit.
 _ENCODED_HEADER_PAIRS: dict[tuple[str, str], tuple[bytes, bytes]] = {}
 _MAX_ENCODED_PAIRS = 512
 
 
-# Methods that do not carry a request body. RFC 9110 permits a body on these, so
-# the received-length checks still run - this skips only the declared walk.
+# RFC 9110 permits a body on these, so this skips only the declared walk.
 _BODILESS_METHODS = frozenset((HTTP_METHOD_GET, HTTP_METHOD_HEAD, HTTP_METHOD_OPTIONS))
 
 
-# Lowercase response header names as latin-1 bytes, built from every `HEADER_*`
-# constant in `_constants`. Never written at runtime, so it cannot grow unbounded.
+# Built from every `HEADER_*` constant; never written at runtime.
 _ENCODED_HEADER_NAMES: dict[str, bytes] = {
     value.lower(): value.lower().encode("latin-1")
     for name, value in vars(_constants).items()
@@ -120,8 +115,8 @@ _ENCODED_HEADER_NAMES: dict[str, bytes] = {
 def _content_type_bytes(content_type: str) -> bytes:
     """Return the content-type as guarded ASCII bytes, cached when it is known.
 
-    The ASGI emit path bypasses `Response.encode()`, so the response-splitting
-    guard it would have applied belongs here instead.
+    The ASGI emit path bypasses `Response.encode()`, so its response-splitting
+    guard belongs here instead.
     """
     cached = _CT_BYTES_CACHE.get(content_type)
     if cached is not None:
@@ -133,18 +128,15 @@ def _build_asgi_headers(headers: Any) -> tuple[list[tuple[bytes, bytes]], bool, 
     """Build ASGI `(name, value)` header tuples from a response header map.
 
     Both emit paths bypass `Response.encode()`, so the response-splitting CRLF
-    guard must be applied here. Each header becomes its own tuple; `Set-Cookie`
-    is split back into per-cookie tuples (`Response.set_cookie` joins them with
-    a `SET_COOKIE_JOINER` literal for the raw HTTP/1.1 wire path). Returns the
-    tuples plus whether the response already carried content-type /
-    content-length, so the caller can decide on framework defaults.
+    guard must be applied here. `Set-Cookie` is split back into per-cookie
+    tuples. Returns the tuples plus whether the response already carried
+    content-type / content-length, so the caller can decide on defaults.
     """
     has_ct = False
     has_cl = False
     asgi_headers: list[tuple[bytes, bytes]] = []
     # `Response.headers` is case-SENSITIVE, but HTTP field names are not
-    # (RFC 9110 Sec. 5.1): emitting both spellings ships a duplicate browsers
-    # intersect, narrowing the policy. `Set-Cookie` is legitimately multi-valued.
+    # (RFC 9110 Sec. 5.1), and a duplicate browsers intersect narrows the policy.
     slot_by_name: dict[str, int] = {}
     encoded_pairs = _ENCODED_HEADER_PAIRS
     for k, v in headers.items():
@@ -163,11 +155,9 @@ def _build_asgi_headers(headers: Any) -> tuple[list[tuple[bytes, bytes]], bool, 
             has_cl = True
         entry = encoded_pairs.get((k, v))
         if entry is None:
-            # Scanned inline; the helper is entered only on a hit, and owns the
-            # message so there is one wording.
+            # Scanned inline, so the label is joined only when raising.
             if "\r" in k or "\n" in k or "\x00" in k:
                 _reject_header_crlf(k, MSG_LABEL_HEADER_NAME)
-            # The label is joined only when raising, never per header.
             if "\r" in v or "\n" in v or "\x00" in v:
                 _reject_header_crlf(v, k, _LABEL_HEADER_VALUE_SUFFIX)
             encoded_name = _ENCODED_HEADER_NAMES.get(k_lower)
@@ -189,15 +179,9 @@ def _build_asgi_headers(headers: Any) -> tuple[list[tuple[bytes, bytes]], bool, 
 async def _emit_stream(send: Callable[..., Any], response: Response, method: str | None) -> None:
     """Write a streamed response over ASGI: headers, chunks, terminal frame.
 
-    The one writer for both streaming paths - the hot one in `_asgi_app` and the
-    cold reject one in `_emit_response`.
-
-    No `Content-Length` is added - the server frames the chunks - but one the
-    response already set is kept, so a file whose size is known from its stat
-    stays length-delimited rather than silently becoming chunked.
-
-    Header values are CRLF-validated by `_build_asgi_headers`: this path
-    bypasses `Response.encode()`, so the splitting guard applies here too.
+    The one writer for both streaming paths. No `Content-Length` is added - the
+    server frames the chunks - but one the response already set is kept, so a
+    file whose size its stat gave stays length-delimited rather than chunked.
     """
     if response.headers:
         headers, has_ct, _ = _build_asgi_headers(response.headers)
@@ -239,10 +223,8 @@ async def _refuse_websocket(
 
     Drain the `websocket.connect`, then refuse. A `status_code` is sent as a
     real pre-accept HTTP response when the server advertises the ASGI
-    `websocket.http.response` extension, so an unknown path answers 404 the way
-    the built-in server does; without the extension - and for a policy refusal
-    with no status of its own - the refusal is a `websocket.close` with the
-    policy-violation code 1008, which a server renders as 403.
+    `websocket.http.response` extension; otherwise the refusal is a
+    `websocket.close` with the policy-violation code 1008.
     """
     msg = await receive()
     if msg["type"] != ASGI_EVENT_WS_CONNECT:
@@ -272,15 +254,11 @@ class AsgiMixin(AppHost):
     ) -> Request:
         """Build the throwaway `Request` a pre-dispatch refusal is answered against.
 
-        Binds the app and the two contextvars as a request normally would, so
-        the response phase has something a response middleware can work with.
-
-        Only what the *response* phase and an error handler read is bound. The
-        request phase is still not run - refusing before reading the body is the
-        point of this path - so a middleware that caches state in
-        `process_request` will not find it here and must fall back, as
-        `CORSMiddleware` does for the `Origin` header. An error handler sees
-        neither a matched route nor that state.
+        Binds the app and the two contextvars so the response phase has
+        something a response middleware can work with. The request phase is
+        still not run - refusing before reading the body is the point - so
+        middleware that caches state in `process_request` must fall back, as
+        `CORSMiddleware` does for the `Origin` header.
         """
         request = Request(method, path, query, raw_headers, b"", scope=scope)
         request.app = self
@@ -301,10 +279,8 @@ class AsgiMixin(AppHost):
     ) -> None:
         """Emit the `413` for an over-`MAX_CONTENT_LENGTH` body.
 
-        One place for all three refusal points - a declared `Content-Length`,
-        the running total of a buffered read, and the running total of a
-        streamed one - each of which needs the same throwaway `Request` to give
-        the response phase something to run against.
+        One place for all three refusal points: a declared `Content-Length` and
+        the running total of a buffered or a streamed read.
         """
         request = self._refusal_request(method, path, query, raw_headers, scope)
         await self._emit_response(
@@ -333,14 +309,11 @@ class AsgiMixin(AppHost):
     ) -> None:
         """Emit an already-built `Response` over ASGI, headers included.
 
-        The cold reject path. It carries the response's own headers, which is
-        what lets a rejection that ran the response phase ship its CORS and
-        security headers rather than reaching the client as an opaque
-        cross-origin failure with no `Access-Control-Allow-Origin` on it.
-
-        Deliberately separate from the hot buffered emit in `_asgi_app`, which
-        is written inline against precomputed caches - but the *rules* must not
-        diverge: keep the bodiless-status handling below in step with it.
+        The cold reject path. It carries the response's own headers, so a
+        rejection that ran the response phase ships its CORS and security
+        headers rather than reaching the client as an opaque cross-origin
+        failure. Separate from the hot buffered emit in `_asgi_app`, whose
+        bodiless-status handling must stay in step with this.
         """
         if response.is_streamed:
             # An error handler may return a `StreamingResponse` or `FileResponse`.
@@ -352,8 +325,7 @@ class AsgiMixin(AppHost):
             _build_asgi_headers(response.headers) if response.headers else ([], False, False)
         )
         # A bodiless status carries no payload and no default content-type
-        # (RFC 9110 Sec. 15.3.5 / 15.3.6 / 15.4.5); a `HEAD` carries its `GET`'s
-        # headers and no body (RFC 9110 Sec. 9.3.2), or a keep-alive desyncs.
+        # (RFC 9110 Sec. 15.3.5 / 15.3.6 / 15.4.5); a `HEAD` no body (Sec. 9.3.2).
         body_allowed = status.status_permits_body(response.status_code)
         send_body = body_allowed and method != HTTP_METHOD_HEAD
         # RFC 9110 Sec. 8.6 / 15.4.5: a 304 sends no body but may carry the
@@ -381,9 +353,8 @@ class AsgiMixin(AppHost):
         """Wrap the core ASGI app with the compiled PH_ASGI_WRAP chain.
 
         The fused wrap slot is flattened into one ordered `(cls, options)`
-        chain - the highest-`order` wrapper (the live-otel span) first - and
-        composed inside out, so that wrapper ends up outermost: it sees the
-        request first and the response last.
+        chain, highest-`order` first, and composed inside out so that wrapper
+        ends up outermost.
         """
         app: Callable[..., Any] = self._asgi_app
         for cls, options in reversed(flatten_asgi_wrap(cp.asgi_wrap)):
@@ -395,35 +366,28 @@ class AsgiMixin(AppHost):
     async def _run_websocket(self, ws: WebSocket, route_info: RouteInfo) -> None:
         """Run a matched WebSocket handler and apply the close-code mapping.
 
-        The connection envelope (host/Origin checks, route match, connection
-        refusal) is the caller's responsibility - the ASGI branch drives it via
-        receive/send, the native upgrade handler via the raw transport. The
-        caller must have set `ws.path_params` and `ws.scope` before invoking
-        this. A generic handler exception is re-raised after closing with 1011
-        so the surrounding driver can log it.
+        The connection envelope (host/Origin checks, route match, refusal) is
+        the caller's responsibility, and the caller must set `ws.path_params`
+        and `ws.scope` first. A generic handler exception is re-raised after
+        closing with 1011 so the surrounding driver can log it.
         """
-        # Bind the app context so handlers, dependencies and helpers behave the
-        # same under `Veloce.run()` (native upgrade) as under an ASGI server.
+        # So handlers behave the same under `Veloce.run()` as under an ASGI server.
         _current_app_var.set(self)
-        # Mirror `Request.app` so a handler reaches its application directly.
         ws.app = self
-        # Applied at the one funnel every WebSocket handler passes through, so a
-        # later transport inherits it. An explicit timeout still wins over config.
+        # At the one funnel every handler passes through; explicit wins.
         if ws._idle_timeout is None:
             configured = self.config.get("WEBSOCKET_IDLE_TIMEOUT")
             if configured is not None:
                 ws.set_idle_timeout(configured)
         g._reset()
-        # Fresh per connection: a long-lived WebSocket's yield-teardown stack
-        # must not be cleared by a concurrent request resetting a shared one.
+        # Fresh per connection, so a concurrent request cannot clear its stack.
         ws_resolver = DependencyResolver()
         ws_resolver._overrides = self._dependency_overrides
         ws_resolver._override_subplans = self._override_subplans
         ws_exc: BaseException | None = None
         try:
             handler = route_info.handler
-            # WebSocket DI runs through the shared HandlerPlan / resolver, so
-            # `yield` teardown and `Security` / `SecurityScopes` work here too.
+            # The shared resolver, so `yield` teardown and `Security` work here.
             if route_info.handler_plan is not None:
                 try:
                     kwargs = await ws_resolver.resolve_ws_plan(
@@ -449,18 +413,15 @@ class AsgiMixin(AppHost):
                     await ws.close(code=exc.code, reason=exc.reason or "")
         except Exception as exc:
             ws_exc = exc
-            # Recorded before the close below, because the close awaits: a peer
-            # already gone makes the native driver cancel this task and the
-            # re-raise never runs, so the driver reads this back instead.
+            # Before the close, which awaits: a gone peer cancels this task.
             ws._handler_exc = exc
             if ws._needs_close:
                 with contextlib.suppress(Exception):
                     await ws.close(code=status.WS_1011_INTERNAL_ERROR)
             raise
         else:
-            # A peer-initiated close set `_closed` but the server still owes its
-            # reply frame, so `_needs_close` (not `_closed`) drives the reply
-            # that completes the RFC 6455 Sec. 5.5.1 handshake.
+            # `_needs_close`, not `_closed`: a peer-initiated close still owes the
+            # reply frame that completes the RFC 6455 Sec. 5.5.1 handshake.
             if ws._needs_close:
                 with contextlib.suppress(Exception):
                     await ws.close()
@@ -478,19 +439,16 @@ class AsgiMixin(AppHost):
     ) -> None:
         """ASGI interface - allows running under uvicorn/hypercorn if desired.
 
-        Any third-party ASGI middleware registered via `add_middleware` (and the
-        live-otel span) wraps the core application here; with none registered the
-        compiled wrap slot is `None` and this is a direct call to `_asgi_app`
-        with no measurable overhead.
+        Any third-party ASGI middleware registered via `add_middleware` wraps the
+        core application here; with none registered the compiled wrap slot is
+        `None` and this is a direct call to `_asgi_app`.
         """
         # Inlined: once setup latches this is an attribute read and an int compare.
         cp = self._pipeline
         if cp is None or cp.gen != self._gen:
             cp = self._ensure_pipeline()
         if cp.asgi_wrap is not None:
-            # Rebuilt only when the pipeline generation moved. The wrapped
-            # `_asgi_app` re-resolves the pipeline on entry, so a same-request
-            # late registration in DEBUG / TESTING is still observed.
+            # Rebuilt only when the generation moved; `_asgi_app` re-resolves.
             stack = self._asgi_stack
             if stack is None or self._asgi_stack_gen != cp.gen:
                 stack = self._build_asgi_stack(cp)
@@ -510,9 +468,9 @@ class AsgiMixin(AppHost):
     ) -> None:
         """Run the core ASGI application - HTTP, WebSocket and lifespan handling.
 
-        `cp` is the compiled pipeline resolved by `__call__`; threading it in
-        lets the HTTP path skip a redundant generation check. It is `None` when
-        a wrapper in the ASGI stack calls this method directly.
+        `cp` is the compiled pipeline resolved by `__call__`, threaded in so the
+        HTTP path skips a redundant generation check; `None` when a wrapper in
+        the ASGI stack calls this directly.
         """
         if cp is None:
             cp = self._ensure_pipeline()
@@ -533,22 +491,16 @@ class AsgiMixin(AppHost):
                 return
 
         if scope["type"] == ASGI_SCOPE_HTTP:
-            # Handed to `Request` untouched: the CIMultiDict + latin-1 decode is
-            # deferred until a handler reads `request.headers`.
+            # Untouched: the decode is deferred to `request.headers`.
             raw_headers = scope.get("headers", [])
 
-            # MAX_CONTENT_LENGTH: the declared value is refused up front, the
-            # running total catches a chunked body that omits it.
+            # The declared value up front; the running total catches a chunked one.
             max_size = self.config.get("MAX_CONTENT_LENGTH")
             declared_over = False
             if max_size is not None:
                 declared_b: bytes | None = None
-                # Compared as received: ASGI mandates lowercase header names, so
-                # a compliant server matches with no `.lower()` allocation per
-                # header, and a bodiless method skips the walk. Both are only the
-                # *early* reject - the body branches below enforce the received
-                # length themselves. Measured on techc: ~160ns saved per GET
-                # against ~28ns added per POST, ~8-header request.
+                # Compared as received: ASGI mandates lowercase header names.
+                # Measured: ~160ns saved per GET against ~28ns added per POST.
                 if scope["method"] not in _BODILESS_METHODS:
                     for _hk, _hv in raw_headers:
                         if _hk == RAW_HEADER_CONTENT_LENGTH:
@@ -563,14 +515,12 @@ class AsgiMixin(AppHost):
 
             # The ASGI HTTP scope mandates these keys, so subscript over `.get`.
             path = scope["path"]
-            # A well-formed query string is percent-encoded ASCII (RFC 3986
-            # Sec. 3.4), so raw non-ASCII bytes are a 400 rather than a
-            # `UnicodeDecodeError` escaping as a 500.
+            # A query string is percent-encoded ASCII (RFC 3986 Sec. 3.4), so raw
+            # non-ASCII bytes are a 400, not a `UnicodeDecodeError` as a 500.
             try:
                 query = scope["query_string"].decode("ascii")
             except UnicodeDecodeError:
-                # Empty rather than a lossy decode, whose U+FFFD placeholders
-                # would hand an error handler parameters the client never sent.
+                # Empty rather than a lossy decode of parameters nobody sent.
                 await self._refuse_bad_request(
                     send,
                     MSG_INVALID_QUERY_STRING,
@@ -582,23 +532,17 @@ class AsgiMixin(AppHost):
                 )
                 return
 
-            # Refused on a real `Request` through the dispatch path's own builder,
-            # so the rejection runs the response phase and carries the app's CORS
-            # and security headers. Paid only by a request being refused.
+            # Through the dispatch builder, so the rejection carries CORS headers.
             if declared_over:
                 await self._refuse_too_large(
                     send, scope["method"], path, query, raw_headers, scope, cp, max_size
                 )
                 return
 
-            # Matched ONCE here and threaded into `handle_request`, so the radix
-            # tree is not walked twice. A non-streaming route keeps the eager
-            # drain below; only `stream=True` gets a lazy `ASGIBodySource`.
+            # Matched ONCE and threaded into `handle_request`.
             method = scope["method"]
             match = self.match(method, path)
-            # A path under a mount matches nothing here, so the eager drain below
-            # would silently buffer a `stream=True` route once its app was
-            # mounted. Hand it a lazy source and let the mount dispatch decide.
+            # A path under a mount matches nothing here; the mount decides.
             mounted = match is None and cp.has_mounted_apps and self._path_under_mount(path)
             if mounted or (match is not None and match.route_info.stream):
                 request = Request(
@@ -619,9 +563,7 @@ class AsgiMixin(AppHost):
                     body_parts = [body] if body else []
                     received = len(body)
                     if max_size is not None and received > max_size:
-                        # The follow-up loop measures only what it appends, so
-                        # without this a body sent as one large message plus an
-                        # empty terminator escapes the cap entirely.
+                        # The loop below measures only what it appends.
                         await self._refuse_too_large(
                             send, method, path, query, raw_headers, scope, cp, max_size
                         )
@@ -656,9 +598,8 @@ class AsgiMixin(AppHost):
                     receive=receive,
                 )
 
-            # Both branches checked the declared and the received length above,
-            # so dispatch does not repeat either. Per-request, so a mounted
-            # sub-app is still checked against its own limit.
+            # Both branches checked both lengths; per-request, so a mount keeps
+            # its own limit.
             request._length_enforced = True
 
             response = await self.handle_request(request, cp, match)
@@ -668,9 +609,8 @@ class AsgiMixin(AppHost):
                 await _emit_stream(send, response, scope["method"])
                 return
 
-            # A bodiless status (1xx, 204, 205, 304) MUST NOT carry a payload
-            # (RFC 9110 Sec. 15.2 / 15.3.5 / 15.3.6 / 15.4.5), so the body and
-            # the default content-type are both suppressed.
+            # A bodiless status MUST NOT carry a payload (RFC 9110 Sec. 15.2 /
+            # 15.3.5 / 15.3.6 / 15.4.5), so body and content-type are suppressed.
             body_allowed = status.status_permits_body(response.status_code)
             length = advertised_length(response.status_code, response.body)
             body_out = response.body if body_allowed else b""
@@ -685,15 +625,13 @@ class AsgiMixin(AppHost):
                 head_content_length = length
                 body_out = b""
 
-            # Omitted rather than claiming zero when a stream-downgraded 304 has
-            # no knowable length.
+            # Omitted rather than claiming zero for an unknowable length.
             content_length = (
                 (head_content_length if head_content_length is not None else len(body_out))
                 if (head_content_length is not None or length is not None)
                 else None
             )
-            # The ASGI emit path bypasses `Response.encode()`, so the
-            # response-splitting guard must be applied here too.
+            # This path bypasses `Response.encode()`, so its guard applies here.
             _ct_bytes = _content_type_bytes(response.content_type)
             _cl_bytes = (
                 None
@@ -702,8 +640,7 @@ class AsgiMixin(AppHost):
                 if 0 <= content_length < _CL_SMALL_MAX
                 else str(content_length).encode("ascii")
             )
-            # A response-set content-length is kept (e.g. `GZipMiddleware`'s
-            # compressed length), so the default below applies only when absent.
+            # A response-set content-length is kept, so the default fills a gap.
             if response.headers:
                 asgi_headers, has_ct, has_cl = _build_asgi_headers(response.headers)
             else:
@@ -742,12 +679,9 @@ class AsgiMixin(AppHost):
         """Serve one ASGI `websocket` scope.
 
         Out of line from `_asgi_app` deliberately: this runs **once per
-        connection**, before any frame moves, so the call costs nothing that can
-        be measured and the HTTP path is 200 lines shorter to read.
+        connection**, so the call costs nothing measurable.
         """
-        # An HTTP middleware such as `TrustedHostMiddleware` never sees a
-        # `websocket` scope, so any host and Origin allow-list is applied here.
-        # The pipeline pre-filters the check pairs once; `None` skips the gate.
+        # An HTTP middleware never sees a `websocket` scope; `None` skips this.
         ws_checks: WsHandshakeChecks | None = cp.ws_handshake
         if ws_checks is not None:
             ws_host = ""
@@ -755,8 +689,7 @@ class AsgiMixin(AppHost):
             _host_seen = False
             _origin_seen = False
             for _hk, _hv in scope.get("headers", []):
-                # First occurrence of each header wins - a duplicate
-                # `Origin` must not be able to shadow the real one.
+                # First occurrence wins: a duplicate `Origin` must not shadow it.
                 if _hk == b"host" and not _host_seen:
                     ws_host = _extract_host(_hv.decode("latin-1"))
                     _host_seen = True
@@ -794,9 +727,7 @@ class AsgiMixin(AppHost):
                     await send({"type": ASGI_EVENT_LIFESPAN_STARTUP_FAILED, "message": str(exc)})
                     return
             elif message["type"] == ASGI_EVENT_LIFESPAN_SHUTDOWN:
-                # Mirror the startup branch: a teardown that raises is reported
-                # via the spec's `lifespan.shutdown.failed` rather than escaping
-                # `__call__`. `_run_lifecycle` runs every teardown regardless.
+                # Reported as `lifespan.shutdown.failed`, not out of `__call__`.
                 try:
                     await self._run_lifecycle(LIFECYCLE_SHUTDOWN)
                     await send({"type": ASGI_EVENT_LIFESPAN_SHUTDOWN_COMPLETE})

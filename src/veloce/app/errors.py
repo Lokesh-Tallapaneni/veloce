@@ -3,9 +3,8 @@
 Holds the error-handler registry (`exception_handler` / `register_error_handler`
 / `add_exception_handler`), the MRO-walked handler lookup, and the
 `handle_http_exception` / `handle_user_exception` builders that the request
-pipeline calls when a handler raises. A mixin on `Veloce`; the per-request hot
-path never reaches here, only the error path does. Kept out of `app.core` so the
-error surface is one file and the core <-> errors import direction stays one-way.
+pipeline calls when a handler raises. A mixin on `Veloce`; only the error path
+reaches here, never the per-request hot path.
 """
 
 from __future__ import annotations
@@ -33,9 +32,8 @@ from veloce.http.response import (
     Response,
 )
 
-# Sentinel for cache misses where `None` is itself a valid cache hit ("no
-# exception handler matched this type"). Plain `cache.get(k)` would re-walk the
-# MRO every time for an unhandled exception type.
+# `None` is itself a valid cache hit ("no handler matched this type"), so a
+# plain `cache.get(k)` would re-walk the MRO for every unhandled type.
 _MISSING: Any = object()
 
 
@@ -48,10 +46,8 @@ class ErrorsMixin(AppHost):
         """Register an error handler without a decorator.
 
         The key is an `int` status code or an exception class. Anything else is
-        refused: a non-class key landed in `_exception_handlers`, which is matched
-        by walking a raised exception's MRO, so it could never be found.
-        `exception_handlers={"404": h}` - realistic when the mapping is read from
-        JSON, TOML or the environment - registered without a word and never fired.
+        refused: `_exception_handlers` is matched by walking a raised exception's
+        MRO, so a non-class key could never be found and would register silently.
         """
         self._assert_mutable()
         if isinstance(code_or_exception, int):
@@ -62,9 +58,8 @@ class ErrorsMixin(AppHost):
             ):
                 raise TypeError(_error_handler_key_error(code_or_exception))
             self._exception_handlers[code_or_exception] = func
-            # The MRO-walk cache is invalidated on any registration so a
-            # newly-added handler for a base class takes effect for the
-            # already-cached subclasses.
+            # Invalidated on any registration so a new base-class handler takes
+            # effect for the already-cached subclasses.
             self._exc_handler_cache.clear()
 
     def exception_handler(
@@ -78,9 +73,7 @@ class ErrorsMixin(AppHost):
 
         return decorator
 
-    # A one-word spelling of the same decorator, for code that reads better
-    # without the underscore. Semantics are identical - this is an alias, not a
-    # second implementation.
+    # An alias, not a second implementation - semantics are identical.
     errorhandler = exception_handler
 
     def add_exception_handler(
@@ -97,18 +90,9 @@ class ErrorsMixin(AppHost):
     def log_exception(self, exc: BaseException, request: Request | None = None) -> None:
         """Log an exception with traceback.
 
-        Routes the exception through the app logger at ERROR level. Used
-        internally before falling back to a 500 response; exposed publicly so
-        error-handler code can re-log via the same path.
-
-        `request` names the request that failed, which is most of the value of
-        the record: a traceback with no path is hard to place in a live log.
-        Callers with no request in hand (a background task, a CLI hook) omit it.
-
-        Silencing this is `logging.getLogger(app.import_name).setLevel(...)` or
-        any other ordinary logging configuration - it is the app's own logger,
-        deliberately, so an operator turns it down the way they turn down
-        anything else.
+        Routes the exception through the app's own logger at ERROR level, so an
+        operator silences it with ordinary logging configuration. Pass `request`
+        to name the request that failed; a background task or CLI hook omits it.
         """
         if request is not None:
             self.logger.error("Exception on %s [%s]", request.path, request.method, exc_info=exc)
@@ -120,13 +104,10 @@ class ErrorsMixin(AppHost):
     ) -> Response:
         """Build the auto-OPTIONS response for `path`.
 
-        Returns a 200 response with an empty body and an `Allow` header
-        listing every method registered for `path`, augmented with
-        `HEAD` (whenever `GET` is supported) and `OPTIONS` itself per
-        RFC 9110 Sec. 9.3.7. Callers that register an explicit OPTIONS
-        handler can use this to compose the default `Allow` set. Pass
-        `allowed_methods` when the registered set is already known to skip
-        the redundant `get_allowed_methods` lookup.
+        Returns a 200 response with an empty body and an `Allow` header listing
+        every method registered for `path`, augmented with `HEAD` (whenever
+        `GET` is supported) and `OPTIONS` itself per RFC 9110 Sec. 9.3.7. Pass
+        `allowed_methods` when the registered set is already known.
         """
         allowed = allowed_methods if allowed_methods is not None else self.get_allowed_methods(path)
         advertised = list(allowed)
@@ -146,18 +127,14 @@ class ErrorsMixin(AppHost):
     ) -> Response:
         """Build the response for an `HTTPException`.
 
-        Walks registered status-code + class handlers first (matching
-        `abort()` semantics), falling back to JSON
+        Walks registered status-code + class handlers first (matching `abort()`
+        semantics), falling back to JSON
         `{"detail": exc.detail, "status_code": exc.status_code}` with
-        `exc.headers` applied - byte-identical to what the request cycle
-        emits for the same exception, so a handler reached over MCP or from
-        a background task reports the error exactly as it does over HTTP.
+        `exc.headers` applied - byte-identical to what the request cycle emits,
+        so a handler reached over MCP reports the error as it does over HTTP.
 
-        Pass `request=` when calling from inside a request scope so the
-        registered error handler receives the real failing request
-        (with the actual `path`, `method`, `path_params`, `state`, etc.)
-        instead of a synthetic `GET /`. Callers without a request (the
-        original out-of-band use case) can omit it.
+        Pass `request=` from inside a request scope so the registered handler
+        receives the real failing request instead of a synthetic `GET /`.
         """
         handler = self._find_scoped_status_handler(
             exc.status_code, request
@@ -209,11 +186,9 @@ class ErrorsMixin(AppHost):
     def _find_exception_handler(self, exc_type: type[Any]) -> Callable[..., Any] | None:
         """Walk `exc_type`'s MRO looking for a registered handler.
 
-        Handlers registered against a base class catch every subclass -
-        e.g. `@app.exception_handler(HTTPException)` catches every
-        `NotFound`, `Forbidden`, etc. raised through `abort()`. The
-        lookup result is cached per exception type; the cache is cleared
-        on every `register_error_handler` call.
+        Handlers registered against a base class catch every subclass, so
+        `@app.exception_handler(HTTPException)` catches every `NotFound`,
+        `Forbidden`, etc. The result is cached per exception type.
         """
         cached = self._exc_handler_cache.get(exc_type, _MISSING)
         if cached is not _MISSING:
@@ -232,12 +207,9 @@ class ErrorsMixin(AppHost):
         """Find an exception handler, preferring the request's blueprint chain.
 
         A blueprint's `@bp.errorhandler` only applies to exceptions raised on its
-        own routes (or a nested descendant's): walk the failing request's
-        blueprint chain innermost-first, returning the first per-blueprint handler
-        whose registered exception class matches `exc_type`'s MRO. Falls back to
-        the app-level (MRO-cached) lookup when no blueprint handler matches, so an
-        app-level handler still catches everything and an app-level route is
-        unaffected. Not cached - the error path is cold.
+        own routes (or a nested descendant's), so the failing request's blueprint
+        chain is walked innermost-first before falling back to the app-level
+        MRO-cached lookup. Not cached - the error path is cold.
         """
         if request is not None and self._bp_exception_handlers:
             for bp_name in request.blueprints:
@@ -268,13 +240,9 @@ class ErrorsMixin(AppHost):
     ) -> Response:
         """Invoke a matched error handler and coerce whatever it returns.
 
-        Shared by `handle_http_exception` and `handle_user_exception`. Both are
-        out-of-band entry points, so a caller may have no request to hand: the
-        synthetic `GET /` exists so a handler that reads `request` gets an
-        object rather than `None`, and a real request is used whenever the
-        caller has one.
-
-        The error path, so the extra call costs nothing that matters.
+        Both callers are out-of-band entry points, so a caller may have no
+        request to hand: the synthetic `GET /` exists so a handler that reads
+        `request` gets an object rather than `None`.
         """
         if request is None:
             request = Request(

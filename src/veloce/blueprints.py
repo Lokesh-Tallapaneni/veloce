@@ -19,12 +19,10 @@ Scope of this implementation:
 - nested blueprints via `bp.register_blueprint(child)`, which scope the
   child's hooks and error handlers and give it a dotted endpoint name.
 
-`Blueprint` extends `Router`, so blueprint-level routes inherit the
-radix-tree builder and `default_response_class` plumbing for free.
-The registration step splices the blueprint's collected routes into
-the app's own tree under the combined prefix; the blueprint instance
-keeps the route registrations cached so `register_blueprint` can be
-called multiple times on different apps.
+`Blueprint` extends `Router`, so blueprint-level routes inherit the radix-tree
+builder and `default_response_class` plumbing for free. Registration adds the
+blueprint's collected routes to the app's own tree under the combined prefix,
+and the blueprint keeps them cached so it can be registered on several apps.
 """
 
 from __future__ import annotations
@@ -40,14 +38,12 @@ from veloce.exceptions import _error_handler_key_error
 from veloce.routing.router import RouteInfo, Router
 
 #: The key a scoped handler table is indexed by - an exception class for
-#: `_exception_handlers`, a status code for `_status_handlers`. Both flow
-#: through `_merge_scoped`, so the key type is carried rather than erased.
+#: `_exception_handlers`, a status code for `_status_handlers`.
 _HandlerKey = TypeVar("_HandlerKey")
 
 
-#: Bound once so the route-name check reads the argument by name rather than by
-#: position. `Router.route` takes `name` as positional-or-keyword among some
-#: forty options, so an index would be a second place that has to move with it.
+#: Bound once so the route-name check reads the argument by name: `Router.route`
+#: takes `name` positionally among some forty options, and an index would move.
 _ROUTE_SIGNATURE = inspect.signature(Router.route)
 
 
@@ -55,15 +51,11 @@ def _reject_dotted(name: str | None, label: str) -> None:
     """Refuse a name carrying the character that separates endpoint segments.
 
     An endpoint is `"{blueprint}.{route}"`, so a dot inside either half makes the
-    boundary unrecoverable. `_endpoint_blueprint` splits on the last dot, which
-    is right for nesting and wrong for a route named `"users.list"`: its
-    blueprint reads as `"admin.users"`, a blueprint nobody registered, and every
-    blueprint-scoped hook is silently skipped for that route - including an
-    authentication `before_request`.
-
-    Refused where it is written rather than resolved later, because the
-    ambiguity has no correct resolution: `"a.b.c"` is as good a description of a
-    nested blueprint's route as of a dotted route name on a flat one.
+    boundary unrecoverable: a route named `"users.list"` reads as belonging to
+    the blueprint `"admin.users"`, which nobody registered, and every
+    blueprint-scoped hook - an authentication `before_request` included - is
+    silently skipped for it. Refused where it is written, because `"a.b.c"`
+    describes a nested blueprint's route as well as a dotted name on a flat one.
     """
     if name and "." in name:
         raise ValueError(
@@ -78,18 +70,13 @@ def _endpoint_blueprint(endpoint: str | None) -> str | None:
 
     Blueprint routes have endpoints of the form `"{bp}.{routename}"`, and a
     nested one `"{bp}.{child}.{routename}"`; app-level routes have a bare
-    `"routename"` (no dot). This is the same convention `register_blueprint` and
-    `url_for` already use.
+    `"routename"` (no dot), the same convention `register_blueprint` and
+    `url_for` use.
 
     Everything before the *last* dot, so a nested route resolves to the
-    blueprint it was declared on rather than to its outermost ancestor - reading
-    only the first segment is what made a child's hooks apply to every route
-    under the parent, siblings included. The app flattens each path's ancestor
-    chain at registration, so this stays one key and one lookup per request.
-
-    Read per request by the app's dispatch and hook paths (`app/dispatch.py`,
-    `app/core.py`), so it lives with the convention it decodes rather than being
-    restated there.
+    blueprint it was declared on rather than to its outermost ancestor. The app
+    flattens each path's ancestor chain at registration, so this stays one key
+    and one lookup per request.
     """
     if not endpoint:
         return None
@@ -114,12 +101,8 @@ def _merge_scoped(
         dst[f"{child_name}.{suffix}"] = table
 
 
-#: Every registration category that must stay scoped to the blueprint it was
-#: declared on. Each row is `(own attribute, scoped attribute)`. A category
-#: merged with a plain `extend` instead silently acquires the parent's scope -
-#: which is what let a child's `before_request` run on a sibling's routes - so a
-#: new category belongs in this table rather than in a hand-written line.
-#: Error handlers are merged separately because they are mappings, not lists.
+#: Every category that must stay scoped to the blueprint it was declared on, as
+#: `(own attribute, scoped attribute)`; a plain `extend` would widen its scope.
 _SCOPED_LIST_CATEGORIES: tuple[tuple[str, str], ...] = (
     ("_before_request_hooks", "_scoped_before_hooks"),
     ("_after_request_hooks", "_scoped_after_hooks"),
@@ -140,13 +123,10 @@ def _merge_scoped_lists(
     The list counterpart of `_merge_scoped`: the child's own callables land
     under its bare name, each already-scoped descendant keeps its suffix.
 
-    The child's entry is written even when it declares nothing of this
-    category, because `dst` is what tells registration which descendant paths
-    exist. Recorded only when non-empty, a child that declares no
-    `before_request` of its own left no `<parent>.<child>` path at all - and
-    the parent's own hooks, which apply to every route beneath it, had nowhere
-    to be flattened onto. A guard on the parent then never ran on the child's
-    routes.
+    The child's entry is written even when it declares nothing of this category,
+    because `dst` is what tells registration which descendant paths exist - with
+    no `<parent>.<child>` path, the parent's own hooks have nowhere to be
+    flattened onto and never run on the child's routes.
     """
     dst[child_name] = list(child_own)
     for suffix, entries in child_scoped.items():
@@ -158,10 +138,9 @@ def _resolve_scoped_chain(
 ) -> list[Callable[..., Any]]:
     """Flatten the callables that apply to a descendant, outermost first.
 
-    A route under `<bp>.<child>.<grandchild>` runs the hooks declared on the
-    blueprint, then the child's, then the grandchild's. Flattening the chain at
-    registration keeps the per-request path a single dict lookup rather than a
-    walk up the endpoint's parent chain.
+    A route under `<bp>.<child>.<grandchild>` runs the blueprint's hooks, then
+    the child's, then the grandchild's. Flattening at registration keeps the
+    per-request path one dict lookup rather than a walk up the parent chain.
     """
     chain = list(own)
     parts = suffix.split(".")
@@ -235,30 +214,20 @@ class Blueprint(Router):
         _reject_dotted(name, "Blueprint name")
         self.name = name
         self.url_prefix = url_prefix
-        # Pending hook + handler registrations - applied to the app at
-        # `register_blueprint` time.
+        # Pending registrations, applied to the app at `register_blueprint` time.
         self._before_request_hooks: list[Callable[..., Any]] = []
         self._after_request_hooks: list[Callable[..., Any]] = []
         self._teardown_request_hooks: list[Callable[..., Any]] = []
         self._exception_handlers: dict[type[Any], Callable[..., Any]] = {}
         self._status_handlers: dict[int, Callable[..., Any]] = {}
-        # Nested-child error handlers, kept under each child's dotted name suffix
-        # (relative to this blueprint) rather than flattened into the tables above,
-        # so a sibling child's handler does not leak across to another child. The
-        # app buckets these under `<this_bp_name>.<suffix>` at register time.
+        # Under each child's dotted suffix, so one child cannot leak to a sibling.
         self._scoped_exception_handlers: dict[str, dict[type[Any], Callable[..., Any]]] = {}
         self._scoped_status_handlers: dict[str, dict[int, Callable[..., Any]]] = {}
-        # URL processors registered on this blueprint. They're
-        # gated to blueprint endpoints at register time.
+        # URL processors, gated to blueprint endpoints at register time.
         self._url_value_preprocessors: list[Callable[..., Any]] = []
         self._url_default_funcs: list[Callable[..., Any]] = []
-        # A nested child's hooks and URL processors, kept under the child's
-        # dotted suffix for the same reason its error handlers are: merged into
-        # the lists above they became this blueprint's own, so a child's
-        # `before_request` guard ran on a *sibling* child's routes and a child's
-        # `url_value_preprocessor` rewrote a sibling's path params. Each entry
-        # holds only that descendant's own callables; the app flattens the chain
-        # at register time so one lookup per request still serves them.
+        # A nested child's hooks and URL processors, scoped under its dotted
+        # suffix; each entry holds only that descendant's own callables.
         self._scoped_before_hooks: dict[str, list[Callable[..., Any]]] = {}
         self._scoped_after_hooks: dict[str, list[Callable[..., Any]]] = {}
         self._scoped_teardown_hooks: dict[str, list[Callable[..., Any]]] = {}
@@ -270,15 +239,10 @@ class Blueprint(Router):
     def route(self, *args: Any, **kwargs: Any) -> Any:
         """Declare a route, refusing a name that would break the endpoint split.
 
-        On the decorator rather than on `add_route`, because those are the two
-        different callers: every user-facing shortcut (`get`, `post`, ...)
-        reaches `route`, while `_readd_route` calls `add_route` directly with an
-        endpoint it has *already* composed - `"child.handler"` - which this
-        would otherwise reject as the framework re-registers its own routes.
-
-        The name is recovered by binding against `Router.route`'s own signature
-        rather than by indexing a position: it enumerates about forty options,
-        and one more should not silently move which argument is read.
+        On the decorator rather than on `add_route`, because every user-facing
+        shortcut (`get`, `post`, ...) reaches `route` while `_readd_route` calls
+        `add_route` with an endpoint it has *already* composed - `"child.handler"`
+        - which this would otherwise reject.
         """
         bound = _ROUTE_SIGNATURE.bind_partial(self, *args, **kwargs)
         _reject_dotted(bound.arguments.get("name"), "Blueprint route name")
@@ -306,22 +270,18 @@ class Blueprint(Router):
     def errorhandler(self, exc_class_or_status: type[Any] | int) -> Callable[[T_route], T_route]:
         """Blueprint-scoped error handler.
 
-        Matches `app.errorhandler` semantics: integer keys go to the
-        status-code table, classes go to the MRO-matched exception
-        table. The handler runs for exceptions raised by blueprint
-        handlers; app-level handlers act as fallback (registration
-        order: blueprint wins on direct match).
+        Matches `app.errorhandler` semantics: integer keys go to the status-code
+        table, classes to the MRO-matched exception table. The handler runs for
+        exceptions raised by this blueprint's handlers, with app-level handlers
+        as fallback.
         """
 
         def decorator(func: T_route) -> T_route:
             if isinstance(exc_class_or_status, int):
                 self._status_handlers[exc_class_or_status] = func
             else:
-                # The exception table is matched by an MRO walk, so a key that is
-                # not an exception class can never be found. Every app-level entry
-                # point refuses one; this must too, or `@bp.errorhandler("500")`
-                # sits in the table and never fires. Realistic when the mapping is
-                # read from JSON, TOML, or the environment.
+                # The exception table is matched by an MRO walk, so a key that
+                # is not an exception class could never be found.
                 if not (
                     isinstance(exc_class_or_status, type)
                     and issubclass(exc_class_or_status, BaseException)
@@ -337,10 +297,8 @@ class Blueprint(Router):
     def url_value_preprocessor(self, func: T_route) -> T_route:
         """Register a `fn(endpoint, values)` URL preprocessor on this blueprint.
 
-        Mirrors `@app.url_value_preprocessor` - runs after route
-        match for blueprint-routed requests, mutating `values` in
-        place. Use to pop a path-param into `g` (e.g. a lang segment)
-        before the handler sees it.
+        Mirrors `@app.url_value_preprocessor` - runs after route match for
+        blueprint-routed requests, mutating `values` in place.
         """
         self._url_value_preprocessors.append(func)
         return func
@@ -348,9 +306,9 @@ class Blueprint(Router):
     def url_defaults(self, func: T_route) -> T_route:
         """Register a `fn(endpoint, values)` URL-defaults injector for `url_for`.
 
-        Mirrors `@app.url_defaults` - runs inside `url_for` /
-        `url_path_for` for endpoints belonging to this blueprint. Use
-        `values.setdefault(...)` for caller-wins semantics.
+        Mirrors `@app.url_defaults` - runs inside `url_for` / `url_path_for` for
+        endpoints belonging to this blueprint. Use `values.setdefault(...)` for
+        caller-wins semantics.
         """
         self._url_default_funcs.append(func)
         return func
@@ -365,16 +323,13 @@ class Blueprint(Router):
         """Mount another blueprint as a sub-blueprint of this one.
 
         Routes from `child` register under
-        `self.url_prefix + (url_prefix or child.url_prefix) + path`;
-        endpoint names stored on this blueprint become
-        `<child.name>.<handler>` and pick up the `<self.name>.` prefix
-        once *this* blueprint is itself registered with an app, yielding
-        a final `<self.name>.<child.name>.<handler>` lookup name so the
-        dispatcher's prefix-gate finds them under either name.
+        `self.url_prefix + (url_prefix or child.url_prefix) + path`; endpoint
+        names become `<child.name>.<handler>` and pick up the `<self.name>.`
+        prefix once *this* blueprint is registered with an app, yielding a final
+        `<self.name>.<child.name>.<handler>`.
 
-        Hooks and error handlers from `child` are merged into this
-        blueprint's lists (not the app's - the app gets them when
-        *this* blueprint is registered).
+        Hooks and error handlers from `child` are merged into this blueprint's
+        tables, not the app's - the app gets them when *this* one is registered.
         """
         if child is self:
             raise ValueError(f"Cannot register blueprint {self.name!r} as a child of itself.")
@@ -384,14 +339,8 @@ class Blueprint(Router):
             endpoint = f"{child.name}.{info.name}"
             _readd_route(self, full_path, methods, info, endpoint)
 
-        # Inherit child hooks + error handlers. Child's hooks will be
-        # endpoint-gated when *this* blueprint registers onto the app
-        # (parent gate covers `<parent_name>.` which matches
-        # `<parent_name>.<child_name>....`).
-        # Every list category stays scoped to the child under its dotted name,
-        # for the same reason the error handlers below do: merged into this
-        # blueprint's own lists they become this blueprint's, and a
-        # `@child.before_request` guard would then run on a sibling's routes.
+        # Scoped to the child under its dotted name: merged into this
+        # blueprint's lists, a `@child.before_request` would run on a sibling.
         for own_attr, scoped_attr in _SCOPED_LIST_CATEGORIES:
             _merge_scoped_lists(
                 getattr(self, scoped_attr),
@@ -399,9 +348,8 @@ class Blueprint(Router):
                 getattr(child, scoped_attr),
                 child.name,
             )
-        # Error handlers stay scoped to the child (and its descendants) under the
-        # child's dotted name, not merged into this blueprint's own tables - so a
-        # `@child.errorhandler` only catches the child's routes, never a sibling's.
+        # Scoped under the child's dotted name, so a `@child.errorhandler`
+        # catches the child's routes and never a sibling's.
         _merge_scoped(
             self._scoped_exception_handlers,
             child._exception_handlers,
@@ -420,29 +368,21 @@ class Blueprint(Router):
     def _walk_routes(self) -> list[tuple[str, list[str], RouteInfo]]:
         """Return `(path, methods, RouteInfo)` triples for every route.
 
-        The blueprint's own `url_prefix` is **stripped** from each path
-        before returning, so `register_blueprint` can re-apply a
-        (possibly different) prefix without double-nesting. Caller is
-        expected to prepend the chosen prefix.
+        The blueprint's own `url_prefix` is **stripped** from each path before
+        returning, so `register_blueprint` can re-apply a (possibly different)
+        prefix without double-nesting; the caller prepends the chosen prefix.
         """
         results: list[tuple[str, list[str], RouteInfo]] = []
         own_prefix = self.url_prefix.rstrip("/")
         # include_hidden=True: a blueprint's WebSocket routes and its
         # include_in_schema=False routes must still enter the app's tree.
         for method, _path, info in self._collect_all_routes(include_hidden=True):
-            # `_walk_tree` reconstructs the path from the radix structure,
-            # which loses the trailing-slash distinction the router
-            # collapses at storage time (both `@bp.get("/")` and
-            # `@bp.get("")` map to the same radix node). Read from
-            # `RouteInfo.path_template` instead - it carries the original
-            # `prefix + user_path` string so we can tell the two apart
-            # and re-prefix correctly.
+            # `path_template`, not the radix-reconstructed path, which loses the
+            # trailing-slash distinction the re-prefix step below must preserve.
             full_path = info.path_template
             if own_prefix and full_path.startswith(own_prefix):
-                # Strip the prefix verbatim - preserving an empty
-                # remainder (`@bp.get("")` against the bare prefix) and
-                # an explicit `/` remainder (`@bp.get("/")`) as their
-                # own distinct shapes for the re-prefix step.
+                # Stripped verbatim, preserving an empty and an explicit `/`
+                # remainder as their own distinct shapes.
                 stripped = full_path[len(own_prefix) :]
             else:
                 stripped = full_path

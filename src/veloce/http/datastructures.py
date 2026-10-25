@@ -39,26 +39,21 @@ _MAX_QUERY_FIELDS = 1000
 def _parse_qs_pairs(value: str, max_fields: int | None) -> list[tuple[str, str]]:
     """Parse `a=1&b=2` into ordered pairs, decoding escapes only when present.
 
-    `urllib.parse.parse_qsl` is pure Python and calls `unquote_plus` twice per
-    field; `unquote_plus` allocates a replaced string before scanning for `%`.
-    A value carrying neither `%` nor `+` has nothing for any of that to do, and
-    that is the shape of most query strings and most urlencoded bodies.
+    `parse_qsl` is pure Python and calls `unquote_plus` twice per field, which
+    allocates before scanning for `%`; a value carrying neither `%` nor `+` -
+    the shape of most query strings - has nothing for that to do. Escaped input
+    delegates to `parse_qsl`, which stays the single decoder.
 
-    Escaped input delegates to `parse_qsl`, which stays the single decoder, so
-    the two paths cannot disagree about what an escape means. The guard is two
-    scans over a short string and is within noise of free on the escaped path.
-
-    `parse_qsl` counts fields as `1 + value.count("&")`, which is exactly
-    `len(value.split("&"))`, so the `max_fields` cap - and the 414 / 413 the
-    callers raise from it - is enforced at the same boundary either way.
+    `parse_qsl` counts fields as `1 + value.count("&")`, exactly
+    `len(value.split("&"))`, so `max_fields` binds at the same boundary either
+    way.
     """
     if "%" in value or "+" in value:
         return parse_qsl(value, keep_blank_values=True, max_num_fields=max_fields)
     parts = value.split("&")
     if max_fields is not None and len(parts) > max_fields:
         raise ValueError("Max number of fields exceeded")
-    # Blank values are kept (`a=` is `("a", "")`) and an empty segment is
-    # skipped, both matching `parse_qsl(keep_blank_values=True)`.
+    # Matching `parse_qsl(keep_blank_values=True)`: `a=` is `("a", "")`.
     return [(k, v) for k, _, v in (part.partition("=") for part in parts if part)]
 
 
@@ -78,12 +73,10 @@ class Address(NamedTuple):
 class State(dict[str, Any]):
     """Per-request scratch namespace - supports both styles.
 
-    ASGI servers expose `request.state` for attribute-style
-    storage (`request.state.user = ...`). Veloce's dispatcher also
-    stashes framework internals (`session`, `url_rule`, ...) here by
-    key. `State` is a `dict` subclass whose attribute access maps to
-    items, so `state.user` and `state["user"]` / `state.get("user")`
-    are interchangeable - neither call site needs to know the other.
+    A `dict` subclass whose attribute access maps to items, so
+    `request.state.user` and `state["user"]` / `state.get("user")` are
+    interchangeable. The dispatcher also stashes framework internals
+    (`session`, `url_rule`, ...) here by key.
     """
 
     __slots__ = ()
@@ -122,20 +115,16 @@ class UploadFile:
         self.content_type = content_type
         self.file = file or io.BytesIO()
         self.size = size
-        # Expose the part's headers as a case-insensitive `Headers` view, so a
-        # handler can read `upload.headers["Content-Transfer-Encoding"]` even
-        # though the parser stores keys lowercased. A plain dict passed by a
-        # caller is normalised the same way.
+        # A case-insensitive view, so a handler reads
+        # `upload.headers["Content-Transfer-Encoding"]` off lowercased keys.
         self.headers = headers if isinstance(headers, Headers) else Headers(headers or {})
 
     @property
     def content(self) -> bytes:
         """Return the full file content as bytes.
 
-        Warning: this is a synchronous property. For large uploads that
-        have been spooled to disk (i.e. ``_file_is_in_memory()`` returns
-        False), the underlying ``read()`` call performs blocking I/O.
-        Prefer ``await read()`` in async contexts for spooled files.
+        Synchronous: for an upload spooled to disk the underlying ``read()``
+        blocks, so prefer ``await read()`` in an async context.
         """
         pos = self.file.tell()
         self.file.seek(0)
@@ -146,19 +135,12 @@ class UploadFile:
     def save(self, destination: str | BinaryIO, buffer_size: int = 16384) -> None:
         """Stream this upload into `destination`.
 
-        - `destination` is either a filesystem path (`str`) or an already-open
-          binary file object. With a path, the file is opened in `"wb"` mode
-          and closed afterwards; with a file object, the caller stays
-          responsible for closing it.
-        - `buffer_size` controls the chunk size used while streaming -
-          keeps memory bounded for large uploads without loading them
-          fully into RAM.
+        `destination` is a filesystem path (`str`), opened `"wb"` and closed
+        afterwards, or an already-open binary file the caller still owns.
+        `buffer_size` bounds memory while streaming. The read cursor is reset to
+        0 and restored afterwards, so the upload stays available.
 
-        The upload's read cursor is reset to 0 before reading and restored
-        to its prior position afterwards so the upload remains available
-        for re-inspection.
-
-        This opens and writes on the calling thread. In an async handler use
+        This opens and writes on the calling thread; in an async handler use
         `save_async`, which is the same work hopped to a thread.
         """
         pos = self.file.tell()
@@ -170,8 +152,7 @@ class UploadFile:
             else:
                 self._stream_into(destination, buffer_size)
         finally:
-            # If the underlying stream rejects re-seeking (closed,
-            # one-shot stream, ...) just swallow - we're done with it.
+            # A closed or one-shot stream rejects the re-seek; we are done.
             with contextlib.suppress(ValueError, OSError):
                 self.file.seek(pos)
 
@@ -180,16 +161,13 @@ class UploadFile:
     async def save_async(self, destination: str | BinaryIO, buffer_size: int = 16384) -> None:
         """Stream this upload into `destination` without blocking the event loop.
 
-        The async counterpart of `save`, with identical behaviour: handlers are
-        async, so opening and writing on the calling thread would block the loop
-        for the length of the upload.
+        The async counterpart of `save`, with identical behaviour.
         """
         await asyncio.to_thread(self.save, destination, buffer_size)
 
     async def read(self, size: int = -1) -> bytes:
         """Read up to size bytes from the upload."""
-        # In-memory file objects stay on the loop; rolled-over spools
-        # and arbitrary file-likes hop to a thread.
+        # In-memory objects stay on the loop; a rolled spool hops to a thread.
         if self._file_is_in_memory():
             return self.file.read(size)
         return await asyncio.to_thread(self.file.read, size)
@@ -219,15 +197,10 @@ class UploadFile:
     def _file_is_in_memory(self) -> bool:
         """`True` when reads/writes are pure-Python memory ops.
 
-        Both a `BytesIO` (the constructor default) *and* a
-        `SpooledTemporaryFile` that has not rolled over to disk fall
-        into this category - the multipart parser hands us the
-        latter, and that's the production hot path. Once the spool
-        rolls over to a real file, every op becomes a syscall and
-        must go to a thread.
-
-        `_rolled` is a `SpooledTemporaryFile` attribute (stdlib);
-        anything else falls back to "treat as on-disk" for safety.
+        True for a `BytesIO` and for a `SpooledTemporaryFile` that has not
+        rolled over; once it rolls over, every op is a syscall and must go to a
+        thread. `_rolled` is a stdlib `SpooledTemporaryFile` attribute, and
+        anything else is treated as on-disk.
         """
         if isinstance(self.file, io.BytesIO):
             return True
@@ -251,18 +224,12 @@ class UploadFile:
 
 
 # ── URL ───────────────────────────────────────────────────
-# Safe default host used when the Host header fails validation. Matches the
-# `URL.__init__` default so a rejected Host degrades to the same value as a
-# missing one rather than leaking the attacker-controlled string.
+# Matches `URL.__init__`, so a rejected Host never leaks its own string.
 _DEFAULT_HOST = "localhost"
 
-# RFC 3986 Sec. 3.2.2 reg-name / unreserved + sub-delims, plus `%` for
-# percent-encoded octets. A registered hostname is built only from these
-# characters; anything else (`/`, `?`, `#`, `@`, whitespace, control bytes,
-# CR/LF/NUL) is illegal in the authority's host and is exactly what a
-# Host-injection payload (`evil.com/path?x`, `a\r\nX: y`) carries. Validating
-# against this set stops such a Host from poisoning host / netloc / base_url /
-# url_root / absolute-URL construction.
+# RFC 3986 Sec. 3.2.2 reg-name, plus `%` for percent-encoded octets. Anything
+# else is illegal in the authority's host and is exactly what a Host-injection
+# payload (`evil.com/path?x`, `a\r\nX: y`) carries.
 _HOST_REGNAME_CHARS = frozenset(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
     "-._~"  # unreserved
@@ -279,8 +246,8 @@ def _is_valid_reg_name(host: str) -> bool:
 def _is_valid_ipv6(host: str) -> bool:
     """Whether `host` is a syntactically valid IPv6 literal (brackets stripped).
 
-    Parsed with `ipaddress.IPv6Address` so malformed forms like `:::1`, `::::`,
-    or `2001:::1` are rejected (a bare character-class check would accept them).
+    Parsed with `ipaddress.IPv6Address`, so `:::1` and `2001:::1` are rejected
+    where a bare character-class check would accept them.
     """
     try:
         ipaddress.IPv6Address(host)
@@ -292,18 +259,16 @@ def _is_valid_ipv6(host: str) -> bool:
 def _parse_host_header(host_header: str) -> tuple[str, int | None]:
     """Split a Host header into a validated `(host, port)`.
 
-    Rejects a Host whose host component is not a valid RFC 3986 reg-name or
-    IPv6 literal, or whose port is not a 1-65535 integer, by falling back to
-    `(_DEFAULT_HOST, None)`. A malformed Host therefore degrades to the safe
-    default instead of flowing into absolute-URL construction, where it could
-    inject a path/query/CRLF or an attacker-chosen origin.
+    A Host whose host component is not a valid RFC 3986 reg-name or IPv6
+    literal, or whose port is not 1-65535, falls back to `(_DEFAULT_HOST, None)`
+    rather than flowing into absolute-URL construction, where it could inject a
+    path/query/CRLF or an attacker-chosen origin.
     """
     if "[" in host_header:
         # Bracketed IPv6: [::1]:8080
         bracket_start = host_header.index("[")
         bracket_end = host_header.find("]")
-        # The literal must open at the start and close before any port; a `[`
-        # anywhere else, or a missing `]`, is malformed.
+        # A `[` anywhere but the start, or a missing `]`, is malformed.
         if bracket_start != 0 or bracket_end == -1:
             return (_DEFAULT_HOST, None)
         host = host_header[1:bracket_end]
@@ -389,30 +354,19 @@ class URL:
     ) -> URL:
         """Construct a URL from request headers and path components.
 
-        `trust_forwarded_proto` is False once `ProxyFix` has run: it writes the
-        scheme it trusted into the scope, so reading the raw header afterwards
-        would let a hop it deliberately refused set the scheme anyway - which is
-        the trust depth being bypassed. With no `ProxyFix` installed the header
-        remains a convenience default.
+        `trust_forwarded_proto` is False once `ProxyFix` has run, which writes
+        the scheme it trusted into the scope; reading the raw header afterwards
+        would let a hop it refused set the scheme anyway. With no `ProxyFix`
+        installed the header remains a convenience default.
 
-        `forwarded_port` is the public port a trusted reverse proxy supplied
-        (via `ProxyFix` reading `X-Forwarded-Port` / `Forwarded host=...:port`).
-        A port embedded in the Host header always wins; `forwarded_port` only
-        fills in the port when the Host header carries none, so a proxy on a
-        non-default port (e.g. 8443) survives into `netloc` / absolute URLs.
+        `forwarded_port` is the public port a trusted reverse proxy supplied. A
+        port embedded in the Host header always wins, so `forwarded_port` only
+        fills one in when the Host header carries none.
         """
         host_header = headers.get(HEADER_HOST, "localhost")
-        # Precedence (ASGI HTTP connection scope): the scope's `scheme` is the
-        # authoritative answer when one was supplied - that's
-        # what uvicorn sets under TLS. `X-Forwarded-Proto` is a hint set
-        # by reverse proxies and only meaningful when ProxyFix or similar
-        # has trusted it. Plain `http` is the final fallback.
-        # Normalised here, once, because this is the single point every consumer
-        # reads the scheme through. RFC 3986 Sec. 3.1 makes a scheme
-        # case-insensitive and RFC 7239 Sec. 4 says the same of the `proto`
-        # directive, so a proxy spelling either `HTTPS` is naming the same
-        # scheme - and comparing it verbatim made `is_secure` answer `False` on
-        # an encrypted connection.
+        # Precedence: the ASGI scope's `scheme`, then a trusted
+        # `X-Forwarded-Proto`, then plain `http`. Lower-cased once, because
+        # RFC 3986 Sec. 3.1 and RFC 7239 Sec. 4 make it case-insensitive.
         if scope_scheme:
             scheme = scope_scheme.lower()
         elif (
@@ -422,17 +376,11 @@ class URL:
             scheme = URL_SCHEME_HTTPS
         else:
             scheme = URL_SCHEME_HTTP
-        # Validate the Host against the RFC 3986 Sec. 3.2.2 host grammar before
-        # it reaches host / netloc / base_url / url_root. A malformed Host
-        # (`evil.com/path?x`, a CRLF-injected value, a non-numeric port) falls
-        # back to the safe default rather than poisoning absolute-URL
-        # construction. A port embedded in the Host header still wins over
-        # `forwarded_port`.
+        # Validated against the RFC 3986 Sec. 3.2.2 host grammar before it
+        # reaches host / netloc / base_url / url_root.
         host, port = _parse_host_header(host_header)
-        # The Host header is the authoritative source of the port; only when
-        # it carries none does a trusted `X-Forwarded-Port` / `Forwarded`
-        # port fill in. This keeps an explicit `host:port` from being
-        # overridden by a stale forwarded port.
+        # The Host header is authoritative for the port, so a stale forwarded
+        # one cannot override an explicit `host:port`.
         if port is None and forwarded_port is not None:
             port = forwarded_port
         return cls(
@@ -471,11 +419,7 @@ class URL:
 
 
 # ── Multidict-backed collections ──────────────────────────
-# A header parameter value carrying any of these characters must be
-# double-quoted (RFC 9110 Sec. 5.6.6 quoted-string). Hoisted so `Headers.add`
-# does not rebuild the trigger set on every parameter. A backslash is included
-# because it is not a `tchar` (RFC 9110 Sec. 5.6.2), so a value containing one
-# cannot be sent as a bare token.
+# These must be double-quoted (RFC 9110 Sec. 5.6.6); `\` is not a `tchar`.
 _HEADER_PARAM_QUOTE_TRIGGERS = frozenset((" ", ";", ",", '"', "\\"))
 
 
@@ -483,11 +427,9 @@ class _GetListMixin:
     """Shared `getlist` for the multidict-backed collections.
 
     `multidict` exposes `getall`, which raises `KeyError` when the key is
-    absent; the framework's collections expose `getlist`, which returns an
-    empty list instead. The mixin's own `__slots__ = ()` is necessary but
-    not sufficient for a `__dict__`-free layout: each subclass must itself
-    declare `__slots__`, because a subclass that omits it regains a
-    per-instance `__dict__` regardless of the mixin's empty slots.
+    absent; `getlist` returns an empty list instead. Each subclass must declare
+    its own `__slots__`, because one that omits it regains a per-instance
+    `__dict__` regardless of the mixin's empty slots.
     """
 
     __slots__ = ()
@@ -503,8 +445,8 @@ class _GetListMixin:
 def _files_key_hint(key: str, mimetype: str, form_keys: frozenset[str]) -> str:
     """Build the debug message for a missing `request.files` key.
 
-    Branches on what the request actually carried so the message names the
-    real root cause of the most common upload mistakes.
+    Branches on what the request actually carried, so the message names the
+    real cause of the commonest upload mistakes.
     """
     if key in form_keys:
         return (
@@ -537,12 +479,8 @@ class FormData(_GetListMixin, MultiDict[Any]):
     `getlist("a")` returns the full list.
     """
 
-    # Debug-only diagnostic recorded by `Request.files` when the app runs
-    # with `debug=True`: `(request_mimetype, frozenset_of_form_field_names)`.
-    # When set, a missing-key lookup raises a descriptive `FilesKeyError`
-    # instead of a bare `KeyError`. `None` (the default) keeps plain
-    # multidict semantics, so production lookups pay nothing. A real slot
-    # rather than the open-ended `__dict__` the class would otherwise gain.
+    # Set by `Request.files` under `debug=True`, so a missing key raises a
+    # descriptive `FilesKeyError`; `None` costs a production lookup nothing.
     __slots__ = ("_files_diagnostic",)
 
     _files_diagnostic: tuple[str, frozenset[str]] | None
@@ -569,10 +507,9 @@ class FormData(_GetListMixin, MultiDict[Any]):
 class Headers(_GetListMixin, CIMultiDict[str]):
     """Case-insensitive, multi-value header collection.
 
-    Backed by `multidict.CIMultiDict`. Existing single-value access via
-    `headers["X"]` returns the first value (multidict semantics); use `headers.getlist("X")` to get all
-    values. Construction from a plain dict, a list of tuples, or another
-    multidict all work - the underlying constructor handles each shape.
+    Backed by `multidict.CIMultiDict`. `headers["X"]` returns the first value;
+    `headers.getlist("X")` returns all of them. Construction from a plain dict,
+    a list of tuples or another multidict all work.
     """
 
     __slots__ = ()
@@ -580,8 +517,7 @@ class Headers(_GetListMixin, CIMultiDict[str]):
     def to_wsgi_list(self) -> list[tuple[str, str]]:
         """Return headers as a list of `(name, value)` tuples.
 
-        Preserves insertion order and every duplicate. Useful for
-        emitting to a WSGI/ASGI layer or for round-tripping.
+        Preserves insertion order and every duplicate.
         """
         return [(k, v) for k, v in self.items()]
 
@@ -649,10 +585,8 @@ class RangeSpec:
             start_s, _, end_s = chunk.partition("-")
             start_s = start_s.strip()
             end_s = end_s.strip()
-            # RFC 9110 Sec. 14.1.1 spells a byte position `1*DIGIT`. `int()` is
-            # looser than that: it reads a sign, digit separators and non-ASCII
-            # decimal digits, so `bytes=+3-4` and `bytes=1_0-20` were honoured
-            # as ranges no client had asked for.
+            # RFC 9110 Sec. 14.1.1 spells a byte position `1*DIGIT`, where
+            # `int()` also reads a sign, `_` separators and non-ASCII digits.
             if (start_s and not _is_byte_pos(start_s)) or (end_s and not _is_byte_pos(end_s)):
                 continue
             if not start_s and not end_s:
@@ -666,14 +600,10 @@ class RangeSpec:
         return f"RangeSpec(unit={self.unit!r}, ranges={self.ranges!r})"
 
 
-# A decomposed MIME media range: lower-cased type, subtype, the frozenset of
-# `(name, value)` media-type parameter pairs, and a specificity score used to
-# rank competing matches (RFC 9110 Sec. 12.5.1):
-#   3 = full `type/subtype` carrying parameters
-#   2 = full `type/subtype`
-#   1 = `type/*`
-#   0 = `*/*`
-# An invalid range (e.g. `*/json`) scores -1 and never matches.
+# Lower-cased type, subtype, the frozenset of media-type parameter pairs, and
+# a specificity score ranking competing matches (RFC 9110 Sec. 12.5.1):
+#   3 = `type/subtype` with parameters, 2 = `type/subtype`, 1 = `type/*`,
+#   0 = `*/*`, -1 = invalid (e.g. `*/json`), which never matches.
 _MimeKey = tuple[str, str, frozenset[tuple[str, str]], int]
 
 
@@ -681,12 +611,11 @@ _MimeKey = tuple[str, str, frozenset[tuple[str, str]], int]
 def _lookup_mime_key(value: str) -> _MimeKey:
     """`_parse_mime_key` for a media range the caller names, memoized.
 
-    `quality("application/json")` and its siblings ask about a literal the
-    application owns, and re-parsing it per call was measured as three parses
-    on a single MCP request. Deliberately NOT used for the ranges parsed out of
-    an `Accept` header: those come from the client, and a process-lifetime map
-    keyed on remote input lets a caller sending a few hundred distinct ranges
-    evict the handful this cache exists to hold.
+    `quality("application/json")` asks about a literal the application owns,
+    and re-parsing it per call measured three parses on one MCP request.
+    Deliberately NOT used for the ranges parsed out of an `Accept` header: those
+    are remote input, and a few hundred distinct ones would evict the handful
+    this cache exists to hold.
     """
     return _parse_mime_key(value)
 
@@ -704,8 +633,7 @@ def _parse_mime_key(value: str) -> _MimeKey:
     # `*/non-*` is meaningless (RFC 9110 Sec. 12.5.1) - never match it.
     if type_ == "*" and subtype != "*":
         return ("", "", frozenset(), -1)
-    # Parameter names are case-insensitive; values are kept verbatim except for
-    # the surrounding quotes.
+    # Parameter names are case-insensitive; values keep all but their quotes.
     params: set[tuple[str, str]] = set(parse_media_type_params(rest))
     if type_ == "*":
         specificity = 0
@@ -730,14 +658,8 @@ class AcceptHeader:
     __slots__ = ("_options", "_mime")
 
     def __init__(self, options: list[tuple[str, float]], mime: bool) -> None:
-        # `options` is already (value, q) tuples in original order; we
-        # never re-sort because best_match wants the configured option
-        # order to break ties, not the client's.
-        #
-        # For MIME headers each option is decomposed once into a
-        # `_MimeKey` (type, subtype, frozenset of media-type params,
-        # specificity score) so matching and specificity ranking read a
-        # cached tuple instead of re-splitting strings per comparison.
+        # Never re-sorted: `best_match` breaks ties on the configured option
+        # order. A MIME option is decomposed once into a cached `_MimeKey`.
         self._mime = mime
         self._options: list[tuple[str, float, _MimeKey | None]]
         if mime:
@@ -751,12 +673,10 @@ class AcceptHeader:
     def parse(cls, raw: str, mime: bool = False) -> AcceptHeader:
         """Parse a comma-separated header into (value, q) tuples.
 
-        Q-values missing or unparseable default to 1.0 (RFC 9110 Sec. 12.4.2).
-        Entries with `q=0` are kept - `best_match` treats them as
-        explicit rejections of that option. For MIME headers, media-type
-        parameters (e.g. `application/json;profile="x"`) are retained and
-        participate in matching (RFC 9110 Sec. 12.5.1); the `q` parameter
-        separates the q-value from the media-type parameters.
+        A missing or unparseable q-value defaults to 1.0 (RFC 9110
+        Sec. 12.4.2). An entry with `q=0` is kept, because `best_match` treats
+        it as an explicit rejection. For MIME headers the media-type parameters
+        are retained and participate in matching (RFC 9110 Sec. 12.5.1).
         """
         if not raw:
             return cls([], mime)
@@ -771,10 +691,8 @@ class AcceptHeader:
             value, _, rest = chunk.partition(";")
             value = value.strip()
             q = 1.0
-            # Media-type parameters appear BEFORE `q`; accept-extension
-            # parameters appear AFTER it (RFC 9110 Sec. 12.5.1). For MIME
-            # headers the pre-`q` parameters are kept on the value so they
-            # take part in matching; for plain headers they are ignored.
+            # Media-type parameters appear BEFORE `q` and accept-extension ones
+            # after (RFC 9110 Sec. 12.5.1); only the former take part in matching.
             params: list[str] = []
             seen_q = False
             for param in rest.split(";"):
@@ -786,9 +704,8 @@ class AcceptHeader:
                         q = float(param[2:])
                     except ValueError:
                         q = 1.0
-                    # `float()` accepts "inf"/"nan"; a non-finite q would poison
-                    # `quality()`/`best_match` comparisons, so treat it as the
-                    # default like an unparseable value.
+                    # A non-finite q from `float("inf")` would poison every
+                    # comparison, so it is treated as unparseable.
                     if not math.isfinite(q):
                         q = 1.0
                     seen_q = True
@@ -811,10 +728,9 @@ class AcceptHeader:
         """Return the q-value the client assigned to `value`.
 
         For MIME headers, matches `*/*` and `type/*` wildcards as well as
-        parameterized media ranges (e.g. `application/json;profile=x`); the
-        MOST SPECIFIC matching client range wins (RFC 9110 Sec. 12.5.1), with
-        ties broken by the higher q-value. Returns 0 when the value is
-        rejected or not mentioned (callers usually special-case this).
+        parameterized media ranges; the MOST SPECIFIC matching client range wins
+        (RFC 9110 Sec. 12.5.1), ties broken by the higher q-value. Returns 0 for
+        a value that is rejected or not mentioned.
         """
         if self._mime:
             return self._mime_best(_lookup_mime_key(value))[0]
@@ -829,24 +745,16 @@ class AcceptHeader:
         """Return the q-value for `value`, with explicit tokens overriding `*`.
 
         RFC 9110 Sec. 12.5.3: an explicit `q=0` means "not acceptable" and must
-        override a more permissive wildcard. `quality()` returns the MAX across
-        an exact match and a `*` match, so for `br;q=0, *;q=1` it reports 1.0 for
-        `br` - serving a rejected coding. This variant prefers an EXACT token
-        match (so an explicit `q=0` excludes the coding) and only falls back to
-        the `*` wildcard q when `value` is not explicitly listed. Used by
-        precompressed static selection where honoring an explicit rejection
-        matters; non-MIME (Accept-Encoding) semantics.
+        override a more permissive wildcard, which `quality()` does not do - it
+        reports the MAX, so `br;q=0, *;q=1` gives `br` 1.0. This variant prefers
+        an EXACT token match and falls back to the `*` q only for a value not
+        explicitly listed. Non-MIME (Accept-Encoding) semantics.
         """
-        # RFC 9110 Sec. 12.5.3 / Sec. 8.4.1: content-coding tokens are
-        # case-insensitive, so `BR` must match an explicit `br` entry and an
-        # explicit `Br;q=0` must reject `br`. Fold both sides to lowercase
-        # before the exact compare; the `*` wildcard fallback is unaffected.
+        # Content-coding tokens are case-insensitive (RFC 9110 Sec. 12.5.3 /
+        # Sec. 8.4.1), so an explicit `Br;q=0` must reject `br`.
         folded = value.lower()
-        # A repeated token with conflicting weights (`gzip;q=1.0, gzip;q=0`) is
-        # not defined by RFC 9110, so this reads it the way the rest of the
-        # method does: an explicit refusal anywhere wins. Returning the first
-        # entry instead let a later `q=0` be ignored, which is the one reading
-        # this method exists to rule out.
+        # RFC 9110 leaves a repeated token with conflicting weights
+        # (`gzip;q=1.0, gzip;q=0`) undefined; an explicit refusal anywhere wins.
         found: float | None = None
         for opt, q, _okey in self._options:
             if opt.lower() == folded:
@@ -864,14 +772,10 @@ class AcceptHeader:
     def accepts_identity(self) -> bool:
         """Whether the `identity` (no-encoding) coding is acceptable per RFC 9110.
 
-        RFC 9110 Sec. 12.5.3: `identity` is acceptable by default unless it is
-        explicitly excluded. It is UNacceptable only when an explicit `identity`
-        entry carries `q=0`, OR when `identity` is not explicitly listed and a
-        `*` wildcard entry carries `q=0` (the wildcard rejects every coding not
-        named, including identity). A missing header, or any header that does
-        not exclude identity, leaves identity acceptable. Token comparison is
-        case-insensitive (Sec. 8.4.1). Used by precompressed static selection to
-        decide between serving the uncompressed asset and returning 406.
+        RFC 9110 Sec. 12.5.3: `identity` is acceptable by default. It is
+        UNacceptable only when an explicit `identity` entry carries `q=0`, or
+        when it is unlisted and a `*` entry carries `q=0`. Token comparison is
+        case-insensitive (Sec. 8.4.1).
         """
         for opt, q, _okey in self._options:
             if opt.lower() == "identity":
@@ -889,13 +793,11 @@ class AcceptHeader:
     def best_match(self, options: list[str], default: str | None = None) -> str | None:
         """Return the option the client accepts with the highest q-value.
 
-        Among candidates the client accepts (q>0), the one whose best
-        matching client range has the highest `(q, specificity)` wins, so a
-        parameterized exact match beats a bare wildcard (RFC 9110
-        Sec. 12.5.1). Ties on both go to the order in `options` (caller's
-        preference). Returns `default` when no option has q>0. When the
-        header is empty (no preference expressed), returns `options[0]` -
-        a missing Accept means "accept anything".
+        Among candidates the client accepts (q>0), the one whose best matching
+        range has the highest `(q, specificity)` wins, so a parameterized exact
+        match beats a bare wildcard (RFC 9110 Sec. 12.5.1); ties go to the order
+        in `options`. Returns `default` when no option has q>0, and `options[0]`
+        for an empty header, since a missing Accept means "accept anything".
         """
         if not self._options:
             return options[0] if options else default
@@ -911,16 +813,13 @@ class AcceptHeader:
     def _match_rank(self, value: str) -> tuple[float, int]:
         """Return `(quality, specificity)` for `value` against this header.
 
-        `specificity` is the score of the most specific matching client
-        range (0 for non-MIME headers), used by `best_match` to prefer a
+        `specificity` is the score of the most specific matching client range
+        (0 for non-MIME headers), which `best_match` uses to prefer a
         parameterized exact match over a wildcard at equal quality.
 
-        Non-MIME headers rank through `quality_explicit`, not `quality`: RFC 9110
-        Sec. 12.5.3 makes an explicit `q=0` a refusal that a wildcard must not
-        override, and `quality` deliberately reports the max across an exact and
-        a `*` match. Ranking through it made `best_match` recommend a coding the
-        client had explicitly rejected - `gzip;q=0, *` selected `gzip`. The MIME
-        path already resolves this correctly, by most-specific-range.
+        Non-MIME headers rank through `quality_explicit`, not `quality`, because
+        RFC 9110 Sec. 12.5.3 makes an explicit `q=0` a refusal a wildcard must
+        not override. The MIME path resolves this by most-specific-range.
         """
         if not self._mime:
             return (self.quality_explicit(value), 0)
@@ -947,10 +846,9 @@ class AcceptHeader:
     def _mime_matches(okey: _MimeKey, vkey: _MimeKey) -> bool:
         """Whether a client media range `okey` matches a server media type `vkey`.
 
-        Type and subtype must match or be covered by the range's `*`
-        wildcard, and every media-type parameter named in the range must be
-        present with an equal value in the server type (RFC 9110 Sec. 12.5.1).
-        An invalid range (specificity -1) never matches.
+        Type and subtype must match or be covered by the range's `*` wildcard,
+        and every parameter the range names must be present with an equal value
+        in the server type (RFC 9110 Sec. 12.5.1). An invalid range never matches.
         """
         otype, osub, oparams, ospec = okey
         if ospec < 0:
@@ -960,8 +858,7 @@ class AcceptHeader:
             return False
         if osub != "*" and osub != vsub:
             return False
-        # Parameters only constrain a fully-specified range; `<=` checks the
-        # range's params are a subset of the server type's params.
+        # `<=`: the range's params must be a subset of the server type's.
         return oparams <= vparams
 
     def __contains__(self, value: str) -> bool:
@@ -981,12 +878,12 @@ class Authorization:
     - `Basic` (RFC 7617): `.type == "basic"`, `.username` + `.password` set.
     - `Bearer` (RFC 6750): `.type == "bearer"`, `.token` set.
 
-    Other schemes (Digest per RFC 7616, Negotiate, custom) populate
-    `.params` with the comma-separated key="value" parameters parsed
-    from the credentials portion; `.type` is the scheme name lower-cased.
+    Other schemes (Digest per RFC 7616, Negotiate, custom) populate `.params`
+    with the comma-separated key="value" parameters parsed from the credentials
+    portion; `.type` is the scheme name lower-cased.
 
-    Construction is via `Authorization.from_header(value)` which returns
-    `None` for empty / malformed inputs rather than raising.
+    `Authorization.from_header(value)` returns `None` for empty or malformed
+    input rather than raising.
     """
 
     __slots__ = ("type", "scheme", "raw", "username", "password", "token", "params")
@@ -1021,10 +918,8 @@ class Authorization:
         scheme_lower = scheme.lower()
 
         if scheme_lower == "basic":
-            # Shared with `HTTPBasic` so the two cannot disagree about what a
-            # valid payload is. `None` covers both malformed shapes - undecodable
-            # base64 and a colon-less value (RFC 7617 Sec. 2 makes the colon
-            # mandatory) - and yields no credentials either way.
+            # Shared with `HTTPBasic`, so the two cannot disagree. `None` covers
+            # undecodable base64 and a colon-less value (RFC 7617 Sec. 2).
             decoded_pair = _decode_basic_credentials(credentials.strip())
             if decoded_pair is None:
                 return cls(type="basic", raw=header_value)
@@ -1034,8 +929,7 @@ class Authorization:
         if scheme_lower == "bearer":
             return cls(type="bearer", raw=header_value, token=credentials.strip())
 
-        # Digest / Negotiate / custom: parse comma-separated key=value pairs
-        # if present; otherwise just keep the raw credentials in `token`.
+        # Digest / Negotiate / custom: key=value pairs, else a raw `token`.
         if "=" in credentials:
             _, params = parse_header_params(credentials, delimiter=",", unescape=True)
             return cls(type=scheme_lower, raw=header_value, params=params)
@@ -1054,8 +948,8 @@ class Cookies(_GetListMixin, MultiDict[str]):
     """Cookie collection parsed from the `Cookie` header.
 
     Built on `multidict.MultiDict`. Parsing delegates to `iter_cookies`
-    (RFC 6265 Sec. 5.4) so values are percent-decoded. Duplicate names
-    collapse to the first occurrence per the spec.
+    (RFC 6265 Sec. 5.4), which percent-decodes values and collapses a duplicate
+    name to its first occurrence.
     """
 
     __slots__ = ()
@@ -1064,9 +958,8 @@ class Cookies(_GetListMixin, MultiDict[str]):
     def from_cookie_header(cls, header_value: str) -> Cookies:
         """Parse a `Cookie:` header value into a `Cookies` mapping.
 
-        Delegates to `iter_cookies` for RFC 6265-compliant parsing
-        (percent-decoding, quote-stripping). Duplicate names collapse
-        to the first occurrence per RFC 6265 Sec. 5.4.
+        Delegates to `iter_cookies`, which percent-decodes and strips quotes;
+        a duplicate name collapses to its first occurrence (RFC 6265 Sec. 5.4).
         """
         return cls(iter_cookies(header_value))
 
@@ -1085,15 +978,14 @@ class QueryParams(_GetListMixin, MultiDict[str]):
     def from_query_string(cls, query_string: str) -> QueryParams:
         """Parse ``a=1&b=2&a=3`` into a multi-value mapping.
 
-        Keeps blank values (``a=``) and decodes percent-escapes. The
-        ordering of repeated keys reflects the order in the URL.
+        Keeps blank values (``a=``) and decodes percent-escapes; repeated keys
+        stay in the order the URL carried them.
         """
         if not query_string:
             return cls()
         try:
             items = _parse_qs_pairs(query_string, _MAX_QUERY_FIELDS)
         except ValueError as exc:
-            # parse_qsl raises when the field count exceeds the cap;
-            # surface as 414 so the framework returns a clean response.
+            # Surfaced as 414 rather than the `ValueError` from the cap.
             raise RequestURITooLong(f"Query string exceeds {_MAX_QUERY_FIELDS} fields") from exc
         return cls(items)

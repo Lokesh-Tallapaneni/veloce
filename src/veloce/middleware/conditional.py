@@ -39,9 +39,8 @@ class ConditionalGetMiddleware(Middleware):
         if request.method not in ("GET", "HEAD"):
             return response
 
-        # Field names are case-insensitive (RFC 9110 Sec. 5.1), so probe the
-        # plain-dict headers case-insensitively; the `Cache-Control` scan is
-        # evaluated last so the cheaper guards short-circuit before it.
+        # Field names are case-insensitive (RFC 9110 Sec. 5.1); the `Cache-Control`
+        # scan is last so the cheaper guards short-circuit before it.
         existing_etag = header_present(response.headers, HEADER_ETAG)
         if (
             self.auto_etag
@@ -53,9 +52,8 @@ class ConditionalGetMiddleware(Middleware):
         ):
             response.add_etag(weak=True)
 
-        # Streamed responses downgrade too: `make_conditional()` clears `body`
-        # and `_stream` together, so a 304 never ships the original chunks
-        # alongside a bodiless status (RFC 9110 Sec. 15.4.5).
+        # Streamed responses downgrade too: `make_conditional()` clears `body` and
+        # `_stream` together, so a 304 ships no chunks (RFC 9110 Sec. 15.4.5).
         if header_present(response.headers, HEADER_ETAG) or header_present(
             response.headers, HEADER_LAST_MODIFIED
         ):

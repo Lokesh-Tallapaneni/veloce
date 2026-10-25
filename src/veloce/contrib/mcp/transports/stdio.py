@@ -6,25 +6,18 @@ server as a subprocess expects. The transport never blocks the event loop:
 stdin reads run in a thread executor (stdlib `sys.stdin` is blocking), and
 the dispatch + write happen on the loop.
 
-The duplex pipe also makes this the bidirectional transport: it satisfies
-`BidirectionalTransport` via `request`, which sends a server->client request
-(`sampling` / `elicitation` / `roots`) and awaits the client's correlated
-reply. The serve loop reads that reply and settles the waiting future, so a
-handler never reads the stream itself and a task-augmented call may sample,
-elicit and list roots like any other.
+The duplex pipe also makes this the bidirectional transport: `request` sends a
+server->client request (`sampling` / `elicitation` / `roots`) and awaits the
+reply the serve loop settles, so a handler never reads the stream itself.
 
 **The loop is the sole reader and dispatches off itself**, so it keeps consuming
 input while handlers run: `notifications/cancelled` reaches a call that is still
 running, and `ping` is answered without queueing behind a slow tool. Ordinary
-requests are chained so they still execute in the order they arrived - a client
-that sends `logging/setLevel` before a call expects the level to be in force -
-while those two control methods deliberately bypass the chain, since their whole
-purpose is to reach a request that is already running.
+requests are chained so they still execute in the order they arrived, while
+those two control methods bypass the chain by design.
 
-`StdioTransport` is decoupled from the real streams - it takes an async
-`read_line` source and an async `write_line` sink - so a test can drive a
-full request/response round-trip in-process without touching real file
-descriptors.
+`StdioTransport` takes an async `read_line` source and an async `write_line`
+sink, so a test can drive a round-trip in-process without real descriptors.
 """
 
 from __future__ import annotations
@@ -51,14 +44,11 @@ if TYPE_CHECKING:  # pragma: no cover
 
 _logger = logging.getLogger(__name__)
 
-# Prefix for server-issued request ids so a server->client request never collides
-# with a client-issued id (the client owns its own id space; the server owns this).
+# So a server-issued request id never collides with a client-issued one.
 _SERVER_ID_PREFIX = "srv-"
 
-# Answered off the ordering chain. Everything else keeps strict request order -
-# a client that sends `logging/setLevel` then a call expects the level to be in
-# force - but these two exist to reach a request that is ALREADY running, so
-# queueing them behind it defeats them entirely.
+# Answered off the ordering chain: these two exist to reach a request that is
+# ALREADY running, so queueing them behind it defeats them.
 _CONTROL_METHODS = frozenset({"ping", "notifications/cancelled"})
 
 
@@ -94,20 +84,14 @@ class StdioTransport:
         self.server = server
         self._read_line = read_line
         self._write_line = write_line
-        # Server->client requests awaiting a reply, keyed by the server-issued id.
-        # Empty until a tool issues `sample` / `elicit` / `roots`, so a server that
-        # never initiates a request holds nothing.
+        # Server->client requests awaiting a reply, keyed by server-issued id.
         self._pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._server_ids = count(1)
-        # The live connection's session, exposed so `request` reads the client's
-        # advertised capabilities; bound for the serve loop's lifetime.
+        # Bound for the serve loop's lifetime, so `request` reads its capabilities.
         self._session: MCPSession | None = None
-        # Dispatches run concurrently, so two could otherwise interleave halves
-        # of a line. The framing is one JSON message per line, so a torn write is
-        # an unparseable message for the client.
+        # One JSON message per line, so a torn write is unparseable.
         self._write_lock = asyncio.Lock()
-        # Tail of the ordered dispatch chain: each ordinary request awaits the
-        # one ahead of it, so order survives without the read loop blocking.
+        # Each request awaits the one ahead, so order survives a non-blocking loop.
         self._serial_tail: asyncio.Task[None] | None = None
 
     async def serve(self) -> None:
@@ -120,47 +104,30 @@ class StdioTransport:
 
         Framing is newline-delimited per the MCP stdio transport spec
         ("messages are delimited by newlines, and MUST NOT contain embedded
-        newlines"). This is deliberate and correct: the MCP stdio transport
-        does NOT use LSP-style `Content-Length:` header framing - that belongs
-        to the Language Server Protocol, not MCP. One JSON line in, one JSON
-        line out. Do not "fix" this into header framing.
+        newlines"). MCP does NOT use LSP-style `Content-Length:` header framing;
+        do not "fix" this into it.
         """
-        # Wire the outbound one-way channel so a handler's progress / log
-        # notifications reach the client, and the server->client request issuer so
-        # a handler's `sample` / `elicit` / `roots` reaches it. The loop is serial,
-        # so a direct write never races the loop's response write.
+        # The outbound channel for a handler's notifications and requests.
         self.server.set_notifier(self.send)
-        # Names the transport for `MCPContext.transport`; set once for the
-        # serve task, whose context every dispatched call inherits.
+        # Set once for the serve task, whose context every call inherits.
         _transport_var.set("stdio")
         self.server.set_requester(self.request)
-        # One session for the connection's lifetime: it records the client's
-        # advertised capabilities from `initialize` and lets the server enforce
-        # that no other request precedes initialization.
+        # One per connection, so nothing may precede `initialize`.
         session = MCPSession()
         self._session = session
-        # Register this connection so an application-signalled resource change can
-        # be delivered to it (a no-op when resource subscriptions are disabled);
-        # unregistered on EOF so a closed connection receives nothing further.
+        # So an application-signalled resource change reaches this connection.
         token = self.server.register_connection(session, self.send)
-        # Requests are dispatched as tasks so this loop stays the SOLE reader and
-        # keeps consuming input while a handler runs. Awaiting each dispatch made
-        # `notifications/cancelled` unreachable - it could only be read once the
-        # request it cancels had already finished - and queued `ping` behind a
-        # slow tool.
+        # Dispatched as tasks so this loop stays the SOLE reader and keeps
+        # consuming input while a handler runs.
         inflight: set[asyncio.Task[None]] = set()
         try:
             while True:
                 line = await self._read_line()
                 if line is None:
-                    # The client closed its write side. Nothing more can be
-                    # read, so a handler parked on a server->client reply would
-                    # wait for a message that can never arrive - fail those
-                    # first, or the drain below deadlocks on it.
+                    # A handler parked on a reply must fail first, or the
+                    # drain below deadlocks on it.
                     self._fail_pending()
-                    # Then let the dispatches already running finish and write
-                    # their replies rather than dropping answers to requests the
-                    # client did send.
+                    # Then let running dispatches finish and write their replies.
                     if inflight:
                         await asyncio.gather(*inflight, return_exceptions=True)
                     return
@@ -170,9 +137,7 @@ class StdioTransport:
                     continue
                 if message is None:
                     continue
-                # A reply to a server->client request settles the waiting future
-                # rather than entering dispatch. Synchronous and cheap, so it is
-                # never worth a task.
+                # Synchronous and cheap, so never worth a task.
                 if "method" not in message:
                     self._resolve_reply(message)
                     continue
@@ -187,18 +152,12 @@ class StdioTransport:
                 inflight.add(task)
                 task.add_done_callback(inflight.discard)
         finally:
-            # Only reached with work outstanding when the serve loop itself was
-            # cancelled; a clean EOF has already drained above.
+            # Outstanding work here means `serve` was cancelled; EOF has drained.
             for task in inflight:
                 task.cancel()
             self.server.unregister_connection(token)
-            # Reclaim what the connection owned, the same way the HTTP session
-            # store does on idle eviction. Unregistering alone drops the
-            # notification sink and the listen streams but leaves the session's
-            # tasks registered, and `TaskRegistry.evict_expired` deliberately
-            # never reaps a task that has not settled - so a never-settling task
-            # created here outlived the connection, together with its running
-            # asyncio runner, for the lifetime of the process.
+            # Unregistering leaves the session's tasks registered, and
+            # `evict_expired` never reaps an unsettled one.
             self.server.evict_session(session)
             self._session = None
 
@@ -209,9 +168,8 @@ class StdioTransport:
     def _fail_pending(self) -> None:
         """Settle every waiting server->client request as failed.
 
-        Called at EOF: the loop is the only reader, so once input is closed no
-        correlated reply can arrive and a handler awaiting one would hang for
-        the process lifetime.
+        Called at EOF: the loop is the only reader, so no correlated reply can
+        arrive and a handler awaiting one would hang for the process lifetime.
         """
         for future in list(self._pending.values()):
             if not future.done():
@@ -222,9 +180,7 @@ class StdioTransport:
         """Write one JSON line, serialised against every other writer.
 
         `default=` is the same fallback the HTTP path uses, so one handler
-        answering both doors produces the same JSON either way. Without it a
-        `Decimal`, a `set`, a `Path` or a registered encoder - all of which
-        `ctx.result_meta` puts straight into the envelope - raised here instead.
+        answering both doors produces the same JSON either way.
         """
         async with self._write_lock:
             await self._write_line(encode_envelope(payload))
@@ -237,10 +193,8 @@ class StdioTransport:
         try:
             await self._emit(response)
         except TypeError:
-            # A value no encoder can represent must not cost the client its
-            # reply. This runs in a task nothing awaits, so the exception would
-            # otherwise be the whole of the diagnostic: no bytes written, no
-            # error, and a client waiting for the lifetime of the process.
+            # In a task nothing awaits, so an unencodable value would otherwise
+            # write no bytes and leave the client waiting.
             _logger.exception("MCP stdio reply could not be encoded")
             await self._emit(internal_error(message.get("id"), "Response could not be serialised"))
 
@@ -252,31 +206,19 @@ class StdioTransport:
     ) -> None:
         """Dispatch after `previous`, preserving the order requests arrived in.
 
-        The read loop hands each request to a task so it can carry on reading,
-        which is what lets a cancellation reach a running call. Left unordered
-        that would also let a call overtake the `logging/setLevel` or
-        `initialize` sent before it. A failure in the predecessor is its own
-        business and must not stop this one.
+        The read loop hands each request to a task so a cancellation can reach a
+        running call; left unordered that would also let a call overtake the
+        `logging/setLevel` or `initialize` sent before it. A failure in the
+        predecessor must not stop this one.
         """
         if previous is not None and not previous.done():
-            # `Exception`, not `BaseException`: the intent is to ignore the
-            # *predecessor's* failure, and `asyncio.CancelledError` is
-            # `BaseException`-derived, so the wider catch also absorbed a cancel
-            # delivered to *this* task while parked on the shield. `serve`
-            # cancels every in-flight task as it unwinds and then evicts the
-            # session, so an absorbed cancel dispatched afterwards against a
-            # reclaimed session with nowhere to send its notifications. A
-            # predecessor that was itself cancelled still raises
-            # `CancelledError` here, and that one is caught explicitly - it is a
-            # failed predecessor, not a cancel of us.
+            # `Exception`, not `BaseException`: a wider catch would absorb a
+            # cancel of *this* task and dispatch against a reclaimed session.
             try:
                 await asyncio.shield(previous)
             except asyncio.CancelledError:
-                # Which task was cancelled, read off the shield: a cancelled
-                # predecessor is `cancelled()`, while a cancel of *this* task
-                # leaves the shielded predecessor running. `Task.cancelling()`
-                # would say the same thing but only from 3.11, and this supports
-                # 3.10.
+                # A cancel of *this* task leaves the predecessor running.
+                # `Task.cancelling()` would say the same, but only from 3.11.
                 if not previous.cancelled():
                     raise
             except Exception:
@@ -290,22 +232,15 @@ class StdioTransport:
         when the correlated reply arrives. Returns the reply's `result`; an error
         reply raises `MCPRequestError`.
 
-        This does not read the stream itself: the serve loop is the sole
-        reader. Reading here would make the loop and the calling handler two
-        readers of one blocking stream, which cannot both be live - and both
-        are live during a task-augmented call. Because there is only one
-        reader, a task-augmented tool may sample, elicit and list roots like
-        any other.
+        This does not read the stream itself: the serve loop is the sole reader.
+        Reading here would make it and the calling handler two readers of one
+        blocking stream, which cannot both be live.
         """
         request_id = f"{_SERVER_ID_PREFIX}{next(self._server_ids)}"
         future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         self._pending[request_id] = future
-        # The emit is inside the `finally`'s reach: `encode_envelope` raises
-        # `TypeError` for a value no encoder can represent, and `ctx.elicit()` /
-        # `ctx.sample()` put author-supplied `params` straight into that
-        # envelope. Registering before the emit and opening the `try` after left
-        # one entry per failed issue for the process lifetime, which `_fail_pending`
-        # at EOF then settled for nobody.
+        # Inside the `finally`'s reach, because `encode_envelope` raises on the
+        # author-supplied `params` and the entry would otherwise leak.
         try:
             await self._emit(
                 {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
@@ -330,10 +265,7 @@ class StdioTransport:
         except orjson.JSONDecodeError:
             return None, parse_error()
         if not isinstance(message, dict):
-            # It parsed, so the failure is the shape, not the JSON. JSON-RPC keeps
-            # these apart: -32700 says the text could not be read, -32600 says what
-            # was read is not a Request object. A batch array lands here too, since
-            # the revisions this server speaks do not carry batches.
+            # JSON-RPC: -32700 is unreadable text, -32600 a non-Request object.
             return None, invalid_request_error()
         return message, None
 
@@ -362,8 +294,7 @@ _STDIN_FD = 0
 _STDOUT_FD = 1
 _STDERR_FD = 2
 
-# Set while a stdio server holds the process wire. Two servers on one process
-# would each divert the other's descriptors, so the second is refused instead.
+# Two servers on one process would each divert the other's descriptors.
 _wire_claimed = False
 
 
@@ -391,21 +322,17 @@ def _isolated_wire() -> Generator[tuple[IO[bytes], IO[bytes]], None, None]:
     """Yield the protocol (reader, writer) with descriptors 0 and 1 pointed away.
 
     While a stdio server is running the process's standard output *is* the
-    protocol pipe, so anything else written there - a `print` left in a handler,
-    a library that logs to stdout, a subprocess a tool spawns - lands in the
-    newline-delimited JSON stream as a line the client cannot parse. The client
-    reports malformed JSON, which points at everything except the write that
-    caused it.
+    protocol pipe, so anything else written there - a stray `print`, a library
+    logging to stdout, a subprocess a tool spawns - reaches the client as a line
+    it cannot parse.
 
-    The isolation has to be at the descriptor level: a child process inherits
-    descriptors rather than Python file objects, so rebinding `sys.stdout` would
-    not cover a tool that shells out. The wire is duplicated onto private
-    descriptors (not inherited, per PEP 446), descriptor 0 is pointed at the null
-    device and descriptor 1 at stderr, and both are restored on the way out. A
-    stray write then shows up as diagnostics on stderr instead of corrupting the
-    protocol, and a child no longer inherits the server's end of either pipe -
-    which on Windows is also what stops it blocking in interpreter startup behind
-    the server's pending read (CPython gh-78961).
+    The isolation has to be at the descriptor level, because a child inherits
+    descriptors rather than Python file objects: the wire is duplicated onto
+    private descriptors (not inherited, per PEP 446), descriptor 0 points at the
+    null device and descriptor 1 at stderr, and both are restored on the way out.
+    A child then no longer inherits the server's end of either pipe, which on
+    Windows is also what stops it blocking in interpreter startup behind the
+    server's pending read (CPython gh-78961).
 
     Every failure path degrades to serving the streams as they are, because a
     half-diverted wire is worse than an unisolated one.
@@ -415,8 +342,7 @@ def _isolated_wire() -> Generator[tuple[IO[bytes], IO[bytes]], None, None]:
         wire_in = os.dup(_STDIN_FD)
         wire_out = os.dup(_STDOUT_FD)
     except OSError:
-        # Nothing to duplicate: an embedded interpreter, or a standard stream
-        # already closed. Serve on the streams as they are rather than not at all.
+        # An embedded interpreter, or a stream already closed.
         yield sys.stdin.buffer, sys.stdout.buffer
         return
 
@@ -426,8 +352,7 @@ def _isolated_wire() -> Generator[tuple[IO[bytes], IO[bytes]], None, None]:
         try:
             null_fd = os.open(os.devnull, os.O_RDWR)
             os.dup2(null_fd, _STDIN_FD)
-            # Stderr is where a stray write belongs; with no stderr to divert to,
-            # the null device at least keeps it off the wire.
+            # With no stderr to divert to, the null device keeps it off the wire.
             os.dup2(_STDERR_FD if _descriptor_is_open(_STDERR_FD) else null_fd, _STDOUT_FD)
             diverted = True
         except OSError:
@@ -442,11 +367,8 @@ def _isolated_wire() -> Generator[tuple[IO[bytes], IO[bytes]], None, None]:
             yield reader, writer
     finally:
         if diverted:
-            # `sys.stdout` buffers, and its buffer is flushed to whatever
-            # descriptor 1 points at when the flush happens - so a `print` left
-            # unflushed by a handler would be written to the wire the moment it
-            # is restored, or at interpreter exit. Drain it while it still
-            # drains to stderr.
+            # Flushed to whatever descriptor 1 points at, so drain it while
+            # that is still stderr.
             with contextlib.suppress(Exception):
                 sys.stdout.flush()
             _restore_wire(wire_in, wire_out)
@@ -459,14 +381,10 @@ def _isolated_wire() -> Generator[tuple[IO[bytes], IO[bytes]], None, None]:
 async def serve_stdio(server: MCPServer) -> None:
     """Serve `server` over the real process stdin / stdout.
 
-    The wire is isolated from the rest of the process for the duration: the
-    protocol is carried on private duplicates of descriptors 0 and 1 while the
-    standard ones point at the null device and at stderr, so a handler that
-    prints, logs to stdout or spawns a child cannot corrupt the JSON-RPC stream.
-
-    Blocking stdin reads are offloaded to the default thread executor so the
-    event loop stays responsive; stdout writes are flushed per line so a
-    client reading the pipe sees each response immediately.
+    The wire is isolated from the rest of the process for the duration, so a
+    handler that prints, logs to stdout or spawns a child cannot corrupt the
+    JSON-RPC stream. Blocking stdin reads are offloaded to the default thread
+    executor; stdout writes are flushed per line.
     """
     global _wire_claimed
     if _wire_claimed:

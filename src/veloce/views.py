@@ -135,9 +135,8 @@ class View:
         callable carries `view_class`, `methods`, and `__name__ = name`
         for router introspection and `url_for` naming.
         """
-        # Path parameters are read off the request rather than accepted as
-        # `**path_params`, which the handler plan skips; forwarding only what the
-        # target declares keeps a view reading `request.path_params` working too.
+        # Read off the request, not accepted as `**path_params` which the handler
+        # plan skips; forwarding only what the target declares serves both shapes.
         accepted = _accepted_params(cls.dispatch_request)
 
         if cls.init_every_request:

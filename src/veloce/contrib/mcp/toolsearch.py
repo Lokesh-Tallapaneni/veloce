@@ -1,15 +1,12 @@
 """Serving a large catalogue through search instead of a listing.
 
-Every entry `tools/list` returns lands in the agent's context window. A server
-with three hundred tools spends most of that window before the agent has done
-anything, and pagination only spreads the same cost over more round trips.
-
+Every entry `tools/list` returns lands in the agent's context window, and
+pagination only spreads the same cost over more round trips. So
 `mount_mcp(tool_search=True)` publishes three tools instead of the catalogue:
 
 - ``search_tools`` ranks the catalogue against a query (BM25 over each tool's
   name, title, description and tags) and returns the best matches.
-- ``describe_tools`` returns the full definitions of the tools named, which is
-  what the agent needs before it can call one.
+- ``describe_tools`` returns the full definitions of the tools named.
 - ``run_tools`` runs a list of calls in one request, so a chain of calls costs
   one round trip and only the results the agent asked to keep.
 
@@ -17,11 +14,10 @@ anything, and pagination only spreads the same cost over more round trips.
 registered tool and its arguments; there is no expression to evaluate and
 nothing is compiled, so no sandbox is involved and none is relied on. A step's
 argument may reference an earlier step's result - ``{"$from": "step1", "path":
-"/items/0/id"}``, an RFC 6901 pointer - which is how a chain passes values along
-without routing each intermediate result through the model. Every call runs
-through the same path `tools/call` serves: declared scopes, call hooks, the
-timeout and the error shaping all apply, and a tool the caller may not invoke is
-no more reachable here than it is directly.
+"/items/0/id"}``, an RFC 6901 pointer. Every call runs through the same path
+`tools/call` serves, so declared scopes, call hooks, the timeout and the error
+shaping all apply and a tool the caller may not invoke is no more reachable
+here than it is directly.
 
 Discovery honours the same visibility the listing does, so a `tool_filter` still
 decides what a caller can find.
@@ -45,9 +41,8 @@ from veloce.contrib.mcp.registry import MCPTool
 if TYPE_CHECKING:  # pragma: no cover
     from collections.abc import Iterable
 
-# BM25's saturation and length-normalisation constants. These are the values the
-# ranking function is usually reported with, and a tool corpus - a few hundred
-# short documents - gives no reason to depart from them.
+# BM25's saturation and length-normalisation constants, at the values the
+# ranking function is usually reported with.
 _K1 = 1.5
 _B = 0.75
 
@@ -56,8 +51,8 @@ _B = 0.75
 _WORD = re.compile(r"[A-Za-z0-9]+")
 _CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 
-# What `run_tools` calls a step the caller did not name, so a later step can
-# still reference it and a result can still be attributed.
+# What `run_tools` names a step the caller did not, so a later step can
+# reference it.
 _STEP_ID_PREFIX = "step"
 
 _SEARCH_DESCRIPTION = (
@@ -93,9 +88,8 @@ def _tokenize(text: str) -> list[str]:
 class _Bm25Index:
     """Okapi BM25 over one short document per tool.
 
-    The index is built once, when the server is constructed: a tool's name,
-    title, description and tags cannot change after registration, so ranking a
-    query is a walk over the query's own terms rather than over the catalogue.
+    Built once at server construction - a tool's text cannot change after
+    registration - so ranking a query walks the query's terms, not the catalogue.
     """
 
     __slots__ = ("_names", "_postings", "_norms", "_documents")
@@ -112,10 +106,8 @@ class _Bm25Index:
                 if postings is None:
                     self._postings[term] = postings = {}
                 postings[index] = postings.get(index, 0) + 1
-        # BM25's length normalisation is fixed once the corpus is - a document's
-        # length and the corpus average cannot change after the registry is
-        # built - so it is computed here rather than per posting visited. Ranking
-        # a query is then arithmetic over the query's own terms.
+        # BM25's length normalisation is fixed once the corpus is, so it is
+        # computed here rather than per posting visited.
         average = (sum(lengths) / len(lengths) if lengths else 0.0) or 1.0
         self._norms = [_K1 * (1 - _B + _B * (length or 1) / average) for length in lengths]
         self._documents = len(self._names)
@@ -179,16 +171,14 @@ class ToolStep(BaseModel):
 
 def _pointer(value: Any, path: str) -> Any:
     """Return the part of `value` an RFC 6901 JSON pointer names."""
-    # RFC 6901 section 3: a pointer is a sequence of zero or more tokens, each
-    # prefixed by "/". The empty pointer is the zero-token one and names the whole
-    # document; "/" is one token - the empty string - and names the member keyed
-    # by "".
+    # RFC 6901 Sec. 3: the empty pointer names the whole document, while "/" is
+    # one token - the empty string - and names the member keyed by "".
     if not path:
         return value
     if not path.startswith("/"):
         raise ValueError(f"a JSON pointer must start with '/': {path!r}")
     for raw in path[1:].split("/"):
-        # RFC 6901 section 4 unescapes "~1" before "~0", so an escaped tilde
+        # RFC 6901 Sec. 4 unescapes "~1" before "~0", so an escaped tilde
         # cannot be read as the start of an escaped slash.
         token = raw.replace("~1", "/").replace("~0", "~")
         if isinstance(value, dict):
@@ -196,11 +186,9 @@ def _pointer(value: Any, path: str) -> Any:
                 raise ValueError(f"{path!r} does not name anything in the referenced result")
             value = value[token]
         elif isinstance(value, list):
-            # RFC 6901 section 4: array-index = %x30 / ( %x31-39 *(%x30-39) ) -
-            # an unsigned base-10 integer with no leading zero. `isdigit` alone
-            # admits non-ASCII digits and `int()` admits a sign, so the ABNF is
-            # checked term by term. "-" names the element after the last, which
-            # never exists, and falls out here with every other non-index.
+            # RFC 6901 Sec. 4: array-index = %x30 / ( %x31-39 *(%x30-39) ), so
+            # the ABNF is checked term by term - `isdigit` alone admits
+            # non-ASCII digits and `int()` admits a sign.
             if not token.isdigit() or not token.isascii() or (token[0] == "0" and token != "0"):
                 raise ValueError(
                     f"{path!r} indexes an array with {token!r}, which is not an array index"
@@ -233,15 +221,12 @@ def _resolve_references(node: Any, results: dict[str, Any]) -> Any:
 def _step_ids(steps: list[ToolStep]) -> list[str]:
     """Name every step, refusing a plan that would give one name to two steps.
 
-    A duplicate is refused before the first step runs rather than after: results
-    are kept by name, so the second write would silently redirect a reference the
-    plan meant for the first, and the response would carry two entries the model
-    cannot tell apart. An unnamed step is named for its position and those names
-    appear in every response, so they are exactly the names a model reuses.
+    Results are kept by name, so a duplicate would silently redirect a reference
+    the plan meant for the first step; it is refused before any step runs.
     """
     named = [step.id or f"{_STEP_ID_PREFIX}{n}" for n, step in enumerate(steps, start=1)]
-    # A plan almost never collides, so the common case pays one set build and one
-    # length compare; the walk that finds which name repeats runs only when one does.
+    # The common case pays one set build and one length compare; the walk that
+    # finds which name repeats runs only when one does.
     if len(set(named)) != len(named):
         seen: set[str] = set()
         for step_id in named:
@@ -258,16 +243,15 @@ def _step_ids(steps: list[ToolStep]) -> list[str]:
 def _referenceable(result: dict[str, Any]) -> Any:
     """Return the part of a tool result a later step can point into.
 
-    A tool that declares an output schema answers with `structuredContent`, which
-    is the value itself. One that does not answers with text, which is JSON
-    whenever the tool returned anything but a string - so it is decoded here
-    rather than leaving a pointer to walk a string.
+    A tool declaring an output schema answers with `structuredContent`, which is
+    the value itself. One that does not answers with text, which is JSON unless
+    the tool returned a string, so it is decoded here.
     """
     if "structuredContent" in result:
         return result["structuredContent"]
     content = result.get("content")
-    # A proxied tool relays its upstream's result object verbatim, so the block
-    # is upstream JSON this server never shaped and is not known to be an object.
+    # A proxied tool relays its upstream's result verbatim, so the block is
+    # upstream JSON this server never shaped.
     if (
         isinstance(content, list)
         and len(content) == 1
@@ -300,10 +284,9 @@ def _document(tool: MCPTool) -> str:
 def _meta_tool(handler: Any, name: str, description: str) -> MCPTool:
     """Build one of the three tools, deriving its schema from the handler.
 
-    Marked `dispatches_tools`: `run_tools` calls other tools through the server,
-    and one of those may take an `MCPContext` and log or report progress through
-    it. None of that shows in these handlers' own signatures, so the plan walk
-    would call them streamless and those messages would be dropped.
+    Marked `dispatches_tools` because a tool `run_tools` calls may take an
+    `MCPContext`, which these handlers' own signatures do not show - without it
+    the plan walk calls them streamless and drops those messages.
     """
     plan = build_plan(handler)
     schemas: dict[str, dict[str, Any]] = {}
@@ -350,11 +333,9 @@ class ToolSearch:
     async def _reachable(self) -> dict[str, MCPTool]:
         """Return the tools this caller may see, by name.
 
-        The same set `tools/list` reports, so a scope, a visibility policy or a
-        name this connection hid narrows discovery exactly as it narrows the
-        listing - search stands in for the listing, so it has to answer alike.
-        The registry's own map is handed back untouched when nothing can narrow
-        it, which is the case `tool_search` exists to serve.
+        The same set `tools/list` reports: search stands in for the listing, so a
+        scope or visibility policy must narrow it alike. The registry's own map
+        is handed back untouched when nothing can narrow it.
         """
         unnarrowed: dict[str, MCPTool] | None = self._server._unnarrowed_tools()
         if unnarrowed is not None:
@@ -397,22 +378,20 @@ class ToolSearch:
             try:
                 arguments = _resolve_references(step.arguments, results)
             except ValueError as exc:
-                # Surfaced verbatim rather than as a handler failure: the model
-                # wrote the reference and the message names what it got wrong.
+                # Surfaced verbatim: the model wrote the reference, and the
+                # message names what it got wrong.
                 raise _InvalidArgumentsError(f"step {step_id!r}: {exc}") from exc
             except RecursionError as exc:
-                # An argument tree deeper than the interpreter's stack: `orjson`
-                # decodes further than this walk can descend, and the model can act
-                # on the depth but not on a message about a Python stack.
+                # `orjson` decodes deeper than this walk can descend, and the
+                # model can act on the depth but not on a Python stack.
                 raise _InvalidArgumentsError(
                     f"step {step_id!r}: its arguments nest too deeply to resolve"
                 ) from exc
             try:
                 result = await self._server._tools_call({"name": step.tool, "arguments": arguments})
             except MCPError as exc:
-                # Reported as this step's failure rather than as the whole call's:
-                # the steps before it have already run, and a plan that hides the
-                # side effects it caused is worse than one that names them.
+                # This step's failure, not the whole call's: the steps before it
+                # have already run, and their side effects must be named.
                 result = _text_result(str(exc), is_error=True)
             results[step_id] = _referenceable(result)
             failed = bool(result.get("isError"))

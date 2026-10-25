@@ -70,14 +70,10 @@ from veloce.http.response import Response
 _logger = logging.getLogger(__name__)
 
 
-# Marks a plan whose compiled-resolver build was attempted and rejected, so
-# resolve_plan does not retry compilation on every request.
+# A rejected compiled-resolver build, so `resolve_plan` does not retry it.
 _NOT_COMPILABLE = object()
 
-# Shared empty sentinels for resolvers that never see app-level overrides; the
-# dispatcher overwrites both slots before any read. `_EMPTY_OVERRIDE_SUBPLANS`
-# is also written, so `_exec_depends` swaps the slot for a fresh
-# `WeakKeyDictionary` on first write rather than mutating the sentinel.
+# Shared sentinels; `_exec_depends` swaps the slot rather than mutating one.
 _EMPTY_OVERRIDES: dict[Callable[..., Any], Callable[..., Any]] = {}
 _EMPTY_OVERRIDE_SUBPLANS: weakref.WeakKeyDictionary[Callable[..., Any], Any] = (
     weakref.WeakKeyDictionary()
@@ -91,8 +87,7 @@ _EMPTY_OVERRIDE_SUBPLANS: weakref.WeakKeyDictionary[Callable[..., Any], Any] = (
 def _type_adapter(target_type: Any) -> TypeAdapter[Any] | None:
     """Build (once) and cache a Pydantic ``TypeAdapter`` for a parameter type.
 
-    ``None`` - the result for an annotation Pydantic cannot adapt - is cached
-    too, so an un-adaptable type is not re-attempted on every request.
+    ``None``, the result for an annotation Pydantic cannot adapt, is cached too.
     """
     try:
         return TypeAdapter(target_type)
@@ -100,10 +95,7 @@ def _type_adapter(target_type: Any) -> TypeAdapter[Any] | None:
         return None
 
 
-# The boolean spellings a request value may take, matching what Pydantic accepts
-# so a bare `bool` parameter and one carried on a model agree about the same
-# query string. Anything else is refused rather than read as False, so
-# `?errors_only=ture` cannot silently mean "no filter".
+# What Pydantic accepts, so `?errors_only=ture` cannot mean "no filter".
 _TRUE_VALUES = frozenset({"1", "on", "t", "true", "y", "yes"})
 _FALSE_VALUES = frozenset({"0", "off", "f", "false", "n", "no"})
 
@@ -121,10 +113,9 @@ def _coerce_bool_value(value: str) -> bool:
 def _coerce_literal(value: Any, target_type: Any, param_name: str, loc: str) -> Any:
     """Match a request value against a `Literal[...]` parameter.
 
-    Request values arrive as strings, so Pydantic's strict literal check
-    rejects an `int` / `bool` literal outright. Candidate coercions are compared
-    against the members by *exact* runtime type, sidestepping Python's loose
-    `1 == True` equivalence.
+    Request values arrive as strings, which Pydantic's strict literal check
+    rejects for an `int` / `bool` literal. Candidates are compared by *exact*
+    runtime type, sidestepping Python's loose `1 == True` equivalence.
     """
     members = get_args(target_type)
     candidates: list[Any] = [value]
@@ -136,8 +127,7 @@ def _coerce_literal(value: Any, target_type: Any, param_name: str, loc: str) -> 
         with contextlib.suppress(ValueError):
             candidates.append(float(value))
     for member in members:
-        # An `Enum` member is matched against its underlying value, so the plain
-        # request value is accepted while the member object is returned.
+        # Matched on the member's value, but the member itself is returned.
         comparand = member.value if isinstance(member, Enum) else member
         for candidate in candidates:
             if type(candidate) is type(comparand) and candidate == comparand:
@@ -162,9 +152,8 @@ def _coerce_via_pydantic(value: Any, target_type: Any, param_name: str, loc: str
     """Validate and coerce a request value through Pydantic.
 
     Handles every annotation the fast scalar branches of `_coerce_value` do not
-    (`datetime`, `UUID`, `Decimal`, constrained generics), so query / path /
-    header / cookie parameters get the same validation a body model does. An
-    annotation Pydantic cannot adapt passes through unchanged.
+    (`datetime`, `UUID`, `Decimal`, constrained generics). An annotation Pydantic
+    cannot adapt passes through unchanged.
     """
     try:
         adapter = _type_adapter(target_type)
@@ -174,9 +163,7 @@ def _coerce_via_pydantic(value: Any, target_type: Any, param_name: str, loc: str
     if adapter is None:
         return value
     try:
-        # A model-typed query param arrives as a serialised JSON document
-        # (`?tag={"name":"x"}`), which `validate_python` would reject with a
-        # `model_type` error.
+        # A model-typed query param arrives as serialised JSON (`?tag={"a":1}`).
         if isinstance(value, str) and _is_model_typed(target_type):
             return adapter.validate_json(value)
         return adapter.validate_python(value)
@@ -232,8 +219,7 @@ def _coerce_value(value: Any, target_type: Any, param_name: str, loc: str) -> An
             ]
         ) from err
 
-    # `Literal[...]` needs string-aware member matching; the rest goes to
-    # Pydantic for full coverage.
+        # `Literal[...]` needs string-aware member matching; the rest Pydantic.
     if get_origin(target_type) is Literal:
         return _coerce_literal(value, target_type, param_name, loc)
     return _coerce_via_pydantic(value, target_type, param_name, loc)
@@ -292,9 +278,8 @@ def _list_marker_checks(
 
     `min_length` / `max_length` bound the item count on a repeated parameter
     (published as `minItems` / `maxItems`), so the per-element check is the same
-    marker with those two cleared. Called once per marker slot at plan build and
-    not memoized: `ParamBase` hashes by identity and a folded `Field` builds a
-    fresh marker per plan, so a marker-keyed cache never hit.
+    marker with those two cleared. Not memoized: `ParamBase` hashes by identity
+    and a folded `Field` builds a fresh marker per plan.
     """
     per_item = (
         marker.ge is not None
@@ -412,18 +397,14 @@ def _validate_body_list(raw: list[Any], slot: Any) -> Any:
     The members arrive already typed by the JSON decode, so the declared type is
     a contract to check rather than a string to parse. Checked through the same
     adapter a bare body model would use, which is Pydantic's lax answer: `"1"`
-    is accepted for an `int`, `1.5` is not. The agent door is deliberately
-    stricter about converting the same arrays.
+    is accepted for an `int`, `1.5` is not.
     """
     adapter = slot.list_adapter
     if adapter is None:
-        # Against the declared container itself: `tuple[int, str]` is
-        # heterogeneous, so a `list[int]` rebuild would refuse its second member.
-        # Memoised because the annotation is fixed at registration.
+        # The declared container itself, `tuple[int, str]` being heterogeneous.
         adapter = slot.list_adapter = _type_adapter(slot.target_type)
     if adapter is None:
-        # An element type Pydantic cannot adapt leaves the members as the decode
-        # produced them.
+        # An unadaptable element type leaves the members as decoded.
         return raw
     try:
         validated: Any = adapter.validate_python(raw)
@@ -435,8 +416,7 @@ def _validate_body_list(raw: list[Any], slot: Any) -> Any:
 # ── Markers ───────────────────────────────────────────────
 
 
-#: Caught by `_validate_marker_body`. Empty when msgspec is absent, which makes
-#: the `except` clause a no-op rather than a NameError.
+#: Empty when msgspec is absent, making the `except` a no-op not a NameError.
 _msgspec_validation_error: tuple[type[BaseException], ...] = (
     (_msgspec.ValidationError,) if _msgspec is not None else ()
 )
@@ -462,11 +442,8 @@ class Depends:
     __slots__ = ("dependency", "use_cache", "offload")
 
     if TYPE_CHECKING:  # pragma: no cover
-        # Type-only. A marker is written as a parameter's DEFAULT
-        # (`db: Database = Depends(get_db)`), which a checker otherwise refuses
-        # as unassignable to the declared type. `Any` here is the honest
-        # description: the resolver replaces the default with a value of that
-        # type before the body runs. Runtime is untouched.
+        # A marker is written as a parameter's DEFAULT, which a checker refuses
+        # as unassignable; the resolver replaces it before the body runs.
         def __new__(cls, *args: Any, **kwargs: Any) -> Any: ...
 
     def __init__(
@@ -528,9 +505,7 @@ class Security(Depends):
             ),
         ] = False,
     ) -> None:
-        # A `str` is iterable, so `scopes="read"` would become
-        # `['r','e','a','d']`, and a dependency that treats any scope as a grant
-        # would then grant on `"r"`. Rejected on the line that made the mistake.
+        # A `str` is iterable, so `scopes="read"` would grant on `"r"`.
         if isinstance(scopes, (str, bytes)):
             _refuse_string_scopes(scopes, "Security(scopes=...)")
         super().__init__(dependency=dependency, use_cache=use_cache, offload=offload)
@@ -540,11 +515,10 @@ class Security(Depends):
 class SecurityScopes:
     """Aggregated OAuth 2.0 scopes for the current Security() chain.
 
-    A handler / sub-dependency that declares a parameter of this type
-    receives the union of all `Security(..., scopes=[...])` calls between
-    the route entry and this point in the dependency graph. Typical use:
-    an authorising dependency checks `security_scopes.scopes` against
-    the scopes the bearer token actually carries and builds a
+    A handler or sub-dependency declaring a parameter of this type receives the
+    union of every `Security(..., scopes=[...])` between the route entry and
+    this point in the graph. An authorising dependency checks
+    `security_scopes.scopes` against what the bearer token carries and builds a
     `WWW-Authenticate: Bearer scope="<...>"` header when denying.
 
     Per RFC 6749 Sec. 3.3 the scope-string serialisation is space-separated.
@@ -585,13 +559,10 @@ def _resolve_scalar_param(slot: Any, request: Request, path_params: dict[str, st
     if name in path_params:
         value = _coerce_value(path_params[name], slot.target_type or str, name, "path")
         return value if marker is None else _validated(marker, value, name, "path")
-    # The alias names the query key; the path keys on the declared name, which is
-    # what the route template stored. `_adopt_field_marker` sets `lookup_name`
-    # for every slot kind that reaches here, so there is nothing to fall back to.
+    # The alias names the query key; the path keys on the declared name.
     lookup = slot.lookup_name
     if lookup in request.query_params:
-        # Reported under the key the client sent, which is the one the schema
-        # published - not the Python parameter name.
+        # Under the key the schema published, not the parameter name.
         value = _coerce_value(
             request.query_params[lookup], slot.target_type or str, lookup, "query"
         )
@@ -678,31 +649,23 @@ class DependencyResolver:
 
     def __init__(self) -> None:
         self._cache: dict[Callable[..., Any], Any] = {}
-        # Overwritten by `Veloce._dispatch_request` with the app-scoped
-        # instances, so the module-level sentinels avoid a throwaway dict +
-        # WeakKeyDictionary allocation per request.
+        # Overwritten by `_dispatch_request`, so the sentinels save two allocations.
         self._overrides: dict[Callable[..., Any], Callable[..., Any]] = _EMPTY_OVERRIDES
         self._override_subplans: weakref.WeakKeyDictionary[Callable[..., Any], Any] = (
             _EMPTY_OVERRIDE_SUBPLANS
         )
-        # Per-request teardown stack of `(kind, generator)`, kind "sync" or
-        # "async", drained in reverse by `run_teardowns()`.
+        # `(kind, generator)` pairs, drained in reverse by `run_teardowns()`.
         self._teardowns: list[tuple[str, Any]] = []
-        # Per-request accumulator of `Security(..., scopes=[...])` scopes, read
-        # by a `SecurityScopes` parameter inside the chain.
+        # Read by a `SecurityScopes` parameter inside the chain.
         self._scope_stack: list[str] = []
-        # The MCP tool-call context, set by the MCP bridge before resolution and
-        # `None` on the HTTP / WebSocket paths. Bound by the slot's declared
-        # TYPE, so an `MCPContext`-typed slot anywhere in the graph receives it.
+        # Bound by the slot's declared TYPE; `None` on HTTP / WebSocket.
         self._mcp_context: Any = None
 
     def reset(self) -> None:
         """Clear the per-request resolver state.
 
         Run at the top of every path that resolves against this instance. The
-        dispatcher does not call it: a resolver is allocated per request, so a
-        single shared one would let one request's reset clobber another's
-        `yield`-teardown stack.
+        dispatcher does not call it, allocating a resolver per request instead.
         """
         self._cache.clear()
         self._teardowns.clear()
@@ -716,13 +679,10 @@ class DependencyResolver:
         route_dep_plans: list[Any] | None = None,
     ) -> dict[str, Any]:
         """Fast path - consume a pre-built `HandlerPlan`."""
-        # `DependencyResolver` is public and a caller may reuse one instance, so
-        # a prior resolve's cache / teardown / scope stack must not leak in.
+        # Public, so a reused instance must not leak a prior resolve's state.
         self.reset()
 
-        # Param-only plans resolve through a straight-line function compiled on
-        # first use and cached on the plan; `_NOT_COMPILABLE` marks one the
-        # compiler rejected, which falls through to the interpreter.
+        # Compiled once and cached on the plan; `_NOT_COMPILABLE` interprets.
         if not route_dep_plans:
             cr = plan.compiled_resolver
             if cr is None:
@@ -731,15 +691,8 @@ class DependencyResolver:
             if cr is not _NOT_COMPILABLE:
                 return cast("Callable[..., Any]", cr)(request, path_params)
 
-            # A no-wave dependency graph compiles to a straight-line `async`
-            # resolver too, including a `Security()` scope chain, whose union per
-            # `SecurityScopes` parameter is fixed by the graph edges and resolved
-            # at compile time rather than on a per-request stack. The compiled
-            # body reads neither the override map nor the MCP context, so it is
-            # used only when both are absent; an override falls through to the
-            # interpreter, which applies them. It is handed `_teardowns` because
-            # a `yield` dependency must register its live generator there for
-            # `run_teardowns` to drain.
+            # A no-wave graph compiles too, but its body reads neither the override
+            # map nor the MCP context, so it is used only when both are absent.
             if not self._overrides and self._mcp_context is None:
                 gcr = plan.compiled_graph_resolver
                 if gcr is None:
@@ -791,19 +744,16 @@ class DependencyResolver:
         Each generator is advanced one step (or thrown into if *exc* is set) so
         the code after its ``yield`` executes. Every teardown runs even when an
         earlier one fails; the failures are logged, then re-raised together as a
-        `BaseExceptionGroup` (PEP 654) on 3.11+ - chained from *exc* when the
-        request itself failed - or as a single chained raise on 3.10.
+        `BaseExceptionGroup` (PEP 654) on 3.11+, or singly on 3.10.
         """
         failures: list[BaseException] = []
-        # Drain in reverse so the most recently set-up dependency tears down
-        # first - matching `contextlib.ExitStack` semantics.
+        # In reverse, matching `contextlib.ExitStack` semantics.
         while self._teardowns:
             kind, gen = self._teardowns.pop()
             try:
                 if kind == "sync":
                     if exc is not None:
-                        # Only the generator-exhausted signal is swallowed; a
-                        # real teardown bug propagates to the outer except.
+                        # Only the exhausted signal; a real bug propagates.
                         with contextlib.suppress(StopIteration):
                             gen.throw(exc)
                     else:
@@ -817,8 +767,7 @@ class DependencyResolver:
                         with contextlib.suppress(StopAsyncIteration):
                             await gen.__anext__()
             except Exception as teardown_exc:
-                # The request exception re-emerging unchanged is not a teardown
-                # failure - the caller is already handling it.
+                # The request exception re-emerging is not a teardown failure.
                 if teardown_exc is exc:
                     continue
                 _logger.exception("teardown raised")
@@ -826,14 +775,12 @@ class DependencyResolver:
 
         if not failures:
             return
-        # The group keeps every individual traceback and chains from the request
-        # error when there was one.
+            # The group keeps every individual traceback.
         if _BaseExceptionGroup is not None:
             raise _BaseExceptionGroup(
                 "exceptions raised during dependency teardown", failures
             ) from exc
-        # 3.10 has no exception groups: re-raise the first failure, the rest
-        # already logged, chained from the request error.
+            # 3.10 has no exception groups; the rest are already logged.
         raise failures[0] from exc
 
     async def resolve(
@@ -861,23 +808,17 @@ class DependencyResolver:
 
         The interpreter behind the codegen fast paths in `resolve_plan`; it runs
         only for the plans those reject - batched dependency waves, Security
-        scopes, yield teardowns, overrides, an MCP context, or body models. Each
-        kind binds through a named helper, so adding a kind is one branch plus
-        one binder.
+        scopes, yield teardowns, overrides, an MCP context, or body models.
         """
         slots = plan.slots
         kwargs: dict[str, Any] = {}
-        # Precomputed at registration: `wave_trigger` maps the earliest batched
-        # slot index to the ordered waves, `wave_members` holds every batched
-        # index. Both empty when there is nothing to batch.
+        # `wave_trigger` maps the earliest batched index to the ordered waves.
         wave_trigger = plan.wave_trigger
         wave_members = plan.wave_members
 
-        # Hoisted so the per-`K_QUERY` check below reads a local rather than an
-        # attribute load each iteration; only the MCP bridge ever sets it.
+        # Hoisted so the per-`K_QUERY` check below reads a local.
         mcp_context = self._mcp_context
-        # `enumerate` measures ~7% faster on a representative slot ladder than
-        # indexing with a manual counter.
+        # `enumerate` measures ~7% faster than a manual counter here.
         for i, slot in enumerate(slots):
             kind = slot.kind
             name = slot.name
@@ -900,22 +841,16 @@ class DependencyResolver:
                 continue
 
             if kind == K_SECURITY_SCOPES:
-                # `SecurityScopes.__init__` already snapshots with `list(...)`,
-                # so the live stack is passed rather than copied twice.
+                # `__init__` snapshots with `list(...)`, so no copy is needed.
                 kwargs[name] = SecurityScopes(self._scope_stack)
                 continue
 
             # ── Dependencies ──────────────────────────────────────
             if kind == K_DEPENDS:
-                # Topological batching (see `compute_dep_waves`): every batched
-                # parallel-safe dep resolves at the earliest batched slot, so
-                # deps at different nesting depths still run concurrently.
-                # Unsafe deps (Security() scope mutators, yield deps) are never
-                # batched and fall through to the inline resolve below in slot
-                # order, preserving teardown and scope semantics.
+                # Topological batching (see `compute_dep_waves`), so deps at different
+                # depths run concurrently; an unsafe one falls through in slot order.
                 if wave_members and i in wave_members:
-                    # Only the earliest batched index carries waves; at a later
-                    # member the result is already in `kwargs`.
+                    # Only the earliest index carries waves.
                     waves = wave_trigger.get(i)
                     if waves is not None:
                         await self._run_dep_waves(waves, slots, request, path_params, kwargs)
@@ -946,9 +881,7 @@ class DependencyResolver:
                 continue
 
             if kind == K_QUERY:
-                # An `MCPContext`-typed parameter lands on a K_QUERY slot, being
-                # neither `Request` nor a model. The type-identity check keeps a
-                # plain `ctx: str` query parameter an ordinary agent input.
+                # An `MCPContext` parameter lands here, being neither `Request` nor a model.
                 if mcp_context is not None and slot.target_type is type(mcp_context):
                     kwargs[name] = mcp_context
                     continue
@@ -992,9 +925,8 @@ class DependencyResolver:
     def _bind_injected_response(request: Request) -> Response:
         """Lazily create and return the per-request injected `Response`.
 
-        One `Response` per request, shared between the handler and any dependency
-        that also declares the parameter. `status_code = 0` is the "not set by
-        the handler" sentinel the dispatcher checks before merging.
+        One per request, shared with any dependency that also declares it.
+        `status_code = 0` is the "not set by the handler" sentinel.
         """
         injected = request._state.get(STATE_INJECTED_RESPONSE)
         if injected is None:
@@ -1021,13 +953,11 @@ class DependencyResolver:
         """Bind a model whose fields come from one request source.
 
         `Annotated[Filters, Query()]` reads every field of `Filters` off the
-        query string rather than looking for a single key named `filters`.
-        Errors are remapped onto `["query", "<field>"]` so a bad `limit` blames
-        `limit`, not the group.
+        query string rather than one key named `filters`. Errors are remapped
+        onto `["query", "<field>"]`, so a bad `limit` blames `limit`.
         """
         mk = slot.marker_kind
-        # Declared up front: the four branches yield four different mappings,
-        # and the only things read off the result are `getlist` and `get`.
+        # Four branches, four mappings; only `getlist` and `get` are read.
         source: FormData | Headers | Cookies | QueryParams
         if mk == MK_FORM:
             source = await request.form()
@@ -1052,8 +982,7 @@ class DependencyResolver:
 
         loc = MARKER_LOC[mk]
         if not raw and (slot.is_optional or slot.marker.has_default):
-            # Nothing supplied for any field: fall back rather than reporting
-            # every field as missing.
+            # Fall back rather than reporting every field as missing.
             return slot.marker.resolve_default() if slot.marker.has_default else None
         try:
             if slot.backend == ModelBackend.MSGSPEC:
@@ -1079,12 +1008,10 @@ class DependencyResolver:
     def _require_json_body(request: Request) -> None:
         """Refuse a body whose `Content-Type` declares it is not JSON.
 
-        Which content types are refused, and why, lives in `json_body_refused`
-        so this door and `await request.json()` cannot answer differently. What
-        this adds is the carve-out for an absent *body*: nothing was there to be
-        sent cross-origin, so an omitted optional body is answered "absent" by
-        the resolvers below rather than refused for a content type it had no
-        body to declare.
+        Which content types are refused lives in `json_body_refused`, so this
+        door and `await request.json()` cannot answer differently. What this adds
+        is the carve-out for an absent *body*: nothing was there to be sent
+        cross-origin, so an omitted optional body is answered "absent" below.
         """
         mimetype = request.mimetype
         if not json_body_refused(mimetype):
@@ -1126,10 +1053,8 @@ class DependencyResolver:
         except ValidationError:
             raise
         except HTTPException:
-            # `Request.on_json_loading_failed` already raised `BadRequest` under
-            # a deliberate policy: a stable message unless `JSON_ERRORS_VERBOSE`
-            # is set, since the decoder's offsets derive from attacker-controlled
-            # input. Swallowing it here would replace that with a generic message.
+            # `on_json_loading_failed` already raised `BadRequest` with a stable
+            # message, the decoder's offsets deriving from attacker-controlled input.
             raise
         except Exception as err:
             raise RequestValidationError(
@@ -1143,12 +1068,10 @@ class DependencyResolver:
             ) from err
 
     async def _resolve_msgspec_body(self, slot: Any, request: Request) -> Any:
-        # Reached only for a msgspec.Struct body slot, which the registration
-        # tagging in `_handler_plan` produces only when msgspec is installed.
+        # Only for a msgspec.Struct slot, tagged only when msgspec is installed.
         self._require_json_body(request)
         raw = await request.body()
-        # An empty or whitespace-only body is "missing", not a decode error -
-        # `msgspec.json.decode(b"")` would raise an opaque truncation error.
+        # "missing", not the opaque truncation error `decode(b"")` would raise.
         if not raw or not raw.strip():
             if slot.is_optional:
                 return None
@@ -1156,14 +1079,11 @@ class DependencyResolver:
                 [{"loc": ["body"], "msg": "Missing request body", "type": "missing"}]
             )
         try:
-            # `strict=True` (the default) enforces types on decode: a `str` for an
-            # `int` field is rejected rather than coerced.
+            # `strict=True` rejects a `str` for an `int` rather than coercing.
             return _msgspec.json.decode(raw, type=slot.model)
         except _msgspec.ValidationError as e:
-            # `ValidationError` SUBCLASSES `DecodeError`, so it must be caught
-            # first. msgspec embeds the field path in the message text, which is
-            # not a stable public API, so it is surfaced whole in `msg` and `loc`
-            # stays `["body"]`.
+            # `ValidationError` SUBCLASSES `DecodeError`, so it is caught first; its
+            # field path is in the message text, so `loc` stays `["body"]`.
             raise RequestValidationError(
                 [{"loc": ["body"], "msg": str(e), "type": "value_error"}]
             ) from e
@@ -1178,9 +1098,8 @@ class DependencyResolver:
 
         `payload: Payload = Body()` declares the same contract as a bare
         `payload: Payload`, down to the `["body", ...]` error location. It cannot
-        reuse `_resolve_body_model`, which reads the whole body itself, because
-        `embed=True` means the value was already taken from under the parameter
-        name.
+        reuse `_resolve_body_model`, which reads the whole body, because
+        `embed=True` takes the value from under the parameter name.
         """
         backend = slot.backend
         try:
@@ -1192,8 +1111,7 @@ class DependencyResolver:
         except PydanticValidationError as e:
             raise _err_body_validation(e) from e
         except _msgspec_validation_error as e:
-            # As in `_resolve_msgspec_body`: the field path is in the message
-            # text, so `loc` stays `["body"]`.
+            # The field path is in the message text, so `loc` stays `["body"]`.
             raise RequestValidationError(
                 [{"loc": ["body"], "msg": str(e), "type": "value_error"}]
             ) from e
@@ -1205,8 +1123,7 @@ class DependencyResolver:
         mk = slot.marker_kind
         lookup = slot.lookup_name
 
-        # List-typed query / header / cookie / form marker - collect every
-        # repeated value, not just the first.
+        # A list-typed marker collects every repeated value, not just the first.
         if mk in (0, 2, 3, 5) and get_origin(slot.target_type) in _SEQUENCE_ORIGINS:
             if mk == 5:  # MK_FORM
                 values = (await request.form()).getlist(lookup)
@@ -1236,21 +1153,14 @@ class DependencyResolver:
         elif mk == 3:  # MK_COOKIE
             raw = request.cookies.get(lookup)
         elif mk == 4:  # MK_BODY
-            # The same content-type policy the bare-model body applies: a JSON
-            # endpoint that parses a `text/plain` body is reachable cross-origin
-            # without a preflight, so the two body forms must not differ.
+            # An endpoint parsing `text/plain` is reachable cross-origin unpreflighted.
             self._require_json_body(request)
             body = await request.json()
-            # `Body(embed=True)` - the value lives under the param name inside
-            # the JSON object rather than being the whole body.
+            # `Body(embed=True)`: under the param name, not the whole body.
             raw = body.get(lookup) if marker.embed and isinstance(body, dict) else body
-            # A JSON array body is the one value `marker.validate` below cannot
-            # check - it bounds a string or a number - so it is checked here
-            # against the same `minItems` / `maxItems` the schema publishes.
+            # `marker.validate` bounds a scalar, so an array is checked here.
             if slot.marker_reads_list and isinstance(raw, list):
-                # The element type first: `ParamBase.validate` dispatches on the
-                # Python type, so a raw `["0"]` would take the string branch and
-                # skip the published `items.minimum`.
+                # The element type first, or a raw `["0"]` skips `items.minimum`.
                 items = _validate_body_list(raw, slot)
                 if slot.list_checks is not None:
                     _validate_list_marker(items, slot.list_checks, slot.name, MARKER_LOC[mk])
@@ -1269,8 +1179,7 @@ class DependencyResolver:
                 return None
             raise _err_missing_marker(loc, slot.name)
 
-        # A model target is validated by the model, not coerced as a scalar -
-        # `_coerce_scalar` would pass a `dict` straight through.
+            # `_coerce_scalar` would pass a `dict` straight through.
         if slot.model is not None:
             return self._validate_marker_body(raw, slot)
 
@@ -1285,18 +1194,14 @@ class DependencyResolver:
 
     async def _exec_depends(self, slot: Any, request: Request, path_params: dict[str, str]) -> Any:
         """Resolve a K_DEPENDS slot with caching and override support."""
-        # One `_Slot` class serves every kind, so the field is declared
-        # optional; a K_DEPENDS slot always carries the callable.
+        # One `_Slot` serves every kind, so the field is declared optional.
         dep_callable = cast("Callable[..., Any]", slot.dep_callable)
         actual = self._overrides.get(dep_callable, dep_callable)
 
-        # The scopes this Security() pushes onto the chain; plain `Depends` has
-        # none, so every scope branch below is skipped.
+        # Plain `Depends` has none, so every scope branch below is skipped.
         new_scopes: list[str] = slot.target_type if isinstance(slot.target_type, list) else []
 
-        # A scope-sensitive Security() dependency keys on the callable plus the
-        # scope union it will see, so the same callable referenced with different
-        # scope sets in one request does not collide in the cache.
+        # Keyed on the callable plus the scope union, so two scope sets cannot collide.
         if slot.scope_sensitive:
             cache_key: Any = (actual, frozenset(self._scope_stack) | frozenset(new_scopes))
         else:
@@ -1311,8 +1216,7 @@ class DependencyResolver:
             is_gen = slot.dep_is_gen
             is_async_gen = slot.dep_is_async_gen
         else:
-            # Override path: subplan + the three callable-kind flags are memoised
-            # on the override callable, shared across requests via the app.
+            # Memoised on the override callable, shared across requests.
             entry = self._override_subplans.get(actual)
             if entry is None:
                 entry = (
@@ -1321,19 +1225,15 @@ class DependencyResolver:
                     inspect.isgeneratorfunction(actual),
                     inspect.isasyncgenfunction(actual),
                 )
-                # A non-weak-referenceable override target skips caching -
-                # re-probing is fine, leaking the entry is not. The sentinel is
-                # swapped for a per-resolver map before the first write, so a
-                # resolver built outside the dispatcher cannot accumulate plans
-                # process-globally.
+                # A non-weak-referenceable target skips caching: re-probing is fine,
+                # leaking is not. The sentinel is swapped for a per-resolver map first.
                 if self._override_subplans is _EMPTY_OVERRIDE_SUBPLANS:
                     self._override_subplans = weakref.WeakKeyDictionary()
                 with contextlib.suppress(TypeError):
                     self._override_subplans[actual] = entry
             sub_plan, is_coro, is_gen, is_async_gen = entry
 
-        # Pushed so a `SecurityScopes` slot inside the sub-plan sees them, and
-        # popped regardless of success or failure.
+            # Pushed for a `SecurityScopes` slot in the sub-plan, popped either way.
         if new_scopes:
             self._scope_stack.extend(new_scopes)
         try:
@@ -1343,8 +1243,7 @@ class DependencyResolver:
                 del self._scope_stack[-len(new_scopes) :]
 
         if is_gen:
-            # The live generator goes onto the teardown stack so
-            # `run_teardowns` advances past the yield.
+            # Onto the teardown stack, so `run_teardowns` advances past the yield.
             gen = actual(**sub_kwargs)
             try:
                 result = next(gen)
@@ -1361,8 +1260,7 @@ class DependencyResolver:
         elif is_coro:
             result = await actual(**sub_kwargs)
         elif slot.dep_offload:
-            # `offload` preserves request-scoped ContextVars, the same pattern
-            # sync route handlers use.
+            # `offload` preserves request-scoped ContextVars.
             result = await offload(actual, **sub_kwargs)
         else:
             result = actual(**sub_kwargs)
