@@ -18,18 +18,25 @@ class OpenAPIMixin(AppHost):
         """Register OpenAPI/Swagger routes if enabled."""
         if self._openapi_setup:
             return
-        self._openapi_setup = True
-        if self._openapi_url:
-            # Deferred: `contrib/` is optional.
-            from veloce.contrib.docs_ui import setup_openapi_routes
+        # Registration writes the route table, and the flag below is what
+        # another event loop reads to decide it has finished - so it is set
+        # last, and under a guard, or that loop dispatches against a table
+        # still being written.
+        with self._openapi_setup_guard:
+            if self._openapi_setup:
+                return
+            if self._openapi_url:
+                # Deferred: `contrib/` is optional.
+                from veloce.contrib.docs_ui import setup_openapi_routes
 
-            # A `None` URL means "do not register that UI" - never defaulted.
-            setup_openapi_routes(
-                self,
-                openapi_url=self._openapi_url,
-                docs_url=self._docs_url,
-                redoc_url=self._redoc_url,
-            )
+                # A `None` URL means "do not register that UI" - never defaulted.
+                setup_openapi_routes(
+                    self,
+                    openapi_url=self._openapi_url,
+                    docs_url=self._docs_url,
+                    redoc_url=self._redoc_url,
+                )
+            self._openapi_setup = True
 
     def openapi(self) -> dict[str, Any]:
         """Return the generated OpenAPI schema dict.

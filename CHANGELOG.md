@@ -6,6 +6,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `before_first_request` no longer fails a concurrent first request served on another event loop. ([#343](https://github.com/Lokesh-Tallapaneni/veloce/pull/343))
+- The docs routes are registered before a second event loop can dispatch against the route table. ([#343](https://github.com/Lokesh-Tallapaneni/veloce/pull/343))
+
 ## [0.21.0] - 2026-10-25
 
 ### Security

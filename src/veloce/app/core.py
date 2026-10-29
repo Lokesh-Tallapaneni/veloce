@@ -9,6 +9,7 @@ import inspect
 import logging
 import os
 import sys
+import threading
 import warnings
 import weakref
 from collections.abc import Callable, Iterable, Sequence
@@ -373,6 +374,9 @@ class Veloce(
             )
         self._openapi_url = openapi_url
         self._openapi_setup = False
+        # Registration is not atomic, and the flag above is what another loop
+        # reads to decide it has finished.
+        self._openapi_setup_guard = threading.Lock()
         self.openapi_schema: dict[str, Any] | None = None
         self.redirect_slashes = redirect_slashes
         # Normalised once: a trailing slash would double the separator in every URL.
@@ -1167,10 +1171,12 @@ class Veloce(
         )
         self._before_request_hooks: list[Callable[..., Any]] = []
         self._before_first_request_hooks: list[Callable[..., Any]] = []
-        # Stops two concurrent first requests both seeing it False. Lazy, so it
-        # binds to a running loop, which construction has none of.
+        # Stops two concurrent first requests both seeing it False. `threading`
+        # rather than `asyncio`: an `asyncio.Lock` binds to the first loop that
+        # blocks on it, and one app can be served by a loop per thread.
         self._first_request_fired = False
-        self._first_request_lock: asyncio.Lock | None = None
+        self._first_request_guard = threading.Lock()
+        self._first_request_running = False
         self._after_request_hooks: list[Callable[..., Any]] = []
         self._teardown_request_hooks: list[Callable[..., Any]] = []
         # Dispatch walks only the bucket matching the route's `endpoint` prefix.
