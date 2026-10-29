@@ -107,6 +107,10 @@ _exc_handler_sig_cache: weakref.WeakKeyDictionary[Callable[..., Any], _HookBindi
 )
 
 # Cache of the `(request_key, response_key)` binding per after-request hook.
+#: How long a request waits between checks while another runs the
+#: `before_first_request` hooks. Once per app, so the cost is one wake-up.
+_FIRST_REQUEST_POLL_SECONDS = 0.001
+
 _after_hook_sig_cache: weakref.WeakKeyDictionary[Callable[..., Any], _HookBinding] = (
     weakref.WeakKeyDictionary()
 )
@@ -297,6 +301,39 @@ class DispatchMixin(AppHost):
             response = await self._run_response_phase(cp.http_post, request, response, False)
         return response
 
+    async def _fire_first_request(self) -> None:
+        """Run the `before_first_request` hooks once per app, on any loop.
+
+        The latch cannot be an `asyncio.Lock`: it binds to the first event loop
+        that blocks on it, so an app behind a loop per thread answered later
+        first requests with `RuntimeError: ... is bound to a different event
+        loop`. A `threading.Lock` elects the one caller that runs the hooks,
+        and the others poll the flag rather than wait on a loop-bound future.
+
+        A hook that raises releases the claim, so the next request retries.
+        """
+        while not self._first_request_fired:
+            with self._first_request_guard:
+                claimed = not self._first_request_running
+                if claimed:
+                    self._first_request_running = True
+            if not claimed:
+                # Polling, not an executor: a sync `before_first_request` hook
+                # may itself be occupying the default executor's threads.
+                await asyncio.sleep(_FIRST_REQUEST_POLL_SECONDS)
+                continue
+            try:
+                for hook in self._before_first_request_hooks:
+                    await self._call_handler(hook, {})
+                # Frozen outside DEBUG/TESTING, so hot-reload keeps working.
+                self._setup_locked = self._setup_lock_enabled and not (
+                    self.debug or _coerce_bool(self.config.get("TESTING"))
+                )
+                self._first_request_fired = True
+            finally:
+                with self._first_request_guard:
+                    self._first_request_running = False
+
     async def handle_request(
         self, request: Request, cp: CompiledPipeline | None = None, match: Any = None
     ) -> Response:
@@ -325,19 +362,9 @@ class DispatchMixin(AppHost):
             except Exception:
                 self.logger.exception("request_started signal receiver raised")
 
-        # One latch for both; the double-check guarantees single-fire under a race.
+        # One latch for both. Kept to a flag read here; the rest is cold.
         if not self._first_request_fired:
-            if self._first_request_lock is None:
-                self._first_request_lock = asyncio.Lock()
-            async with self._first_request_lock:
-                if not self._first_request_fired:
-                    for hook in self._before_first_request_hooks:
-                        await self._call_handler(hook, {})
-                    # Frozen outside DEBUG/TESTING, so hot-reload keeps working.
-                    self._setup_locked = self._setup_lock_enabled and not (
-                        self.debug or _coerce_bool(self.config.get("TESTING"))
-                    )
-                    self._first_request_fired = True
+            await self._fire_first_request()
 
         # On the declared Content-Length and the buffered size; RFC 9110
         # Sec. 15.5.14 makes it a 413.

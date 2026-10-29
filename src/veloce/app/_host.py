@@ -12,6 +12,7 @@ here, add it here.
 
 from __future__ import annotations
 
+import threading
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -108,7 +109,8 @@ class AppHost:
         _extra_lifespans: list[Any]
         _started_subapps: list[LifecycleMixin]
         _first_request_fired: bool
-        _first_request_lock: asyncio.Lock | None
+        _first_request_guard: threading.Lock
+        _first_request_running: bool
         _watchdog: Any
 
         # ── Background tasks ──
@@ -122,6 +124,7 @@ class AppHost:
 
         # ── OpenAPI and the docs routes ──
         _openapi_setup: bool
+        _openapi_setup_guard: threading.Lock
         _openapi_url: str | None
         _docs_url: str | None
         _redoc_url: str | None
