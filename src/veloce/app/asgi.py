@@ -330,7 +330,7 @@ class AsgiMixin(AppHost):
         send_body = body_allowed and method != HTTP_METHOD_HEAD
         # RFC 9110 Sec. 8.6 / 15.4.5: a 304 sends no body but may carry the
         # `Content-Length` a 200 would; 1xx, 204 and 205 have length 0.
-        length = advertised_length(response.status_code, body)
+        length = advertised_length(response.status_code, body, body_allowed)
         if not send_body:
             body = b""
         if not has_cl and length is not None:
@@ -612,7 +612,7 @@ class AsgiMixin(AppHost):
             # A bodiless status MUST NOT carry a payload (RFC 9110 Sec. 15.2 /
             # 15.3.5 / 15.3.6 / 15.4.5), so body and content-type are suppressed.
             body_allowed = status.status_permits_body(response.status_code)
-            length = advertised_length(response.status_code, response.body)
+            length = advertised_length(response.status_code, response.body, body_allowed)
             body_out = response.body if body_allowed else b""
 
             # RFC 9110 Sec. 9.3.2: a HEAD carries no payload body, but

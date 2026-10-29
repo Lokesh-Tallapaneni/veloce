@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `advertised_length` takes the body-permitted flag its callers already computed.
+
 ### Fixed
 
 - `before_first_request` no longer fails a concurrent first request served on another event loop. ([#343](https://github.com/Lokesh-Tallapaneni/veloce/pull/343))

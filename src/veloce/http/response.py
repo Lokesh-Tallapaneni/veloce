@@ -198,8 +198,14 @@ def _read_file_chunk(handle: BinaryIO) -> bytes:
     return handle.read(FILE_STREAM_CHUNK)
 
 
-def advertised_length(status_code: int, body: bytes) -> int | None:
+def advertised_length(
+    status_code: int, body: bytes, permits_body: bool | None = None
+) -> int | None:
     """Return the `Content-Length` to synthesize, or `None` when it is unknown.
+
+    `permits_body` is `status_permits_body(status_code)` when the caller has
+    already computed it - every send path has - so the answer is not worked
+    out twice for one response.
 
     A body-permitting status advertises what it carries. A 304 may advertise the
     length the equivalent 200 would have carried (RFC 9110 Sec. 8.6 / 15.4.5),
@@ -209,7 +215,7 @@ def advertised_length(status_code: int, body: bytes) -> int | None:
     Every other bodiless status (1xx, 204, 205) has no representation, so its
     length is 0.
     """
-    if status_permits_body(status_code):
+    if permits_body if permits_body is not None else status_permits_body(status_code):
         return len(body)
     if status_code == HTTP_304_NOT_MODIFIED:
         return len(body) or None
@@ -419,7 +425,7 @@ class Response:
         # `Content-Length` (RFC 9110 Sec. 8.6), while 1xx/204/205 advertise 0.
         body_allowed = status_permits_body(self.status_code)
         body = self.body if body_allowed else b""
-        length = advertised_length(self.status_code, self.body)
+        length = advertised_length(self.status_code, self.body, body_allowed)
         default_headers = {} if length is None else {HEADER_CONTENT_LENGTH: str(length)}
         if body_allowed:
             default_headers = {HEADER_CONTENT_TYPE: self.content_type, **default_headers}
