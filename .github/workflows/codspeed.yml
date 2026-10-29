@@ -57,7 +57,7 @@ jobs:
       # regression is visible. It cannot see system calls, which is why the
       # thread-crossing benchmarks are excluded here and measured below.
       - name: Run benchmarks (CPU simulation)
-        uses: CodSpeedHQ/action@f1d600dbe5eb1d03277a466f331e5f19f64fc567 # v5
+        uses: CodSpeedHQ/action@78102a468f96d8e0ccb92d0ec49425753fc42062 # v5.6.0
         with:
           mode: simulation
           # `benchmarks/` sits outside `testpaths`, so it is only ever
@@ -73,7 +73,7 @@ jobs:
       # restores the per-instance dict and shows up here as a step change,
       # while both timing instruments stay flat.
       - name: Run benchmarks (memory)
-        uses: CodSpeedHQ/action@f1d600dbe5eb1d03277a466f331e5f19f64fc567 # v5
+        uses: CodSpeedHQ/action@78102a468f96d8e0ccb92d0ec49425753fc42062 # v5.6.0
         with:
           mode: memory
           run: uv run pytest benchmarks/memory --codspeed
@@ -123,7 +123,7 @@ jobs:
         run: uv sync --all-extras --dev
 
       - name: Run benchmarks (wall time)
-        uses: CodSpeedHQ/action@f1d600dbe5eb1d03277a466f331e5f19f64fc567 # v5
+        uses: CodSpeedHQ/action@78102a468f96d8e0ccb92d0ec49425753fc42062 # v5.6.0
         with:
           mode: walltime
           run: uv run pytest benchmarks/walltime --codspeed
