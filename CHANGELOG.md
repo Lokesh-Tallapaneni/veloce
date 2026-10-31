@@ -8,19 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `use_json_backend` selects the JSON backend for every serialisation path at once.
-- `JSONBackend` names the available JSON backends for `use_json_backend`.
-- `ujson` and the standard library `json` are selectable JSON backends.
-- `VELOCE_JSON_BACKEND` sets the same choice from the process environment.
+- `use_json_backend` selects the JSON backend for every serialisation path at once. ([#346](https://github.com/Lokesh-Tallapaneni/veloce/pull/346))
+- `JSONBackend` names the available JSON backends for `use_json_backend`. ([#346](https://github.com/Lokesh-Tallapaneni/veloce/pull/346))
+- `ujson` and the standard library `json` are selectable JSON backends. ([#346](https://github.com/Lokesh-Tallapaneni/veloce/pull/346))
+- `VELOCE_JSON_BACKEND` sets the same choice from the process environment. ([#346](https://github.com/Lokesh-Tallapaneni/veloce/pull/346))
 
 ### Changed
 
-- Veloce serialises with `msgspec` when `orjson` cannot be installed, instead of refusing to import.
+- Veloce serialises with `msgspec` when `orjson` cannot be installed, instead of refusing to import. ([#346](https://github.com/Lokesh-Tallapaneni/veloce/pull/346))
 
 ### Deprecated
 
-- `ORJSONResponse` is deprecated; return `JSONResponse` and select the library with `use_json_backend`.
-- `UJSONResponse` is deprecated; it bypasses the application's `JSONProvider`.
+- `ORJSONResponse` is deprecated; return `JSONResponse` and select the library with `use_json_backend`. ([#346](https://github.com/Lokesh-Tallapaneni/veloce/pull/346))
+- `UJSONResponse` is deprecated; it bypasses the application's `JSONProvider`. ([#346](https://github.com/Lokesh-Tallapaneni/veloce/pull/346))
 
 ### Fixed
 
