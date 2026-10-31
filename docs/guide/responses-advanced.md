@@ -50,20 +50,21 @@ change the fallback for every route that does not declare its own. A route-level
 `response_class=` still overrides it:
 
 ```python title="app.py"
-from veloce import ORJSONResponse, Veloce
+from veloce import HTMLResponse, Veloce
 
-app = Veloce(default_response_class=ORJSONResponse)
+app = Veloce(default_response_class=HTMLResponse)
 
 
 @app.get("/items")
 async def items():
-    return [{"id": 1}, {"id": 2}]
+    return "<p>two items</p>"
 ```
 
-!!! note
-    `ORJSONResponse` is a semantic alias for `JSONResponse` (both encode with
-    orjson). Declaring it communicates the encoder choice; it does not change the
-    output bytes.
+!!! warning "Not for choosing a JSON library"
+    `ORJSONResponse` and `UJSONResponse` are deprecated and importing either
+    warns. A response class does not select a JSON library - that is
+    [`use_json_backend`](encoding.md#choosing-the-json-backend), which covers
+    every JSON path rather than response bodies alone.
 
 ### A custom JSON content type
 

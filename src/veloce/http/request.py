@@ -7,9 +7,9 @@ import logging
 from collections.abc import AsyncIterator, Callable
 from typing import TYPE_CHECKING, Any
 
-import orjson
 from multidict import MultiDict
 
+import veloce._json as _json
 from veloce._constants import (
     HEADER_ACCEPT,
     HEADER_ACCEPT_CHARSET,
@@ -1268,8 +1268,8 @@ class Request:
             return self._json
 
         try:
-            parsed = orjson.loads(body)
-        except orjson.JSONDecodeError as exc:
+            parsed = _json.loads(body)
+        except _json.JSONDecodeError as exc:
             if silent:
                 return None
             return self.on_json_loading_failed(exc)
@@ -1380,8 +1380,8 @@ class Request:
                 self._json = None
             else:
                 try:
-                    self._json = orjson.loads(body)
-                except (orjson.JSONDecodeError, ValueError) as exc:
+                    self._json = _json.loads(body)
+                except (_json.JSONDecodeError, ValueError) as exc:
                     # Share the single masking policy with the sync `get_json`.
                     return self.on_json_loading_failed(exc)
         return self._json

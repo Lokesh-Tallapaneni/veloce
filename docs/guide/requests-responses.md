@@ -396,9 +396,9 @@ async def json(request: Request):
 - `JSONResponse(data, status_code=...)` and `HTMLResponse(content, status_code=...)`
   take their payload as the first positional argument.
 - Other classes: [`RedirectResponse`](../reference/responses.md#veloce.RedirectResponse),
-  [`FileResponse`](../reference/responses.md#veloce.FileResponse),
-  [`ORJSONResponse`](../reference/responses.md#veloce.ORJSONResponse),
-  [`UJSONResponse`](../reference/responses.md#veloce.UJSONResponse).
+  [`FileResponse`](../reference/responses.md#veloce.FileResponse).
+- `ORJSONResponse` and `UJSONResponse` are deprecated; see
+  [choosing the JSON backend](encoding.md#deprecated-response-aliases).
 
 !!! warning "`Response` body is bytes, not text"
     `Response(body=...)` expects `bytes`. Passing a `str` raises when the

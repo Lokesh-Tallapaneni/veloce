@@ -1,7 +1,8 @@
 """Veloce — Ultra-fast async Python web framework.
 
 Veloce is a high-performance asynchronous web framework built on raw asyncio,
-httptools, and orjson. It pairs a small, well-typed API with predictable
+httptools, and a native JSON backend. It pairs a small, well-typed API with
+predictable
 performance under load.
 
 Basic usage::
@@ -22,6 +23,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from veloce import status
+from veloce._json import JSONBackend, use_json_backend
 from veloce._params import Body, Cookie, File, Form, Header, Path, Query
 from veloce._warnings import VeloceDeprecationWarning
 from veloce.app import Plugin, URLMap, URLRule, Veloce
@@ -128,12 +130,10 @@ from veloce.http.response import (
     FileResponse,
     HTMLResponse,
     JSONResponse,
-    ORJSONResponse,
     PlainTextResponse,
     RedirectResponse,
     Response,
     StreamingResponse,
-    UJSONResponse,
 )
 from veloce.instrumentation import RequestMetrics
 from veloce.json_provider import (
@@ -253,6 +253,7 @@ from veloce.websocket import WebSocket, WebSocketState
 # whole MCP subpackage at every `import veloce`, for one re-exported name.
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.context import MCPContext
+    from veloce.http.response import ORJSONResponse, UJSONResponse
     from veloce.liveserver import LiveServer
 
 # `APIRouter` aliases `Router` (`prefix=`, `tags=`, `dependencies=`,
@@ -477,6 +478,8 @@ __all__ = [
     "escape",
     # Encoders
     "jsonable_encoder",
+    "JSONBackend",
+    "use_json_backend",
     "register_encoder",
     "unregister_encoder",
     # JSON provider
@@ -542,6 +545,28 @@ __all__ = [
 _LAZY_EXPORTS: dict[str, str] = {
     "MCPContext": "veloce.contrib.mcp.context",
     "LiveServer": "veloce.liveserver",
+    "ORJSONResponse": "veloce.http.response",
+    "UJSONResponse": "veloce.http.response",
+}
+
+#: Names that warn once when first imported, and what to use instead. The
+#: warning lives here rather than in a constructor so it costs a response
+#: nothing: `__getattr__` caches into `globals()` and runs once per process.
+_DEPRECATED_EXPORTS: dict[str, str] = {
+    "ORJSONResponse": (
+        "`ORJSONResponse` is deprecated and will be removed in 1.0. It aliases "
+        "`JSONResponse` and selects no library - encoding follows the configured "
+        "backend. Return `JSONResponse` and choose the library with "
+        "`use_json_backend(JSONBackend.ORJSON)`, which covers every JSON path "
+        "rather than response bodies alone."
+    ),
+    "UJSONResponse": (
+        "`UJSONResponse` is deprecated and will be removed in 1.0. It encodes "
+        "with `ujson` directly, bypassing the application's `JSONProvider`, so "
+        "an envelope or field convention is dropped on these responses. Return "
+        "`JSONResponse` and choose the library with "
+        "`use_json_backend(JSONBackend.UJSON)`."
+    ),
 }
 
 
@@ -557,6 +582,11 @@ def __getattr__(name: str) -> Any:
     module_name = _LAZY_EXPORTS.get(name)
     if module_name is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    message = _DEPRECATED_EXPORTS.get(name)
+    if message is not None:
+        import warnings
+
+        warnings.warn(message, VeloceDeprecationWarning, stacklevel=2)
     import importlib
 
     value = getattr(importlib.import_module(module_name), name)

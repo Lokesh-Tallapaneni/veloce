@@ -212,6 +212,9 @@ dev = [
     # The `fast` extra's backend, so the default test run exercises the msgspec
     # path; the no-msgspec CI leg installs without it and the guarded tests skip.
     "msgspec>=0.16",
+    # A selectable JSON backend, so the suite covers it. Not a runtime dep:
+    # users who want it install it themselves.
+    "ujson>=5.0",
     # In-memory Redis fake so the contrib.redis store/limiter tests run without a
     # real Redis server.
     "fakeredis>=2.20",
@@ -378,6 +381,13 @@ ignore = [
 "asyncio.AbstractEventLoopPolicy".msg = "deprecated in 3.14; pass a loop factory as app/serving.py does"
 "asyncio.DefaultEventLoopPolicy".msg = "deprecated in 3.14; pass a loop factory as app/serving.py does"
 "asyncio.WindowsSelectorEventLoopPolicy".msg = "deprecated in 3.14; pass a loop factory as app/serving.py does"
+# Every module reaches JSON through `veloce._json`, which owns the one import
+# and so is the single place the backend is chosen. A direct import here would
+# re-pin one module to one library and split that choice silently.
+"orjson".msg = "import veloce._json as _json; it owns the backend choice"
+"msgspec".msg = "import veloce._json as _json; it owns the backend choice"
+"ujson".msg = "import veloce._json as _json; it owns the backend choice"
+"json".msg = "import veloce._json as _json; it owns the backend choice"
 "asyncio.WindowsProactorEventLoopPolicy".msg = "deprecated in 3.14; pass a loop factory as app/serving.py does"
 "uvloop.EventLoopPolicy".msg = "deprecated in 3.14; pass `uvloop.new_event_loop` as the loop factory"
 
@@ -385,12 +395,20 @@ ignore = [
 # The style guide's PEP 257 clause is about `src/veloce/**`. Test functions,
 # benchmark scripts and the demo app carry their explanation in the module
 # docstring and the test name, not in a per-function docstring.
-"tests/**" = ["B", "D"]  # bugbear false positives in test patterns; see above
+# TID251: the JSON ban keeps the *framework* on one backend. A test has to
+# reach a library directly to check the seam against something independent.
+"tests/**" = ["B", "D", "TID251"]  # bugbear false positives in test patterns; see above
 "src/veloce/__init__.py" = ["F401"]  # re-exports
 "benchmarks/**" = ["D"]
 "example_app.py" = ["D"]
 "bench/**" = ["D"]
 "mkdocs_hooks.py" = ["D"]  # a build hook, not shipped API
+
+# The only three modules allowed to name a JSON library directly. Everything
+# else goes through `veloce._json`, which the TID251 bans above enforce.
+"src/veloce/_json.py" = ["TID251"]  # owns the backend choice
+"src/veloce/_model_backend.py" = ["TID251"]  # msgspec for model validation, not encoding
+"src/veloce/http/response.py" = ["TID251"]  # `UJSONResponse` is an explicit opt-out
 
 [tool.pyright]
 include = ["src/veloce"]

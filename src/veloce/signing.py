@@ -6,7 +6,7 @@ tampered with.
 
 Token format: `<base64url(payload)>.<base64url(timestamp)>.<base64url(sig)>`
 
-- The payload is the user's value serialised to JSON (via `orjson`).
+- The payload is the user's value serialised to JSON.
 - The timestamp is a big-endian uint64 of seconds since the epoch.
 - The signature is `HMAC-SHA256(derived_key, payload.timestamp)` where
   `derived_key = HMAC-SHA256(secret, salt)` (nested HMAC, RFC 2104 Sec. 2).
@@ -27,8 +27,7 @@ import struct
 import time
 from typing import Any
 
-import orjson
-
+import veloce._json as _json
 from veloce._internal import _b64decode, _b64encode, _coerce_secret_bytes
 from veloce.exceptions import VeloceError
 
@@ -103,7 +102,7 @@ class Signer:
 
     def dumps(self, data: Any) -> str:
         """Serialise `data` to a signed, timestamped, URL-safe token."""
-        payload_bytes = orjson.dumps(data)
+        payload_bytes = _json.dumps(data)
         ts_bytes = struct.pack(">Q", int(time.time()))
         payload_b64 = _b64encode(payload_bytes)
         ts_b64 = _b64encode(ts_bytes)
@@ -164,6 +163,6 @@ class Signer:
         except (ValueError, OSError) as err:
             raise BadData("malformed payload segment") from err
         try:
-            return orjson.loads(payload_bytes)
-        except orjson.JSONDecodeError as err:
+            return _json.loads(payload_bytes)
+        except _json.JSONDecodeError as err:
             raise BadData("payload is not valid JSON") from err

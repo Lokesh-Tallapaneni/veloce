@@ -42,7 +42,7 @@ except ImportError:  # pragma: no cover - typing_extensions comes with pydantic
 class ModelBackend(IntEnum):
     """Which validation/serialization backend owns a model type."""
 
-    NONE = 0  # not a model - orjson / JSONResponse straight through
+    NONE = 0  # not a model - backend / JSONResponse straight through
     PYDANTIC = 1  # subclass of pydantic.BaseModel
     MSGSPEC = 2  # subclass of msgspec.Struct
     ADAPTED = 3  # stdlib object type Pydantic validates through a TypeAdapter

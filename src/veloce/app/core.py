@@ -704,7 +704,7 @@ class Veloce(
         replaces it explicitly.
 
         The provider serialises every value a handler returns, and an app that
-        configures nothing keeps the direct orjson path. It does not reach the
+        configures nothing keeps the direct backend path. It does not reach the
         framework's own wire formats: cache keys always sort so equal mappings
         hash alike, and signed cookies, JWTs and protocol frames are not the
         application's to restyle.
@@ -1221,7 +1221,7 @@ class Veloce(
 
         self.json_provider_class: Any = DefaultJSONProvider
         self._json_provider = None
-        # `None` is the stock provider, which the direct orjson path matches.
+        # `None` is the stock provider, which the direct backend path matches.
         self._handler_json_dumps: Any = _UNRESOLVED_JSON_DUMPS
         # Built on first `app.aborter` access, so a subclass can replace it first.
         self._aborter = None

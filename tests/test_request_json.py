@@ -146,16 +146,16 @@ def test_get_json_raises_when_body_not_yet_buffered():
 
 
 def _count_loads(monkeypatch) -> dict:
-    """Patch the module's orjson.loads with a call counter; return the counter."""
+    """Patch the JSON seam's `loads` with a call counter; return the counter."""
 
     calls = {"n": 0}
-    real = reqmod.orjson.loads
+    real = reqmod._json.loads
 
     def counting(raw):
         calls["n"] += 1
         return real(raw)
 
-    monkeypatch.setattr(reqmod.orjson, "loads", counting)
+    monkeypatch.setattr(reqmod._json, "loads", counting)
     return calls
 
 

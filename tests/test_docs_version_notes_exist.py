@@ -17,9 +17,12 @@ import pathlib
 import re
 
 #: The admonition the docs use to date a behaviour, e.g.
-#: `!!! note "Changed in version 0.20.0"`. Both `Added` and `Changed` are dated
-#: this way, and the version is the trailing dotted number.
-_NOTE = re.compile(r'!!!\s+note\s+"(?:Added|Changed) in version ([0-9]+(?:\.[0-9]+)*)"')
+#: `!!! note "Changed in version 0.20.0"`. Every verb the docs date this way
+#: is covered, and the version is the trailing dotted number.
+_NOTE = re.compile(
+    r'!!!\s+note\s+"(?:Added|Changed|Deprecated|Removed|Fixed) in version '
+    r'([0-9]+(?:\.[0-9]+)*)"'
+)
 
 #: A released section, e.g. `## [0.18.0] - 2026-08-31`. `## [Unreleased]` is
 #: deliberately not matched: a docs note pointing at it would send a reader to

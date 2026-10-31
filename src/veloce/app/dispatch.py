@@ -17,9 +17,9 @@ import weakref
 from collections.abc import Callable, MutableMapping
 from typing import Any, get_args, get_origin
 
-import orjson
 from pydantic import BaseModel as _PydanticBaseModel
 
+import veloce._json as _json
 import veloce.status as status
 from veloce._constants import (
     HEADER_ACCEPT,
@@ -1261,7 +1261,7 @@ class DispatchMixin(AppHost):
         """
         dumps = self._json_dumps_override()
         # Encoding here rather than in `JSONResponse(data)` resolves the dialect once.
-        body = orjson.dumps(data, default=orjson_default) if dumps is None else dumps(data)
+        body = _json.dumps(data, default=orjson_default) if dumps is None else dumps(data)
         return JSONResponse._from_encoded(body)
 
     def _json_dumps_override(self) -> Any:

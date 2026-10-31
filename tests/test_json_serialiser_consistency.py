@@ -20,6 +20,7 @@ import orjson
 import pytest
 from pydantic import BaseModel
 
+import veloce._json as _json
 from veloce import JSONProvider, Veloce, jsonify
 from veloce._internal import _b64decode
 from veloce.cache import _KEY_OPTIONS
@@ -168,7 +169,7 @@ def test_a_custom_provider_still_returns_a_json_response():
 def test_a_cache_key_sorts_regardless():
     """Equal mappings must hash alike whatever the app renders responses as."""
 
-    assert _KEY_OPTIONS & orjson.OPT_SORT_KEYS
+    assert _KEY_OPTIONS & _json.OPT_SORT_KEYS
 
 
 @pytest.mark.parametrize("sort", [False, True])

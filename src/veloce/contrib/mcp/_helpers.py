@@ -19,8 +19,7 @@ from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
-import orjson
-
+import veloce._json as _json
 from veloce._internal import is_json_mimetype
 from veloce._model_backend import shape_through_model
 from veloce._protocol_constants import (
@@ -507,8 +506,8 @@ def _response_body_value(response: Response) -> Any:
         return ""
     if is_json_mimetype(response.mimetype):
         try:
-            return orjson.loads(body)
-        except orjson.JSONDecodeError:
+            return _json.loads(body)
+        except _json.JSONDecodeError:
             pass
     return body.decode("utf-8", "replace")
 
@@ -532,7 +531,7 @@ def _stringify(result: Any, dumps: Any = None) -> str:
     if dumps is not None:
         encoded: bytes = dumps(result)
         return encoded.decode()
-    return orjson.dumps(result, default=_orjson_default).decode()
+    return _json.dumps(result, default=_orjson_default).decode()
 
 
 def encode_envelope(payload: Any) -> bytes:
@@ -543,11 +542,11 @@ def encode_envelope(payload: Any) -> bytes:
     reaches a tool result's content through `_stringify`; this is the envelope
     around it.
     """
-    return orjson.dumps(payload, default=_orjson_default)
+    return _json.dumps(payload, default=_orjson_default)
 
 
 def _orjson_default(value: Any) -> Any:
-    """Fallback serialiser for values orjson cannot encode natively.
+    """Fallback serialiser for values the JSON backend cannot encode natively.
 
     Delegates to the framework's own encoder, so one handler answering both doors
     produces the same JSON either way, down to a `Secret` being refused. Bytes

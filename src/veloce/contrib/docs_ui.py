@@ -10,8 +10,7 @@ from __future__ import annotations
 import html
 from typing import Any
 
-import orjson
-
+import veloce._json as _json
 from veloce.http.response import HTMLResponse, JSONResponse
 from veloce.middleware.security import csp_nonce
 
@@ -34,9 +33,9 @@ _SCRIPT_ESCAPES = (
 )
 
 
-def _html_safe_orjson(value: Any) -> str:
+def _html_safe_json(value: Any) -> str:
     """Serialise `value` to JSON safe to embed inline in a <script> block."""
-    raw = orjson.dumps(value)
+    raw = _json.dumps(value)
     for needle, repl in _SCRIPT_ESCAPES:
         if needle in raw:
             raw = raw.replace(needle, repl)
@@ -142,19 +141,19 @@ def setup_openapi_routes(
 
     async def swagger_ui(request: Any) -> HTMLResponse:
         # Extra SwaggerUIBundle options render inline as JSON literals; the page
-        # is utf-8, so orjson's raw-UTF-8 output needs no ensure_ascii.
+        # is utf-8, so the backend's raw-UTF-8 output needs no ensure_ascii.
         params = app.swagger_ui_parameters or {}
         if params:
-            # orjson serialises nested values without spaces, so the outer
+            # The backend serialises nested values without spaces, so the outer
             # separator stays spaceless too.
             ui_params = ",".join(
-                f"{_html_safe_orjson(k)}:{_html_safe_orjson(v)}" for k, v in params.items()
+                f"{_html_safe_json(k)}:{_html_safe_json(v)}" for k, v in params.items()
             )
         else:
             ui_params = ""
 
         oauth_init = app.swagger_ui_init_oauth
-        init_oauth = f"ui.initOAuth({_html_safe_orjson(oauth_init)});" if oauth_init else ""
+        init_oauth = f"ui.initOAuth({_html_safe_json(oauth_init)});" if oauth_init else ""
 
         html_page = SWAGGER_HTML.format(
             title=html.escape(app.title),
