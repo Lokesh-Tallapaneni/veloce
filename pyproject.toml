@@ -110,7 +110,7 @@ uvicorn = ["uvicorn[standard]>=0.23"]
 # ASGI app under a server that relies on it for WebSocket framing - e.g. plain
 # `uvicorn` (the `[uvicorn]` extra's `uvicorn[standard]` already bundles it).
 # Install with `pip install veloceframework[ws]`.
-ws = ["websockets>=12"]
+ws = ["websockets>=16.1.1"]
 # gunicorn process supervision for the optional `veloce.workers.VeloceWorker`
 # worker class. POSIX-only — gunicorn does not run on Windows — so this extra
 # is opt-in and never pulled in by a plain install. The `uvicorn` extra
@@ -164,7 +164,7 @@ ciso8601 = ["ciso8601>=2.3"]
 # Everything optional in one shot.
 all = [
     "uvicorn[standard]>=0.23",
-    "websockets>=12",
+    "websockets>=16.1.1",
     "gunicorn>=23.0.0; sys_platform != 'win32'",
     "opentelemetry-api>=1.20",
     "prometheus_client>=0.17",
