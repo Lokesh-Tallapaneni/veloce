@@ -31,8 +31,7 @@ from collections.abc import Awaitable, Callable, Generator
 from itertools import count
 from typing import IO, TYPE_CHECKING, Any
 
-import orjson
-
+import veloce._json as _json
 from veloce.contrib.mcp._helpers import encode_envelope
 from veloce.contrib.mcp.context import _transport_var
 from veloce.contrib.mcp.errors import internal_error, invalid_request_error, parse_error
@@ -261,8 +260,8 @@ class StdioTransport:
         if not stripped:
             return None, None
         try:
-            message = orjson.loads(stripped)
-        except orjson.JSONDecodeError:
+            message = _json.loads(stripped)
+        except _json.JSONDecodeError:
             return None, parse_error()
         if not isinstance(message, dict):
             # JSON-RPC: -32700 is unreadable text, -32600 a non-Request object.

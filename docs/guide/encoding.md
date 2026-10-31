@@ -1,19 +1,107 @@
 ---
-description: Turn models, dataclasses, datetime, UUID, and Decimal into JSON-safe values with jsonable_encoder, extend it with register_encoder, and swap the serialiser through the JSONProvider / DefaultJSONProvider interface and config_orjson_options.
+description: Turn models, dataclasses, datetime, UUID, and Decimal into JSON-safe values with jsonable_encoder, extend it with register_encoder, select the JSON backend with use_json_backend, and add your own encoding behaviour through the JSONProvider / DefaultJSONProvider interface.
 tags: [json, encoding, serialisation, orjson]
 ---
 
 # JSON and encoding
 
-Veloce serialises responses with [orjson](https://github.com/ijl/orjson) and a
-small conversion layer that turns rich Python objects — Pydantic models,
-dataclasses, `datetime`, `UUID`, `Decimal`, `set`, `Path` — into JSON-safe
-values. [`jsonable_encoder`](../reference/openapi.md#veloce.jsonable_encoder) exposes
-that conversion directly, [`register_encoder`](../reference/openapi.md#veloce.register_encoder)
-extends it for your own types, and the
-[`JSONProvider`](../reference/openapi.md#veloce.JSONProvider) interface lets you replace
-the serialiser entirely. orjson ships as a Veloce dependency, so there is
-nothing extra to install.
+Veloce serialises responses through one JSON backend — [orjson](https://github.com/ijl/orjson)
+by default — plus a small conversion layer that turns rich Python objects —
+Pydantic models, dataclasses, `datetime`, `UUID`, `Decimal`, `set`, `Path` —
+into JSON-safe values. [`jsonable_encoder`](../reference/openapi.md#veloce.jsonable_encoder)
+exposes that conversion directly,
+[`register_encoder`](../reference/openapi.md#veloce.register_encoder) extends it
+for your own types, [`use_json_backend`](#choosing-the-json-backend) selects
+the library, and the [`JSONProvider`](../reference/openapi.md#veloce.JSONProvider)
+interface supplies your application's own encoding behaviour on top of it.
+orjson ships as a Veloce dependency, so there is nothing extra to install.
+
+## Choosing the JSON backend
+
+Veloce reaches JSON through one backend, chosen when the package is
+imported. orjson is used whenever it is importable, which is every
+ordinary install. When it is genuinely absent Veloce serialises with
+[msgspec](https://jcristharif.com/msgspec/) rather than refusing to
+import - orjson publishes no wheel for a free-threaded CPython build, and
+a dependency marker cannot express "except on free-threaded". The output
+is byte-for-byte the same compact JSON and the config flags still apply.
+
+Four backends are selectable. orjson and msgspec ship with Veloce (the
+latter via the `fast` extra); `ujson` and the standard library are there
+if you want them, and nothing falls back to either. The standard library
+needs no package at all, so Veloce can run with no JSON dependency.
+
+To pick one deliberately, call `use_json_backend` at startup:
+
+```python
+from veloce import JSONBackend, Veloce, use_json_backend
+
+use_json_backend(JSONBackend.MSGSPEC)
+
+app = Veloce()
+app.config.from_file("config.json")  # parsed with the backend just chosen
+```
+
+One call moves every JSON path together - response bodies, `jsonify`,
+signed cookies and tokens, cache keys, config files and the MCP
+transports. `JSONBackend` has `ORJSON`, `MSGSPEC`, `UJSON` and `STDLIB`; a
+plain string works too (`use_json_backend("ujson")`), and a name that is
+unknown or names a library that is not installed raises with the
+available choices rather than quietly selecting a different one.
+
+All four emit the same bytes for the same payload - compact, raw UTF-8,
+the same sorted and indented forms, `null` for a non-finite float, and
+ISO 8601 for a date. Three differences are real and pinned by the suite:
+orjson alone refuses an integer wider than 64 bits and a non-`str`
+mapping key, and msgspec alone encodes a `set` as an array. A payload one
+refuses may be accepted by another.
+
+Call it before anything is encoded. It is process-wide rather than
+per-app on purpose: one interpreter has one backend, and an `app`-scoped
+setting would let a second app silently redefine the first app's wire
+format. Switching after requests have been served leaves cache entries
+keyed by the previous backend, which then miss rather than fail.
+
+`VELOCE_JSON_BACKEND` sets the same choice from the environment, for
+deployments that would rather not edit code:
+
+```bash
+VELOCE_JSON_BACKEND=msgspec uvicorn app:app
+```
+
+It is read at import, so it must be in the real process environment - a
+shell export, a `Dockerfile` `ENV`, a systemd `Environment=`, a
+Kubernetes `env:`. `Config.from_env_file` cannot set it, because that
+runs long after the import it would have to influence. An explicit
+`use_json_backend` call overrides it.
+
+When the choices disagree, a **response body** takes the first of these
+that applies, and everything else - signed cookies and tokens, cache
+keys, config files, the MCP transports - always takes the backend:
+
+| for a response body | encodes with |
+| --- | --- |
+| a `JSONProvider` you wrote that calls a library itself | that library |
+| anything else, including `DefaultJSONProvider` | the backend |
+
+A response class never selects a library. `ORJSONResponse` aliases
+`JSONResponse` and binds nothing, and `DefaultJSONProvider` sits on the
+backend too, so neither pins one. Both named classes are
+[deprecated](#deprecated-response-aliases).
+
+Writing your own provider is therefore the only way to encode bodies with
+one library while the wire formats use another. That is deliberate - it
+keeps cache keys and signed tokens canonical whatever an application does
+to its own output - but it does mean the two can disagree about the
+divergences above: a payload holding an integer wider than 64 bits would
+be refused in an orjson-provider response while still keying a cache
+entry fine.
+
+On the msgspec path, encoding is a little slower, because the option flags
+and error types are mapped in Python rather than natively. msgspec is also
+more permissive: it encodes a `set` as an array and an integer wider than
+64 bits, where orjson raises. A payload refused on one is accepted on the
+other.
 
 ## How a return value becomes JSON
 
@@ -88,7 +176,7 @@ async def stats() -> dict:
 
 If you would rather a non-finite value fail loudly, give the app a provider that
 refuses one and return through it — see
-[Choosing the serialiser with JSONProvider](#choosing-the-serialiser-with-jsonprovider):
+[Your own encoding with JSONProvider](#your-own-encoding-with-jsonprovider):
 
 ```python
 import json
@@ -296,12 +384,12 @@ unregister_encoder(Color)
     Registration is global to the process and persists across requests. Register
     your encoders once at startup, not per request.
 
-## Choosing the serialiser with JSONProvider
+## Your own encoding with JSONProvider
 
 `app.json` is the active [`JSONProvider`](../reference/openapi.md#veloce.JSONProvider).
 Veloce's default is [`DefaultJSONProvider`](../reference/openapi.md#veloce.DefaultJSONProvider),
-an orjson-backed provider, instantiated lazily on first access. A provider
-exposes three methods:
+which encodes through the configured backend and is instantiated lazily on
+first access. A provider exposes three methods:
 
 | Method | Purpose |
 | --- | --- |
@@ -309,9 +397,19 @@ exposes three methods:
 | `loads(data)` | Parse JSON `bytes`/`str` into Python objects. |
 | `response(value, **kwargs)` | Build a `Response` carrying `value` as JSON. |
 
-Subclass `JSONProvider` to plug in a different serialiser, then point the app at
-it. Set `app.json_provider_class` to a class (instantiated lazily) or assign
-`app.json` an instance directly.
+A provider is for your application's own encoding behaviour - an envelope, a
+field convention, a different date format. It is **not** how you choose a JSON
+library: that is [`use_json_backend`](#choosing-the-json-backend), which covers
+every path rather than response bodies alone.
+
+So subclass `DefaultJSONProvider` and call `super().dumps(...)`. Your logic
+applies and the configured backend still does the encoding, which keeps one
+library in play across the whole application. Set `app.json_provider_class` to
+a class (instantiated lazily) or assign `app.json` an instance directly.
+
+Subclass the bare `JSONProvider` only when you mean to bypass the backend
+entirely - a provider that calls a library itself encodes response bodies with
+that library while signed tokens and cache keys stay on the backend.
 
 !!! note "Which responses the provider reaches"
     Every value a handler returns — a `dict`, a `list`, a model, a msgspec
@@ -320,8 +418,8 @@ it. Set `app.json_provider_class` to a class (instantiated lazily) or assign
     as are `ws.send_json(...)` frames and `ServerSentEvent.json(...)` events, so
     one dialect covers the whole application.
 
-    An app that configures nothing keeps the direct orjson path, so the default
-    pays nothing for the indirection.
+    An app that configures nothing keeps the direct backend path, so the
+    default pays nothing for the indirection.
 
     What the provider does **not** reach is the framework's own wire formats:
     cache keys (which always sort, so equal mappings hash alike), signed
@@ -330,31 +428,29 @@ it. Set `app.json_provider_class` to a class (instantiated lazily) or assign
     application to consult and stays on the direct path.
 
 ```python title="app.py"
-import json
 from typing import Any
 
-from veloce import JSONProvider, TestClient, Veloce
+from veloce import DefaultJSONProvider, TestClient, Veloce
 
 
-class StdlibJSONProvider(JSONProvider):
+class EnvelopeJSONProvider(DefaultJSONProvider):
+    """Wrap every response body, without naming a JSON library."""
+
     def dumps(self, obj: Any, **kwargs: Any) -> bytes:
-        return json.dumps(obj).encode()
-
-    def loads(self, data: bytes | str) -> Any:
-        return json.loads(data)
+        return super().dumps({"data": obj, "ok": True}, **kwargs)
 
 
 app = Veloce()
-app.json_provider_class = StdlibJSONProvider
+app.json_provider_class = EnvelopeJSONProvider
 
 
 @app.get("/ping")
 async def ping():
-    return app.json.response({"pong": True})
+    return {"pong": True}
 
 
 client = TestClient(app)
-assert client.get("/ping").json() == {"pong": True}
+assert client.get("/ping").json() == {"data": {"pong": True}, "ok": True}
 ```
 
 !!! note
@@ -363,10 +459,65 @@ assert client.get("/ping").json() == {"pong": True}
     wraps the result in a `JSONResponse` via `from_bytes`, so your dump options
     survive without a re-encode.
 
+## Deprecated response aliases
+
+`ORJSONResponse` and `UJSONResponse` are deprecated and will be removed in 1.0.
+Importing either warns once.
+
+Veloce had ended up with two mechanisms that were never designed to coexist: a
+`JSONProvider` governing the application's JSON, and response classes named
+after a library. A class that owns its library has to bypass the provider,
+because a provider's `dumps` transforms and encodes in the same call - there is
+no way to apply a different library afterwards. So the two behave differently
+today:
+
+```python
+app.json_provider_class = EnvelopeJSONProvider
+
+# honours the provider - it selects no library
+@app.get("/a", response_class=ORJSONResponse)
+async def a(): return {"v": 1}      # {"data": {"v": 1}, "ok": true}
+
+# bypasses the provider - the envelope is lost
+@app.get("/b", response_class=UJSONResponse)
+async def b(): return {"v": 1}      # {"v": 1}
+```
+
+Replace both with `JSONResponse` and name the library once:
+
+```python
+from veloce import JSONBackend, use_json_backend
+
+use_json_backend(JSONBackend.ORJSON)   # or UJSON
+```
+
+That reaches every JSON path rather than response bodies alone, and leaves one
+rule with no exceptions: the backend encodes, a provider adds your
+application's own logic on top of it.
+
+!!! note "Coming from a `response_class=ORJSONResponse` idiom"
+    Some frameworks make the response class the only place to pick an encoder,
+    because they have no provider. Veloce has one, so the library choice lives
+    at `use_json_backend` and the provider stays free for your own encoding
+    behaviour. There is nothing to put on the route.
+
+To encode a single route differently without a provider, build the body
+yourself:
+
+```python
+import orjson
+
+from veloce import Response
+
+@app.get("/special")
+async def special(request):
+    return Response(body=orjson.dumps(data), content_type="application/json")
+```
+
 ## Tuning the default provider
 
 [`DefaultJSONProvider`](../reference/openapi.md#veloce.DefaultJSONProvider) reads two
-[config](configuration.md) flags into an orjson option bitmask when it is first
+[config](configuration.md) flags into a JSON option bitmask when it is first
 instantiated. [`config_orjson_options`](../reference/openapi.md#veloce.config_orjson_options)
 builds that bitmask and is shared with the `jsonify` helper so the two paths
 cannot drift.

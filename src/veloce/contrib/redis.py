@@ -33,8 +33,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-import orjson
-
+import veloce._json as _json
 from veloce.cache import Cache
 from veloce.ratelimit import RateLimitBackend, RateLimitResult, RateLimitStrategy
 from veloce.sessions import SessionStore
@@ -99,10 +98,10 @@ class RedisSessionStore(SessionStore):
         raw = await self._redis.get(self._key(session_id))
         if raw is None:
             return None
-        return orjson.loads(raw)
+        return _json.loads(raw)
 
     async def write(self, session_id: str, data: dict[str, Any], max_age: int) -> None:
-        await self._redis.set(self._key(session_id), orjson.dumps(data), ex=max_age)
+        await self._redis.set(self._key(session_id), _json.dumps(data), ex=max_age)
 
     async def delete(self, session_id: str) -> None:
         await self._redis.delete(self._key(session_id))
@@ -111,7 +110,7 @@ class RedisSessionStore(SessionStore):
         # `SET ... XX` writes only if the key still exists, so a session a concurrent
         # `delete` removed is never resurrected - atomically, unlike a read-then-write.
         result = await self._redis.set(
-            self._key(session_id), orjson.dumps(data), ex=max_age, xx=True
+            self._key(session_id), _json.dumps(data), ex=max_age, xx=True
         )
         return bool(result)
 
@@ -253,10 +252,10 @@ class RedisRateLimitBackend(RateLimitBackend):
                 try:
                     await pipe.watch(redis_key)
                     raw = await pipe.get(redis_key)
-                    state = orjson.loads(raw) if raw is not None else None
+                    state = _json.loads(raw) if raw is not None else None
                     result, new_state, ttl = strategy.evaluate(state, now)
                     pipe.multi()
-                    pipe.set(redis_key, orjson.dumps(new_state), ex=ttl)
+                    pipe.set(redis_key, _json.dumps(new_state), ex=ttl)
                     await pipe.execute()
                     return result
                 except self._watch_error:
@@ -267,9 +266,9 @@ class RedisRateLimitBackend(RateLimitBackend):
         # the request rather than livelocking; racing writers may exceed the limit.
         _logger.warning("rate-limit WATCH contention on %r; using non-atomic fallback", redis_key)
         raw = await self._redis.get(redis_key)
-        state = orjson.loads(raw) if raw is not None else None
+        state = _json.loads(raw) if raw is not None else None
         result, new_state, ttl = strategy.evaluate(state, now)
-        await self._redis.set(redis_key, orjson.dumps(new_state), ex=ttl)
+        await self._redis.set(redis_key, _json.dumps(new_state), ex=ttl)
         return result
 
 

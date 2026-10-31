@@ -10,8 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-import orjson
-
+import veloce._json as _json
 from veloce._internal import _require_methods
 from veloce.encoders import orjson_default
 from veloce.http.response import JSONResponse, Response
@@ -19,7 +18,7 @@ from veloce.status import HTTP_200_OK
 
 
 def config_orjson_options(cfg: Any) -> int:
-    """Build the orjson option bitmask from an app config mapping.
+    """Build the JSON option bitmask from an app config mapping.
 
     Reads `JSON_SORT_KEYS` and `JSONIFY_PRETTYPRINT_REGULAR`; `0` when `cfg`
     is `None`.
@@ -27,9 +26,9 @@ def config_orjson_options(cfg: Any) -> int:
     opts = 0
     if cfg is not None:
         if cfg.get("JSON_SORT_KEYS"):
-            opts |= orjson.OPT_SORT_KEYS
+            opts |= _json.OPT_SORT_KEYS
         if cfg.get("JSONIFY_PRETTYPRINT_REGULAR"):
-            opts |= orjson.OPT_INDENT_2
+            opts |= _json.OPT_INDENT_2
     return opts
 
 
@@ -85,7 +84,7 @@ class JSONProvider:
 
 
 class DefaultJSONProvider(JSONProvider):
-    """orjson-backed provider — Veloce's default.
+    """Provider over the configured JSON backend — Veloce's default.
 
     Honours the `JSON_SORT_KEYS` / `JSONIFY_PRETTYPRINT_REGULAR` config flags,
     so neither needs a subclass.
@@ -100,17 +99,17 @@ class DefaultJSONProvider(JSONProvider):
     def dumps(self, obj: Any, **kwargs: Any) -> bytes:
         opts = self._config_options
         if kwargs.get("sort_keys"):
-            opts |= orjson.OPT_SORT_KEYS
+            opts |= _json.OPT_SORT_KEYS
         if kwargs.get("indent"):
-            opts |= orjson.OPT_INDENT_2
-        # orjson calls `default=` only for leaf types it cannot encode itself,
-        # so the common path keeps its C traversal at no added cost.
+            opts |= _json.OPT_INDENT_2
+        # The backend calls `default=` only for leaf types it cannot encode
+        # itself, so the common path keeps its C traversal at no added cost.
         if opts:
-            return orjson.dumps(obj, option=opts, default=orjson_default)
-        return orjson.dumps(obj, default=orjson_default)
+            return _json.dumps(obj, option=opts, default=orjson_default)
+        return _json.dumps(obj, default=orjson_default)
 
     def loads(self, data: bytes | str) -> Any:
-        return orjson.loads(data)
+        return _json.loads(data)
 
 
 # `dumps_for` / `dumps_current` live in `_internal`, so `http.response` reaches

@@ -352,7 +352,7 @@ def test_timedelta_converter_strict():
     c = TimeDeltaConverter()
     ok, val = c.match("P1DT2H")
     assert ok and val == _dt.timedelta(days=1, hours=2)
-    # Bare number rejected (strict vs Litestar).
+    # Strict: an ISO-8601 duration only, so a bare seconds count is refused.
     assert c.match("60") == (False, None)
     assert c.match("") == (False, None)
 

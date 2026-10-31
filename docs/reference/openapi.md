@@ -6,6 +6,8 @@ description: Veloce API reference - openapi & encoding.
 
 Schema generation and the JSON encoding layer.
 
+::: veloce.use_json_backend
+::: veloce.JSONBackend
 ::: veloce.jsonable_encoder
 ::: veloce.register_encoder
 ::: veloce.unregister_encoder

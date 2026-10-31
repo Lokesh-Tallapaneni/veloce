@@ -217,6 +217,8 @@ VELOCE_ALL = {
     "instrument_access_log",
     "is_strong_password",
     "jsonable_encoder",
+    "JSONBackend",
+    "use_json_backend",
     "jsonify",
     "log_requests_as_json",
     "login_session",

@@ -25,8 +25,7 @@ import time
 from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 
-import orjson
-
+import veloce._json as _json
 from veloce._internal import _b64decode, _b64encode, _coerce_secret_bytes
 from veloce.exceptions import VeloceError
 
@@ -127,8 +126,8 @@ def encode_jwt(
     secret_bytes = _coerce_secret_bytes(secret)
     if not secret_bytes:
         raise ValueError("secret must be non-empty")
-    header_b64 = _b64encode(orjson.dumps({"alg": alg, "typ": _HEADER_TYP}))
-    payload_b64 = _b64encode(orjson.dumps(dict(claims)))
+    header_b64 = _b64encode(_json.dumps({"alg": alg, "typ": _HEADER_TYP}))
+    payload_b64 = _b64encode(_json.dumps(dict(claims)))
     signing_input = f"{header_b64}.{payload_b64}".encode("ascii")
     sig = hmac.new(secret_bytes, signing_input, digestmod).digest()
     return f"{header_b64}.{payload_b64}.{_b64encode(sig)}"
@@ -213,8 +212,8 @@ def decode_jwt(
     header_b64, payload_b64, sig_b64 = parts
 
     try:
-        header = orjson.loads(_b64decode(header_b64))
-    except (ValueError, OSError, orjson.JSONDecodeError) as err:
+        header = _json.loads(_b64decode(header_b64))
+    except (ValueError, OSError, _json.JSONDecodeError) as err:
         raise InvalidTokenError("malformed header segment") from err
     if not isinstance(header, dict):
         raise InvalidTokenError("header is not a JSON object")
@@ -243,8 +242,8 @@ def decode_jwt(
         raise InvalidSignatureError("signature verification failed")
 
     try:
-        payload = orjson.loads(_b64decode(payload_b64))
-    except (ValueError, OSError, orjson.JSONDecodeError) as err:
+        payload = _json.loads(_b64decode(payload_b64))
+    except (ValueError, OSError, _json.JSONDecodeError) as err:
         raise InvalidTokenError("malformed payload segment") from err
     if not isinstance(payload, dict):
         raise InvalidTokenError("payload is not a JSON object")

@@ -19,8 +19,7 @@ import math
 import struct
 from typing import TYPE_CHECKING, Any, NoReturn, cast
 
-import orjson
-
+import veloce._json as _json
 from veloce._constants import (
     HEADER_COOKIE,
     HEADER_ORIGIN,
@@ -1074,7 +1073,7 @@ class WebSocket:
     async def receive_json(self, timeout: float | None = None) -> Any:
         """Receive and parse JSON."""
         text = await self.receive_text(timeout=timeout)
-        return orjson.loads(text)
+        return _json.loads(text)
 
     async def receive_bytes(self, timeout: float | None = None) -> bytes:
         """Receive binary data. Raises asyncio.TimeoutError if timeout exceeded.

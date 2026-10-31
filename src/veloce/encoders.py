@@ -431,13 +431,13 @@ def jsonable_encoder(
 
 
 def orjson_default(obj: Any) -> Any:
-    """Single-object fallback for orjson's `default=` hook.
+    """Single-object fallback for the JSON backend's `default=` hook.
 
-    orjson encodes the common leaf types at C speed and calls this only for a
-    leaf it cannot handle, so this converts ONE object and lets orjson recurse
-    into the result; it deliberately does not walk the whole graph.
+    The backend encodes the common leaf types at C speed and calls this only
+    for a leaf it cannot handle, so this converts ONE object and lets the
+    backend recurse into the result; it does not walk the whole graph.
 
-    A set becomes a list of raw items orjson re-enters this hook for;
+    A set becomes a list of raw items the backend re-enters this hook for;
     Path/Decimal/timedelta map to their scalar form; bytes encode as base64; a
     model is dumped through `model_dump` so its computed fields survive. Anything
     else falls back to `vars(obj)` then `str(obj)`, as `jsonable_encoder` does.
@@ -454,7 +454,7 @@ def orjson_default(obj: Any) -> Any:
     scalar = _encode_shared_scalar(obj)
     if scalar is not _MISSING:
         return scalar
-    # A subclass orjson cannot encode resolves via its base, not `vars()` (`{}`).
+    # A subclass the backend cannot encode resolves via its base, not `vars()` (`{}`).
     encoder = _resolve_encoder(type(obj))
     if encoder is not None:
         return encoder(obj)

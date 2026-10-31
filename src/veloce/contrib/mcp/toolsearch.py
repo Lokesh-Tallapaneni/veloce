@@ -29,9 +29,9 @@ import math
 import re
 from typing import TYPE_CHECKING, Any
 
-import orjson
 from pydantic import BaseModel, Field
 
+import veloce._json as _json
 from veloce._handler_plan import build_plan
 from veloce.contrib.mcp._helpers import _text_result
 from veloce.contrib.mcp.errors import MCPError, _InvalidArgumentsError
@@ -261,8 +261,8 @@ def _referenceable(result: dict[str, Any]) -> Any:
         text = content[0].get("text")
         if isinstance(text, str):
             try:
-                return orjson.loads(text)
-            except orjson.JSONDecodeError:
+                return _json.loads(text)
+            except _json.JSONDecodeError:
                 return text
     return content
 
@@ -382,7 +382,7 @@ class ToolSearch:
                 # message names what it got wrong.
                 raise _InvalidArgumentsError(f"step {step_id!r}: {exc}") from exc
             except RecursionError as exc:
-                # `orjson` decodes deeper than this walk can descend, and the
+                # The JSON backend decodes deeper than this walk can descend, and the
                 # model can act on the depth but not on a Python stack.
                 raise _InvalidArgumentsError(
                     f"step {step_id!r}: its arguments nest too deeply to resolve"

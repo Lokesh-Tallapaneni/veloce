@@ -1,4 +1,4 @@
-"""Response types — optimized serialization with orjson."""
+"""Response types — optimized serialization over the configured JSON backend."""
 
 from __future__ import annotations
 
@@ -12,8 +12,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, BinaryIO, Literal
 from urllib.parse import quote
 
-import orjson
-
+import veloce._json as _json
 from veloce._constants import (
     HEADER_ACCEPT_RANGES,
     HEADER_AGE,
@@ -335,7 +334,7 @@ class Response:
         body is non-empty and not valid JSON.
         """
         body = self.body
-        return orjson.loads(body) if body else None
+        return _json.loads(body) if body else None
 
     def _ensure_ct_parsed(self) -> None:
         """Parse `content_type` into mimetype / charset / params, value-keyed.
@@ -1339,7 +1338,7 @@ class Response:
 
 
 class JSONResponse(Response):
-    """JSON response using orjson for speed.
+    """JSON response encoded by the configured JSON backend.
 
     Usage::
 
@@ -1401,7 +1400,7 @@ class JSONResponse(Response):
     ) -> JSONResponse:
         """Build a `JSONResponse` from already-encoded JSON bytes.
 
-        Skips `__init__`'s orjson re-encode - use this when the caller has
+        Skips `__init__`'s re-encode - use this when the caller has
         produced the JSON body itself. The body is sent verbatim with
         `Content-Type` from `cls.default_media_type`, unless `headers` carries a
         `Content-Type`, in which case the caller-supplied value wins.
@@ -1428,11 +1427,10 @@ class JSONResponse(Response):
 
 
 class ORJSONResponse(JSONResponse):
-    """Explicit orjson-backed JSON response.
+    """Semantic alias for `JSONResponse`.
 
-    `JSONResponse` already uses `orjson` for encoding, so this class is a
-    semantic alias - useful when route declarations want to communicate
-    the encoder choice via `response_class=ORJSONResponse`.
+    Both encode through the configured JSON backend, which is selected at
+    import rather than by the response class.
     """
 
     __slots__ = ()
@@ -1454,7 +1452,7 @@ class UJSONResponse(Response):
         headers: dict[str, str] | None = None,
     ) -> None:
         try:
-            import ujson  # type: ignore[import-untyped]
+            import ujson
         except ImportError as err:
             raise ImportError(
                 "UJSONResponse requires the `ujson` package. Install it with: pip install ujson"

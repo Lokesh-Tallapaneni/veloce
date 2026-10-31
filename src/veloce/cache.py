@@ -29,12 +29,11 @@ from collections.abc import Callable
 from hashlib import blake2b
 from typing import Any
 
-import orjson
-
+import veloce._json as _json
 from veloce._internal import _is_async_callable, _require_methods
 
 # Sort dict keys so equal mappings hash identically regardless of order.
-_KEY_OPTIONS = orjson.OPT_SORT_KEYS
+_KEY_OPTIONS = _json.OPT_SORT_KEYS
 
 
 def _ignore_unserialisable(_value: Any) -> None:
@@ -45,12 +44,12 @@ def _ignore_unserialisable(_value: Any) -> None:
 
 def _default_key(func: Callable[..., Any], args: tuple[Any, ...], kwargs: dict[str, Any]) -> str:
     """Build a cache key from a function's qualified name and its arguments."""
-    payload = orjson.dumps((args, kwargs), default=_ignore_unserialisable, option=_KEY_OPTIONS)
+    payload = _json.dumps((args, kwargs), default=_ignore_unserialisable, option=_KEY_OPTIONS)
     return f"{func.__qualname__}:{blake2b(payload, digest_size=16).hexdigest()}"
 
 
 def _cache_default(value: Any) -> Any:
-    # Pydantic models serialise via their JSON dump; anything else orjson cannot
+    # Pydantic models serialise via their JSON dump; anything else the backend cannot
     # encode is a programming error (the result is not cacheable).
     dump = getattr(value, "model_dump", None)
     if callable(dump):
@@ -183,12 +182,12 @@ def cached(
             cache_key = key_for(*args, **kwargs)
             hit = await cache.get(cache_key)
             if hit is not None:
-                return orjson.loads(hit)
+                return _json.loads(hit)
             result = await func(*args, **kwargs)
             try:
-                payload = orjson.dumps(result, default=_cache_default)
-            except orjson.JSONEncodeError as err:
-                # orjson wraps the `_cache_default` TypeError; re-raise a clean
+                payload = _json.dumps(result, default=_cache_default)
+            except TypeError as err:
+                # The backend wraps the `_cache_default` TypeError; re-raise a clean
                 # one so the contract is "non-serialisable result -> TypeError".
                 raise TypeError(
                     f"cannot cache a {type(result).__name__!r} result: not JSON-serialisable"

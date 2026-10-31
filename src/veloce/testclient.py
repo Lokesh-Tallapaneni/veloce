@@ -32,9 +32,9 @@ from collections.abc import (
 from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote, urlencode, urlparse
 
-import orjson
 from multidict import CIMultiDict
 
+import veloce._json as _json
 from veloce._constants import (
     HEADER_CONTENT_TYPE,
     HEADER_LOCATION,
@@ -544,7 +544,7 @@ def _assemble_body(
         body, ct = _encode_multipart(files, data or {})
         _set_header(hdrs, HEADER_CONTENT_TYPE, ct)
     elif json is not None:
-        body = orjson.dumps(json)
+        body = _json.dumps(json)
         if not _has_header(hdrs, HEADER_CONTENT_TYPE):
             hdrs.append((HEADER_CONTENT_TYPE, MIME_JSON))
     elif data is not None:
@@ -737,7 +737,7 @@ class TestResponse:
 
     def json(self) -> Any:
         """Parse the response body as JSON and return the result."""
-        return orjson.loads(self.body)
+        return _json.loads(self.body)
 
     @property
     def text(self) -> str:
@@ -1327,11 +1327,11 @@ class _WebSocketSession:
 
     def receive_json(self) -> Any:
         """Receive the next text frame and parse it as JSON."""
-        return orjson.loads(self.receive_text())
+        return _json.loads(self.receive_text())
 
     def send_json(self, data: Any) -> None:
         """Send `data` to the handler as a JSON-encoded text frame."""
-        self.send_text(orjson.dumps(data).decode("utf-8"))
+        self.send_text(_json.dumps(data).decode("utf-8"))
 
 
 # ── Cookie jar view ───────────────────────────────────────

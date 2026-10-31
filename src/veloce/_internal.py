@@ -30,11 +30,10 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mappin
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any, TypeVar
 
-import orjson
-
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.routing.router import RouteInfo, Router
 
+import veloce._json as _json
 from veloce._constants import (
     HEADER_CONNECTION,
     HEADER_VALUE_CLOSE,
@@ -582,13 +581,13 @@ def dumps_for(app: Any, payload: Any) -> bytes:
     layer and must be able to call it; `json_provider` re-exports it.
     """
     if app is None:
-        return orjson.dumps(payload, default=orjson_default)
+        return _json.dumps(payload, default=orjson_default)
     # `None` means the stock provider, which emits what the direct call does.
     dumps = app._handler_json_dumps
     if dumps is _UNRESOLVED_JSON_DUMPS:
         dumps = app._handler_json_dumps = app._resolve_handler_json_dumps()
     if dumps is None:
-        return orjson.dumps(payload, default=orjson_default)
+        return _json.dumps(payload, default=orjson_default)
     encoded: bytes = dumps(payload)
     return encoded
 

@@ -15,8 +15,7 @@ import types
 from collections.abc import Callable, Mapping
 from typing import IO, Any
 
-import orjson
-
+import veloce._json as _json
 from veloce._protocol_constants import URL_SCHEME_HTTP
 
 _logger = logging.getLogger(__name__)
@@ -29,13 +28,13 @@ DEFAULT_MAX_CONCURRENT_CONNECTIONS = 1000
 DEFAULT_WRITE_BUFFER_HIGH_WATER = 256 * 1024
 
 
-def _orjson_load(fp: IO[str] | IO[bytes]) -> Mapping[str, Any]:
-    """File-object loader matching `json.load`'s shape, backed by orjson.
+def _json_load(fp: IO[str] | IO[bytes]) -> Mapping[str, Any]:
+    """File-object loader matching `json.load`'s shape.
 
-    `orjson` only exposes `loads(bytes | str)`, so this keeps
+    The JSON backend only exposes `loads(bytes | str)`, so this keeps
     `Config.from_file(load=...)`'s `Callable[[file], Mapping[str, Any]]` contract.
     """
-    return orjson.loads(fp.read())
+    return _json.loads(fp.read())
 
 
 def _parse_env_lines(lines: list[str], *, source: str = "<env>") -> dict[str, str]:
@@ -403,7 +402,7 @@ class Config(dict[str, Any]):
     def from_prefixed_env(
         self,
         prefix: str = "VELOCE",
-        loads: Callable[[str], Any] = orjson.loads,
+        loads: Callable[[str], Any] = _json.loads,
     ) -> bool:
         """Load config from the env vars named `<prefix>_...`, less the prefix.
 
@@ -449,7 +448,7 @@ class Config(dict[str, Any]):
     def from_file(
         self,
         filename: str,
-        load: Callable[[Any], Mapping[str, Any]] = _orjson_load,
+        load: Callable[[Any], Mapping[str, Any]] = _json_load,
         silent: bool = False,
         text: bool = False,
     ) -> bool:
