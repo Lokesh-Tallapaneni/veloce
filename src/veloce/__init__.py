@@ -253,6 +253,7 @@ from veloce.websocket import WebSocket, WebSocketState
 # whole MCP subpackage at every `import veloce`, for one re-exported name.
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.context import MCPContext
+    from veloce.http.response import ORJSONResponse, UJSONResponse
     from veloce.liveserver import LiveServer
 
 # `APIRouter` aliases `Router` (`prefix=`, `tags=`, `dependencies=`,
