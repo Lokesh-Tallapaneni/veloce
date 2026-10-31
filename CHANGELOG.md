@@ -26,6 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `before_first_request` no longer fails a concurrent first request served on another event loop. ([#343](https://github.com/Lokesh-Tallapaneni/veloce/pull/343))
 - The docs routes are registered before a second event loop can dispatch against the route table. ([#343](https://github.com/Lokesh-Tallapaneni/veloce/pull/343))
+- A `POSITIONAL_ONLY` handler parameter (`def f(a, b, /)`) no longer crashes every call.
+- A handler returning a bare async generator now streams it instead of serialising the generator object's `repr()` as the response body.
+- An MCP tool or prompt declaring `*args`/`**kwargs` is rejected when the registry builds, instead of publishing a schema that silently omits the parameter.
 
 ## [0.21.0] - 2026-10-25
 

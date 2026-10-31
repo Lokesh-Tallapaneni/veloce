@@ -30,7 +30,9 @@ from veloce._handler_plan import (
     K_SECURITY_SCOPES,
     MARKER_LOC,
     MK_BODY,
+    _callable_name,
     _unwrap_optional,
+    _variadic_param_error,
 )
 from veloce._internal import _current_request_var
 from veloce._model_backend import (
@@ -142,6 +144,10 @@ def build_input_schema(
     call's contract whether or not a signature names them, so a placeholder no
     slot declares is advertised from the route itself.
     """
+    if plan.variadic_param is not None:
+        name, kind = plan.variadic_param
+        raise TypeError(_variadic_param_error(_callable_name(plan.handler), name, kind))
+
     properties: dict[str, Any] = {}
     required: list[str] = []
 

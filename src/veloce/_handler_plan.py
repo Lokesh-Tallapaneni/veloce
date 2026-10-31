@@ -574,6 +574,8 @@ class HandlerPlan:
         "is_coro",
         "slots",
         "route_dep_plans",
+        "positional_only",
+        "variadic_param",
         "compiled_resolver",
         "compiled_graph_resolver",
         "dep_waves",
@@ -586,12 +588,25 @@ class HandlerPlan:
         handler: Callable[..., Any],
         slots: list[_Slot],
         route_dep_plans: list[_Slot],
+        positional_only: tuple[str, ...] = (),
+        variadic_param: tuple[str, Any] | None = None,
     ) -> None:
         self.handler = handler
         self.is_coro = _is_async_callable(handler)
         self.slots = slots
         # K_DEPENDS slots for side-effect deps that bind to no parameter.
         self.route_dep_plans = route_dep_plans
+        # Names of POSITIONAL_ONLY parameters, in declaration order - resolved
+        # kwargs still key on these names, but calling the handler must pass
+        # them positionally (see `split_positional_only`).
+        self.positional_only = positional_only
+        # `(name, kind)` of the first *args/**kwargs parameter, if any - a
+        # request carries named values only, so there is nothing to bind such
+        # a parameter to. Left for the caller to act on: an HTTP route reads
+        # path parameters generically through other means and tolerates one
+        # (e.g. an endpoint-only `url_for` stub), while an MCP tool/prompt
+        # schema cannot represent it and raises when this is set.
+        self.variadic_param = variadic_param
         # Straight-line resolver for param-only plans. `None` = not yet attempted;
         # a callable = compiled fast path; a sentinel = tried and not compilable.
         self.compiled_resolver: Any = None
@@ -1172,18 +1187,28 @@ def build_plan(
     sig, hints = inspected
 
     slots: list[_Slot] = []
+    positional_only: list[str] = []
+    variadic_param: tuple[str, Any] | None = None
     # The diagnostics below surface on one `router.py` line, which names no route.
     handler_name = _callable_name(handler)
 
     for param_name, param in sig.parameters.items():
         if param_name == "self":
             continue
-        # *args / **kwargs are not injectable query parameters.
+        # *args / **kwargs are not injectable query parameters; a route that
+        # reads path parameters generically (an endpoint-only `url_for` stub)
+        # legitimately uses one, so this records rather than rejects - an MCP
+        # tool/prompt schema builder, which cannot represent it, rejects it.
         if param.kind in (
             inspect.Parameter.VAR_POSITIONAL,
             inspect.Parameter.VAR_KEYWORD,
         ):
+            if variadic_param is None:
+                variadic_param = (param_name, param.kind)
             continue
+
+        if param.kind is inspect.Parameter.POSITIONAL_ONLY:
+            positional_only.append(param_name)
 
         annotation = hints.get(param_name)
         default = param.default
@@ -1275,7 +1300,32 @@ def build_plan(
         if annotated_slot is not None:
             slots.append(annotated_slot)
 
-    return HandlerPlan(handler, slots, [])
+    return HandlerPlan(handler, slots, [], tuple(positional_only), variadic_param)
+
+
+def _variadic_param_error(handler_name: str, param_name: str, kind: Any) -> str:
+    """Return the message for a `*args`/`**kwargs` handler parameter."""
+    shape = "*" + param_name if kind is inspect.Parameter.VAR_POSITIONAL else "**" + param_name
+    return (
+        f"{handler_name}({shape}, ...): a handler parameter cannot be "
+        f"*args or **kwargs - every argument must be named, since a request "
+        f"carries named values, not an arbitrary positional/keyword tail."
+    )
+
+
+def split_positional_only(
+    kwargs: dict[str, Any], positional_only: tuple[str, ...]
+) -> tuple[tuple[Any, ...], dict[str, Any]]:
+    """Pull `positional_only` names out of `kwargs`, in order, for a positional call.
+
+    A `POSITIONAL_ONLY` parameter cannot be passed by keyword, so a caller
+    invoking a resolved handler must call it as `handler(*positional, **kwargs)`
+    rather than pure `handler(**kwargs)`. `kwargs` is mutated in place; the
+    common case (no positional-only parameters) returns it untouched.
+    """
+    if not positional_only:
+        return (), kwargs
+    return tuple(kwargs.pop(name) for name in positional_only), kwargs
 
 
 def build_route_dep_plans(

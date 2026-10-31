@@ -55,6 +55,42 @@ def test_plan_recognises_request_by_name():
     assert plan.slots[0].kind == K_REQUEST
 
 
+def test_plan_records_positional_only_parameters_in_order():
+    async def h(a: int, b: int, /, c: int):
+        return None
+
+    plan = build_plan(h)
+    assert plan.positional_only == ("a", "b")
+    assert {slot.name for slot in plan.slots} == {"a", "b", "c"}
+
+
+def test_plan_with_no_positional_only_parameters_is_empty_tuple():
+    async def h(a: int):
+        return None
+
+    assert build_plan(h).positional_only == ()
+
+
+def test_plan_records_var_positional_parameter_without_raising():
+    async def h(*args):
+        return None
+
+    plan = build_plan(h)
+    assert plan.variadic_param == ("args", _inspect.Parameter.VAR_POSITIONAL)
+    assert plan.slots == []
+
+
+def test_plan_records_var_keyword_parameter_without_raising():
+    # An endpoint-only `url_for` stub legitimately takes **kwargs; `build_plan`
+    # itself must stay lenient - only an MCP schema builder rejects this.
+    async def h(**kwargs):
+        return None
+
+    plan = build_plan(h)
+    assert plan.variadic_param == ("kwargs", _inspect.Parameter.VAR_KEYWORD)
+    assert plan.slots == []
+
+
 def test_plan_recognises_background_tasks():
     async def h(bg: BackgroundTasks):
         return None

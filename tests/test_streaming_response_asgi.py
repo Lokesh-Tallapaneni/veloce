@@ -24,6 +24,28 @@ def test_async_generator_streamed_through_asgi():
     assert resp.body == b"chunk0chunk1chunk2"
 
 
+def test_bare_async_generator_return_value_is_streamed():
+    """A handler returning an async generator directly, not wrapped in
+    `StreamingResponse`, must stream its chunks rather than falling through
+    to the JSON-encoding fallback (which previously serialised the
+    generator object's own `repr()` as the response body)."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/s")
+    def s():
+        async def gen():
+            yield b"hello "
+            yield b"world"
+
+        return gen()
+
+    with TestClient(app) as client:
+        resp = client.get("/s")
+
+    assert resp.status_code == 200
+    assert resp.body == b"hello world"
+
+
 def test_sync_generator_accepted():
     app = Veloce(openapi_url=None)
 

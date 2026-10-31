@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 
 import orjson
+import pytest
 
 from tests._mcp import METHOD_NOT_FOUND, PARSE_ERROR, Pipe
 from tests._mcp_shared import (
@@ -50,6 +51,42 @@ def test_tools_list_and_call_round_trip():
     names = [t["name"] for t in listed["result"]["tools"]]
     assert "add" in names
     assert called["result"]["content"][0]["text"] == "7"
+
+
+def test_positional_only_tool_handler_round_trips():
+    # A POSITIONAL_ONLY parameter cannot be passed by keyword in Python, so
+    # the binding boundary must call the handler positionally for these.
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add two integers, positional-only")
+    async def add_posonly(a: int, b: int, /) -> int:
+        return a + b
+
+    pipe = Pipe(_server(app))
+    pipe.feed(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "add_posonly", "arguments": {"a": 2, "b": 5}},
+        }
+    )
+    (called,) = asyncio.run(pipe.run())
+    assert called["result"]["content"][0]["text"] == "7"
+
+
+def test_variadic_tool_handler_rejected_at_registry_build():
+    # *args/**kwargs cannot be satisfied by one JSON-RPC arguments object, so
+    # the registry rejects it when it builds, rather than publishing a schema
+    # that silently omits the parameter.
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Sum any number of integers")
+    def total(*nums: int) -> int:
+        return sum(nums)
+
+    with pytest.raises(TypeError, match=r"\*args or \*\*kwargs"):
+        _server(app)
 
 
 def test_call_coerces_string_arguments():

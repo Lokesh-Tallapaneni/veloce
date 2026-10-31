@@ -32,6 +32,7 @@ from veloce._constants import (
     MSG_INTERNAL_SERVER_ERROR,
     STATE_INJECTED_RESPONSE,
 )
+from veloce._handler_plan import split_positional_only
 from veloce._internal import (
     _UNRESOLVED_JSON_DUMPS,
     MIME_HTML,
@@ -85,6 +86,7 @@ from veloce.http.response import (
     JSONResponse,
     RedirectResponse,
     Response,
+    StreamingResponse,
     header_present,
 )
 from veloce.instrumentation import RequestMetrics
@@ -533,12 +535,12 @@ class DispatchMixin(AppHost):
             # `process_request` is the set that unwinds.
             kwargs, resolver = await self._resolve_dependencies(request, match)
             route_info = match.route_info
+            handler_plan = route_info.handler_plan
             result = await self._call_handler(
                 route_info.handler,
                 kwargs,
-                is_coro=(
-                    route_info.handler_plan.is_coro if route_info.handler_plan is not None else None
-                ),
+                is_coro=(handler_plan.is_coro if handler_plan is not None else None),
+                positional_only=(handler_plan.positional_only if handler_plan is not None else ()),
             )
 
             response = self._build_response(request, match, result)
@@ -1111,19 +1113,26 @@ class DispatchMixin(AppHost):
         return actual == subdomain
 
     async def _call_handler(
-        self, handler: Callable[..., Any], kwargs: dict[str, Any], is_coro: bool | None = None
+        self,
+        handler: Callable[..., Any],
+        kwargs: dict[str, Any],
+        is_coro: bool | None = None,
+        positional_only: tuple[str, ...] = (),
     ) -> Any:
         """Call a handler, supporting both sync and async.
 
         Sync handlers are offloaded to the thread pool. `is_coro` lets a caller
-        that already knows skip the per-request probe.
+        that already knows skip the per-request probe. `positional_only` names
+        the resolved kwargs that must be passed positionally, for a handler
+        declaring a `POSITIONAL_ONLY` parameter (`def f(a, b, /)`).
         """
         if is_coro is None:
             is_coro = _is_async_callable(handler)
+        positional, kwargs = split_positional_only(kwargs, positional_only)
         if is_coro:
-            return await handler(**kwargs)
+            return await handler(*positional, **kwargs)
         # `offload` preserves request-scoped ContextVars.
-        return await offload(handler, **kwargs)
+        return await offload(handler, *positional, **kwargs)
 
     async def _call_after_hook(
         self, hook: Callable[..., Any], request: Request, response: Response
@@ -1330,6 +1339,10 @@ class DispatchMixin(AppHost):
             return Response(body=result, content_type=MIME_HTML)
         if isinstance(result, _PydanticBaseModel):
             return self._json_from_handler(result.model_dump())
+        # An async generator/iterable has no JSON shape of its own; stream it
+        # rather than falling through to a `repr()`-string JSON body.
+        if hasattr(result, "__aiter__"):
+            return StreamingResponse(result)
         return self._json_from_handler(result)
 
     # ── Middleware phases ──────────────────────────────────

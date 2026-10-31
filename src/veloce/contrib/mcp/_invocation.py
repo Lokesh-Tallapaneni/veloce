@@ -15,6 +15,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any, cast
 
+from veloce._handler_plan import split_positional_only
 from veloce._internal import _current_app_var, _current_request_var, _is_async_callable, offload
 from veloce.contrib.mcp._helpers import (
     _inflight_var,
@@ -349,10 +350,11 @@ class InvocationMixin:
             raise _InvalidArgumentsError(str(err)) from err
 
         handler = tool.handler
+        positional, kwargs = split_positional_only(kwargs, tool.plan.positional_only)
         if _is_async_callable(handler):
-            return await handler(**kwargs)
+            return await handler(*positional, **kwargs)
         # The same offload the HTTP path applies, preserving request ContextVars.
-        return await offload(handler, **kwargs)
+        return await offload(handler, *positional, **kwargs)
 
     async def _run_background(self, request: Any, result: Any) -> None:
         """Run everything this call scheduled: the injected queue, then the response's.
