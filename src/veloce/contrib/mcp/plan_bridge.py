@@ -33,6 +33,7 @@ from veloce._handler_plan import (
     _callable_name,
     _unwrap_optional,
     _variadic_param_error,
+    get_plan_extension,
 )
 from veloce._internal import _current_request_var
 from veloce._model_backend import (
@@ -49,6 +50,9 @@ from veloce.contrib._jsonschema import (
     _publishable_default,
     _pydantic_to_schema,
     _python_type_to_schema,
+)
+from veloce.contrib.mcp._plan_facts import (  # noqa: F401 - registers the "mcp" plan extension
+    _compute_mcp_plan_facts,
 )
 from veloce.contrib.mcp.context import MCPContext
 from veloce.dependency import (
@@ -144,8 +148,9 @@ def build_input_schema(
     call's contract whether or not a signature names them, so a placeholder no
     slot declares is advertised from the route itself.
     """
-    if plan.variadic_param is not None:
-        name, kind = plan.variadic_param
+    facts = get_plan_extension(plan, "mcp")
+    if facts is not None and facts.variadic_param is not None:
+        name, kind = facts.variadic_param
         raise TypeError(_variadic_param_error(_callable_name(plan.handler), name, kind))
 
     properties: dict[str, Any] = {}
