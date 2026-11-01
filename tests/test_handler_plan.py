@@ -24,6 +24,9 @@ from veloce._handler_plan import (
     MK_QUERY,
     build_plan,
     build_route_dep_plans,
+    get_plan_extension,
+    register_plan_extension,
+    unregister_plan_extension,
 )
 from veloce.background import BackgroundTasks
 from veloce.http.datastructures import UploadFile
@@ -76,7 +79,6 @@ def test_plan_records_var_positional_parameter_without_raising():
         return None
 
     plan = build_plan(h)
-    assert plan.variadic_param == ("args", _inspect.Parameter.VAR_POSITIONAL)
     assert plan.slots == []
 
 
@@ -87,7 +89,6 @@ def test_plan_records_var_keyword_parameter_without_raising():
         return None
 
     plan = build_plan(h)
-    assert plan.variadic_param == ("kwargs", _inspect.Parameter.VAR_KEYWORD)
     assert plan.slots == []
 
 
@@ -399,3 +400,66 @@ def test_a_marker_on_a_partial_bound_parameter_is_still_refused():
 
     with pytest.raises(TypeError, match="secret"):
         build_plan(functools.partial(handler, "bound"))
+
+
+# ── Plan extension points ─────────────────────────────────────────
+
+
+def test_get_plan_extension_computes_lazily_and_caches():
+    calls = []
+
+    def provider(sig, plan):
+        calls.append(1)
+        return "computed"
+
+    register_plan_extension("t1", provider)
+    try:
+
+        async def h(a: int):
+            return None
+
+        plan = build_plan(h)
+        assert plan._extensions is None  # nothing allocated before first access
+        assert get_plan_extension(plan, "t1") == "computed"
+        assert get_plan_extension(plan, "t1") == "computed"
+        assert len(calls) == 1  # provider ran exactly once
+    finally:
+        unregister_plan_extension("t1")
+
+
+def test_plan_with_no_extensions_requested_never_allocates():
+    async def h(a: int):
+        return None
+
+    plan = build_plan(h)
+    assert plan._extensions is None
+
+
+def test_register_plan_extension_rejects_duplicate_key():
+    register_plan_extension("t2", lambda sig, plan: None)
+    try:
+        with pytest.raises(ValueError, match="t2"):
+            register_plan_extension("t2", lambda sig, plan: None)
+    finally:
+        unregister_plan_extension("t2")
+
+
+def test_get_plan_extension_raises_keyerror_for_unregistered_key():
+    async def h(a: int):
+        return None
+
+    plan = build_plan(h)
+    with pytest.raises(KeyError):
+        get_plan_extension(plan, "nonexistent-key-xyz")
+
+
+def test_get_plan_extension_returns_none_for_uninspectable_handler():
+    calls = []
+    register_plan_extension("t3", lambda sig, plan: calls.append(1))
+    try:
+        plan = build_plan(type)  # inspect.signature(type) raises ValueError
+        assert plan.slots == []
+        assert get_plan_extension(plan, "t3") is None
+        assert calls == []  # provider never called
+    finally:
+        unregister_plan_extension("t3")

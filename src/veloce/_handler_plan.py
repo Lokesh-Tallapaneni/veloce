@@ -575,12 +575,12 @@ class HandlerPlan:
         "slots",
         "route_dep_plans",
         "positional_only",
-        "variadic_param",
         "compiled_resolver",
         "compiled_graph_resolver",
         "dep_waves",
         "wave_trigger",
         "wave_members",
+        "_extensions",
     )
 
     def __init__(
@@ -589,7 +589,6 @@ class HandlerPlan:
         slots: list[_Slot],
         route_dep_plans: list[_Slot],
         positional_only: tuple[str, ...] = (),
-        variadic_param: tuple[str, Any] | None = None,
     ) -> None:
         self.handler = handler
         self.is_coro = _is_async_callable(handler)
@@ -600,13 +599,9 @@ class HandlerPlan:
         # kwargs still key on these names, but calling the handler must pass
         # them positionally (see `split_positional_only`).
         self.positional_only = positional_only
-        # `(name, kind)` of the first *args/**kwargs parameter, if any - a
-        # request carries named values only, so there is nothing to bind such
-        # a parameter to. Left for the caller to act on: an HTTP route reads
-        # path parameters generically through other means and tolerates one
-        # (e.g. an endpoint-only `url_for` stub), while an MCP tool/prompt
-        # schema cannot represent it and raises when this is set.
-        self.variadic_param = variadic_param
+        # Lazily populated by `get_plan_extension` - stays `None` for any plan
+        # nothing ever asks a single-consumer extension of.
+        self._extensions: dict[str, Any] | None = None
         # Straight-line resolver for param-only plans. `None` = not yet attempted;
         # a callable = compiled fast path; a sentinel = tried and not compilable.
         self.compiled_resolver: Any = None
@@ -628,6 +623,56 @@ class HandlerPlan:
             trigger[min(members)] = batched_waves
         self.wave_trigger = trigger
         self.wave_members = members
+
+
+# ── Plan extension points ─────────────────────────────────────────
+#: Computes a `key`-namespaced fact about a plan's handler, from its
+#: signature, for a single consumer's own policy decision - never a fact
+#: more than one consumer needs to operate the handler itself (that belongs
+#: directly on `HandlerPlan`, like `positional_only`).
+PlanExtensionProvider = Callable[[inspect.Signature, "HandlerPlan"], Any]
+_plan_extension_providers: dict[str, PlanExtensionProvider] = {}
+
+
+def register_plan_extension(key: str, provider: PlanExtensionProvider) -> None:
+    """Register `provider` as the `key`-namespaced plan extension provider.
+
+    Computed, for any `HandlerPlan`, the first time `get_plan_extension(plan,
+    key)` asks for it. Raises `ValueError` if `key` is already registered -
+    a plan-extension key has exactly one legitimate owner, the package that
+    defines it, so a second registration is always a bug: an accidental
+    double-import, or two unrelated packages colliding on the same key.
+    """
+    if key in _plan_extension_providers:
+        raise ValueError(f"a plan extension provider is already registered for {key!r}")
+    _plan_extension_providers[key] = provider
+
+
+def unregister_plan_extension(key: str) -> None:
+    """Remove a previously registered provider. No-op if `key` was never registered."""
+    _plan_extension_providers.pop(key, None)
+
+
+def get_plan_extension(plan: HandlerPlan, key: str) -> Any:
+    """Return `plan`'s `key`-namespaced extension, computed once on first access.
+
+    Raises `KeyError` if nothing is registered for `key` - a typo, or the
+    owning package was never imported. Returns `None` without calling the
+    provider at all when `plan.handler` has no inspectable signature (a
+    builtin or certain C callables) - the same case `build_plan` already
+    tolerates by producing an empty-slot plan rather than raising, so a
+    provider must be able to answer "nothing special" for this case too.
+    """
+    if plan._extensions is None:
+        plan._extensions = {}
+    if key not in plan._extensions:
+        inspected = _inspect_handler(plan.handler)
+        if inspected is None:
+            plan._extensions[key] = None
+        else:
+            provider = _plan_extension_providers[key]
+            plan._extensions[key] = provider(inspected[0], plan)
+    return plan._extensions[key]
 
 
 # ── Plan builders ─────────────────────────────────────────
@@ -1188,7 +1233,6 @@ def build_plan(
 
     slots: list[_Slot] = []
     positional_only: list[str] = []
-    variadic_param: tuple[str, Any] | None = None
     # The diagnostics below surface on one `router.py` line, which names no route.
     handler_name = _callable_name(handler)
 
@@ -1197,14 +1241,13 @@ def build_plan(
             continue
         # *args / **kwargs are not injectable query parameters; a route that
         # reads path parameters generically (an endpoint-only `url_for` stub)
-        # legitimately uses one, so this records rather than rejects - an MCP
-        # tool/prompt schema builder, which cannot represent it, rejects it.
+        # legitimately uses one, so this is skipped rather than rejected here -
+        # the `"mcp"` plan extension (contrib/mcp/_plan_facts.py) is the one
+        # consumer that cannot represent it and rejects it.
         if param.kind in (
             inspect.Parameter.VAR_POSITIONAL,
             inspect.Parameter.VAR_KEYWORD,
         ):
-            if variadic_param is None:
-                variadic_param = (param_name, param.kind)
             continue
 
         if param.kind is inspect.Parameter.POSITIONAL_ONLY:
@@ -1300,7 +1343,7 @@ def build_plan(
         if annotated_slot is not None:
             slots.append(annotated_slot)
 
-    return HandlerPlan(handler, slots, [], tuple(positional_only), variadic_param)
+    return HandlerPlan(handler, slots, [], tuple(positional_only))
 
 
 def _variadic_param_error(handler_name: str, param_name: str, kind: Any) -> str:
