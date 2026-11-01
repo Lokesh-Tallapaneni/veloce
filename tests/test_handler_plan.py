@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import inspect as _inspect
+import warnings
 from typing import Annotated
 
 import pytest
@@ -463,3 +464,38 @@ def test_get_plan_extension_returns_none_for_uninspectable_handler():
         assert calls == []  # provider never called
     finally:
         unregister_plan_extension("t3")
+
+
+def test_get_plan_extension_raises_keyerror_even_for_uninspectable_handler():
+    # The provider lookup must happen before the inspectability check, so a
+    # typo'd/unregistered key is never masked as "nothing special" just
+    # because the handler also happens to be uninspectable.
+    plan = build_plan(type)  # inspect.signature(type) raises ValueError
+    with pytest.raises(KeyError):
+        get_plan_extension(plan, "nonexistent-key-xyz")
+
+
+def test_get_plan_extension_does_not_re_salvage_hints():
+    """get_plan_extension must read only the signature, never resolved hints.
+
+    A handler planned under a path template that names its one unresolvable
+    annotation is tolerated - `_salvage_hints` sees the name in `path_params`
+    and treats the drop as non-fatal (a warning, not a raise). Re-inspecting
+    without those path_params, as `build_plan` originally had them, would
+    reclassify the same parameter as load-bearing and raise - exactly what a
+    second `get_type_hints` pass through `_inspect_handler` would do.
+    """
+    register_plan_extension("t4", lambda sig, plan: "computed")
+    try:
+
+        async def h(item_id: Missing):  # noqa: F821
+            return item_id
+
+        with pytest.warns(UserWarning, match="could not resolve"):
+            plan = build_plan(h, path_params=frozenset({"item_id"}))
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            assert get_plan_extension(plan, "t4") == "computed"
+    finally:
+        unregister_plan_extension("t4")

@@ -657,21 +657,30 @@ def get_plan_extension(plan: HandlerPlan, key: str) -> Any:
     """Return `plan`'s `key`-namespaced extension, computed once on first access.
 
     Raises `KeyError` if nothing is registered for `key` - a typo, or the
-    owning package was never imported. Returns `None` without calling the
-    provider at all when `plan.handler` has no inspectable signature (a
-    builtin or certain C callables) - the same case `build_plan` already
-    tolerates by producing an empty-slot plan rather than raising, so a
-    provider must be able to answer "nothing special" for this case too.
+    owning package was never imported - regardless of `plan.handler`'s own
+    shape. Returns `None` without calling the provider at all when the
+    handler has no inspectable signature (a builtin or certain C callables) -
+    the same case `build_plan` already tolerates by producing an empty-slot
+    plan rather than raising, so a provider must be able to answer "nothing
+    special" for this case too.
+
+    Reads `inspect.signature(plan.handler)` directly rather than through
+    `_inspect_handler` - a provider only ever needs parameter kinds, never
+    resolved type hints, and `_inspect_handler`'s hint-salvage path depends on
+    the `path_params` `build_plan` was originally called with, which are not
+    available here; re-running it without them would refuse a parameter
+    `build_plan` already accepted.
     """
     if plan._extensions is None:
         plan._extensions = {}
     if key not in plan._extensions:
-        inspected = _inspect_handler(plan.handler)
-        if inspected is None:
+        provider = _plan_extension_providers[key]
+        try:
+            sig = inspect.signature(plan.handler)
+        except (TypeError, ValueError):
             plan._extensions[key] = None
         else:
-            provider = _plan_extension_providers[key]
-            plan._extensions[key] = provider(inspected[0], plan)
+            plan._extensions[key] = provider(sig, plan)
     return plan._extensions[key]
 
 
