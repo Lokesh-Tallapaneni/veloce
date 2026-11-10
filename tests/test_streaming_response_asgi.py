@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from veloce import Request, StreamingResponse, Veloce
+from pydantic import BaseModel
+
+from veloce import JSONResponse, Request, StreamingResponse, Veloce
+from veloce.sse import EventSourceResponse, ServerSentEvent
 from veloce.testclient import TestClient
 
 
@@ -22,6 +25,98 @@ def test_async_generator_streamed_through_asgi():
 
     assert resp.status_code == 200
     assert resp.body == b"chunk0chunk1chunk2"
+
+
+def test_bare_async_generator_return_value_is_streamed():
+    """A handler returning an async generator directly, not wrapped in
+    `StreamingResponse`, must stream its chunks rather than falling through
+    to the JSON-encoding fallback (which previously serialised the
+    generator object's own `repr()` as the response body)."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/s")
+    def s():
+        async def gen():
+            yield b"hello "
+            yield b"world"
+
+        return gen()
+
+    with TestClient(app) as client:
+        resp = client.get("/s")
+
+    assert resp.status_code == 200
+    assert resp.body == b"hello world"
+
+
+def test_bare_async_generator_return_streams_even_with_a_response_class_override():
+    """The same bug as `test_bare_async_generator_return_value_is_streamed`,
+    but with an explicit `response_class` that cannot itself accept a
+    generator (`JSONResponse`) - streaming must win over mis-serialising it."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/s", response_class=JSONResponse)
+    async def s():
+        async def gen():
+            yield b"hello "
+            yield b"world"
+
+        return gen()
+
+    with TestClient(app) as client:
+        resp = client.get("/s")
+
+    assert resp.status_code == 200
+    assert resp.body == b"hello world"
+
+
+def test_bare_async_generator_still_reaches_a_streaming_capable_response_class():
+    """`EventSourceResponse`/`StreamingResponse` already know how to accept a
+    bare generator in their own constructor - the generic streaming fast
+    path must not intercept the call and build a plain `StreamingResponse`
+    instead, which cannot write a `ServerSentEvent` as an SSE frame."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/sse", response_class=EventSourceResponse)
+    async def sse():
+        async def gen():
+            yield ServerSentEvent(data="hello")
+
+        return gen()
+
+    with TestClient(app) as client:
+        resp = client.get("/sse")
+
+    assert resp.status_code == 200
+    assert resp.headers.get("content-type") == "text/event-stream"
+    assert resp.body == b"data: hello\n\n"
+
+
+def test_bare_async_generator_return_skips_response_model_validation():
+    """`response_model` validates a returned value's shape, which a
+    generator has none of - trying anyway raises a Pydantic `ValidationError`
+    against the generator object itself. A generator return is left to the
+    streaming fast path, the same way a `list[Model]` origin already lets a
+    non-list/tuple result fall through to it."""
+
+    class Item(BaseModel):
+        name: str
+
+    app = Veloce(openapi_url=None)
+
+    @app.get("/s", response_model=Item)
+    async def s():
+        async def gen():
+            yield b"hello "
+            yield b"world"
+
+        return gen()
+
+    with TestClient(app) as client:
+        resp = client.get("/s")
+
+    assert resp.status_code == 200
+    assert resp.body == b"hello world"
 
 
 def test_sync_generator_accepted():

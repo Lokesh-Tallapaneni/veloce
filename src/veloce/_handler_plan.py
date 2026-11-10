@@ -574,11 +574,14 @@ class HandlerPlan:
         "is_coro",
         "slots",
         "route_dep_plans",
+        "positional_only",
+        "invoke",
         "compiled_resolver",
         "compiled_graph_resolver",
         "dep_waves",
         "wave_trigger",
         "wave_members",
+        "_extensions",
     )
 
     def __init__(
@@ -586,12 +589,29 @@ class HandlerPlan:
         handler: Callable[..., Any],
         slots: list[_Slot],
         route_dep_plans: list[_Slot],
+        positional_only: tuple[str, ...] = (),
     ) -> None:
         self.handler = handler
         self.is_coro = _is_async_callable(handler)
         self.slots = slots
         # K_DEPENDS slots for side-effect deps that bind to no parameter.
         self.route_dep_plans = route_dep_plans
+        # Names of POSITIONAL_ONLY parameters, in declaration order - resolved
+        # kwargs still key on these names, but calling the handler must pass
+        # them positionally (see `split_positional_only`).
+        self.positional_only = positional_only
+        # The handler itself, callable directly as `invoke(**kwargs)`, for a
+        # coroutine function with no POSITIONAL_ONLY parameter; `None` for
+        # every other shape, where a caller falls back to the general
+        # dispatch path. Measured: this roughly halves per-call overhead on
+        # the common shape; a wrapper built for the rare shapes measured no
+        # better than their existing fallback, so none is built for them.
+        self.invoke: Callable[..., Any] | None = (
+            handler if self.is_coro and not positional_only else None
+        )
+        # Lazily populated by `get_plan_extension` - stays `None` for any plan
+        # nothing ever asks a single-consumer extension of.
+        self._extensions: dict[str, Any] | None = None
         # Straight-line resolver for param-only plans. `None` = not yet attempted;
         # a callable = compiled fast path; a sentinel = tried and not compilable.
         self.compiled_resolver: Any = None
@@ -613,6 +633,57 @@ class HandlerPlan:
             trigger[min(members)] = batched_waves
         self.wave_trigger = trigger
         self.wave_members = members
+
+
+# ── Plan extension points ─────────────────────────────────────────
+#: Computes a `key`-namespaced fact about a plan's handler, from its
+#: signature, for a single consumer's own policy decision - never a fact
+#: more than one consumer needs to operate the handler itself (that belongs
+#: directly on `HandlerPlan`, like `positional_only`).
+PlanExtensionProvider = Callable[[inspect.Signature, "HandlerPlan"], Any]
+_plan_extension_providers: dict[str, PlanExtensionProvider] = {}
+
+
+def register_plan_extension(key: str, provider: PlanExtensionProvider) -> None:
+    """Register `provider` as the `key`-namespaced plan extension provider.
+
+    Computed, for any `HandlerPlan`, the first time `get_plan_extension(plan,
+    key)` asks for it. Raises `ValueError` if `key` is already registered -
+    a plan-extension key has exactly one legitimate owner, the package that
+    defines it, so a second registration is always a bug: an accidental
+    double-import, or two unrelated packages colliding on the same key.
+    """
+    if key in _plan_extension_providers:
+        raise ValueError(f"a plan extension provider is already registered for {key!r}")
+    _plan_extension_providers[key] = provider
+
+
+def unregister_plan_extension(key: str) -> None:
+    """Remove a previously registered provider. No-op if `key` was never registered."""
+    _plan_extension_providers.pop(key, None)
+
+
+def get_plan_extension(plan: HandlerPlan, key: str) -> Any:
+    """Return `plan`'s `key`-namespaced extension, computed once and cached.
+
+    Returns `None` without calling the provider when the handler has no
+    inspectable signature - the same case `build_plan` tolerates, so a
+    provider must answer "nothing special" for it too. Reads a bare
+    `inspect.signature(plan.handler)`, not `_inspect_handler`'s hint-salvage
+    path, which needs `build_plan`'s original `path_params` and would wrongly
+    reject a parameter `build_plan` already accepted.
+    """
+    if plan._extensions is None:
+        plan._extensions = {}
+    if key not in plan._extensions:
+        provider = _plan_extension_providers[key]
+        try:
+            sig = inspect.signature(plan.handler)
+        except (TypeError, ValueError):
+            plan._extensions[key] = None
+        else:
+            plan._extensions[key] = provider(sig, plan)
+    return plan._extensions[key]
 
 
 # ── Plan builders ─────────────────────────────────────────
@@ -1172,18 +1243,26 @@ def build_plan(
     sig, hints = inspected
 
     slots: list[_Slot] = []
+    positional_only: list[str] = []
     # The diagnostics below surface on one `router.py` line, which names no route.
     handler_name = _callable_name(handler)
 
     for param_name, param in sig.parameters.items():
         if param_name == "self":
             continue
-        # *args / **kwargs are not injectable query parameters.
+        # *args / **kwargs are not injectable query parameters; a route that
+        # reads path parameters generically (an endpoint-only `url_for` stub)
+        # legitimately uses one, so this is skipped rather than rejected here -
+        # the `"mcp"` plan extension (contrib/mcp/_plan_facts.py) is the one
+        # consumer that cannot represent it and rejects it.
         if param.kind in (
             inspect.Parameter.VAR_POSITIONAL,
             inspect.Parameter.VAR_KEYWORD,
         ):
             continue
+
+        if param.kind is inspect.Parameter.POSITIONAL_ONLY:
+            positional_only.append(param_name)
 
         annotation = hints.get(param_name)
         default = param.default
@@ -1275,7 +1354,49 @@ def build_plan(
         if annotated_slot is not None:
             slots.append(annotated_slot)
 
-    return HandlerPlan(handler, slots, [])
+    return HandlerPlan(handler, slots, [], tuple(positional_only))
+
+
+def _variadic_param_error(handler_name: str, param_name: str, kind: Any) -> str:
+    """Return the message for a `*args`/`**kwargs` handler parameter."""
+    shape = "*" + param_name if kind is inspect.Parameter.VAR_POSITIONAL else "**" + param_name
+    return (
+        f"{handler_name}({shape}, ...): a handler parameter cannot be "
+        f"*args or **kwargs - every argument must be named, since a request "
+        f"carries named values, not an arbitrary positional/keyword tail."
+    )
+
+
+def split_positional_only(
+    kwargs: dict[str, Any], positional_only: tuple[str, ...], handler: Callable[..., Any]
+) -> tuple[tuple[Any, ...], dict[str, Any]]:
+    """Pull `positional_only` names out of `kwargs`, in order, for a positional call.
+
+    A `POSITIONAL_ONLY` parameter cannot be passed by keyword, so a caller
+    invoking a resolved handler must call it as `handler(*positional, **kwargs)`
+    rather than pure `handler(**kwargs)`. `kwargs` is mutated in place.
+
+    Callers guard with `if positional_only:` first - the overwhelmingly
+    common case has none, and a function call on every request to learn
+    that measured ~40% slower than inlining the check at the call site.
+
+    A name absent from `kwargs` has no slot at all - a `Body`/`Form`/`File`
+    marker on a WebSocket handshake, which has no body to read one from -
+    and takes `handler`'s own declared default for that parameter instead of
+    raising `KeyError`. It cannot simply be left out: positional arguments
+    bind by position, so omitting one would silently shift every later
+    resolved name into the wrong parameter rather than raising.
+    """
+    positional: list[Any] = []
+    sig: inspect.Signature | None = None
+    for name in positional_only:
+        if name in kwargs:
+            positional.append(kwargs.pop(name))
+            continue
+        if sig is None:
+            sig = inspect.signature(handler)
+        positional.append(sig.parameters[name].default)
+    return tuple(positional), kwargs
 
 
 def build_route_dep_plans(

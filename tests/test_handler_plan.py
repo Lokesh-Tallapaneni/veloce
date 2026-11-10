@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import inspect as _inspect
+import warnings
 from typing import Annotated
 
 import pytest
@@ -24,6 +25,10 @@ from veloce._handler_plan import (
     MK_QUERY,
     build_plan,
     build_route_dep_plans,
+    get_plan_extension,
+    register_plan_extension,
+    split_positional_only,
+    unregister_plan_extension,
 )
 from veloce.background import BackgroundTasks
 from veloce.http.datastructures import UploadFile
@@ -53,6 +58,99 @@ def test_plan_recognises_request_by_name():
 
     plan = build_plan(h)
     assert plan.slots[0].kind == K_REQUEST
+
+
+def test_plan_records_positional_only_parameters_in_order():
+    async def h(a: int, b: int, /, c: int):
+        return None
+
+    plan = build_plan(h)
+    assert plan.positional_only == ("a", "b")
+    assert {slot.name for slot in plan.slots} == {"a", "b", "c"}
+
+
+def test_plan_with_no_positional_only_parameters_is_empty_tuple():
+    async def h(a: int):
+        return None
+
+    assert build_plan(h).positional_only == ()
+
+
+def test_plan_invoke_is_the_handler_itself_for_a_coroutine_with_no_positional_only():
+    async def h(a: int):
+        return None
+
+    plan = build_plan(h)
+    assert plan.invoke is h
+
+
+def test_plan_invoke_is_none_when_the_handler_has_positional_only_parameters():
+    async def h(a: int, /):
+        return None
+
+    assert build_plan(h).invoke is None
+
+
+def test_plan_invoke_is_none_for_a_sync_handler():
+    def h(a: int):
+        return None
+
+    assert build_plan(h).invoke is None
+
+
+def test_split_positional_only_fills_a_trailing_unresolved_name_with_its_default():
+    """A trailing positional-only name with no slot (e.g. a Body/Form/File
+    marker on a WebSocket handler, which has no slot at all) has nothing in
+    `kwargs` to pop - it must take the handler's own declared default for
+    that parameter, not raise `KeyError`."""
+
+    async def h(a, b, c=99, /):
+        return None
+
+    positional, kwargs = split_positional_only({"a": 1, "b": 2}, ("a", "b", "c"), h)
+    assert positional == (1, 2, 99)
+    assert kwargs == {}
+
+
+def test_split_positional_only_keeps_later_names_aligned_past_a_missing_one():
+    """A missing name in the MIDDLE of `positional_only` must not shift later,
+    resolved names into the wrong position - each one is bound by position,
+    so skipping one without filling it would silently swap two parameters'
+    values rather than raising."""
+
+    async def h(a, b=99, c=5, /):
+        return None
+
+    positional, kwargs = split_positional_only({"a": 1, "c": 7}, ("a", "b", "c"), h)
+    assert positional == (1, 99, 7)
+    assert kwargs == {}
+
+
+def test_split_positional_only_pops_every_resolved_name():
+    async def h(a, b, /, **_extra):
+        return None
+
+    positional, kwargs = split_positional_only({"a": 1, "b": 2, "extra": 3}, ("a", "b"), h)
+    assert positional == (1, 2)
+    assert kwargs == {"extra": 3}
+
+
+def test_plan_records_var_positional_parameter_without_raising():
+    async def h(*args):
+        return None
+
+    plan = build_plan(h)
+    assert plan.slots == []
+
+
+def test_plan_records_var_keyword_parameter_without_raising():
+    # An endpoint-only `url_for` stub legitimately takes **kwargs; `build_plan`
+    # itself must stay lenient - only an MCP schema builder rejects this.
+    async def h(**kwargs):
+        return None
+
+    plan = build_plan(h)
+    assert plan.slots == []
 
 
 def test_plan_recognises_background_tasks():
@@ -363,3 +461,101 @@ def test_a_marker_on_a_partial_bound_parameter_is_still_refused():
 
     with pytest.raises(TypeError, match="secret"):
         build_plan(functools.partial(handler, "bound"))
+
+
+# ── Plan extension points ─────────────────────────────────────────
+
+
+def test_get_plan_extension_computes_lazily_and_caches():
+    calls = []
+
+    def provider(sig, plan):
+        calls.append(1)
+        return "computed"
+
+    register_plan_extension("t1", provider)
+    try:
+
+        async def h(a: int):
+            return None
+
+        plan = build_plan(h)
+        assert plan._extensions is None  # nothing allocated before first access
+        assert get_plan_extension(plan, "t1") == "computed"
+        assert get_plan_extension(plan, "t1") == "computed"
+        assert len(calls) == 1  # provider ran exactly once
+    finally:
+        unregister_plan_extension("t1")
+
+
+def test_plan_with_no_extensions_requested_never_allocates():
+    async def h(a: int):
+        return None
+
+    plan = build_plan(h)
+    assert plan._extensions is None
+
+
+def test_register_plan_extension_rejects_duplicate_key():
+    register_plan_extension("t2", lambda sig, plan: None)
+    try:
+        with pytest.raises(ValueError, match="t2"):
+            register_plan_extension("t2", lambda sig, plan: None)
+    finally:
+        unregister_plan_extension("t2")
+
+
+def test_get_plan_extension_raises_keyerror_for_unregistered_key():
+    async def h(a: int):
+        return None
+
+    plan = build_plan(h)
+    with pytest.raises(KeyError):
+        get_plan_extension(plan, "nonexistent-key-xyz")
+
+
+def test_get_plan_extension_returns_none_for_uninspectable_handler():
+    calls = []
+    register_plan_extension("t3", lambda sig, plan: calls.append(1))
+    try:
+        plan = build_plan(type)  # inspect.signature(type) raises ValueError
+        assert plan.slots == []
+        assert get_plan_extension(plan, "t3") is None
+        assert calls == []  # provider never called
+    finally:
+        unregister_plan_extension("t3")
+
+
+def test_get_plan_extension_raises_keyerror_even_for_uninspectable_handler():
+    # The provider lookup must happen before the inspectability check, so a
+    # typo'd/unregistered key is never masked as "nothing special" just
+    # because the handler also happens to be uninspectable.
+    plan = build_plan(type)  # inspect.signature(type) raises ValueError
+    with pytest.raises(KeyError):
+        get_plan_extension(plan, "nonexistent-key-xyz")
+
+
+def test_get_plan_extension_does_not_re_salvage_hints():
+    """get_plan_extension must read only the signature, never resolved hints.
+
+    A handler planned under a path template that names its one unresolvable
+    annotation is tolerated - `_salvage_hints` sees the name in `path_params`
+    and treats the drop as non-fatal (a warning, not a raise). Re-inspecting
+    without those path_params, as `build_plan` originally had them, would
+    reclassify the same parameter as load-bearing and raise - exactly what a
+    second `get_type_hints` pass through `_inspect_handler` would do.
+    """
+    register_plan_extension("t4", lambda sig, plan: "computed")
+    try:
+
+        async def h(item_id: Missing):  # noqa: F821
+            return item_id
+
+        with pytest.warns(UserWarning, match="could not resolve"):
+            plan = build_plan(h, path_params=frozenset({"item_id"}))
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            assert get_plan_extension(plan, "t4") == "computed"
+    finally:
+        unregister_plan_extension("t4")

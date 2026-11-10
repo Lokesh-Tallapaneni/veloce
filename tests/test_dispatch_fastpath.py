@@ -52,6 +52,32 @@ def test_fast_path_engages_for_bare_app():
     assert match.route_info.is_fast_eligible is True
 
 
+def test_fast_path_disengages_for_a_positional_only_request_param():
+    """The fast path calls the handler by keyword - a POSITIONAL_ONLY
+    `request` parameter cannot be, so such a route must not be eligible."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/x")
+    async def x(request, /):
+        return {"ok": True}
+
+    match = app.match("GET", "/x")
+    assert match is not None
+    assert match.route_info.is_fast_eligible is False
+
+
+async def test_a_positional_only_request_param_is_called_correctly():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/x")
+    async def x(request, /):
+        return {"ok": True}
+
+    response = await app.handle_request(_req(path="/x"))
+    assert response.status_code == 200
+    assert b'"ok"' in response.body
+
+
 async def test_fast_path_returns_correct_response():
     app = Veloce(openapi_url=None)
 
