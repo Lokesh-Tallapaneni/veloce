@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 
 import pytest
 
@@ -11,6 +12,23 @@ from veloce.contrib.mcp.errors import MCPError
 from veloce.contrib.mcp.http_upstream import http_upstream
 
 httpx2 = pytest.importorskip("httpx2")
+
+
+def test_import_error_on_a_pre_311_interpreter_names_the_python_floor(monkeypatch):
+    monkeypatch.setitem(sys.modules, "httpx2", None)
+    monkeypatch.setattr(sys, "version_info", (3, 10, 0, "final", 0))
+
+    with pytest.raises(RuntimeError, match="Python >= 3.11"):
+        http_upstream("http://upstream/mcp")
+
+
+def test_import_error_on_a_311_plus_interpreter_names_the_pip_extra(monkeypatch):
+    monkeypatch.setitem(sys.modules, "httpx2", None)
+    monkeypatch.setattr(sys, "version_info", (3, 11, 0, "final", 0))
+
+    with pytest.raises(RuntimeError, match=r"pip install veloceframework\[mcp-proxy\]") as excinfo:
+        http_upstream("http://upstream/mcp")
+    assert "Python >= 3.11" not in str(excinfo.value)
 
 
 def _envelope(payload: dict, *, result: dict | None = None, error: dict | None = None) -> dict:
@@ -176,6 +194,34 @@ async def test_sse_response_is_read_until_the_result_event():
     assert result == {"tools": []}
 
 
+async def test_sse_response_skips_an_empty_priming_event_before_the_result():
+    # A real Veloce MCP server opens its SSE stream with `id: 0\ndata: \n\n`
+    # (transports/http.py's "priming event") before any JSON-RPC content.
+    sse_body = (
+        b"id: 0\ndata: \n\n"
+        b'event: message\ndata: {"jsonrpc": "2.0", "id": 2, "result": {"tools": []}}\n\n'
+    )
+
+    async def handler(request):
+        payload = json.loads(request.read())
+        if payload["method"] == "notifications/initialized":
+            return httpx2.Response(202)
+        if payload["method"] == "initialize":
+            return _json_response(payload, {"protocolVersion": "2025-11-25"})
+        return httpx2.Response(
+            200,
+            content=sse_body,
+            headers={"content-type": "text/event-stream", "mcp-session-id": "sess-1"},
+        )
+
+    client = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
+    request = http_upstream("http://upstream/mcp", client=client)
+
+    result = await request("tools/list", {})
+
+    assert result == {"tools": []}
+
+
 async def test_session_expiry_triggers_one_reinit_and_retry():
     calls = []
     state = {"init_count": 0}
@@ -228,12 +274,18 @@ async def test_a_second_404_after_reinit_propagates_without_looping():
 
 
 async def test_concurrent_session_expiry_triggers_one_reinit():
-    state = {"init_count": 0}
+    state = {"init_count": 0, "stray_sessionless_calls": 0}
 
     async def handler(request):
         payload = json.loads(request.read())
         if payload["method"] == "initialize":
             state["init_count"] += 1
+            if state["init_count"] == 2:
+                # Sleeps while the retry-path lock is held, so the second
+                # concurrent caller's own 404 (below) has to contend for
+                # that same lock instead of finding the session already
+                # fixed - without the lock it would race in here too.
+                await asyncio.sleep(0.01)
             return _json_response(
                 payload, {"protocolVersion": "2025-11-25"}, session_id=f"sess-{state['init_count']}"
             )
@@ -243,10 +295,14 @@ async def test_concurrent_session_expiry_triggers_one_reinit():
             # Without this, MockTransport never yields between an ordinary
             # request and its response, so the first concurrent caller runs
             # straight through its entire retry cycle before the second one
-            # ever gets scheduled - neither the 404 nor the retry-lock
-            # comparison this test exists to check would be reached twice.
+            # ever gets scheduled.
             await asyncio.sleep(0.01)
             return httpx2.Response(404)
+        if not request.headers.get("mcp-session-id"):
+            # A lock-less retry could reach here before the re-handshake
+            # that was already in flight assigns a new session.
+            state["stray_sessionless_calls"] += 1
+            return httpx2.Response(400)
         return _json_response(payload, {"tools": []}, session_id=None)
 
     client = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
@@ -256,6 +312,29 @@ async def test_concurrent_session_expiry_triggers_one_reinit():
 
     assert results == [{"tools": []}, {"tools": []}]
     assert state["init_count"] == 2  # one initial handshake + exactly one re-handshake, not three
+    assert state["stray_sessionless_calls"] == 0
+
+
+async def test_a_capitalized_caller_header_does_not_leak_past_the_protocol_override():
+    async def handler(request):
+        payload = json.loads(request.read())
+        if payload["method"] == "initialize":
+            return _json_response(payload, {"protocolVersion": "2025-11-25"})
+        if payload["method"] == "notifications/initialized":
+            return httpx2.Response(202)
+        # "Accept" (capitalized) collides with the protocol header's lowercase
+        # "accept" at the HTTP level even though they're different dict keys.
+        assert request.headers.get("accept") == "application/json, text/event-stream"
+        return _json_response(payload, {"tools": []})
+
+    client = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
+    request = http_upstream(
+        "http://upstream/mcp",
+        client=client,
+        headers={"Accept": "text/plain"},
+    )
+
+    await request("tools/list", {})
 
 
 async def test_supplied_client_is_untouched_by_aclose():
