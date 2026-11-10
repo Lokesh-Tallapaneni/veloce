@@ -2024,11 +2024,6 @@ from another, not `client_id`.
     token set on restart. Implement `UpstreamOAuthProxyStore` over your own
     database for anything else.
 
-!!! note "Added in version 0.22"
-    `UpstreamOAuthProxy`, `register_oauth_proxy`, `UpstreamOAuthProxyStore`,
-    `InMemoryUpstreamOAuthProxyStore`, `PendingAuthorization`,
-    `ProxyAuthorizationCode`, `UpstreamTokenSet` and `discover_oidc_endpoints`.
-
 ### Per-tool scopes
 
 Declare the scopes a tool, resource, or prompt requires; a principal lacking them
