@@ -97,6 +97,7 @@ from veloce.signals import (
     request_started,
     request_tearing_down,
 )
+from veloce.sse import EventSourceResponse
 
 # ── Dispatch-scoped module state ───────────────────────────
 
@@ -1297,10 +1298,15 @@ class DispatchMixin(AppHost):
         """Convert handler return value to a Response object."""
         if isinstance(result, Response):
             return result
-        # Unconditional, ahead of `response_class`: no `Response` subclass
-        # gives an async generator/iterable a shape of its own, so streaming
-        # wins even when a route sets its own `response_class`.
-        if hasattr(result, "__aiter__"):
+        # Ahead of everything else that cannot accept a generator - but a
+        # `response_class` that already knows how to (StreamingResponse,
+        # EventSourceResponse) is left to its own constructor, further down,
+        # since building a plain StreamingResponse here would lose its media
+        # type and its own item shape (e.g. a `ServerSentEvent`).
+        if hasattr(result, "__aiter__") and not (
+            isinstance(response_class, type)
+            and issubclass(response_class, (StreamingResponse, EventSourceResponse))
+        ):
             return StreamingResponse(result)
         # Gated so the JSONResponse-subclass branch below still owns dicts.
         if type(result) is dict and response_class is None:

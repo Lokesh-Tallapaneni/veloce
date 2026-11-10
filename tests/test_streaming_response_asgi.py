@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from veloce import JSONResponse, Request, StreamingResponse, Veloce
+from veloce.sse import EventSourceResponse, ServerSentEvent
 from veloce.testclient import TestClient
 
 
@@ -48,8 +49,8 @@ def test_bare_async_generator_return_value_is_streamed():
 
 def test_bare_async_generator_return_streams_even_with_a_response_class_override():
     """The same bug as `test_bare_async_generator_return_value_is_streamed`,
-    but with an explicit `response_class` set - no `Response` subclass can
-    give a generator a shape of its own, so streaming must win regardless."""
+    but with an explicit `response_class` that cannot itself accept a
+    generator (`JSONResponse`) - streaming must win over mis-serialising it."""
     app = Veloce(openapi_url=None)
 
     @app.get("/s", response_class=JSONResponse)
@@ -65,6 +66,28 @@ def test_bare_async_generator_return_streams_even_with_a_response_class_override
 
     assert resp.status_code == 200
     assert resp.body == b"hello world"
+
+
+def test_bare_async_generator_still_reaches_a_streaming_capable_response_class():
+    """`EventSourceResponse`/`StreamingResponse` already know how to accept a
+    bare generator in their own constructor - the generic streaming fast
+    path must not intercept the call and build a plain `StreamingResponse`
+    instead, which cannot write a `ServerSentEvent` as an SSE frame."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/sse", response_class=EventSourceResponse)
+    async def sse():
+        async def gen():
+            yield ServerSentEvent(data="hello")
+
+        return gen()
+
+    with TestClient(app) as client:
+        resp = client.get("/sse")
+
+    assert resp.status_code == 200
+    assert resp.headers.get("content-type") == "text/event-stream"
+    assert resp.body == b"data: hello\n\n"
 
 
 def test_sync_generator_accepted():
