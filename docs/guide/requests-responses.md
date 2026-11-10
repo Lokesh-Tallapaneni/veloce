@@ -291,6 +291,7 @@ A handler can return several shapes; Veloce coerces each to a `Response`.
 | `bytes` | `text/html` response. |
 | Pydantic model | `JSONResponse` of `model_dump()`. |
 | `Response` instance | Used as-is. |
+| async generator / iterable | Streamed through `StreamingResponse`, unless `response_class` already knows how to accept one (`StreamingResponse`, `EventSourceResponse`). |
 | `(body, status)` tuple | `body` coerced, then status applied. |
 | `(body, status, headers)` tuple | `body` coerced, status and headers applied. |
 | any other tuple | JSON-encoded as an array, like a `list`. |

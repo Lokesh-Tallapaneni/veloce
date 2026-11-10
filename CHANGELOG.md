@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Veloce serialises with `msgspec` when `orjson` cannot be installed, instead of refusing to import. ([#346](https://github.com/Lokesh-Tallapaneni/veloce/pull/346))
-- Dispatching a handler with no `POSITIONAL_ONLY` parameter no longer calls `split_positional_only`, cutting the per-call cost that fix added back to near zero.
+- An MCP tool or prompt declaring `*args`/`**kwargs` now raises `TypeError` when the registry builds, instead of publishing a schema that silently omits the parameter; name every parameter explicitly. ([#349](https://github.com/Lokesh-Tallapaneni/veloce/pull/349))
 
 ### Deprecated
 
@@ -27,9 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `before_first_request` no longer fails a concurrent first request served on another event loop. ([#343](https://github.com/Lokesh-Tallapaneni/veloce/pull/343))
 - The docs routes are registered before a second event loop can dispatch against the route table. ([#343](https://github.com/Lokesh-Tallapaneni/veloce/pull/343))
-- A `POSITIONAL_ONLY` parameter (`def f(a, b, /)`) on a route handler, a WebSocket handler, or an MCP tool/prompt no longer crashes every call. A `Depends()` dependency, a request hook, or an error handler with one still does - out of scope for this fix.
-- A handler returning a bare async generator now streams it instead of serialising the generator object's `repr()` as the response body, including with an explicit `response_class` that cannot itself accept one.
-- An MCP tool or prompt declaring `*args`/`**kwargs` is rejected when the registry builds, instead of publishing a schema that silently omits the parameter.
+- A `POSITIONAL_ONLY` parameter (`def f(a, b, /)`) on a route handler, a WebSocket handler, or an MCP tool/prompt no longer crashes every call. A `Depends()` dependency, a request hook, or an error handler with one still does - out of scope for this fix. ([#349](https://github.com/Lokesh-Tallapaneni/veloce/pull/349))
+- A handler returning a bare async generator now streams it instead of serialising the generator object's `repr()` as the response body, including with an explicit `response_class` that cannot itself accept one. ([#349](https://github.com/Lokesh-Tallapaneni/veloce/pull/349))
 
 ## [0.21.0] - 2026-10-25
 

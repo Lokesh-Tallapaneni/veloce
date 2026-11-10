@@ -39,6 +39,10 @@ when to call the tool, and it is kept separate from the docstring.
 Sync functions work too - they are offloaded to the thread pool, exactly like
 sync route handlers, so they never block the event loop.
 
+Every parameter must be named - a handler declaring `*args` or `**kwargs`
+raises `TypeError` when the registry builds, since a `tools/call` argument
+object has nothing to bind an arbitrary positional/keyword tail to.
+
 ## Exposing an existing route
 
 Pass `expose_as_mcp_tool=True` and a non-empty `mcp_description` on any route
