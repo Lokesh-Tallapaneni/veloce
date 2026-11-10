@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `UpstreamOAuthProxy.allowed_redirect_uris` is the exact-match allowlist `/authorize` and `/register` enforce; it defaults to empty, accepting nothing. ([#350](https://github.com/Lokesh-Tallapaneni/veloce/pull/350))
 - `UpstreamOAuthProxy.upstream_scopes` is requested from the upstream provider at `/authorize`, separately from `scopes_supported`, which the minted JWT carries instead. ([#350](https://github.com/Lokesh-Tallapaneni/veloce/pull/350))
 - `UpstreamOAuthProxy.aclose()` closes the persistent HTTP client the proxy opens against the upstream token endpoint. ([#350](https://github.com/Lokesh-Tallapaneni/veloce/pull/350))
+- `http_upstream` builds a session-aware `request` callable for `add_mcp_proxy` against a real Streamable HTTP upstream server - handshake, `Mcp-Session-Id` carry, and one re-initialize-and-retry on an expired session.
+- The `mcp-proxy` extra installs `httpx2`, the dependency `http_upstream` needs (Python >= 3.11).
 
 ### Changed
 

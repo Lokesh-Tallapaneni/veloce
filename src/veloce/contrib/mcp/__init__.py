@@ -48,6 +48,7 @@ from veloce.contrib.mcp.errors import (
     SessionRequiredError,
     ToolError,
 )
+from veloce.contrib.mcp.http_upstream import HttpUpstreamRequest, http_upstream
 from veloce.contrib.mcp.icons import Icon
 from veloce.contrib.mcp.oauth_proxy import (
     InMemoryUpstreamOAuthProxyStore,
@@ -123,11 +124,13 @@ __all__ = [
     "derive_tool",
     # Transports
     "BidirectionalTransport",
+    "HttpUpstreamRequest",
     "SessionBackend",
     "SessionRecord",
     "StdioTransport",
     "Transport",
     "add_mcp_proxy",
+    "http_upstream",
     "register_http_transport",
     "register_sse_transport",
     "serve_stdio",

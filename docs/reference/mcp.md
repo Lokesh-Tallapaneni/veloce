@@ -38,6 +38,8 @@ The seam an out-of-tree spec area implements against: subclass `Capability`, ann
 Composing a surface from more than one source: tools mounted from a sub-application, served from an upstream MCP server, or derived from a tool this application already registers.
 
 ::: veloce.contrib.mcp.add_mcp_proxy
+::: veloce.contrib.mcp.http_upstream
+::: veloce.contrib.mcp.HttpUpstreamRequest
 ::: veloce.contrib.mcp.derive_tool
 ::: veloce.contrib.mcp.ArgTransform
 
