@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import itertools
+import sys
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
@@ -58,7 +59,9 @@ class HttpUpstreamRequest:
         self._url = url
         self._client = client
         self._owns_client = owns_client
-        self._headers = dict(headers or {})
+        # Lowercased so a caller header never sits alongside its own
+        # protocol override as two distinct wire header lines.
+        self._headers = {key.lower(): value for key, value in (headers or {}).items()}
         self._session_id: str | None = None
         self._protocol_version: str = LATEST_PROTOCOL_VERSION
         self._init_lock = asyncio.Lock()
@@ -195,15 +198,27 @@ def _try_parse_json_rpc_error(body: bytes) -> tuple[int, str, Any] | None:
 
 
 async def _read_sse_envelope(response: httpx2.Response) -> dict[str, Any]:
-    """Read SSE `data:` lines, event by event, until one is a JSON-RPC result/error."""
+    """Read SSE `data:` lines, event by event, until one is a JSON-RPC result/error.
+
+    WHATWG SSE strips at most one leading space per `data:` line and joins
+    multi-line data with `\n`. A resumability "priming event" (`id` set,
+    `data` empty - e.g. this server's own `transports/http.py`) joins to an
+    empty string and is skipped rather than parsed, same as a bare notification.
+    """
     data_lines: list[str] = []
     async for line in response.aiter_lines():
         if line.startswith("data:"):
-            data_lines.append(line[len("data:") :].strip())
+            value = line[len("data:") :]
+            if value.startswith(" "):
+                value = value[1:]
+            data_lines.append(value)
             continue
-        if line == "" and data_lines:
-            event: dict[str, Any] = _json.loads("".join(data_lines))
+        if line == "":
+            payload = "\n".join(data_lines)
             data_lines = []
+            if not payload.strip():
+                continue
+            event: dict[str, Any] = _json.loads(payload)
             if "result" in event or "error" in event:
                 return event
     raise RuntimeError("upstream SSE stream ended without a JSON-RPC result or error event")
@@ -247,7 +262,13 @@ def http_upstream(
     """
     try:
         import httpx2
-    except ImportError as exc:  # pragma: no cover
+    except ImportError as exc:
+        if sys.version_info < (3, 11):
+            raise RuntimeError(
+                "http_upstream needs the 'httpx2' package, which requires "
+                "Python >= 3.11 and cannot be installed on this interpreter. "
+                "Supply your own request callable instead, or run on 3.11+."
+            ) from exc
         raise RuntimeError(
             "http_upstream needs the 'httpx2' package. "
             "Install it with: pip install veloceframework[mcp-proxy]"
