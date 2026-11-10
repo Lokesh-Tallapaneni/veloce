@@ -536,12 +536,18 @@ class DispatchMixin(AppHost):
             kwargs, resolver = await self._resolve_dependencies(request, match)
             route_info = match.route_info
             handler_plan = route_info.handler_plan
-            result = await self._call_handler(
-                route_info.handler,
-                kwargs,
-                is_coro=(handler_plan.is_coro if handler_plan is not None else None),
-                positional_only=(handler_plan.positional_only if handler_plan is not None else ()),
-            )
+            invoke = handler_plan.invoke if handler_plan is not None else None
+            if invoke is not None:
+                result = await invoke(**kwargs)
+            else:
+                result = await self._call_handler(
+                    route_info.handler,
+                    kwargs,
+                    is_coro=(handler_plan.is_coro if handler_plan is not None else None),
+                    positional_only=(
+                        handler_plan.positional_only if handler_plan is not None else ()
+                    ),
+                )
 
             response = self._build_response(request, match, result)
 

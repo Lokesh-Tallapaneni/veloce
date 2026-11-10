@@ -75,6 +75,28 @@ def test_plan_with_no_positional_only_parameters_is_empty_tuple():
     assert build_plan(h).positional_only == ()
 
 
+def test_plan_invoke_is_the_handler_itself_for_a_coroutine_with_no_positional_only():
+    async def h(a: int):
+        return None
+
+    plan = build_plan(h)
+    assert plan.invoke is h
+
+
+def test_plan_invoke_is_none_when_the_handler_has_positional_only_parameters():
+    async def h(a: int, /):
+        return None
+
+    assert build_plan(h).invoke is None
+
+
+def test_plan_invoke_is_none_for_a_sync_handler():
+    def h(a: int):
+        return None
+
+    assert build_plan(h).invoke is None
+
+
 def test_plan_records_var_positional_parameter_without_raising():
     async def h(*args):
         return None

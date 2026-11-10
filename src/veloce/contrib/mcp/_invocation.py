@@ -349,6 +349,9 @@ class InvocationMixin:
         except (TypeError, ValueError) as err:
             raise _InvalidArgumentsError(str(err)) from err
 
+        invoke = tool.plan.invoke
+        if invoke is not None:
+            return await invoke(**kwargs)
         handler = tool.handler
         if tool.plan.positional_only:
             positional, kwargs = split_positional_only(kwargs, tool.plan.positional_only)

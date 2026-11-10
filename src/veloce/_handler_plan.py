@@ -575,6 +575,7 @@ class HandlerPlan:
         "slots",
         "route_dep_plans",
         "positional_only",
+        "invoke",
         "compiled_resolver",
         "compiled_graph_resolver",
         "dep_waves",
@@ -599,6 +600,15 @@ class HandlerPlan:
         # kwargs still key on these names, but calling the handler must pass
         # them positionally (see `split_positional_only`).
         self.positional_only = positional_only
+        # The handler itself, callable directly as `invoke(**kwargs)`, for a
+        # coroutine function with no POSITIONAL_ONLY parameter; `None` for
+        # every other shape, where a caller falls back to the general
+        # dispatch path. Measured: this roughly halves per-call overhead on
+        # the common shape; a wrapper built for the rare shapes measured no
+        # better than their existing fallback, so none is built for them.
+        self.invoke: Callable[..., Any] | None = (
+            handler if self.is_coro and not positional_only else None
+        )
         # Lazily populated by `get_plan_extension` - stays `None` for any plan
         # nothing ever asks a single-consumer extension of.
         self._extensions: dict[str, Any] | None = None
