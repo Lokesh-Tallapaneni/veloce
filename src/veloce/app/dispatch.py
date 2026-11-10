@@ -1205,8 +1205,12 @@ class DispatchMixin(AppHost):
     def _apply_response_model(self, result: Any, route_info: Any) -> Any:
         """Route the handler return through `response_model` + dump flags.
 
-        A `list[Model]` declaration validates each element individually.
+        A `list[Model]` declaration validates each element individually. An
+        async generator/iterable has no shape to validate against - left
+        untouched, for the streaming fast path in `_coerce_response`.
         """
+        if hasattr(result, "__aiter__"):
+            return result
         model = route_info.response_model
         # Resolved at registration; read, never mutated - shared across requests.
         dump_kwargs = route_info.response_dump_kwargs
@@ -1298,16 +1302,6 @@ class DispatchMixin(AppHost):
         """Convert handler return value to a Response object."""
         if isinstance(result, Response):
             return result
-        # Ahead of everything else that cannot accept a generator - but a
-        # `response_class` that already knows how to (StreamingResponse,
-        # EventSourceResponse) is left to its own constructor, further down,
-        # since building a plain StreamingResponse here would lose its media
-        # type and its own item shape (e.g. a `ServerSentEvent`).
-        if hasattr(result, "__aiter__") and not (
-            isinstance(response_class, type)
-            and issubclass(response_class, (StreamingResponse, EventSourceResponse))
-        ):
-            return StreamingResponse(result)
         # Gated so the JSONResponse-subclass branch below still owns dicts.
         if type(result) is dict and response_class is None:
             return self._json_from_handler(result)
@@ -1333,6 +1327,18 @@ class DispatchMixin(AppHost):
                 # The status line and headers changed, so a cached encoding is stale.
                 resp._encoded = None
                 return resp
+        # Checked here, not ahead of dict/msgspec/tuple above: neither can be
+        # an async generator/iterable, so this only costs a `hasattr` call on
+        # a shape none of those three already claimed. A `response_class`
+        # that already knows how to accept one (StreamingResponse,
+        # EventSourceResponse) is left to its own constructor, further down,
+        # since building a plain StreamingResponse here would lose its media
+        # type and its own item shape (e.g. a `ServerSentEvent`).
+        if hasattr(result, "__aiter__") and not (
+            isinstance(response_class, type)
+            and issubclass(response_class, (StreamingResponse, EventSourceResponse))
+        ):
+            return StreamingResponse(result)
         if response_class is not None:
             if isinstance(response_class, type) and issubclass(response_class, JSONResponse):
                 if isinstance(result, _PydanticBaseModel):

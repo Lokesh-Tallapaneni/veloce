@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pydantic import BaseModel
+
 from veloce import JSONResponse, Request, StreamingResponse, Veloce
 from veloce.sse import EventSourceResponse, ServerSentEvent
 from veloce.testclient import TestClient
@@ -88,6 +90,33 @@ def test_bare_async_generator_still_reaches_a_streaming_capable_response_class()
     assert resp.status_code == 200
     assert resp.headers.get("content-type") == "text/event-stream"
     assert resp.body == b"data: hello\n\n"
+
+
+def test_bare_async_generator_return_skips_response_model_validation():
+    """`response_model` validates a returned value's shape, which a
+    generator has none of - trying anyway raises a Pydantic `ValidationError`
+    against the generator object itself. A generator return is left to the
+    streaming fast path, the same way a `list[Model]` origin already lets a
+    non-list/tuple result fall through to it."""
+
+    class Item(BaseModel):
+        name: str
+
+    app = Veloce(openapi_url=None)
+
+    @app.get("/s", response_model=Item)
+    async def s():
+        async def gen():
+            yield b"hello "
+            yield b"world"
+
+        return gen()
+
+    with TestClient(app) as client:
+        resp = client.get("/s")
+
+    assert resp.status_code == 200
+    assert resp.body == b"hello world"
 
 
 def test_sync_generator_accepted():
