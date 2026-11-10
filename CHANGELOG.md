@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Veloce serialises with `msgspec` when `orjson` cannot be installed, instead of refusing to import. ([#346](https://github.com/Lokesh-Tallapaneni/veloce/pull/346))
 - An MCP tool or prompt declaring `*args`/`**kwargs` now raises `TypeError` when the registry builds, instead of publishing a schema that silently omits the parameter; name every parameter explicitly. ([#349](https://github.com/Lokesh-Tallapaneni/veloce/pull/349))
+- A tool hidden by `MCPContext.hide()` or a `mount_mcp(tool_filter=...)` policy is no longer callable by name; pair visibility with `required_scopes` if you also need the call refused.
 
 ### Deprecated
 

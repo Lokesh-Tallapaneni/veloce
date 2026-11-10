@@ -5,15 +5,17 @@ was missing is a running call changing what *its own* client sees — unlocking 
 tool once a licence is verified, hiding a step once it is done — without touching
 what any other client is served.
 
-Hiding is not enforcement. A hidden primitive is still callable, exactly as with
-`tool_filter`: what a caller may invoke is decided by its declared scopes, so a
-hidden name can never be mistaken for a permission boundary.
+For a tool, hiding is enforcement too, exactly as with `tool_filter`: a hidden
+tool is refused at `tools/call` the same way an unregistered one would be. A
+hidden prompt or resource is not yet refused the same way at
+`prompts/get`/`resources/read` - only its listing narrows.
 """
 
 from __future__ import annotations
 
 import pytest
 
+from tests._mcp import INVALID_PARAMS
 from veloce import MCPContext, Veloce
 from veloce.contrib.mcp._helpers import _notifier_var
 from veloce.contrib.mcp.server import MCPServer
@@ -89,6 +91,21 @@ async def _call(
     finally:
         _notifier_var.reset(token)
     return response["result"]
+
+
+async def _call_error(server: MCPServer, session: MCPSession, name: str) -> dict:
+    """Same dispatch as `_call`, for a call expected to fail."""
+    response = await server.handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": name, "arguments": {}},
+        },
+        session,
+    )
+    assert "error" in response, f"tools/call unexpectedly succeeded: {response}"
+    return response["error"]
 
 
 # ── One connection's view ────────────────────────────────────────────
@@ -182,14 +199,36 @@ async def test_a_resource_is_hidden_by_its_uri():
     assert "doc://secret" not in await _names(server, session, "resources/list", "resources")
 
 
-# ── Hiding is not enforcement ────────────────────────────────────────
+# ── Hiding is enforced at call time too ───────────────────────────────
 
 
-async def test_a_hidden_tool_is_still_callable():
-    """Same contract as `tool_filter`: scopes decide what may be invoked."""
+async def test_a_hidden_tool_is_rejected_as_unknown():
+    """Same contract as `tool_filter`: a name this connection hid is no
+    longer callable either - not just omitted from its own tools/list."""
     server, session = MCPServer(_app()), MCPSession()
     await _call(server, session, "lock")
+    error = await _call_error(server, session, "secret_tool")
+    assert error["code"] == INVALID_PARAMS
+    assert "secret_tool" in error["message"]
+
+
+async def test_unhiding_restores_callability_too():
+    server, session = MCPServer(_app()), MCPSession()
+    await _call(server, session, "lock")
+    await _call(server, session, "unlock")
     assert (await _call(server, session, "secret_tool"))["content"][0]["text"] == "42"
+
+
+async def test_hide_and_tool_filter_together_reject_once_cleanly():
+    """Review Focus #7: a tool hidden by BOTH this connection's `hide()` and
+    the server's `tool_filter` must still produce exactly one clean
+    rejection, not a double-evaluation error or a conflicting result."""
+    app = _app()
+    server = MCPServer(app, tool_filter=lambda tool, principal: tool.name != "secret_tool")
+    session = MCPSession()
+    await _call(server, session, "lock")
+    error = await _call_error(server, session, "secret_tool")
+    assert error["code"] == INVALID_PARAMS
 
 
 # ── Paging sees the narrowed catalogue ───────────────────────────────

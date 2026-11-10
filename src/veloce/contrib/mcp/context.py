@@ -665,10 +665,11 @@ class MCPContext:
         untouched - and this connection is told its lists changed so it fetches
         them again.
 
-        Hiding is not enforcement. A hidden primitive is still callable, exactly
-        as with a `mount_mcp(tool_filter=...)` policy: what a caller may invoke is
-        decided by its declared scopes, so a hidden name cannot be mistaken for a
-        permission boundary.
+        For a tool, hiding is enforcement too: `tools/call` rejects a hidden
+        name exactly as it would an unregistered one. A hidden prompt or
+        resource is not yet refused at `prompts/get`/`resources/read` the same
+        way - only its listing narrows - so treat those two as visibility
+        only, not a permission boundary, until that gap closes too.
         """
         await self._change_visibility(lambda hidden: hidden.update(names))
 
