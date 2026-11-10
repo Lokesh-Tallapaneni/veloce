@@ -23,8 +23,10 @@ from veloce.contrib.mcp.authorization import (
     _now,
     _redirect_error,
     _redirect_uri_is_allowed,
+    _verify_pkce,
 )
-from veloce.http.response import RedirectResponse, Response
+from veloce.http.response import JSONResponse, RedirectResponse, Response
+from veloce.security.jwt import encode_jwt
 from veloce.status import HTTP_302_FOUND
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -280,34 +282,23 @@ async def _handle_upstream_callback(proxy: UpstreamOAuthProxy, request: Request)
             pending.client_state,
         )
 
-    httpx2 = _httpx2()
-    try:
-        async with httpx2.AsyncClient(timeout=httpx2.Timeout(10.0)) as client:
-            response = await client.post(
-                proxy.upstream_token_endpoint,
-                data={
-                    "grant_type": "authorization_code",
-                    "code": upstream_code,
-                    "redirect_uri": proxy.callback_url,
-                    "client_id": proxy.upstream_client_id,
-                    "client_secret": proxy.upstream_client_secret,
-                },
-            )
-    except httpx2.HTTPError:
-        return _redirect_error(
-            pending.client_redirect_uri,
-            "server_error",
-            "could not reach the upstream token endpoint",
-            pending.client_state,
-        )
-    if response.status_code >= 400:
+    body = await _exchange_at_upstream(
+        proxy,
+        {
+            "grant_type": "authorization_code",
+            "code": upstream_code,
+            "redirect_uri": proxy.callback_url,
+            "client_id": proxy.upstream_client_id,
+            "client_secret": proxy.upstream_client_secret,
+        },
+    )
+    if body is None:
         return _redirect_error(
             pending.client_redirect_uri,
             "server_error",
             "the upstream rejected the code exchange",
             pending.client_state,
         )
-    body = response.json()
 
     jti = secrets.token_urlsafe(_TOKEN_ENTROPY_BYTES)
     await proxy.store.save_upstream_tokens(
@@ -337,3 +328,121 @@ async def _handle_upstream_callback(proxy: UpstreamOAuthProxy, request: Request)
     return RedirectResponse(
         f"{pending.client_redirect_uri}{joiner}{urlencode(granted)}", status_code=HTTP_302_FOUND
     )
+
+
+def _mint_jwt(proxy: UpstreamOAuthProxy, jti: str, tokens: UpstreamTokenSet) -> str:
+    """Sign a client-facing access token standing in for the upstream's own."""
+    claims: dict[str, Any] = {
+        "iss": proxy.issuer,
+        "jti": jti,
+        "iat": _now(),
+        "exp": _now() + proxy.access_token_ttl,
+    }
+    subject = tokens.claims.get("sub")
+    if subject is not None:
+        claims["sub"] = subject
+    scope = " ".join(proxy.scopes_supported)
+    if scope:
+        claims["scope"] = scope
+    return encode_jwt(claims, proxy.signing_key, alg="HS256")
+
+
+def _token_response(proxy: UpstreamOAuthProxy, jti: str, tokens: UpstreamTokenSet) -> Response:
+    """Build the RFC 6749 Sec. 5.1 response carrying the minted JWT.
+
+    `refresh_token` is the `jti` itself: the only thing a refresh needs to
+    find which stored upstream token set to re-exchange.
+    """
+    return JSONResponse(
+        {
+            "access_token": _mint_jwt(proxy, jti, tokens),
+            "token_type": "Bearer",
+            "expires_in": int(proxy.access_token_ttl),
+            "refresh_token": jti,
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+async def _exchange_at_upstream(
+    proxy: UpstreamOAuthProxy, data: dict[str, str]
+) -> dict[str, Any] | None:
+    """POST a grant to the upstream token endpoint; `None` on any failure."""
+    httpx2 = _httpx2()
+    try:
+        async with httpx2.AsyncClient(timeout=httpx2.Timeout(10.0)) as client:
+            response = await client.post(proxy.upstream_token_endpoint, data=data)
+    except httpx2.HTTPError:
+        return None
+    if response.status_code >= 400:
+        return None
+    body: dict[str, Any] = response.json()
+    return body
+
+
+async def _grant_authorization_code(proxy: UpstreamOAuthProxy, form: Any) -> Response:
+    """Redeem a proxy-issued code: single-use, PKCE-verified against the client."""
+    code = form.get("code")
+    verifier = form.get("code_verifier")
+    if not code or not verifier:
+        return _error_response("invalid_request", "code and code_verifier are required")
+
+    # Taken, not read: a replay finds nothing even if the checks below fail.
+    record = await proxy.store.take_code(_digest(code))
+    if record is None:
+        return _error_response("invalid_grant", "the code is unknown or has already been used")
+    if record.expires_at <= _now():
+        return _error_response("invalid_grant", "the code has expired")
+    if record.client_redirect_uri != form.get("redirect_uri"):
+        return _error_response("invalid_grant", "redirect_uri does not match the authorization")
+    if not _verify_pkce(verifier, record.client_code_challenge):
+        return _error_response("invalid_grant", "code_verifier does not match the challenge")
+
+    tokens = await proxy.store.get_upstream_tokens(record.jti)
+    if tokens is None:
+        return _error_response("invalid_grant", "the upstream session behind this code is gone")
+    return _token_response(proxy, record.jti, tokens)
+
+
+async def _grant_refresh_token(proxy: UpstreamOAuthProxy, form: Any) -> Response:
+    """Re-run the upstream exchange with its refresh token and re-mint a JWT."""
+    jti = form.get("refresh_token")
+    if not jti:
+        return _error_response("invalid_request", "refresh_token is required")
+    tokens = await proxy.store.get_upstream_tokens(jti)
+    if tokens is None:
+        return _error_response("invalid_grant", "the refresh token is unknown or has expired")
+    if tokens.refresh_token is None:
+        return _error_response("invalid_grant", "the upstream issued no refresh token")
+
+    body = await _exchange_at_upstream(
+        proxy,
+        {
+            "grant_type": "refresh_token",
+            "refresh_token": tokens.refresh_token,
+            "client_id": proxy.upstream_client_id,
+            "client_secret": proxy.upstream_client_secret,
+        },
+    )
+    if body is None:
+        return _error_response("invalid_grant", "the upstream rejected the refresh")
+
+    refreshed = UpstreamTokenSet(
+        access_token=body["access_token"],
+        refresh_token=body.get("refresh_token", tokens.refresh_token),
+        expires_at=_now() + float(body.get("expires_in", proxy.access_token_ttl)),
+        claims=body,
+    )
+    await proxy.store.save_upstream_tokens(jti, refreshed)
+    return _token_response(proxy, jti, refreshed)
+
+
+async def _handle_token(proxy: UpstreamOAuthProxy, request: Request) -> Response:
+    """Exchange a proxy-issued code, or refresh one, for a locally-minted JWT."""
+    form = await request.form()
+    grant_type = form.get("grant_type")
+    if grant_type == "authorization_code":
+        return await _grant_authorization_code(proxy, form)
+    if grant_type == "refresh_token":
+        return await _grant_refresh_token(proxy, form)
+    return _error_response("unsupported_grant_type", f"unsupported grant_type: {grant_type!r}")
