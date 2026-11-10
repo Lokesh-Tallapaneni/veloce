@@ -78,6 +78,16 @@ Authorization: validating a bearer token on the resource server, and issuing one
 ::: veloce.contrib.mcp.AuthorizationCode
 ::: veloce.contrib.mcp.AccessToken
 
+Fronting a real upstream OAuth/OIDC identity provider instead of issuing
+tokens yourself: the data a proxy carries between the authorize and token
+legs, and the OIDC discovery convenience.
+
+::: veloce.contrib.mcp.PendingAuthorization
+::: veloce.contrib.mcp.UpstreamTokenSet
+::: veloce.contrib.mcp.UpstreamOAuthProxyStore
+::: veloce.contrib.mcp.InMemoryUpstreamOAuthProxyStore
+::: veloce.contrib.mcp.discover_oidc_endpoints
+
 Errors. A handler raising one of these surfaces it to the client as the JSON-RPC error carrying its code; anything else a tool raises is reported in-band as an `isError` result.
 
 ::: veloce.contrib.mcp.MCPError
