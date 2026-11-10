@@ -19,6 +19,7 @@ from veloce._constants import (
     MSG_LABEL_HEADER_NAME,
     MSG_LABEL_SET_COOKIE_VALUE,
 )
+from veloce._handler_plan import split_positional_only
 from veloce._internal import (
     _LABEL_HEADER_VALUE_SUFFIX,
     MIME_HTML,
@@ -398,9 +399,15 @@ class AsgiMixin(AppHost):
                     )
                 except RequestValidationError as exc:
                     raise WebSocketRequestValidationError(getattr(exc, "errors", []) or []) from exc
+                positional_only = route_info.handler_plan.positional_only
             else:
                 kwargs = {}
-            await handler(**kwargs)
+                positional_only = ()
+            if positional_only:
+                positional, kwargs = split_positional_only(kwargs, positional_only)
+            else:
+                positional = ()
+            await handler(*positional, **kwargs)
         except WebSocketRequestValidationError:
             # A validation failure is a policy violation (1008), not 1011.
             if ws._needs_close:

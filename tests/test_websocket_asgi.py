@@ -29,6 +29,24 @@ def test_websocket_echo_text_via_test_client():
         assert ws.receive_text() == "echo: hello"
 
 
+def test_websocket_positional_only_param_is_called_correctly():
+    """A POSITIONAL_ONLY `websocket` parameter cannot be passed by keyword -
+    the handler call must split it out, not `handler(**kwargs)` unconditionally."""
+    app = _make_app()
+
+    @app.websocket("/ws")
+    async def echo(websocket, /):
+        await websocket.accept()
+        msg = await websocket.receive_text()
+        await websocket.send_text(f"echo: {msg}")
+        await websocket.close()
+
+    client = app.test_client()
+    with client.websocket_connect("/ws") as ws:
+        ws.send_text("hello")
+        assert ws.receive_text() == "echo: hello"
+
+
 def test_websocket_subprotocol_negotiation():
     app = _make_app()
 

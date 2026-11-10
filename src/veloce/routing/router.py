@@ -707,9 +707,12 @@ class Router:
             route_info.request_param_name = slots[0].name
         # An async handler with a trivial or request-only plan and none of the
         # features the fast path cannot honour; a WebSocket route never applies.
+        # A POSITIONAL_ONLY parameter disqualifies it too - the fast path calls
+        # the handler by keyword, which such a parameter cannot accept.
         route_info.is_fast_eligible = (
             not is_ws
             and route_info.handler_plan.is_coro
+            and not route_info.handler_plan.positional_only
             and (route_info.is_trivial_plan or route_info.is_request_only_plan)
             and route_info.response_model is None
             and route_info.response_class is None
