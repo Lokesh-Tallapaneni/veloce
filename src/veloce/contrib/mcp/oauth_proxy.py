@@ -9,6 +9,7 @@ resource-server machinery.
 
 from __future__ import annotations
 
+import base64
 import secrets
 import sys
 from collections.abc import Iterable, Sequence
@@ -16,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from urllib.parse import urlencode
 
+import veloce._json as _json
 from veloce._protocol_constants import HTTP_METHOD_GET, HTTP_METHOD_POST
 from veloce.contrib.mcp.authorization import (
     _PKCE_S256,
@@ -40,6 +42,8 @@ _TOKEN_ENTROPY_BYTES = 32
 #: Lifetime of the code this proxy hands the original client - separate from
 #: whatever TTL the upstream applies to its own authorization code.
 _PROXY_CODE_TTL_SECONDS = 60.0
+#: How long an abandoned `/authorize` flow stays redeemable at the callback.
+_PENDING_AUTHORIZATION_TTL_SECONDS = 600.0
 
 
 def _httpx2() -> Any:
@@ -59,6 +63,37 @@ def _httpx2() -> Any:
     return httpx2
 
 
+def _decode_unverified_jwt_payload(token: str) -> dict[str, Any]:
+    """Decode a compact JWS payload without verifying its signature.
+
+    Only ever called on an `id_token` the upstream itself returned over the
+    authenticated token-endpoint exchange, never on anything a client
+    presents to this proxy - that back-channel origin is what makes
+    skipping signature verification acceptable here.
+    """
+    try:
+        _header, payload_b64, _sig = token.split(".", 2)
+    except ValueError:
+        return {}
+    padded = payload_b64 + "=" * (-len(payload_b64) % 4)
+    try:
+        payload = _json.loads(base64.urlsafe_b64decode(padded))
+    except (ValueError, UnicodeDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _extract_subject(body: dict[str, Any]) -> str | None:
+    """Find the upstream subject in a token response: `id_token` first."""
+    id_token = body.get("id_token")
+    if isinstance(id_token, str):
+        sub = _decode_unverified_jwt_payload(id_token).get("sub")
+        if isinstance(sub, str):
+            return sub
+    sub = body.get("sub")
+    return sub if isinstance(sub, str) else None
+
+
 @dataclass(slots=True)
 class PendingAuthorization:
     """One in-flight `/authorize` request, correlated to the upstream's callback."""
@@ -66,6 +101,8 @@ class PendingAuthorization:
     client_redirect_uri: str
     client_code_challenge: str
     client_state: str | None = None
+    resource: str | None = None
+    expires_at: float = field(default_factory=lambda: _now() + _PENDING_AUTHORIZATION_TTL_SECONDS)
 
 
 @dataclass(slots=True)
@@ -76,6 +113,12 @@ class UpstreamTokenSet:
     refresh_token: str | None
     expires_at: float
     claims: dict[str, Any] = field(default_factory=dict)
+    #: Taken from the upstream's `id_token`, where OIDC providers carry it -
+    #: not from `claims`, which a refresh response can overwrite or omit.
+    subject: str | None = None
+    #: RFC 8707 resource this was requested for, carried into every JWT
+    #: minted from it - including across a refresh, unlike `claims`.
+    resource: str | None = None
 
 
 @dataclass(slots=True)
@@ -116,18 +159,31 @@ class UpstreamOAuthProxyStore(Protocol):
     async def delete_upstream_tokens(self, jti: str) -> None:
         """Remove the token set recorded under `jti`, if any."""
 
+    async def save_refresh(self, refresh_digest: str, jti: str) -> None:
+        """Record which `jti` a client-facing refresh token stands for."""
+
+    async def take_refresh(self, refresh_digest: str) -> str | None:
+        """Return and remove the `jti` recorded under `refresh_digest`."""
+
 
 class InMemoryUpstreamOAuthProxyStore:
     """Single-process, dict-backed `UpstreamOAuthProxyStore` - lost on restart."""
 
-    __slots__ = ("_codes", "_pending", "_tokens")
+    __slots__ = ("_codes", "_pending", "_refresh", "_tokens")
 
     def __init__(self) -> None:
         self._pending: dict[str, PendingAuthorization] = {}
         self._codes: dict[str, ProxyAuthorizationCode] = {}
         self._tokens: dict[str, UpstreamTokenSet] = {}
+        self._refresh: dict[str, str] = {}
 
     async def save_pending(self, state: str, pending: PendingAuthorization) -> None:
+        # Opportunistic sweep: an abandoned flow that never reaches the
+        # callback would otherwise sit here forever.
+        now = _now()
+        expired = [key for key, value in self._pending.items() if value.expires_at <= now]
+        for key in expired:
+            del self._pending[key]
         self._pending[state] = pending
 
     async def take_pending(self, state: str) -> PendingAuthorization | None:
@@ -147,6 +203,12 @@ class InMemoryUpstreamOAuthProxyStore:
 
     async def delete_upstream_tokens(self, jti: str) -> None:
         self._tokens.pop(jti, None)
+
+    async def save_refresh(self, refresh_digest: str, jti: str) -> None:
+        self._refresh[refresh_digest] = jti
+
+    async def take_refresh(self, refresh_digest: str) -> str | None:
+        return self._refresh.pop(refresh_digest, None)
 
 
 async def discover_oidc_endpoints(issuer: str) -> tuple[str, str]:
@@ -179,8 +241,14 @@ class UpstreamOAuthProxy:
             upstream_client_id="...",
             upstream_client_secret="...",
             signing_key="...",
+            allowed_redirect_uris=["https://my-mcp-client.example/callback"],
         )
         register_oauth_proxy(app, proxy)
+
+    `allowed_redirect_uris` defaults to empty, which accepts nothing: with
+    no per-client registry, any redirect_uri this proxy would otherwise
+    accept is where a stolen authorization code ends up, so every one an
+    MCP client will use must be listed explicitly.
     """
 
     #: Veloce's own issuer identity, presented to MCP clients.
@@ -193,7 +261,16 @@ class UpstreamOAuthProxy:
     signing_key: str | bytes
     #: This proxy's own fixed callback, registered upstream once.
     redirect_path: str = "/oauth/callback"
+    #: Exact client redirect_uris this proxy will ever redirect a browser
+    #: to or redirect an error to. Empty means none - fail closed, since
+    #: there is no per-client registry to check membership against instead.
+    allowed_redirect_uris: Iterable[str] = ()
+    #: Scopes the minted JWT carries and advertises to MCP clients.
     scopes_supported: Iterable[str] = ()
+    #: Scopes requested from the upstream at `/authorize` - a provider's own
+    #: vocabulary (e.g. `openid email profile`), not `scopes_supported`,
+    #: which the upstream has never heard of and may refuse as unknown.
+    upstream_scopes: Iterable[str] = ()
     access_token_ttl: float = 3600.0
     allow_dynamic_registration: bool = True
     store: UpstreamOAuthProxyStore = field(default_factory=InMemoryUpstreamOAuthProxyStore)
@@ -229,7 +306,12 @@ async def _handle_authorize(proxy: UpstreamOAuthProxy, request: Request) -> Resp
     """
     params = request.query_params
     redirect_uri = params.get("redirect_uri")
-    if not redirect_uri or not _redirect_uri_is_allowed(redirect_uri):
+    allowed = frozenset(proxy.allowed_redirect_uris)
+    if (
+        not redirect_uri
+        or not _redirect_uri_is_allowed(redirect_uri)
+        or redirect_uri not in allowed
+    ):
         return _error_response("invalid_request", "redirect_uri is missing or not allowed")
 
     client_state = params.get("state")
@@ -253,6 +335,7 @@ async def _handle_authorize(proxy: UpstreamOAuthProxy, request: Request) -> Resp
             client_redirect_uri=redirect_uri,
             client_code_challenge=challenge,
             client_state=client_state,
+            resource=params.get("resource"),
         ),
     )
     upstream_params = {
@@ -261,7 +344,7 @@ async def _handle_authorize(proxy: UpstreamOAuthProxy, request: Request) -> Resp
         "redirect_uri": proxy.callback_url,
         "state": upstream_state,
     }
-    scope = " ".join(proxy.scopes_supported)
+    scope = " ".join(proxy.upstream_scopes)
     if scope:
         upstream_params["scope"] = scope
     joiner = "&" if "?" in proxy.upstream_authorization_endpoint else "?"
@@ -281,7 +364,7 @@ async def _handle_upstream_callback(proxy: UpstreamOAuthProxy, request: Request)
     # Taken, not read: a failed exchange below leaves nothing stored, and a
     # replayed callback finds nothing even if the checks below would pass.
     pending = await proxy.store.take_pending(_digest(upstream_state))
-    if pending is None:
+    if pending is None or pending.expires_at <= _now():
         return _error_response("invalid_request", "state is unknown or has expired")
 
     upstream_error = params.get("error")
@@ -327,6 +410,8 @@ async def _handle_upstream_callback(proxy: UpstreamOAuthProxy, request: Request)
             refresh_token=body.get("refresh_token"),
             expires_at=_now() + float(body.get("expires_in", proxy.access_token_ttl)),
             claims=body,
+            subject=_extract_subject(body),
+            resource=pending.resource,
         ),
     )
 
@@ -349,7 +434,9 @@ async def _handle_upstream_callback(proxy: UpstreamOAuthProxy, request: Request)
     )
 
 
-def _mint_jwt(proxy: UpstreamOAuthProxy, jti: str, tokens: UpstreamTokenSet) -> str:
+def _mint_jwt(
+    proxy: UpstreamOAuthProxy, jti: str, tokens: UpstreamTokenSet, resource: str | None
+) -> str:
     """Sign a client-facing access token standing in for the upstream's own."""
     claims: dict[str, Any] = {
         "iss": proxy.issuer,
@@ -357,27 +444,36 @@ def _mint_jwt(proxy: UpstreamOAuthProxy, jti: str, tokens: UpstreamTokenSet) -> 
         "iat": _now(),
         "exp": _now() + proxy.access_token_ttl,
     }
-    subject = tokens.claims.get("sub")
-    if subject is not None:
-        claims["sub"] = subject
+    if tokens.subject is not None:
+        claims["sub"] = tokens.subject
+    if resource is not None:
+        # RFC 8707: binds the token to the resource it was requested for, so
+        # a token minted for one MCP server is identifiable as such.
+        claims["aud"] = resource
     scope = " ".join(proxy.scopes_supported)
     if scope:
         claims["scope"] = scope
     return encode_jwt(claims, proxy.signing_key, alg="HS256")
 
 
-def _token_response(proxy: UpstreamOAuthProxy, jti: str, tokens: UpstreamTokenSet) -> Response:
+async def _token_response(
+    proxy: UpstreamOAuthProxy, jti: str, tokens: UpstreamTokenSet, resource: str | None
+) -> Response:
     """Build the RFC 6749 Sec. 5.1 response carrying the minted JWT.
 
-    `refresh_token` is the `jti` itself: the only thing a refresh needs to
-    find which stored upstream token set to re-exchange.
+    Issues a fresh, random `refresh_token` of its own rather than handing
+    back `jti` directly - `jti` is a plaintext claim inside the JWT above,
+    so using it as the refresh credential too would let anyone who merely
+    sees an access token mint new ones forever.
     """
+    refresh_token = secrets.token_urlsafe(_TOKEN_ENTROPY_BYTES)
+    await proxy.store.save_refresh(_digest(refresh_token), jti)
     return JSONResponse(
         {
-            "access_token": _mint_jwt(proxy, jti, tokens),
+            "access_token": _mint_jwt(proxy, jti, tokens, resource),
             "token_type": "Bearer",
             "expires_in": int(proxy.access_token_ttl),
-            "refresh_token": jti,
+            "refresh_token": refresh_token,
         },
         headers={"Cache-Control": "no-store"},
     )
@@ -395,7 +491,12 @@ async def _exchange_at_upstream(
         return None
     if response.status_code >= 400:
         return None
-    body: dict[str, Any] = response.json()
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    if not isinstance(body, dict) or not isinstance(body.get("access_token"), str):
+        return None
     return body
 
 
@@ -420,17 +521,22 @@ async def _grant_authorization_code(proxy: UpstreamOAuthProxy, form: Any) -> Res
     tokens = await proxy.store.get_upstream_tokens(record.jti)
     if tokens is None:
         return _error_response("invalid_grant", "the upstream session behind this code is gone")
-    return _token_response(proxy, record.jti, tokens)
+    return await _token_response(proxy, record.jti, tokens, tokens.resource)
 
 
 async def _grant_refresh_token(proxy: UpstreamOAuthProxy, form: Any) -> Response:
     """Re-run the upstream exchange with its refresh token and re-mint a JWT."""
-    jti = form.get("refresh_token")
-    if not jti:
+    presented = form.get("refresh_token")
+    if not presented:
         return _error_response("invalid_request", "refresh_token is required")
+    # Taken, not read: refreshing rotates the credential, same as the
+    # authorization server's own refresh grant.
+    jti = await proxy.store.take_refresh(_digest(presented))
+    if jti is None:
+        return _error_response("invalid_grant", "the refresh token is unknown or has expired")
     tokens = await proxy.store.get_upstream_tokens(jti)
     if tokens is None:
-        return _error_response("invalid_grant", "the refresh token is unknown or has expired")
+        return _error_response("invalid_grant", "the upstream session behind this token is gone")
     if tokens.refresh_token is None:
         return _error_response("invalid_grant", "the upstream issued no refresh token")
 
@@ -451,9 +557,11 @@ async def _grant_refresh_token(proxy: UpstreamOAuthProxy, form: Any) -> Response
         refresh_token=body.get("refresh_token", tokens.refresh_token),
         expires_at=_now() + float(body.get("expires_in", proxy.access_token_ttl)),
         claims=body,
+        subject=_extract_subject(body) or tokens.subject,
+        resource=tokens.resource,
     )
     await proxy.store.save_upstream_tokens(jti, refreshed)
-    return _token_response(proxy, jti, refreshed)
+    return await _token_response(proxy, jti, refreshed, refreshed.resource)
 
 
 async def _handle_token(proxy: UpstreamOAuthProxy, request: Request) -> Response:
@@ -485,11 +593,12 @@ async def _handle_register(proxy: UpstreamOAuthProxy, request: Request) -> Respo
     uris = body.get("redirect_uris")
     if not isinstance(uris, list) or not uris or not all(isinstance(u, str) for u in uris):
         return _error_response("invalid_redirect_uri", "redirect_uris must be a non-empty list")
+    allowed = frozenset(proxy.allowed_redirect_uris)
     for uri in uris:
-        if not _redirect_uri_is_allowed(uri):
+        if not _redirect_uri_is_allowed(uri) or uri not in allowed:
             return _error_response(
                 "invalid_redirect_uri",
-                f"{uri!r} must be https, a loopback http address, or a private-use scheme",
+                f"{uri!r} is not in this proxy's allowed_redirect_uris",
             )
 
     registered: dict[str, Any] = {

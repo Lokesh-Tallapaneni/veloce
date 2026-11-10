@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `discover_oidc_endpoints` fetches an issuer's `/.well-known/openid-configuration` document and returns its authorization and token endpoints.
 - `UpstreamOAuthProxy` fronts a real upstream OAuth/OIDC identity provider for MCP clients, minting its own locally-signed JWTs instead of issuing its own authorization-server credentials.
 - `register_oauth_proxy` mounts an `UpstreamOAuthProxy`'s discovery, authorize, callback, token, and registration endpoints on an app.
+- `UpstreamOAuthProxy.allowed_redirect_uris` is the exact-match allowlist `/authorize` and `/register` enforce; it defaults to empty, accepting nothing.
+- `UpstreamOAuthProxy.upstream_scopes` is requested from the upstream provider at `/authorize`, separately from `scopes_supported`, which the minted JWT carries instead.
 
 ### Changed
 

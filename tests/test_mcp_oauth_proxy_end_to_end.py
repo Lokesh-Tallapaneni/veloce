@@ -34,6 +34,7 @@ def _proxy() -> UpstreamOAuthProxy:
         upstream_client_secret="upstream-secret",
         signing_key="signing-key",
         scopes_supported=["mcp:tools"],
+        allowed_redirect_uris=[CLIENT_REDIRECT],
     )
 
 
@@ -104,52 +105,61 @@ def _mock_upstream_token_endpoint(monkeypatch) -> None:
     monkeypatch.setattr(httpx2, "AsyncClient", patched_client)
 
 
+async def _mint_access_token_through_the_full_flow(client, proxy: UpstreamOAuthProxy) -> str:
+    verifier, challenge = _pkce()
+
+    registered = await client.post("/register", json={"redirect_uris": [CLIENT_REDIRECT]})
+    assert registered.status_code == 201
+
+    authorize = await client.get(
+        "/authorize"
+        f"?redirect_uri={urllib.parse.quote(CLIENT_REDIRECT)}"
+        f"&code_challenge={challenge}&code_challenge_method=S256&state=client-state",
+        follow_redirects=False,
+    )
+    upstream_state = _query(authorize.headers["location"])["state"]
+
+    callback = await client.get(
+        f"{proxy.redirect_path}?code=upstream-code&state={upstream_state}",
+        follow_redirects=False,
+    )
+    callback_query = _query(callback.headers["location"])
+    assert callback.headers["location"].startswith(CLIENT_REDIRECT)
+    assert callback_query["state"] == "client-state"
+
+    token_response = await client.post(
+        "/token",
+        data={
+            "grant_type": "authorization_code",
+            "code": callback_query["code"],
+            "code_verifier": verifier,
+            "redirect_uri": CLIENT_REDIRECT,
+        },
+    )
+    assert token_response.status_code == 200
+    access_token: str = token_response.json()["access_token"]
+    return access_token
+
+
+def _whoami_call() -> dict:
+    return {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": "whoami", "arguments": {}},
+    }
+
+
 async def test_the_full_oauth_proxy_flow_end_to_end_through_a_real_app(monkeypatch):
     _mock_upstream_token_endpoint(monkeypatch)
     proxy = _proxy()
 
-    verifier, challenge = _pkce()
-
     async with AsyncTestClient(_app(proxy)) as client:
-        registered = await client.post("/register", json={"redirect_uris": [CLIENT_REDIRECT]})
-        assert registered.status_code == 201
-
-        authorize = await client.get(
-            "/authorize"
-            f"?redirect_uri={urllib.parse.quote(CLIENT_REDIRECT)}"
-            f"&code_challenge={challenge}&code_challenge_method=S256&state=client-state",
-            follow_redirects=False,
-        )
-        upstream_state = _query(authorize.headers["location"])["state"]
-
-        callback = await client.get(
-            f"{proxy.redirect_path}?code=upstream-code&state={upstream_state}",
-            follow_redirects=False,
-        )
-        callback_query = _query(callback.headers["location"])
-        assert callback.headers["location"].startswith(CLIENT_REDIRECT)
-        assert callback_query["state"] == "client-state"
-
-        token_response = await client.post(
-            "/token",
-            data={
-                "grant_type": "authorization_code",
-                "code": callback_query["code"],
-                "code_verifier": verifier,
-                "redirect_uri": CLIENT_REDIRECT,
-            },
-        )
-        assert token_response.status_code == 200
-        access_token = token_response.json()["access_token"]
+        access_token = await _mint_access_token_through_the_full_flow(client, proxy)
 
         call = await client.post(
             "/mcp",
-            json={
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {"name": "whoami", "arguments": {}},
-            },
+            json=_whoami_call(),
             headers={"Authorization": f"Bearer {access_token}"},
         )
 
@@ -157,3 +167,24 @@ async def test_the_full_oauth_proxy_flow_end_to_end_through_a_real_app(monkeypat
     body = call.json()
     assert "error" not in body
     assert body["result"]["content"][0]["text"] == "ok"
+
+
+async def test_a_tampered_proxy_minted_jwt_is_rejected_at_a_real_tool_call(monkeypatch):
+    """Review Focus #6, end to end: a proxy-minted JWT with a flipped
+    signature byte must fail at the resource server, not just at a bare
+    `decode_jwt` call divorced from the actual verification path."""
+    _mock_upstream_token_endpoint(monkeypatch)
+    proxy = _proxy()
+
+    async with AsyncTestClient(_app(proxy)) as client:
+        access_token = await _mint_access_token_through_the_full_flow(client, proxy)
+        header, payload, signature = access_token.rsplit(".", 2)
+        tampered = f"{header}.{payload}.{signature[:-1]}{'A' if signature[-1] != 'A' else 'B'}"
+
+        call = await client.post(
+            "/mcp",
+            json=_whoami_call(),
+            headers={"Authorization": f"Bearer {tampered}"},
+        )
+
+    assert call.status_code == 401

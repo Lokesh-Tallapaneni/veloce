@@ -1968,10 +1968,26 @@ proxy = UpstreamOAuthProxy(
     upstream_client_id="...",
     upstream_client_secret="...",
     signing_key="...",
+    allowed_redirect_uris=["https://my-mcp-client.example/callback"],
+    upstream_scopes=["openid", "email"],
     scopes_supported=["mcp:tools"],
 )
 register_oauth_proxy(app, proxy)
 ```
+
+`allowed_redirect_uris` and `upstream_scopes` are two different vocabularies
+from `scopes_supported`, and both matter:
+
+- `allowed_redirect_uris` is exact-match, and defaults to empty (nothing is
+  allowed). There is no per-client registry here, so without it any
+  `https://` redirect_uri would be accepted at `/authorize` - including one
+  an attacker chose, which is how a victim's authorization code ends up on
+  an attacker's server.
+- `upstream_scopes` is what gets sent to the real identity provider as
+  `scope` at `/authorize` (`openid email profile`, in its own vocabulary).
+  `scopes_supported` is what the *minted JWT* carries for `MCPAuth` to
+  check — an upstream provider has never heard of `mcp:tools` and may
+  refuse it.
 
 A client's `/authorize` request redirects the browser to the upstream, using
 this proxy's own fixed `redirect_path` as the callback it presents there — not
@@ -2004,20 +2020,31 @@ app.mount_mcp(transport="http", auth=MCPAuth(
 ))
 ```
 
+!!! note "Pass `audience=` to bind the token to this server"
+    If the client requests `resource=` at `/authorize`, pass the same URI as
+    `audience=` to `decode_jwt` to enforce it — the same RFC 8707 guarantee
+    `MCPAuthorizationServer.verifier(resource=...)` gives above.
+
 **What it discovers for you.** `discover_oidc_endpoints(issuer)` fetches an
 upstream's `/.well-known/openid-configuration` document and returns its
 authorization and token endpoints, for a provider that publishes one.
 
-**What it enforces.** `redirect_uri` must be https, a loopback address, or a
-private-use scheme — the same check `MCPAuthorizationServer` applies — and an
-error is only ever redirected to a URI that already passed it, so this cannot
-become an open redirector. PKCE between the client and this proxy is
-required and verified; what the proxy does with the upstream is separate.
+**What it enforces.** `redirect_uri` must be https (or loopback, or a
+private-use scheme) *and* appear in `allowed_redirect_uris` exactly — the
+scheme check alone is not enough to stop an attacker from substituting
+their own `https://` address, since there is no per-client registry to
+catch it otherwise. An error is only ever redirected to a URI that already
+passed both checks, so this cannot become an open redirector. PKCE between
+the client and this proxy is required and verified; what the proxy does
+with the upstream is separate. A minted JWT also carries `aud` when the
+client passed `resource=` (RFC 8707), so a token requested for one MCP
+server is rejected by a verifier configured for another.
 
 **What it does not do.** There is no per-client registry: `/register` hands
 every registrant the same `upstream_client_id`, because this proxy itself
 registered only once with the upstream. PKCE is what distinguishes one flow
-from another, not `client_id`.
+from another, not `client_id` — `allowed_redirect_uris` is what stops an
+attacker from registering (or just presenting) a redirect_uri of their own.
 
 !!! warning "The default store is a single process"
     `InMemoryUpstreamOAuthProxyStore` loses every pending flow and upstream

@@ -22,7 +22,13 @@ from veloce.contrib.mcp.oauth_proxy import (
     _handle_token,
     _now,
 )
-from veloce.security.jwt import ExpiredSignatureError, InvalidSignatureError, decode_jwt, encode_jwt
+from veloce.security.jwt import (
+    ExpiredSignatureError,
+    InvalidAudienceError,
+    InvalidSignatureError,
+    decode_jwt,
+    encode_jwt,
+)
 
 ISSUER = "https://proxy.example"
 UPSTREAM_TOKEN = "https://idp.example/token"
@@ -62,6 +68,8 @@ async def _seed(
     *,
     jti: str = "jti-1",
     refresh_token: str | None = "upstream-refresh",
+    subject: str | None = "user-1",
+    resource: str | None = None,
 ) -> str:
     """Store a valid proxy-issued code and its upstream token set directly."""
     await proxy.store.save_upstream_tokens(
@@ -70,7 +78,9 @@ async def _seed(
             access_token="upstream-access",
             refresh_token=refresh_token,
             expires_at=_now() + 3600,
-            claims={"sub": "user-1"},
+            claims={"sub": subject},
+            subject=subject,
+            resource=resource,
         ),
     )
     code = secrets.token_urlsafe(24)
@@ -193,7 +203,10 @@ async def test_refresh_with_a_valid_refresh_token_remints_a_fresh_jwt(monkeypatc
 
     assert refreshed.status_code == 200
     body = refreshed.json()
-    assert body["access_token"] != issued.json()["access_token"]
+    # The refresh token rotates unconditionally (C2); the JWT's own claims
+    # can coincide with the original's when both mints land in the same
+    # clock tick, so rotation is the assertion that can't be timing-flaky.
+    assert body["refresh_token"] != refresh_token
     decode_jwt(body["access_token"], proxy.signing_key, algorithms=["HS256"])
 
 
@@ -206,3 +219,118 @@ async def test_refresh_with_an_unknown_or_expired_jti_is_rejected():
 
     assert response.status_code == 400
     assert response.json()["error"] == "invalid_grant"
+
+
+async def test_refreshing_with_the_jti_decoded_from_the_access_token_is_rejected():
+    """A JWT's payload is signed, not encrypted - its `jti` claim is readable
+    by anyone who ever sees the access token. It must not double as the
+    refresh credential, or a leaked access token becomes permanent access."""
+    proxy = _proxy()
+    verifier, challenge = _pkce()
+    code = await _seed(proxy, challenge, jti="jti-leak-check")
+
+    async with AsyncTestClient(_app(proxy)) as client:
+        issued = await client.post("/token", data=_token_form(code, verifier))
+        claims = decode_jwt(issued.json()["access_token"], proxy.signing_key, algorithms=["HS256"])
+
+        attempted = await client.post(
+            "/token", data={"grant_type": "refresh_token", "refresh_token": claims["jti"]}
+        )
+
+    assert attempted.status_code == 400
+    assert attempted.json()["error"] == "invalid_grant"
+
+
+async def test_the_subject_is_preserved_when_a_refresh_response_omits_it(monkeypatch):
+    """A refresh response typically carries no `id_token` at all, so the
+    subject captured at the first exchange must survive, not be wiped."""
+    httpx2 = pytest.importorskip("httpx2")
+    proxy = _proxy()
+    verifier, challenge = _pkce()
+    code = await _seed(proxy, challenge, jti="jti-oidc", subject="real-upstream-user")
+
+    def handler(request):
+        return httpx2.Response(200, json={"access_token": "refreshed-access", "expires_in": 3600})
+
+    transport = httpx2.MockTransport(handler)
+    real_async_client = httpx2.AsyncClient
+
+    def patched_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx2, "AsyncClient", patched_client)
+
+    async with AsyncTestClient(_app(proxy)) as client:
+        issued = await client.post("/token", data=_token_form(code, verifier))
+        first_claims = decode_jwt(
+            issued.json()["access_token"], proxy.signing_key, algorithms=["HS256"]
+        )
+
+        refreshed = await client.post(
+            "/token",
+            data={"grant_type": "refresh_token", "refresh_token": issued.json()["refresh_token"]},
+        )
+        second_claims = decode_jwt(
+            refreshed.json()["access_token"], proxy.signing_key, algorithms=["HS256"]
+        )
+
+    assert first_claims["sub"] == "real-upstream-user"
+    assert second_claims["sub"] == "real-upstream-user"
+
+
+async def test_a_malformed_upstream_refresh_response_is_rejected_cleanly(monkeypatch):
+    """A 200 with no `access_token` must not crash the refresh grant."""
+    httpx2 = pytest.importorskip("httpx2")
+    proxy = _proxy()
+    verifier, challenge = _pkce()
+    code = await _seed(proxy, challenge, jti="jti-malformed")
+
+    def handler(request):
+        return httpx2.Response(200, text="not json")
+
+    transport = httpx2.MockTransport(handler)
+    real_async_client = httpx2.AsyncClient
+
+    def patched_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx2, "AsyncClient", patched_client)
+
+    async with AsyncTestClient(_app(proxy)) as client:
+        issued = await client.post("/token", data=_token_form(code, verifier))
+        response = await client.post(
+            "/token",
+            data={"grant_type": "refresh_token", "refresh_token": issued.json()["refresh_token"]},
+        )
+
+    assert response.status_code == 400
+    assert response.json()["error"] == "invalid_grant"
+
+
+async def test_a_token_minted_for_one_resource_is_rejected_by_another():
+    """RFC 8707 audience binding: a token requested for one MCP server must
+    not be accepted by a verifier configured for a different one."""
+    proxy = _proxy()
+    verifier, challenge = _pkce()
+    code = await _seed(proxy, challenge, resource="https://a.example/mcp")
+
+    async with AsyncTestClient(_app(proxy)) as client:
+        response = await client.post("/token", data=_token_form(code, verifier))
+
+    access_token = response.json()["access_token"]
+    claims = decode_jwt(
+        access_token,
+        proxy.signing_key,
+        algorithms=["HS256"],
+        audience="https://a.example/mcp",
+    )
+    assert claims["aud"] == "https://a.example/mcp"
+    with pytest.raises(InvalidAudienceError):
+        decode_jwt(
+            access_token,
+            proxy.signing_key,
+            algorithms=["HS256"],
+            audience="https://b.example/mcp",
+        )
