@@ -174,3 +174,158 @@ async def test_sse_response_is_read_until_the_result_event():
     result = await request("tools/list", {})
 
     assert result == {"tools": []}
+
+
+async def test_session_expiry_triggers_one_reinit_and_retry():
+    calls = []
+    state = {"init_count": 0}
+
+    async def handler(request):
+        payload = json.loads(request.read())
+        calls.append(payload["method"])
+        if payload["method"] == "initialize":
+            state["init_count"] += 1
+            return _json_response(
+                payload, {"protocolVersion": "2025-11-25"}, session_id=f"sess-{state['init_count']}"
+            )
+        if payload["method"] == "notifications/initialized":
+            return httpx2.Response(202)
+        if request.headers.get("mcp-session-id") == "sess-1":
+            return httpx2.Response(404)
+        return _json_response(payload, {"tools": []}, session_id=None)
+
+    client = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
+    request = http_upstream("http://upstream/mcp", client=client)
+
+    result = await request("tools/list", {})
+
+    assert result == {"tools": []}
+    assert calls == [
+        "initialize",
+        "notifications/initialized",
+        "tools/list",
+        "initialize",
+        "notifications/initialized",
+        "tools/list",
+    ]
+    assert state["init_count"] == 2
+
+
+async def test_a_second_404_after_reinit_propagates_without_looping():
+    async def handler(request):
+        payload = json.loads(request.read())
+        if payload["method"] == "initialize":
+            return _json_response(payload, {"protocolVersion": "2025-11-25"})
+        if payload["method"] == "notifications/initialized":
+            return httpx2.Response(202)
+        return httpx2.Response(404)  # every tools/list 404s, even after reinit
+
+    client = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
+    request = http_upstream("http://upstream/mcp", client=client)
+
+    with pytest.raises(httpx2.HTTPStatusError):
+        await asyncio.wait_for(request("tools/list", {}), timeout=2)
+
+
+async def test_concurrent_session_expiry_triggers_one_reinit():
+    state = {"init_count": 0}
+
+    async def handler(request):
+        payload = json.loads(request.read())
+        if payload["method"] == "initialize":
+            state["init_count"] += 1
+            return _json_response(
+                payload, {"protocolVersion": "2025-11-25"}, session_id=f"sess-{state['init_count']}"
+            )
+        if payload["method"] == "notifications/initialized":
+            return httpx2.Response(202)
+        if state["init_count"] < 2:
+            # Without this, MockTransport never yields between an ordinary
+            # request and its response, so the first concurrent caller runs
+            # straight through its entire retry cycle before the second one
+            # ever gets scheduled - neither the 404 nor the retry-lock
+            # comparison this test exists to check would be reached twice.
+            await asyncio.sleep(0.01)
+            return httpx2.Response(404)
+        return _json_response(payload, {"tools": []}, session_id=None)
+
+    client = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
+    request = http_upstream("http://upstream/mcp", client=client)
+
+    results = await asyncio.gather(request("tools/list", {}), request("tools/list", {}))
+
+    assert results == [{"tools": []}, {"tools": []}]
+    assert state["init_count"] == 2  # one initial handshake + exactly one re-handshake, not three
+
+
+async def test_supplied_client_is_untouched_by_aclose():
+    async def handler(request):
+        return httpx2.Response(500)  # never actually called
+
+    client = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
+    request = http_upstream("http://upstream/mcp", client=client)
+
+    await request.aclose()
+
+    assert not client.is_closed
+
+
+async def test_omitted_client_is_closed_and_session_deleted_by_aclose(monkeypatch):
+    deletes = []
+
+    async def handler(request):
+        if request.method == "DELETE":
+            deletes.append(request.headers.get("mcp-session-id"))
+            return httpx2.Response(204)
+        payload = json.loads(request.read())
+        if payload["method"] == "initialize":
+            return _json_response(payload, {"protocolVersion": "2025-11-25"})
+        if payload["method"] == "notifications/initialized":
+            return httpx2.Response(202)
+        return _json_response(payload, {"tools": []})
+
+    real_async_client = httpx2.AsyncClient
+
+    def fake_async_client(*args, **kwargs):
+        kwargs["transport"] = httpx2.MockTransport(handler)
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx2, "AsyncClient", fake_async_client)
+
+    request = http_upstream("http://upstream/mcp")  # no client= -> owns its own
+    await request("tools/list", {})
+    owned_client = request._client
+
+    await request.aclose()
+
+    assert deletes == ["sess-1"]
+    assert owned_client.is_closed
+
+
+async def test_headers_reach_every_request_and_protocol_headers_win_on_collision():
+    seen = []
+
+    async def handler(request):
+        seen.append(dict(request.headers))
+        payload = json.loads(request.read())
+        if payload["method"] == "initialize":
+            return _json_response(payload, {"protocolVersion": "2025-11-25"})
+        if payload["method"] == "notifications/initialized":
+            return httpx2.Response(202)
+        return _json_response(payload, {"tools": []})
+
+    client = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
+    request = http_upstream(
+        "http://upstream/mcp",
+        client=client,
+        headers={"authorization": "Bearer tok", "accept": "text/plain"},  # "accept" collides
+    )
+
+    await request("tools/list", {})
+
+    assert all(h["authorization"] == "Bearer tok" for h in seen)
+    assert all(h["accept"] == "application/json, text/event-stream" for h in seen)
+    # Every request past the handshake carries the negotiated version - the
+    # design's own required header (§5.2 step 2), never actually asserted
+    # until this test.
+    assert seen[-1]["mcp-protocol-version"] == "2025-11-25"
