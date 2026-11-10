@@ -79,9 +79,11 @@ Authorization: validating a bearer token on the resource server, and issuing one
 ::: veloce.contrib.mcp.AccessToken
 
 Fronting a real upstream OAuth/OIDC identity provider instead of issuing
-tokens yourself: the data a proxy carries between the authorize and token
-legs, and the OIDC discovery convenience.
+tokens yourself: the proxy, the data it carries between the authorize and
+token legs, and the OIDC discovery convenience.
 
+::: veloce.contrib.mcp.UpstreamOAuthProxy
+::: veloce.contrib.mcp.register_oauth_proxy
 ::: veloce.contrib.mcp.PendingAuthorization
 ::: veloce.contrib.mcp.ProxyAuthorizationCode
 ::: veloce.contrib.mcp.UpstreamTokenSet

@@ -11,13 +11,15 @@ from __future__ import annotations
 
 import secrets
 import sys
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from urllib.parse import urlencode
 
+from veloce._protocol_constants import HTTP_METHOD_GET, HTTP_METHOD_POST
 from veloce.contrib.mcp.authorization import (
     _PKCE_S256,
+    AUTHORIZATION_SERVER_METADATA_PATH,
     _digest,
     _error_response,
     _now,
@@ -200,6 +202,23 @@ class UpstreamOAuthProxy:
     def callback_url(self) -> str:
         """This proxy's fixed redirect_uri, as presented to the upstream."""
         return self.issuer.rstrip("/") + self.redirect_path
+
+    def metadata(self) -> dict[str, Any]:
+        """Build the RFC 8414 authorization server metadata document."""
+        document: dict[str, Any] = {
+            "issuer": self.issuer,
+            "authorization_endpoint": f"{self.issuer.rstrip('/')}/authorize",
+            "token_endpoint": f"{self.issuer.rstrip('/')}/token",
+            "response_types_supported": ["code"],
+            "grant_types_supported": ["authorization_code", "refresh_token"],
+            "code_challenge_methods_supported": [_PKCE_S256],
+            "token_endpoint_auth_methods_supported": ["none"],
+        }
+        if self.scopes_supported:
+            document["scopes_supported"] = list(self.scopes_supported)
+        if self.allow_dynamic_registration:
+            document["registration_endpoint"] = f"{self.issuer.rstrip('/')}/register"
+        return document
 
 
 async def _handle_authorize(proxy: UpstreamOAuthProxy, request: Request) -> Response:
@@ -446,3 +465,109 @@ async def _handle_token(proxy: UpstreamOAuthProxy, request: Request) -> Response
     if grant_type == "refresh_token":
         return await _grant_refresh_token(proxy, form)
     return _error_response("unsupported_grant_type", f"unsupported grant_type: {grant_type!r}")
+
+
+async def _handle_register(proxy: UpstreamOAuthProxy, request: Request) -> Response:
+    """Fake RFC 7591 registration: hand back this proxy's one upstream credential.
+
+    There is no per-client registry - every registrant receives the same
+    `client_id`, because this proxy itself registered only once with the
+    upstream. PKCE, not `client_id`, is what distinguishes one flow from
+    another at `/authorize` and `/token`.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict):
+        return _error_response("invalid_client_metadata", "the body must be a JSON object")
+
+    uris = body.get("redirect_uris")
+    if not isinstance(uris, list) or not uris or not all(isinstance(u, str) for u in uris):
+        return _error_response("invalid_redirect_uri", "redirect_uris must be a non-empty list")
+    for uri in uris:
+        if not _redirect_uri_is_allowed(uri):
+            return _error_response(
+                "invalid_redirect_uri",
+                f"{uri!r} must be https, a loopback http address, or a private-use scheme",
+            )
+
+    registered: dict[str, Any] = {
+        "client_id": proxy.upstream_client_id,
+        "redirect_uris": list(uris),
+        "token_endpoint_auth_method": "none",
+        "grant_types": ["authorization_code", "refresh_token"],
+        "response_types": ["code"],
+    }
+    if proxy.scopes_supported:
+        registered["scope"] = " ".join(proxy.scopes_supported)
+    return JSONResponse(registered, status_code=201, headers={"Cache-Control": "no-store"})
+
+
+def register_oauth_proxy(
+    app: Any,
+    proxy: UpstreamOAuthProxy,
+    *,
+    prefix: str = "",
+    exclude_middleware: Sequence[str] | None = None,
+) -> None:
+    """Mount `proxy`'s endpoints on `app`.
+
+    Registers the RFC 8414 metadata document, `/authorize`, the proxy's own
+    fixed upstream callback, `/token`, and - when dynamic registration is on -
+    `/register`. The metadata advertises whatever the issuer says, so
+    `prefix` and the issuer must agree.
+    """
+    base = prefix.rstrip("/")
+
+    async def metadata(request: Request) -> Response:
+        return JSONResponse(proxy.metadata(), headers={"Cache-Control": "no-store"})
+
+    async def authorize(request: Request) -> Response:
+        return await _handle_authorize(proxy, request)
+
+    async def callback(request: Request) -> Response:
+        return await _handle_upstream_callback(proxy, request)
+
+    async def token(request: Request) -> Response:
+        return await _handle_token(proxy, request)
+
+    async def register(request: Request) -> Response:
+        return await _handle_register(proxy, request)
+
+    app.add_route(
+        AUTHORIZATION_SERVER_METADATA_PATH,
+        metadata,
+        methods=[HTTP_METHOD_GET],
+        include_in_schema=False,
+        exclude_middleware=exclude_middleware,
+    )
+    app.add_route(
+        f"{base}/authorize",
+        authorize,
+        methods=[HTTP_METHOD_GET],
+        include_in_schema=False,
+        exclude_middleware=exclude_middleware,
+    )
+    app.add_route(
+        f"{base}{proxy.redirect_path}",
+        callback,
+        methods=[HTTP_METHOD_GET],
+        include_in_schema=False,
+        exclude_middleware=exclude_middleware,
+    )
+    app.add_route(
+        f"{base}/token",
+        token,
+        methods=[HTTP_METHOD_POST],
+        include_in_schema=False,
+        exclude_middleware=exclude_middleware,
+    )
+    if proxy.allow_dynamic_registration:
+        app.add_route(
+            f"{base}/register",
+            register,
+            methods=[HTTP_METHOD_POST],
+            include_in_schema=False,
+            exclude_middleware=exclude_middleware,
+        )

@@ -1952,6 +1952,83 @@ what proves it.
     `MCPAuthorizationServer`, `register_authorization_server`,
     `AuthorizationStore` and `InMemoryAuthorizationStore`.
 
+### Fronting an upstream identity provider
+
+The previous section issues tokens itself. When an identity provider already
+exists — Okta, Entra, Auth0, Google, or any other OAuth/OIDC provider — but
+it has never heard of MCP, `UpstreamOAuthProxy` sits in front of it instead:
+
+```python
+from veloce.contrib.mcp import UpstreamOAuthProxy, register_oauth_proxy
+
+proxy = UpstreamOAuthProxy(
+    issuer="https://api.example.com",
+    upstream_authorization_endpoint="https://idp.example.com/authorize",
+    upstream_token_endpoint="https://idp.example.com/token",
+    upstream_client_id="...",
+    upstream_client_secret="...",
+    signing_key="...",
+    scopes_supported=["mcp:tools"],
+)
+register_oauth_proxy(app, proxy)
+```
+
+A client's `/authorize` request redirects the browser to the upstream, using
+this proxy's own fixed `redirect_path` as the callback it presents there — not
+the client's. The upstream's callback exchanges its code, stores its token
+set, and redirects back to the original client with a code of this proxy's
+own. `/token` redeems that code for a JWT this proxy signs with `signing_key`,
+and refreshes it later by re-running the exchange at the upstream.
+
+Verifying that JWT needs nothing new — `MCPAuth` does it like any other
+bearer token:
+
+```python
+from veloce import Principal
+from veloce.contrib.mcp import MCPAuth
+from veloce.security.jwt import JWTError, decode_jwt
+
+
+async def verify_proxy_jwt(token: str) -> Principal | None:
+    try:
+        claims = decode_jwt(token, proxy.signing_key, algorithms=["HS256"], issuer=proxy.issuer)
+    except JWTError:
+        return None
+    return Principal(subject=claims.get("sub"), scopes=frozenset((claims.get("scope") or "").split()))
+
+
+app.mount_mcp(transport="http", auth=MCPAuth(
+    verify=verify_proxy_jwt,
+    resource_server_url="https://api.example.com/mcp",
+    authorization_servers=["https://api.example.com"],
+))
+```
+
+**What it discovers for you.** `discover_oidc_endpoints(issuer)` fetches an
+upstream's `/.well-known/openid-configuration` document and returns its
+authorization and token endpoints, for a provider that publishes one.
+
+**What it enforces.** `redirect_uri` must be https, a loopback address, or a
+private-use scheme — the same check `MCPAuthorizationServer` applies — and an
+error is only ever redirected to a URI that already passed it, so this cannot
+become an open redirector. PKCE between the client and this proxy is
+required and verified; what the proxy does with the upstream is separate.
+
+**What it does not do.** There is no per-client registry: `/register` hands
+every registrant the same `upstream_client_id`, because this proxy itself
+registered only once with the upstream. PKCE is what distinguishes one flow
+from another, not `client_id`.
+
+!!! warning "The default store is a single process"
+    `InMemoryUpstreamOAuthProxyStore` loses every pending flow and upstream
+    token set on restart. Implement `UpstreamOAuthProxyStore` over your own
+    database for anything else.
+
+!!! note "Added in version 0.22"
+    `UpstreamOAuthProxy`, `register_oauth_proxy`, `UpstreamOAuthProxyStore`,
+    `InMemoryUpstreamOAuthProxyStore`, `PendingAuthorization`,
+    `ProxyAuthorizationCode`, `UpstreamTokenSet` and `discover_oidc_endpoints`.
+
 ### Per-tool scopes
 
 Declare the scopes a tool, resource, or prompt requires; a principal lacking them

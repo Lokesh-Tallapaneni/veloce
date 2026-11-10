@@ -86,6 +86,7 @@ MCP_ALL = {
     "ToolRegistry",
     "ToolsCapability",
     "Transport",
+    "UpstreamOAuthProxy",
     "UpstreamOAuthProxyStore",
     "UpstreamTokenSet",
     "add_mcp_proxy",
@@ -96,6 +97,7 @@ MCP_ALL = {
     "discover_oidc_endpoints",
     "register_authorization_server",
     "register_http_transport",
+    "register_oauth_proxy",
     "register_sse_transport",
     "serve_stdio",
 }

@@ -53,9 +53,11 @@ from veloce.contrib.mcp.oauth_proxy import (
     InMemoryUpstreamOAuthProxyStore,
     PendingAuthorization,
     ProxyAuthorizationCode,
+    UpstreamOAuthProxy,
     UpstreamOAuthProxyStore,
     UpstreamTokenSet,
     discover_oidc_endpoints,
+    register_oauth_proxy,
 )
 from veloce.contrib.mcp.plan_bridge import JSON_SCHEMA_DIALECT
 from veloce.contrib.mcp.prompts import MCPPrompt, PromptRegistry, build_prompt_registry
@@ -140,10 +142,12 @@ __all__ = [
     "OAuthClient",
     "PendingAuthorization",
     "ProxyAuthorizationCode",
+    "UpstreamOAuthProxy",
     "UpstreamOAuthProxyStore",
     "UpstreamTokenSet",
     "discover_oidc_endpoints",
     "register_authorization_server",
+    "register_oauth_proxy",
     # Errors
     "AuthorizationError",
     "HeaderMismatchError",
