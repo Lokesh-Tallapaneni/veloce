@@ -148,3 +148,29 @@ async def test_two_concurrent_first_calls_perform_one_handshake():
 
     assert results == [{"tools": []}, {"tools": []}]
     assert state["init_count"] == 1
+
+
+async def test_sse_response_is_read_until_the_result_event():
+    sse_body = (
+        b'event: message\ndata: {"jsonrpc": "2.0", "method": "notifications/progress", "params": {}}\n\n'
+        b'event: message\ndata: {"jsonrpc": "2.0", "id": 2, "result": {"tools": []}}\n\n'
+    )
+
+    async def handler(request):
+        payload = json.loads(request.read())
+        if payload["method"] == "notifications/initialized":
+            return httpx2.Response(202)
+        if payload["method"] == "initialize":
+            return _json_response(payload, {"protocolVersion": "2025-11-25"})
+        return httpx2.Response(
+            200,
+            content=sse_body,
+            headers={"content-type": "text/event-stream", "mcp-session-id": "sess-1"},
+        )
+
+    client = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
+    request = http_upstream("http://upstream/mcp", client=client)
+
+    result = await request("tools/list", {})
+
+    assert result == {"tools": []}
