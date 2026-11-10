@@ -357,7 +357,7 @@ class InvocationMixin:
             positional, kwargs = split_positional_only(kwargs, tool.plan.positional_only)
         else:
             positional = ()
-        if _is_async_callable(handler):
+        if tool.plan.is_coro:
             return await handler(*positional, **kwargs)
         # The same offload the HTTP path applies, preserving request ContextVars.
         return await offload(handler, *positional, **kwargs)
