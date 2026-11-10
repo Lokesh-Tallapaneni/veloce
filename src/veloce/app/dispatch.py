@@ -1297,6 +1297,11 @@ class DispatchMixin(AppHost):
         """Convert handler return value to a Response object."""
         if isinstance(result, Response):
             return result
+        # Unconditional, ahead of `response_class`: no `Response` subclass
+        # gives an async generator/iterable a shape of its own, so streaming
+        # wins even when a route sets its own `response_class`.
+        if hasattr(result, "__aiter__"):
+            return StreamingResponse(result)
         # Gated so the JSONResponse-subclass branch below still owns dicts.
         if type(result) is dict and response_class is None:
             return self._json_from_handler(result)
@@ -1348,10 +1353,6 @@ class DispatchMixin(AppHost):
             return Response(body=result, content_type=MIME_HTML)
         if isinstance(result, _PydanticBaseModel):
             return self._json_from_handler(result.model_dump())
-        # An async generator/iterable has no JSON shape of its own; stream it
-        # rather than falling through to a `repr()`-string JSON body.
-        if hasattr(result, "__aiter__"):
-            return StreamingResponse(result)
         return self._json_from_handler(result)
 
     # ── Middleware phases ──────────────────────────────────

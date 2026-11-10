@@ -664,22 +664,14 @@ def unregister_plan_extension(key: str) -> None:
 
 
 def get_plan_extension(plan: HandlerPlan, key: str) -> Any:
-    """Return `plan`'s `key`-namespaced extension, computed once on first access.
+    """Return `plan`'s `key`-namespaced extension, computed once and cached.
 
-    Raises `KeyError` if nothing is registered for `key` - a typo, or the
-    owning package was never imported - regardless of `plan.handler`'s own
-    shape. Returns `None` without calling the provider at all when the
-    handler has no inspectable signature (a builtin or certain C callables) -
-    the same case `build_plan` already tolerates by producing an empty-slot
-    plan rather than raising, so a provider must be able to answer "nothing
-    special" for this case too.
-
-    Reads `inspect.signature(plan.handler)` directly rather than through
-    `_inspect_handler` - a provider only ever needs parameter kinds, never
-    resolved type hints, and `_inspect_handler`'s hint-salvage path depends on
-    the `path_params` `build_plan` was originally called with, which are not
-    available here; re-running it without them would refuse a parameter
-    `build_plan` already accepted.
+    Returns `None` without calling the provider when the handler has no
+    inspectable signature - the same case `build_plan` tolerates, so a
+    provider must answer "nothing special" for it too. Reads a bare
+    `inspect.signature(plan.handler)`, not `_inspect_handler`'s hint-salvage
+    path, which needs `build_plan`'s original `path_params` and would wrongly
+    reject a parameter `build_plan` already accepted.
     """
     if plan._extensions is None:
         plan._extensions = {}
@@ -1387,8 +1379,18 @@ def split_positional_only(
     Callers guard with `if positional_only:` first - the overwhelmingly
     common case has none, and a function call on every request to learn
     that measured ~40% slower than inlining the check at the call site.
+
+    A name absent from `kwargs` has no slot at all - a `Body`/`Form`/`File`
+    marker on a WebSocket handshake, which has no body to read one from -
+    and the call stops there, leaving it and anything after to the
+    handler's own Python-level default rather than raising `KeyError`.
     """
-    return tuple(kwargs.pop(name) for name in positional_only), kwargs
+    positional: list[Any] = []
+    for name in positional_only:
+        if name not in kwargs:
+            break
+        positional.append(kwargs.pop(name))
+    return tuple(positional), kwargs
 
 
 def build_route_dep_plans(

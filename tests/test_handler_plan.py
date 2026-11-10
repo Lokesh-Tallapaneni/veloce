@@ -27,6 +27,7 @@ from veloce._handler_plan import (
     build_route_dep_plans,
     get_plan_extension,
     register_plan_extension,
+    split_positional_only,
     unregister_plan_extension,
 )
 from veloce.background import BackgroundTasks
@@ -95,6 +96,22 @@ def test_plan_invoke_is_none_for_a_sync_handler():
         return None
 
     assert build_plan(h).invoke is None
+
+
+def test_split_positional_only_stops_at_the_first_unresolved_name():
+    """A trailing positional-only name with no slot (e.g. a Body/Form/File
+    marker on a WebSocket handler, which has no slot at all) has nothing in
+    `kwargs` to pop - it must be left out of the call, not raise `KeyError`,
+    so the handler falls back to its own Python-level default."""
+    positional, kwargs = split_positional_only({"a": 1, "b": 2}, ("a", "b", "c"))
+    assert positional == (1, 2)
+    assert kwargs == {}
+
+
+def test_split_positional_only_pops_every_resolved_name():
+    positional, kwargs = split_positional_only({"a": 1, "b": 2, "extra": 3}, ("a", "b"))
+    assert positional == (1, 2)
+    assert kwargs == {"extra": 3}
 
 
 def test_plan_records_var_positional_parameter_without_raising():

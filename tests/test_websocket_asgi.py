@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import TestClient, Veloce, WebSocketOriginMiddleware
+from veloce import Body, TestClient, Veloce, WebSocketOriginMiddleware
 from veloce.middleware.security import TrustedHostMiddleware
 
 
@@ -45,6 +45,26 @@ def test_websocket_positional_only_param_is_called_correctly():
     with client.websocket_connect("/ws") as ws:
         ws.send_text("hello")
         assert ws.receive_text() == "echo: hello"
+
+
+def test_websocket_positional_only_body_marker_falls_back_to_its_default():
+    """A `Body`/`Form`/`File` marker gets no slot on a WebSocket handshake
+    (there is no HTTP body); when that parameter is also POSITIONAL_ONLY,
+    the handler must still be callable, not crash with a bare `KeyError`."""
+    app = _make_app()
+    seen = []
+
+    @app.websocket("/ws")
+    async def echo(websocket, data: dict = Body(default={"x": 1}), /):
+        seen.append(data)
+        await websocket.accept()
+        await websocket.send_text("hi")
+        await websocket.close()
+
+    client = app.test_client()
+    with client.websocket_connect("/ws") as ws:
+        assert ws.receive_text() == "hi"
+    assert len(seen) == 1
 
 
 def test_websocket_subprotocol_negotiation():
