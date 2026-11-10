@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Veloce serialises with `msgspec` when `orjson` cannot be installed, instead of refusing to import. ([#346](https://github.com/Lokesh-Tallapaneni/veloce/pull/346))
+- Dispatching a handler with no `POSITIONAL_ONLY` parameter no longer calls `split_positional_only`, cutting the per-call cost that fix added back to near zero.
 
 ### Deprecated
 

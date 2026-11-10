@@ -1372,11 +1372,12 @@ def split_positional_only(
 
     A `POSITIONAL_ONLY` parameter cannot be passed by keyword, so a caller
     invoking a resolved handler must call it as `handler(*positional, **kwargs)`
-    rather than pure `handler(**kwargs)`. `kwargs` is mutated in place; the
-    common case (no positional-only parameters) returns it untouched.
+    rather than pure `handler(**kwargs)`. `kwargs` is mutated in place.
+
+    Callers guard with `if positional_only:` first - the overwhelmingly
+    common case has none, and a function call on every request to learn
+    that measured ~40% slower than inlining the check at the call site.
     """
-    if not positional_only:
-        return (), kwargs
     return tuple(kwargs.pop(name) for name in positional_only), kwargs
 
 

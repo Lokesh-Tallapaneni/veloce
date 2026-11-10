@@ -1128,7 +1128,10 @@ class DispatchMixin(AppHost):
         """
         if is_coro is None:
             is_coro = _is_async_callable(handler)
-        positional, kwargs = split_positional_only(kwargs, positional_only)
+        if positional_only:
+            positional, kwargs = split_positional_only(kwargs, positional_only)
+        else:
+            positional = ()
         if is_coro:
             return await handler(*positional, **kwargs)
         # `offload` preserves request-scoped ContextVars.

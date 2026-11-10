@@ -350,7 +350,10 @@ class InvocationMixin:
             raise _InvalidArgumentsError(str(err)) from err
 
         handler = tool.handler
-        positional, kwargs = split_positional_only(kwargs, tool.plan.positional_only)
+        if tool.plan.positional_only:
+            positional, kwargs = split_positional_only(kwargs, tool.plan.positional_only)
+        else:
+            positional = ()
         if _is_async_callable(handler):
             return await handler(*positional, **kwargs)
         # The same offload the HTTP path applies, preserving request ContextVars.
