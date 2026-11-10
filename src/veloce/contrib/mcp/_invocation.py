@@ -354,7 +354,7 @@ class InvocationMixin:
             return await invoke(**kwargs)
         handler = tool.handler
         if tool.plan.positional_only:
-            positional, kwargs = split_positional_only(kwargs, tool.plan.positional_only)
+            positional, kwargs = split_positional_only(kwargs, tool.plan.positional_only, handler)
         else:
             positional = ()
         if tool.plan.is_coro:

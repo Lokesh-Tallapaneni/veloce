@@ -1136,7 +1136,7 @@ class DispatchMixin(AppHost):
         if is_coro is None:
             is_coro = _is_async_callable(handler)
         if positional_only:
-            positional, kwargs = split_positional_only(kwargs, positional_only)
+            positional, kwargs = split_positional_only(kwargs, positional_only, handler)
         else:
             positional = ()
         if is_coro:

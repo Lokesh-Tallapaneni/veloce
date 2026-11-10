@@ -404,7 +404,7 @@ class AsgiMixin(AppHost):
                 kwargs = {}
                 positional_only = ()
             if positional_only:
-                positional, kwargs = split_positional_only(kwargs, positional_only)
+                positional, kwargs = split_positional_only(kwargs, positional_only, handler)
             else:
                 positional = ()
             await handler(*positional, **kwargs)

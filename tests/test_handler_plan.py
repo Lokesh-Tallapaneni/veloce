@@ -98,18 +98,39 @@ def test_plan_invoke_is_none_for_a_sync_handler():
     assert build_plan(h).invoke is None
 
 
-def test_split_positional_only_stops_at_the_first_unresolved_name():
+def test_split_positional_only_fills_a_trailing_unresolved_name_with_its_default():
     """A trailing positional-only name with no slot (e.g. a Body/Form/File
     marker on a WebSocket handler, which has no slot at all) has nothing in
-    `kwargs` to pop - it must be left out of the call, not raise `KeyError`,
-    so the handler falls back to its own Python-level default."""
-    positional, kwargs = split_positional_only({"a": 1, "b": 2}, ("a", "b", "c"))
-    assert positional == (1, 2)
+    `kwargs` to pop - it must take the handler's own declared default for
+    that parameter, not raise `KeyError`."""
+
+    async def h(a, b, c=99, /):
+        return None
+
+    positional, kwargs = split_positional_only({"a": 1, "b": 2}, ("a", "b", "c"), h)
+    assert positional == (1, 2, 99)
+    assert kwargs == {}
+
+
+def test_split_positional_only_keeps_later_names_aligned_past_a_missing_one():
+    """A missing name in the MIDDLE of `positional_only` must not shift later,
+    resolved names into the wrong position - each one is bound by position,
+    so skipping one without filling it would silently swap two parameters'
+    values rather than raising."""
+
+    async def h(a, b=99, c=5, /):
+        return None
+
+    positional, kwargs = split_positional_only({"a": 1, "c": 7}, ("a", "b", "c"), h)
+    assert positional == (1, 99, 7)
     assert kwargs == {}
 
 
 def test_split_positional_only_pops_every_resolved_name():
-    positional, kwargs = split_positional_only({"a": 1, "b": 2, "extra": 3}, ("a", "b"))
+    async def h(a, b, /, **_extra):
+        return None
+
+    positional, kwargs = split_positional_only({"a": 1, "b": 2, "extra": 3}, ("a", "b"), h)
     assert positional == (1, 2)
     assert kwargs == {"extra": 3}
 

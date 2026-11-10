@@ -50,12 +50,17 @@ def test_websocket_positional_only_param_is_called_correctly():
 def test_websocket_positional_only_body_marker_falls_back_to_its_default():
     """A `Body`/`Form`/`File` marker gets no slot on a WebSocket handshake
     (there is no HTTP body); when that parameter is also POSITIONAL_ONLY,
-    the handler must still be callable, not crash with a bare `KeyError`."""
+    the handler must still be callable, not crash with a bare `KeyError`.
+
+    The handler receives the `Body` marker object itself, not its `.default`
+    value - the same (pre-existing, unresolved-by-this-fix) behaviour the
+    keyword-argument case already has for a marker with no slot."""
     app = _make_app()
     seen = []
+    marker = Body(default={"x": 1})
 
     @app.websocket("/ws")
-    async def echo(websocket, data: dict = Body(default={"x": 1}), /):
+    async def echo(websocket, data: dict = marker, /):
         seen.append(data)
         await websocket.accept()
         await websocket.send_text("hi")
@@ -64,7 +69,27 @@ def test_websocket_positional_only_body_marker_falls_back_to_its_default():
     client = app.test_client()
     with client.websocket_connect("/ws") as ws:
         assert ws.receive_text() == "hi"
-    assert len(seen) == 1
+    assert seen == [marker]
+
+
+def test_websocket_positional_only_param_after_a_no_slot_one_keeps_its_value():
+    """A resolved positional-only name AFTER a no-slot one must still reach
+    the handler as its own value - not get bound to the no-slot parameter's
+    position, and not be rejected as a keyword."""
+    app = _make_app()
+    seen = []
+
+    @app.websocket("/ws")
+    async def echo(websocket, data: dict = Body(default={"x": 1}), q: int = 0, /):
+        seen.append(q)
+        await websocket.accept()
+        await websocket.send_text("hi")
+        await websocket.close()
+
+    client = app.test_client()
+    with client.websocket_connect("/ws?q=5") as ws:
+        assert ws.receive_text() == "hi"
+    assert seen == [5]
 
 
 def test_websocket_subprotocol_negotiation():

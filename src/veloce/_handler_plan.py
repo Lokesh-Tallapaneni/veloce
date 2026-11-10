@@ -1368,7 +1368,7 @@ def _variadic_param_error(handler_name: str, param_name: str, kind: Any) -> str:
 
 
 def split_positional_only(
-    kwargs: dict[str, Any], positional_only: tuple[str, ...]
+    kwargs: dict[str, Any], positional_only: tuple[str, ...], handler: Callable[..., Any]
 ) -> tuple[tuple[Any, ...], dict[str, Any]]:
     """Pull `positional_only` names out of `kwargs`, in order, for a positional call.
 
@@ -1382,14 +1382,20 @@ def split_positional_only(
 
     A name absent from `kwargs` has no slot at all - a `Body`/`Form`/`File`
     marker on a WebSocket handshake, which has no body to read one from -
-    and the call stops there, leaving it and anything after to the
-    handler's own Python-level default rather than raising `KeyError`.
+    and takes `handler`'s own declared default for that parameter instead of
+    raising `KeyError`. It cannot simply be left out: positional arguments
+    bind by position, so omitting one would silently shift every later
+    resolved name into the wrong parameter rather than raising.
     """
     positional: list[Any] = []
+    sig: inspect.Signature | None = None
     for name in positional_only:
-        if name not in kwargs:
-            break
-        positional.append(kwargs.pop(name))
+        if name in kwargs:
+            positional.append(kwargs.pop(name))
+            continue
+        if sig is None:
+            sig = inspect.signature(handler)
+        positional.append(sig.parameters[name].default)
     return tuple(positional), kwargs
 
 
