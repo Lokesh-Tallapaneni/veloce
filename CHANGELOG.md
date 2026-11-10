@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `JSONBackend` names the available JSON backends for `use_json_backend`. ([#346](https://github.com/Lokesh-Tallapaneni/veloce/pull/346))
 - `ujson` and the standard library `json` are selectable JSON backends. ([#346](https://github.com/Lokesh-Tallapaneni/veloce/pull/346))
 - `VELOCE_JSON_BACKEND` sets the same choice from the process environment. ([#346](https://github.com/Lokesh-Tallapaneni/veloce/pull/346))
-- `UpstreamOAuthProxyStore`, `InMemoryUpstreamOAuthProxyStore`, `PendingAuthorization`, and `UpstreamTokenSet` hold the state an OAuth proxy to an upstream identity provider carries between its authorize and token legs.
+- `UpstreamOAuthProxyStore`, `InMemoryUpstreamOAuthProxyStore`, `PendingAuthorization`, `ProxyAuthorizationCode`, and `UpstreamTokenSet` hold the state an OAuth proxy to an upstream identity provider carries between its authorize and token legs.
 - `discover_oidc_endpoints` fetches an issuer's `/.well-known/openid-configuration` document and returns its authorization and token endpoints.
 
 ### Changed

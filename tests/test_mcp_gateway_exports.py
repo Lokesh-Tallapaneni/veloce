@@ -62,6 +62,7 @@ MCP_ALL = {
     "OAuthClient",
     "OriginNotAllowedError",
     "PendingAuthorization",
+    "ProxyAuthorizationCode",
     "PromptRegistry",
     "PromptsCapability",
     "ProtocolVersionError",

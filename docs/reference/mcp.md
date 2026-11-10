@@ -83,6 +83,7 @@ tokens yourself: the data a proxy carries between the authorize and token
 legs, and the OIDC discovery convenience.
 
 ::: veloce.contrib.mcp.PendingAuthorization
+::: veloce.contrib.mcp.ProxyAuthorizationCode
 ::: veloce.contrib.mcp.UpstreamTokenSet
 ::: veloce.contrib.mcp.UpstreamOAuthProxyStore
 ::: veloce.contrib.mcp.InMemoryUpstreamOAuthProxyStore

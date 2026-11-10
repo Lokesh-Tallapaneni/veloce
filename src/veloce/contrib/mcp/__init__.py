@@ -52,6 +52,7 @@ from veloce.contrib.mcp.icons import Icon
 from veloce.contrib.mcp.oauth_proxy import (
     InMemoryUpstreamOAuthProxyStore,
     PendingAuthorization,
+    ProxyAuthorizationCode,
     UpstreamOAuthProxyStore,
     UpstreamTokenSet,
     discover_oidc_endpoints,
@@ -138,6 +139,7 @@ __all__ = [
     "MCPAuthorizationServer",
     "OAuthClient",
     "PendingAuthorization",
+    "ProxyAuthorizationCode",
     "UpstreamOAuthProxyStore",
     "UpstreamTokenSet",
     "discover_oidc_endpoints",

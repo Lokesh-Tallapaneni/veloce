@@ -225,6 +225,9 @@ UNEXPORTED: dict[str, str] = {
     "contrib.mcp.toolsearch.ToolSearch": "internal to the MCP integration; not part of its published surface",
     "contrib.mcp.transports.event_store.SSEEventStore": "internal to the MCP integration; not part of its published surface",
     "contrib.mcp.transports.session_store.HttpSessionStore": "internal to the MCP integration; not part of its published surface",
+    # Staged: usable only once `register_oauth_proxy` (a later task) can mount
+    # it. Exported from the gateway, and removed from this dict, at that point.
+    "contrib.mcp.oauth_proxy.UpstreamOAuthProxy": "staged for export once register_oauth_proxy exists",
     # ── routing/converters concrete classes ──────────────────────
     # `veloce.routing` publishes the `Converter` base and `register_converter`;
     # the built-in converters are implementations reached through that seam,
