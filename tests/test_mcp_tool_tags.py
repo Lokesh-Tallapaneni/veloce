@@ -121,8 +121,9 @@ async def test_a_policy_can_select_a_declared_tool_by_tag():
     assert {t["name"] for t in response["result"]["tools"]} == {"labelled"}
 
 
-async def test_hiding_a_tool_by_tag_does_not_make_it_callable_by_others():
-    """Hiding is not enforcement; the scope check is unaffected by tags."""
+async def test_a_tag_filter_that_hides_a_tool_also_blocks_calling_it():
+    """A tool a tag-based policy hides is refused at tools/call too, same as
+    any other tool_filter rejection - tags are just what the policy reads."""
 
     def hide_all(tool, principal) -> bool:
         return False
@@ -137,7 +138,8 @@ async def test_hiding_a_tool_by_tag_does_not_make_it_callable_by_others():
         },
         MCPSession(),
     )
-    assert "error" not in response
+    assert "error" in response
+    assert "labelled" in response["error"]["message"]
 
 
 # ── A path parameter says what its string means ──────────────────────

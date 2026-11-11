@@ -187,6 +187,29 @@ def _apply_sync_tool_filter(
     return [tool for tool in tools if tool_filter(tool, principal)]
 
 
+async def _tools_passing_filter(
+    tool_filter: Any, tools: list[MCPTool], principal: Any
+) -> list[MCPTool]:
+    """Run `tool_filter` over `tools`, sync or async.
+
+    The one evaluation path `tools/list` (the whole candidate set) and
+    `tools/call` (a list of one) both call, so neither can drift from how
+    the other decides. A sync filter is offloaded once for the whole batch,
+    including a batch of one: one thread handoff serving every tool, not
+    one handoff per tool.
+    """
+    if _is_async_callable(tool_filter):
+        visible = []
+        for tool in tools:
+            # `_is_async_callable` picked the branch; the alias unions both.
+            if await cast("Awaitable[bool]", tool_filter(tool, principal)):
+                visible.append(tool)
+        return visible
+    return cast(
+        "list[MCPTool]", await offload(_apply_sync_tool_filter, tool_filter, tools, principal)
+    )
+
+
 def _requested_version(params: dict[str, Any]) -> str | None:
     """Return the tool version this call asked for, if it named one."""
     meta = params.get("_meta")
@@ -1122,15 +1145,12 @@ class MCPServer(TasksMixin, InvocationMixin):
     async def _candidate_tools(self) -> list[MCPTool]:
         """List the tools the calling principal may see, in registration order.
 
-        Visibility is scoped by the *same* check `tools/call` performs, so a tool
-        is never listed for a caller that cannot invoke it. What this connection
-        hid and a configured filter narrow it further; neither can reveal a tool
-        the scope check rejected.
-
-        Narrowing is not enforcement: a tool hidden by `MCPContext.hide` or a
-        `mount_mcp(tool_filter=...)` policy is still callable, because what a
-        caller may invoke is decided by its declared scopes alone. Anything that
-        must be refused needs `required_scopes`.
+        Visibility is scoped by the *same* checks `tools/call` performs, in the
+        same order: declared scopes first, then what this connection hid, then
+        a configured filter. None of the three can reveal a tool an earlier
+        one rejected, and all three are enforced identically at call time - a
+        tool this method omits is also a tool `tools/call` refuses, as
+        "Unknown tool", not a permission error.
 
         The spec permits exactly this axis - the tool set "MAY vary by the
         authorization presented on the request [...] since credentials are
@@ -1161,18 +1181,7 @@ class MCPServer(TasksMixin, InvocationMixin):
         tool_filter = self._tool_filter
         if tool_filter is None:
             return scoped
-        if _is_async_callable(tool_filter):
-            visible = []
-            for tool in scoped:
-                # `_is_async_callable` picked the branch; the alias unions both.
-                if await cast("Awaitable[bool]", tool_filter(tool, principal)):
-                    visible.append(tool)
-            return visible
-        # One handoff: offloading each predicate makes microseconds milliseconds.
-        return cast(
-            "list[MCPTool]",
-            await offload(_apply_sync_tool_filter, tool_filter, scoped, principal),
-        )
+        return await _tools_passing_filter(tool_filter, scoped, principal)
 
     @staticmethod
     def _describe_tool(tool: MCPTool) -> dict[str, Any]:
@@ -1204,6 +1213,20 @@ class MCPServer(TasksMixin, InvocationMixin):
         if _principal_lacks_scopes(tool.required_scopes):
             await self._instrument(tool, started, status.HTTP_403_FORBIDDEN)
             raise AuthorizationError(tool.required_scopes)
+
+        # A tool this connection hid, or that a configured policy hides, is
+        # rejected the same way an unregistered name would be - not a
+        # permission error, since nothing distinguishes "hidden" from "never
+        # registered" to the caller.
+        session = _session_var.get()
+        hidden = session.hidden if session is not None else None
+        if hidden and tool.name in hidden:
+            raise InvalidParamsError(f"Unknown tool: {name}")
+        tool_filter = self._tool_filter
+        if tool_filter is not None and not await _tools_passing_filter(
+            tool_filter, [tool], current_principal()
+        ):
+            raise InvalidParamsError(f"Unknown tool: {name}")
 
         # Started detached; the client retrieves the result via `tasks/result`.
         if "task" in params:

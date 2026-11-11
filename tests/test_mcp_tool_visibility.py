@@ -1,13 +1,15 @@
-"""Caller-scoped listing visibility.
+"""Caller-scoped listing visibility, and tool_filter's call-time enforcement.
 
 The tool set a caller is shown may narrow by the authorization presented on the
-request; it must never narrow by connection state, and hiding a tool must never
-change what happens when it is called. These tests pin both halves.
+request; it must never narrow by connection state. A tool a `tool_filter`
+hides from the listing is also refused at `tools/call` - the same name, the
+same rejection, so a caller cannot tell "hidden" from "never registered".
+These tests pin both halves.
 
 Narrowing has two sources. Declared scopes always apply, to every listing: a
 caller that would be refused a tool, prompt or resource is not shown it. A
 `tool_filter` narrows what is left of the tool list, by whatever policy the
-application has.
+application has, and now also governs the call.
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ from __future__ import annotations
 import functools
 from typing import Any
 
-from tests._mcp import FORBIDDEN, call, call_error
+from tests._mcp import FORBIDDEN, INVALID_PARAMS, call, call_error
 from veloce import Veloce
 from veloce.contrib.mcp.server import MCPServer
 from veloce.principal import Principal, set_principal
@@ -225,11 +227,13 @@ async def test_policy_returning_a_truthy_non_bool_is_coerced():
     assert _names(await _list(server)) == {"read_public", "read_invoice"}
 
 
-# ── Hiding is not enforcement ────────────────────────────────────────
+# ── Hiding is enforced at call time too ───────────────────────────────
 
 
 async def test_hidden_tool_still_raises_authorization_error_when_called():
-    """A tool hidden from listing is not thereby callable, nor silently missing."""
+    """A tool hidden from listing, AND out of the caller's scope, raises the
+    scope error, not the filter rejection - the scope check runs first and
+    this caller would be refused regardless of filter state."""
     server = MCPServer(_app(), tool_filter=lambda tool, principal: False)
     set_principal(Principal(subject="nobody", scopes=frozenset()))
     assert _names(await _list(server)) == set()
@@ -237,14 +241,70 @@ async def test_hidden_tool_still_raises_authorization_error_when_called():
     assert error["code"] == FORBIDDEN
 
 
-async def test_a_policy_hidden_but_in_scope_tool_remains_callable():
-    """The policy governs visibility only; invocation still answers to scopes."""
+async def test_a_policy_hidden_tool_is_rejected_as_unknown_even_in_scope():
+    """Review Focus #1: a tool_filter that hides a tool now blocks the call
+    too, not just the listing - and looks exactly like a nonexistent tool
+    (InvalidParamsError), not a permission error, so a caller cannot tell
+    the difference between "hidden" and "never registered"."""
     server = MCPServer(_app(), tool_filter=lambda tool, principal: False)
     set_principal(Principal(subject="ops", scopes=frozenset({"admin"})))
     assert _names(await _list(server)) == set()
+    error = await call_error(server, "tools/call", {"name": "delete_tenant", "arguments": {}})
+    assert error["code"] == INVALID_PARAMS
+    assert "delete_tenant" in error["message"]
+
+
+async def test_an_unfiltered_in_scope_tool_still_succeeds():
+    """Review Focus #4, the common-path regression guard: no tool_filter,
+    sufficient scope - the call must still succeed."""
+    server = MCPServer(_app())
+    set_principal(Principal(subject="ops", scopes=frozenset({"admin"})))
     result = await call(server, "tools/call", {"name": "delete_tenant", "arguments": {}})
     assert result.get("isError") is not True
     assert "deleted" in result["content"][0]["text"]
+
+
+async def test_a_filter_that_admits_the_tool_still_allows_the_call():
+    """A tool_filter that returns True for this tool must not block it -
+    the new check only rejects what the filter actually hides."""
+    server = MCPServer(_app(), tool_filter=lambda tool, principal: True)
+    set_principal(Principal(subject="ops", scopes=frozenset({"admin"})))
+    result = await call(server, "tools/call", {"name": "delete_tenant", "arguments": {}})
+    assert result.get("isError") is not True
+
+
+async def test_an_async_tool_filter_is_awaited_at_call_time_too():
+    """Review Focus #5."""
+    seen = []
+
+    async def only_reads(tool: Any, principal: Any) -> bool:
+        seen.append(tool.name)
+        return tool.name.startswith("read_")
+
+    server = MCPServer(_app(), tool_filter=only_reads)
+    set_principal(Principal(subject="ops", scopes=frozenset({"admin"})))
+    error = await call_error(server, "tools/call", {"name": "delete_tenant", "arguments": {}})
+    assert error["code"] == INVALID_PARAMS
+    assert "delete_tenant" in seen
+    result = await call(server, "tools/call", {"name": "read_public", "arguments": {}})
+    assert result.get("isError") is not True
+
+
+async def test_a_sync_tool_filter_is_offloaded_and_sees_the_right_principal():
+    """Review Focus #6: a sync tool_filter runs on a worker thread via
+    `offload`, and the per-request principal (a ContextVar-backed value)
+    must still be the one visible from inside it - the same guarantee the
+    tools/list path already has, now proven for tools/call."""
+    seen: list[str | None] = []
+
+    def record_and_reject(tool: Any, principal: Any) -> bool:
+        seen.append(getattr(principal, "subject", None))
+        return False
+
+    server = MCPServer(_app(), tool_filter=record_and_reject)
+    set_principal(Principal(subject="ada", scopes=frozenset({"admin"})))
+    await call_error(server, "tools/call", {"name": "delete_tenant", "arguments": {}})
+    assert seen == ["ada"]
 
 
 # ── Transports without a per-request credential ──────────────────────

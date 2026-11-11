@@ -161,6 +161,12 @@ zstd = ["zstandard>=0.21"]
 # stdlib - so the converter answers the same either way, just faster. Install
 # with `pip install veloceframework[ciso8601]`.
 ciso8601 = ["ciso8601>=2.3"]
+# HTTP client support for veloce.contrib.mcp.oauth_proxy's upstream-IdP calls
+# (OIDC discovery, authorization-code exchange, refresh). httpx2 requires
+# Python >= 3.11, so this (and its mirror in `all` and `dev`) carries a
+# marker - see oauth_proxy.py's install-hint RuntimeError for the 3.10 story.
+# Install with `pip install veloceframework[mcp-oauth-proxy]`.
+mcp-oauth-proxy = ["httpx2>=2.10.0; python_version >= '3.11'"]
 # Everything optional in one shot.
 all = [
     "uvicorn[standard]>=0.23",
@@ -174,6 +180,7 @@ all = [
     "brotli>=1.2.1",
     "zstandard>=0.21",
     "ciso8601>=2.3",
+    "httpx2>=2.10.0; python_version >= '3.11'",
 ]
 
 [project.scripts]
@@ -248,6 +255,10 @@ dev = [
     "brotli>=1.2.1",
     "zstandard>=0.25.0",
     "ciso8601>=2.3.3",
+    # The `mcp-oauth-proxy` extra's backend, so the default test run exercises
+    # oauth_proxy's OIDC-discovery path; the 3.10 leg installs without it and
+    # the guarded tests skip (same shape as the `tomli` marker above).
+    "httpx2>=2.10.0; python_version >= '3.11'",
 ]
 docs = [
     # The `imaging` extra pulls Pillow for the social-card plugin. Pillow's
@@ -461,6 +472,7 @@ module = [
     "brotlicffi",
     "zstandard",
     "ciso8601",
+    "httpx2",
 ]
 ignore_missing_imports = true
 

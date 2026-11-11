@@ -15,19 +15,22 @@ being replayed against another that shares an authorization server. It now needs
 this server's own URI to compare against, and says so loudly when it is not given
 rather than claiming a check it cannot perform.
 
-**2. `tool_filter` is not an authorization boundary.** `_candidate_tools` said
-"an unlisted tool still raises `AuthorizationError`". It does not - and
-`MCPContext.hide`, in the same codebase, documents the true rule ("Hiding is not
-enforcement"). The code matches `hide`; the other docstring was the false one, and
-it was false in the dangerous direction: an operator reading it would use
-`tool_filter` as a permission boundary.
+**2. `tool_filter` is not an authorization boundary. (Since closed - see below.)**
+`_candidate_tools` said "an unlisted tool still raises `AuthorizationError`". It
+did not - and `MCPContext.hide`, in the same codebase, documented the true rule
+("Hiding is not enforcement"). The code matched `hide`; the other docstring was
+the false one, and it was false in the dangerous direction: an operator reading
+it would use `tool_filter` as a permission boundary.
 
-    tool_filter hiding everything
+    tool_filter hiding everything (as it was)
       tools/list -> {"tools": []}
       tools/call -> "RAN THE HIDDEN TOOL"
 
-The behaviour is deliberate and unchanged - scopes are the boundary - so this
-pins the behaviour *and* that the two docstrings now agree.
+That gap for tools is now closed: `tools/call` refuses a `tool_filter`-hidden
+or `MCPContext.hide`-hidden tool the same way it refuses an unregistered one.
+Prompts and resources are not yet covered the same way - `prompts/get` and
+`resources/read` still only narrow by declared scopes, not by `hide()` -
+tracked separately, not pinned by this file.
 
 **3. `@app.middleware("http", **kwargs)` dropped every option.** The decorator
 branch never touched `kwargs`. `priority=` and `name=` are real `add_middleware`
@@ -210,15 +213,16 @@ def test_a_filtered_tool_is_absent_from_the_listing():
     assert listed["result"]["tools"] == []
 
 
-def test_a_filtered_tool_is_still_callable():
-    """Deliberate: scopes are the boundary. Pinned so the docs cannot drift back."""
+def test_a_filtered_tool_is_no_longer_callable():
+    """The gap documented above (2) is closed: a hidden tool is refused."""
     client = _filtered_app(lambda tool, principal: False)
     called = client.post(
         "/mcp",
         json={"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "op"}},
         headers={"Accept": "application/json"},
     ).json()
-    assert called["result"]["content"][0]["text"] == "ran"
+    assert "error" in called
+    assert "op" in called["error"]["message"]
 
 
 def test_an_unfiltered_tool_is_listed():
@@ -231,14 +235,15 @@ def test_an_unfiltered_tool_is_listed():
     assert [t["name"] for t in listed["result"]["tools"]] == ["op"]
 
 
-def test_the_two_docstrings_agree_that_hiding_is_not_enforcement():
-    """The defect was a contradiction; this fails if either side drifts back."""
+def test_the_two_docstrings_agree_that_a_hidden_tool_is_refused_at_call_time():
+    """The original defect was a contradiction between these two docstrings;
+    this fails if either side drifts back to claiming - or silently stops
+    claiming - that a hidden/filtered TOOL is still callable."""
 
     hide_doc = MCPContext.hide.__doc__ or ""
     candidates_doc = MCPServer._candidate_tools.__doc__ or ""
-    assert "not enforcement" in hide_doc
-    assert "not enforcement" in candidates_doc
-    assert "still raises" not in candidates_doc
+    assert "tools/call" in hide_doc and "unregistered" in hide_doc
+    assert "tools/call" in candidates_doc and "Unknown tool" in candidates_doc
 
 
 # ── 3. the decorator form refuses options it cannot honour ───────────

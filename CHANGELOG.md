@@ -12,11 +12,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `JSONBackend` names the available JSON backends for `use_json_backend`. ([#346](https://github.com/Lokesh-Tallapaneni/veloce/pull/346))
 - `ujson` and the standard library `json` are selectable JSON backends. ([#346](https://github.com/Lokesh-Tallapaneni/veloce/pull/346))
 - `VELOCE_JSON_BACKEND` sets the same choice from the process environment. ([#346](https://github.com/Lokesh-Tallapaneni/veloce/pull/346))
+- `UpstreamOAuthProxyStore`, `InMemoryUpstreamOAuthProxyStore`, `PendingAuthorization`, `ProxyAuthorizationCode`, and `UpstreamTokenSet` hold the state an OAuth proxy to an upstream identity provider carries between its authorize and token legs. ([#350](https://github.com/Lokesh-Tallapaneni/veloce/pull/350))
+- `discover_oidc_endpoints` fetches an issuer's `/.well-known/openid-configuration` document and returns its authorization and token endpoints. ([#350](https://github.com/Lokesh-Tallapaneni/veloce/pull/350))
+- `UpstreamOAuthProxy` fronts a real upstream OAuth/OIDC identity provider for MCP clients, minting its own locally-signed JWTs instead of issuing its own authorization-server credentials. ([#350](https://github.com/Lokesh-Tallapaneni/veloce/pull/350))
+- `register_oauth_proxy` mounts an `UpstreamOAuthProxy`'s discovery, authorize, callback, token, and registration endpoints on an app. ([#350](https://github.com/Lokesh-Tallapaneni/veloce/pull/350))
+- `UpstreamOAuthProxy.allowed_redirect_uris` is the exact-match allowlist `/authorize` and `/register` enforce; it defaults to empty, accepting nothing. ([#350](https://github.com/Lokesh-Tallapaneni/veloce/pull/350))
+- `UpstreamOAuthProxy.upstream_scopes` is requested from the upstream provider at `/authorize`, separately from `scopes_supported`, which the minted JWT carries instead. ([#350](https://github.com/Lokesh-Tallapaneni/veloce/pull/350))
+- `UpstreamOAuthProxy.aclose()` closes the persistent HTTP client the proxy opens against the upstream token endpoint. ([#350](https://github.com/Lokesh-Tallapaneni/veloce/pull/350))
 
 ### Changed
 
 - Veloce serialises with `msgspec` when `orjson` cannot be installed, instead of refusing to import. ([#346](https://github.com/Lokesh-Tallapaneni/veloce/pull/346))
+- `UpstreamOAuthProxy` reuses one HTTP client across every upstream token exchange instead of opening a new connection per call. ([#350](https://github.com/Lokesh-Tallapaneni/veloce/pull/350))
 - An MCP tool or prompt declaring `*args`/`**kwargs` now raises `TypeError` when the registry builds, instead of publishing a schema that silently omits the parameter; name every parameter explicitly. ([#349](https://github.com/Lokesh-Tallapaneni/veloce/pull/349))
+- A tool hidden by `MCPContext.hide()` or a `mount_mcp(tool_filter=...)` policy is no longer callable by name; pair visibility with `required_scopes` if you also need the call refused. ([#350](https://github.com/Lokesh-Tallapaneni/veloce/pull/350))
 
 ### Deprecated
 
@@ -29,6 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The docs routes are registered before a second event loop can dispatch against the route table. ([#343](https://github.com/Lokesh-Tallapaneni/veloce/pull/343))
 - A `POSITIONAL_ONLY` parameter (`def f(a, b, /)`) on a route handler, a WebSocket handler, or an MCP tool/prompt no longer crashes every call. A `Depends()` dependency, a request hook, or an error handler with one still does - out of scope for this fix. ([#349](https://github.com/Lokesh-Tallapaneni/veloce/pull/349))
 - A handler returning a bare async generator now streams it instead of serialising the generator object's `repr()` as the response body, including with an explicit `response_class` that cannot itself accept one. ([#349](https://github.com/Lokesh-Tallapaneni/veloce/pull/349))
+- `UpstreamOAuthProxy`'s refresh grant no longer consumes the client's refresh token before the upstream exchange succeeds; a transient upstream failure can be retried with the same token instead of forcing `/authorize` again. ([#350](https://github.com/Lokesh-Tallapaneni/veloce/pull/350))
+- A non-numeric or `null` `expires_in` from the upstream no longer crashes the callback or the refresh grant; the exchange is now rejected cleanly like any other malformed response. ([#350](https://github.com/Lokesh-Tallapaneni/veloce/pull/350))
+- A proxy-issued authorization code or upstream token set the client never redeems is now swept from the in-memory store instead of growing it without bound. ([#350](https://github.com/Lokesh-Tallapaneni/veloce/pull/350))
 
 ## [0.21.0] - 2026-10-25
 
