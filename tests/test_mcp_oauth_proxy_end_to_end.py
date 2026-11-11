@@ -82,6 +82,15 @@ def _query(location: str) -> dict[str, str]:
     return {k: v[0] for k, v in urllib.parse.parse_qs(parsed.query).items()}
 
 
+def _tamper_signature(jwt: str) -> str:
+    """Flip the signature's first base64url character, guaranteed to change
+    the decoded bytes - unlike the last character, which can fall in a
+    partial encoding group's unused bits and decode unchanged."""
+    header, payload, signature = jwt.rsplit(".", 2)
+    replacement = "A" if signature[0] != "A" else "B"
+    return f"{header}.{payload}.{replacement}{signature[1:]}"
+
+
 def _mock_upstream_token_endpoint(monkeypatch) -> None:
     httpx2 = pytest.importorskip("httpx2")
 
@@ -178,8 +187,7 @@ async def test_a_tampered_proxy_minted_jwt_is_rejected_at_a_real_tool_call(monke
 
     async with AsyncTestClient(_app(proxy)) as client:
         access_token = await _mint_access_token_through_the_full_flow(client, proxy)
-        header, payload, signature = access_token.rsplit(".", 2)
-        tampered = f"{header}.{payload}.{signature[:-1]}{'A' if signature[-1] != 'A' else 'B'}"
+        tampered = _tamper_signature(access_token)
 
         call = await client.post(
             "/mcp",
