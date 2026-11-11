@@ -6,6 +6,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `http_upstream` builds a session-aware `request` callable for `add_mcp_proxy` against a real Streamable HTTP upstream server - handshake, `Mcp-Session-Id` carry, and one re-initialize-and-retry on an expired session. ([#355](https://github.com/Lokesh-Tallapaneni/veloce/pull/355))
+- The `mcp-proxy` extra installs `httpx2`, the dependency `http_upstream` needs (Python >= 3.11). ([#355](https://github.com/Lokesh-Tallapaneni/veloce/pull/355))
+
 ## [0.22.0] - 2026-11-11
 
 ### Added

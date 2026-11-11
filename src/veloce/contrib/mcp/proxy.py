@@ -12,15 +12,13 @@ owns the client, and with it the retry policy, the credentials, the connection
 pool and the timeouts.
 
 Discovery is I/O, so it is awaited at setup rather than hidden behind a
-decorator, and it runs before `mount_mcp` builds the registry::
+decorator, and it runs before `mount_mcp` builds the registry. Against a real
+Streamable HTTP upstream, `http_upstream` builds the `request` callable for
+you - handshake, session-id carry, and all::
 
-    async def call_upstream(method: str, params: dict) -> dict:
-        response = await client.post(UPSTREAM, json={
-            "jsonrpc": "2.0", "id": 1, "method": method, "params": params,
-        })
-        return response.json()["result"]
+    from veloce.contrib.mcp import add_mcp_proxy, http_upstream
 
-    await add_mcp_proxy(app, "upstream", call_upstream)
+    await add_mcp_proxy(app, "upstream", http_upstream("http://localhost:8000/mcp"))
     app.mount_mcp(transport="http")
 
 The upstream's own `inputSchema` is published unchanged: it is what the upstream
