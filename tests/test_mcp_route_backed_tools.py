@@ -8,12 +8,14 @@ comments. This is one of those points.
 from __future__ import annotations
 
 import orjson
+import pytest
 
 from tests._mcp_shared import (
     FullUser,
     Item,
     PublicUser,
     _call,
+    _list_tools,
 )
 from veloce import (
     BackgroundTasks,
@@ -817,3 +819,100 @@ def test_an_untyped_path_placeholder_is_left_alone():
     result = _call(app, "get_thing", {"slug": "abc"})
 
     assert orjson.loads(result["result"]["content"][0]["text"]) == {"slug": "abc"}
+
+
+# -- A route can override its verb-derived MCP annotations ------------
+
+
+def test_a_route_can_override_its_verb_derived_annotations():
+    """Review Focus #1: the override merges, it does not replace."""
+    app = Veloce(title="RouteAnnotations", openapi_url=None)
+
+    @app.post(
+        "/probe",
+        expose_as_mcp_tool=True,
+        mcp_description="Probe a URL",
+        mcp_annotations={"readOnlyHint": True},
+    )
+    async def probe() -> dict:
+        return {}
+
+    registry = build_registry(app)
+    assert registry.tools["probe"].annotations == {"readOnlyHint": True}
+
+
+def test_the_wire_listing_merges_the_override_over_the_verb_default():
+    """Review Focus #1, end to end: tools/list shows the override AND the
+    untouched verb-derived hints together."""
+    app = Veloce(title="RouteAnnotationsWire", openapi_url=None)
+
+    @app.post(
+        "/probe",
+        expose_as_mcp_tool=True,
+        mcp_description="Probe a URL",
+        mcp_annotations={"readOnlyHint": True},
+    )
+    async def probe() -> dict:
+        return {}
+
+    entry = _list_tools(app)["probe"]
+    assert entry["annotations"]["readOnlyHint"] is True
+    # POST's verb-derived default, untouched by the override above.
+    assert entry["annotations"]["idempotentHint"] is False
+
+
+def test_a_route_with_no_override_keeps_its_verb_derived_hints():
+    """Regression guard: the common, unaffected path."""
+    app = Veloce(title="RouteAnnotationsDefault", openapi_url=None)
+
+    @app.post("/probe", expose_as_mcp_tool=True, mcp_description="Probe a URL")
+    async def probe() -> dict:
+        return {}
+
+    registry = build_registry(app)
+    assert registry.tools["probe"].annotations is None
+
+
+def test_an_unknown_annotation_key_on_a_route_raises_at_registry_build():
+    """Review Focus #2."""
+    app = Veloce(title="RouteAnnotationsBad", openapi_url=None)
+
+    @app.post(
+        "/probe",
+        expose_as_mcp_tool=True,
+        mcp_description="Probe a URL",
+        mcp_annotations={"notARealHint": True},
+    )
+    async def probe() -> dict:
+        return {}
+
+    with pytest.raises(ValueError, match="notARealHint"):
+        build_registry(app)
+
+
+def test_mcp_annotations_and_mcp_resource_annotations_do_not_collide():
+    """Review Focus #3: the tool-hints field and the resource audience/
+    priority field are independent, even on routes in the same app."""
+    app = Veloce(title="RouteAnnotationsNoCollide", openapi_url=None)
+
+    @app.post(
+        "/probe",
+        expose_as_mcp_tool=True,
+        mcp_description="Probe a URL",
+        mcp_annotations={"readOnlyHint": True},
+    )
+    async def probe() -> dict:
+        return {}
+
+    @app.get(
+        "/doc",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="doc://x",
+        mcp_description="A doc",
+        mcp_resource_annotations={"priority": 0.5},
+    )
+    async def doc() -> dict:
+        return {}
+
+    registry = build_registry(app)
+    assert registry.tools["probe"].annotations == {"readOnlyHint": True}

@@ -766,6 +766,7 @@ def _readd_route(
         mcp_scopes=list(info.mcp_scopes) if info.mcp_scopes else None,
         mcp_icons=info.mcp_icons,
         mcp_task_support=info.mcp_task_support,
+        mcp_annotations=info.mcp_annotations,
         exclude_middleware=(
             [*info.excluded_middleware[0], *info.excluded_middleware[1]]
             if info.excluded_middleware
