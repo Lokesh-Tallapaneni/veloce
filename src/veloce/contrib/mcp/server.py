@@ -187,11 +187,27 @@ def _apply_sync_tool_filter(
     return [tool for tool in tools if tool_filter(tool, principal)]
 
 
-async def _tool_passes_filter(tool_filter: Any, tool: MCPTool, principal: Any) -> bool:
-    """Evaluate `tool_filter` for one tool, sync or async."""
+async def _tools_passing_filter(
+    tool_filter: Any, tools: list[MCPTool], principal: Any
+) -> list[MCPTool]:
+    """Run `tool_filter` over `tools`, sync or async.
+
+    The one evaluation path `tools/list` (the whole candidate set) and
+    `tools/call` (a list of one) both call, so neither can drift from how
+    the other decides. A sync filter is offloaded once for the whole batch,
+    including a batch of one: one thread handoff serving every tool, not
+    one handoff per tool.
+    """
     if _is_async_callable(tool_filter):
-        return bool(await cast("Awaitable[bool]", tool_filter(tool, principal)))
-    return bool(await offload(tool_filter, tool, principal))
+        visible = []
+        for tool in tools:
+            # `_is_async_callable` picked the branch; the alias unions both.
+            if await cast("Awaitable[bool]", tool_filter(tool, principal)):
+                visible.append(tool)
+        return visible
+    return cast(
+        "list[MCPTool]", await offload(_apply_sync_tool_filter, tool_filter, tools, principal)
+    )
 
 
 def _requested_version(params: dict[str, Any]) -> str | None:
@@ -1165,18 +1181,7 @@ class MCPServer(TasksMixin, InvocationMixin):
         tool_filter = self._tool_filter
         if tool_filter is None:
             return scoped
-        if _is_async_callable(tool_filter):
-            visible = []
-            for tool in scoped:
-                # `_is_async_callable` picked the branch; the alias unions both.
-                if await cast("Awaitable[bool]", tool_filter(tool, principal)):
-                    visible.append(tool)
-            return visible
-        # One handoff: offloading each predicate makes microseconds milliseconds.
-        return cast(
-            "list[MCPTool]",
-            await offload(_apply_sync_tool_filter, tool_filter, scoped, principal),
-        )
+        return await _tools_passing_filter(tool_filter, scoped, principal)
 
     @staticmethod
     def _describe_tool(tool: MCPTool) -> dict[str, Any]:
@@ -1218,8 +1223,8 @@ class MCPServer(TasksMixin, InvocationMixin):
         if hidden and tool.name in hidden:
             raise InvalidParamsError(f"Unknown tool: {name}")
         tool_filter = self._tool_filter
-        if tool_filter is not None and not await _tool_passes_filter(
-            tool_filter, tool, current_principal()
+        if tool_filter is not None and not await _tools_passing_filter(
+            tool_filter, [tool], current_principal()
         ):
             raise InvalidParamsError(f"Unknown tool: {name}")
 
