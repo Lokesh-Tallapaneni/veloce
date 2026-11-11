@@ -41,6 +41,15 @@ def _pkce() -> tuple[str, str]:
     return verifier, challenge.rstrip(b"=").decode()
 
 
+def _tamper_signature(jwt: str) -> str:
+    """Flip the signature's first base64url character, guaranteed to change
+    the decoded bytes - unlike the last character, which can fall in a
+    partial encoding group's unused bits and decode unchanged."""
+    header, payload, signature = jwt.rsplit(".", 2)
+    replacement = "A" if signature[0] != "A" else "B"
+    return f"{header}.{payload}.{replacement}{signature[1:]}"
+
+
 def _proxy(**kwargs) -> UpstreamOAuthProxy:
     kwargs.setdefault("issuer", ISSUER)
     kwargs.setdefault("upstream_authorization_endpoint", "https://idp.example/authorize")
@@ -152,8 +161,7 @@ async def test_replaying_an_already_used_code_is_rejected():
 
 async def test_a_tampered_jwt_is_rejected_by_mcpauth_verification():
     jwt = encode_jwt({"iss": ISSUER, "sub": "user-1"}, "signing-key", alg="HS256")
-    header, payload, signature = jwt.rsplit(".", 2)
-    tampered = f"{header}.{payload}.{signature[:-1]}{'A' if signature[-1] != 'A' else 'B'}"
+    tampered = _tamper_signature(jwt)
 
     with pytest.raises(InvalidSignatureError):
         decode_jwt(tampered, "signing-key", algorithms=["HS256"])
