@@ -286,6 +286,19 @@ def test_an_optional_dataclass_body_may_be_omitted():
         assert client.post("/point", content=b"").json() == {"got": False}
 
 
+def test_an_optional_typed_dataclass_body_with_no_default_is_still_required():
+    """`p: Point | None` with no `= None` still demands a body: the type
+    permits `None`, but nothing makes the parameter itself omittable."""
+    app = Veloce(title="AdaptedHTTP5", openapi_url=None)
+
+    @app.post("/point")
+    async def create(p: Point | None) -> dict:
+        return {"got": p is not None}
+
+    with app.test_client() as client:
+        assert client.post("/point", content=b"").status_code == 422
+
+
 # ── A BaseModel body is optional too ─────────────────────────────────
 
 

@@ -1032,7 +1032,7 @@ class DependencyResolver:
         self._require_json_body(request)
         raw = await request.body()
         if not raw.strip():
-            if slot.is_optional:
+            if slot.is_optional and slot.has_default:
                 return None
             raise RequestValidationError(
                 [{"loc": ["body"], "msg": MSG_FIELD_REQUIRED, "type": "missing"}]
@@ -1046,11 +1046,8 @@ class DependencyResolver:
         self._require_json_body(request)
         try:
             body_data = await request.json()
-            # An MCP tool call seeds `request._json` directly rather than
-            # buffering bytes, so the emptiness check reads the parsed body,
-            # not `request.body()` - a defaulted slot's own default makes it
-            # omittable, type-optionality alone does not (an undefaulted
-            # `Model | None` body is still a required JSON document).
+            # `request.json()`, not `.body()` - an MCP call never buffers bytes.
+            # Only a default makes the body omittable, not `is_optional` alone.
             if body_data is None and slot.is_optional and slot.has_default:
                 return None
             return slot.model.model_validate(body_data)
@@ -1079,7 +1076,7 @@ class DependencyResolver:
         raw = await request.body()
         # "missing", not the opaque truncation error `decode(b"")` would raise.
         if not raw or not raw.strip():
-            if slot.is_optional:
+            if slot.is_optional and slot.has_default:
                 return None
             raise RequestValidationError(
                 [{"loc": ["body"], "msg": "Missing request body", "type": "missing"}]

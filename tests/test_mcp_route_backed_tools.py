@@ -543,10 +543,10 @@ def test_dependency_body_model_fields_advertised_in_input_schema():
 
 
 def test_an_optional_pydantic_body_resolves_over_mcp_with_no_arguments():
-    """The MCP door seeds `request._json` directly rather than buffering
-    bytes, so an optional body's emptiness must be read from the parsed
-    body, not `request.body()` - which would see an empty byte buffer on
-    every MCP call regardless of the arguments actually sent."""
+    """A route-backed tool binds a `K_BODY_MODEL` slot through `plan_bridge`,
+    not `DependencyResolver` - a separate default-filling path that needs
+    its own `is_optional and has_default` gate (`dependency.py`'s fix does
+    not cover this call site)."""
     app = Veloce(openapi_url=None)
 
     @app.post("/probe", expose_as_mcp_tool=True, mcp_description="Probe")
@@ -556,6 +556,19 @@ def test_an_optional_pydantic_body_resolves_over_mcp_with_no_arguments():
     out = _call(app, "probe", {})
     assert not out["result"].get("isError"), out["result"]["content"][0]["text"]
     assert orjson.loads(out["result"]["content"][0]["text"]) == {"got": True}
+
+
+def test_an_optional_typed_body_with_no_default_is_still_required_over_mcp():
+    """`body: Item | None` with no `= None` still demands an argument over
+    MCP too - type-optionality alone does not make `plan_bridge` fill it in."""
+    app = Veloce(openapi_url=None)
+
+    @app.post("/probe", expose_as_mcp_tool=True, mcp_description="Probe")
+    async def probe(body: Item | None) -> dict:
+        return {"ok": True}
+
+    out = _call(app, "probe", {})
+    assert out["result"].get("isError") is True
 
 
 def test_route_backed_tool_sees_route_method_and_path():

@@ -49,7 +49,7 @@ class MCPRouteOptions:
         so the record is immutable all the way down.
         """
         # Every value is falsy exactly when it is the default, so one `any()`
-        # settles it without the eleven field comparisons a record would cost.
+        # settles it without the twelve field comparisons a record would cost.
         if not any(options.values()):
             return None
         scopes = options["mcp_scopes"]

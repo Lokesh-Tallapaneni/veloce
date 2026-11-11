@@ -140,6 +140,19 @@ def test_struct_body_null_required():
     assert r.status_code == 422
 
 
+def test_struct_body_optional_with_no_default_is_still_required():
+    """`user: User | None` with no `= None` still demands a body: the type
+    permits `None`, but nothing makes the parameter itself omittable."""
+    app = _app()
+
+    @app.post("/u")
+    async def u(user: User | None):
+        return {"ok": True}
+
+    r = TestClient(app).post("/u", content=b"", headers=_HEADERS)
+    assert r.status_code == 422
+
+
 # ── Response serialization ───────────────────────────────────────────
 
 

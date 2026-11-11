@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- An optional Pydantic body parameter (`body: Model | None = None`) no longer answers `422` to a request sent with no body.
+- `body: Model | None = None` no longer answers `422` to a request sent with no body.
 
 ## [0.22.0] - 2026-11-11
 
