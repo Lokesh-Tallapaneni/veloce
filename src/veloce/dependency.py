@@ -1044,15 +1044,15 @@ class DependencyResolver:
 
     async def _resolve_pydantic_body(self, slot: Any, request: Request) -> Any:
         self._require_json_body(request)
-        raw = await request.body()
-        if not raw.strip():
-            if slot.is_optional:
-                return None
-            raise RequestValidationError(
-                [{"loc": ["body"], "msg": MSG_FIELD_REQUIRED, "type": "missing"}]
-            )
         try:
             body_data = await request.json()
+            # An MCP tool call seeds `request._json` directly rather than
+            # buffering bytes, so the emptiness check reads the parsed body,
+            # not `request.body()` - a defaulted slot's own default makes it
+            # omittable, type-optionality alone does not (an undefaulted
+            # `Model | None` body is still a required JSON document).
+            if body_data is None and slot.is_optional and slot.has_default:
+                return None
             return slot.model.model_validate(body_data)
         except PydanticValidationError as e:
             raise _err_body_validation(e) from e

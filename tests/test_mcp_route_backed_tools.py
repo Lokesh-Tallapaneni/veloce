@@ -542,6 +542,22 @@ def test_dependency_body_model_fields_advertised_in_input_schema():
     assert not out["result"].get("isError"), out["result"]["content"][0]["text"]
 
 
+def test_an_optional_pydantic_body_resolves_over_mcp_with_no_arguments():
+    """The MCP door seeds `request._json` directly rather than buffering
+    bytes, so an optional body's emptiness must be read from the parsed
+    body, not `request.body()` - which would see an empty byte buffer on
+    every MCP call regardless of the arguments actually sent."""
+    app = Veloce(openapi_url=None)
+
+    @app.post("/probe", expose_as_mcp_tool=True, mcp_description="Probe")
+    async def probe(body: Item | None = None) -> dict:
+        return {"got": body is None}
+
+    out = _call(app, "probe", {})
+    assert not out["result"].get("isError"), out["result"]["content"][0]["text"]
+    assert orjson.loads(out["result"]["content"][0]["text"]) == {"got": True}
+
+
 def test_route_backed_tool_sees_route_method_and_path():
     """A route-backed tool's handler and a dependency must see the wrapped
     route's real HTTP method and rule path on `request`, not the synthetic

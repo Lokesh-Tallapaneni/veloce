@@ -319,6 +319,19 @@ def test_a_pydantic_body_may_be_explicitly_empty_with_json_content_type():
         assert response.json() == {"got": True}
 
 
+def test_an_optional_typed_pydantic_body_with_no_default_is_still_required():
+    """`body: Probe | None` without `= None` still demands a JSON document:
+    the type permits `None`, but nothing makes the parameter itself omittable."""
+    app = Veloce(title="PydanticOptionalBody5", openapi_url=None)
+
+    @app.post("/probe")
+    async def probe(body: Probe | None) -> dict:
+        return {"got": body}
+
+    with app.test_client() as client:
+        assert client.post("/probe").status_code == 422
+
+
 def test_a_required_pydantic_body_is_still_422_when_empty():
     """Optionality, not the backend switch, is what changes behaviour."""
     app = Veloce(title="PydanticRequiredBody", openapi_url=None)
