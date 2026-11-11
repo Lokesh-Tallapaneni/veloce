@@ -2051,6 +2051,11 @@ attacker from registering (or just presenting) a redirect_uri of their own.
     token set on restart. Implement `UpstreamOAuthProxyStore` over your own
     database for anything else.
 
+!!! note "Close the proxy's HTTP client at shutdown"
+    `UpstreamOAuthProxy` keeps one persistent client open against the
+    upstream token endpoint, reused across every exchange. Call
+    `await proxy.aclose()` from your app's own shutdown hook.
+
 ### Per-tool scopes
 
 Declare the scopes a tool, resource, or prompt requires; a principal lacking them

@@ -351,3 +351,107 @@ async def test_a_malformed_upstream_response_surfaces_cleanly_instead_of_crashin
     assert response.status_code == 302
     assert response.headers["location"].startswith(CLIENT_REDIRECT_A)
     assert _query(response.headers["location"])["error"]
+
+
+async def test_a_non_numeric_expires_in_surfaces_cleanly_instead_of_crashing(monkeypatch):
+    """A 200 response that passes the access_token check but carries a
+    non-numeric (or null) `expires_in` must not crash `float(...)` after the
+    pending record is already consumed."""
+    httpx2 = pytest.importorskip("httpx2")
+
+    def handler(request):
+        return httpx2.Response(200, json={"access_token": "upstream-access", "expires_in": None})
+
+    _mock_token_response(monkeypatch, handler)
+    proxy = _proxy()
+
+    async with AsyncTestClient(_app(proxy)) as client:
+        authorize_response = await client.get(
+            f"/authorize?{_authorize_query()}", follow_redirects=False
+        )
+        upstream_state = _query(authorize_response.headers["location"])["state"]
+
+        response = await client.get(
+            f"{proxy.redirect_path}?code=upstream-code&state={upstream_state}",
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 302
+    assert response.headers["location"].startswith(CLIENT_REDIRECT_A)
+    assert _query(response.headers["location"])["error"]
+
+
+async def test_an_abandoned_proxy_code_is_swept_from_the_store(monkeypatch):
+    """A code the client never redeems at /token must not sit in the store
+    forever - the same opportunistic sweep `save_pending` already has."""
+    httpx2 = pytest.importorskip("httpx2")
+    _mock_token_response(monkeypatch, _success_handler(httpx2))
+    proxy = _proxy()
+
+    async with AsyncTestClient(_app(proxy)) as client:
+        authorize_response = await client.get(
+            f"/authorize?{_authorize_query()}", follow_redirects=False
+        )
+        upstream_state = _query(authorize_response.headers["location"])["state"]
+        # Mints and stores a code + token set, but it's never redeemed.
+        await client.get(
+            f"{proxy.redirect_path}?code=upstream-code&state={upstream_state}",
+            follow_redirects=False,
+        )
+
+        assert len(proxy.store._codes) == 1  # type: ignore[attr-defined]
+
+        # Age the abandoned code past its TTL, then drive another save to
+        # trigger the sweep (mirrors how save_pending's sweep is exercised).
+        for record in proxy.store._codes.values():  # type: ignore[attr-defined]
+            record.expires_at = _now() - 1
+
+        authorize_response_2 = await client.get(
+            f"/authorize?{_authorize_query(redirect_uri=CLIENT_REDIRECT_B, state='other')}",
+            follow_redirects=False,
+        )
+        upstream_state_2 = _query(authorize_response_2.headers["location"])["state"]
+        await client.get(
+            f"{proxy.redirect_path}?code=upstream-code-2&state={upstream_state_2}",
+            follow_redirects=False,
+        )
+
+    # The stale code is gone; only the fresh one from the second flow remains.
+    assert len(proxy.store._codes) == 1  # type: ignore[attr-defined]
+
+
+async def test_a_long_idle_abandoned_token_set_is_swept_from_the_store(monkeypatch):
+    """A token set whose code was never redeemed, and that has sat idle for
+    far longer than any real refresh cycle, must not grow the store
+    unbounded - `delete_upstream_tokens` existed but nothing ever called
+    it."""
+    httpx2 = pytest.importorskip("httpx2")
+    _mock_token_response(monkeypatch, _success_handler(httpx2))
+    proxy = _proxy()
+
+    async with AsyncTestClient(_app(proxy)) as client:
+        authorize_response = await client.get(
+            f"/authorize?{_authorize_query()}", follow_redirects=False
+        )
+        upstream_state = _query(authorize_response.headers["location"])["state"]
+        await client.get(
+            f"{proxy.redirect_path}?code=upstream-code&state={upstream_state}",
+            follow_redirects=False,
+        )
+
+        assert len(proxy.store._tokens) == 1  # type: ignore[attr-defined]
+
+        for record in proxy.store._tokens.values():  # type: ignore[attr-defined]
+            record.last_active_at = 0.0  # decades past any real idle ceiling
+
+        authorize_response_2 = await client.get(
+            f"/authorize?{_authorize_query(redirect_uri=CLIENT_REDIRECT_B, state='other')}",
+            follow_redirects=False,
+        )
+        upstream_state_2 = _query(authorize_response_2.headers["location"])["state"]
+        await client.get(
+            f"{proxy.redirect_path}?code=upstream-code-2&state={upstream_state_2}",
+            follow_redirects=False,
+        )
+
+    assert len(proxy.store._tokens) == 1  # type: ignore[attr-defined]

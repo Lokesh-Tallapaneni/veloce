@@ -44,6 +44,10 @@ _TOKEN_ENTROPY_BYTES = 32
 _PROXY_CODE_TTL_SECONDS = 60.0
 #: How long an abandoned `/authorize` flow stays redeemable at the callback.
 _PENDING_AUTHORIZATION_TTL_SECONDS = 600.0
+#: How long a stored upstream token set may sit untouched - by a redemption
+#: or a refresh - before it is swept as abandoned. Deliberately generous:
+#: this bounds growth from flows nobody ever came back for, not normal use.
+_UPSTREAM_TOKEN_SET_MAX_IDLE_SECONDS = 30 * 24 * 3600.0
 
 
 def _httpx2() -> Any:
@@ -119,6 +123,9 @@ class UpstreamTokenSet:
     #: RFC 8707 resource this was requested for, carried into every JWT
     #: minted from it - including across a refresh, unlike `claims`.
     resource: str | None = None
+    #: Stamped fresh on every save (initial exchange or refresh) - how the
+    #: store tells an active session from one nobody ever came back to.
+    last_active_at: float = field(default_factory=_now)
 
 
 @dataclass(slots=True)
@@ -162,6 +169,9 @@ class UpstreamOAuthProxyStore(Protocol):
     async def save_refresh(self, refresh_digest: str, jti: str) -> None:
         """Record which `jti` a client-facing refresh token stands for."""
 
+    async def get_refresh(self, refresh_digest: str) -> str | None:
+        """Return the `jti` recorded under `refresh_digest`, without removing it."""
+
     async def take_refresh(self, refresh_digest: str) -> str | None:
         """Return and remove the `jti` recorded under `refresh_digest`."""
 
@@ -190,12 +200,29 @@ class InMemoryUpstreamOAuthProxyStore:
         return self._pending.pop(state, None)
 
     async def save_code(self, code_digest: str, code: ProxyAuthorizationCode) -> None:
+        # Opportunistic sweep: a code the client never redeems would
+        # otherwise sit here forever, same reasoning as `save_pending`.
+        now = _now()
+        expired = [key for key, value in self._codes.items() if value.expires_at <= now]
+        for key in expired:
+            del self._codes[key]
         self._codes[code_digest] = code
 
     async def take_code(self, code_digest: str) -> ProxyAuthorizationCode | None:
         return self._codes.pop(code_digest, None)
 
     async def save_upstream_tokens(self, jti: str, tokens: UpstreamTokenSet) -> None:
+        # Opportunistic sweep: a session nobody has redeemed or refreshed in
+        # `_UPSTREAM_TOKEN_SET_MAX_IDLE_SECONDS` is treated as abandoned -
+        # `delete_upstream_tokens` exists but nothing else ever calls it.
+        now = _now()
+        idle = [
+            key
+            for key, value in self._tokens.items()
+            if now - value.last_active_at > _UPSTREAM_TOKEN_SET_MAX_IDLE_SECONDS
+        ]
+        for key in idle:
+            del self._tokens[key]
         self._tokens[jti] = tokens
 
     async def get_upstream_tokens(self, jti: str) -> UpstreamTokenSet | None:
@@ -206,6 +233,9 @@ class InMemoryUpstreamOAuthProxyStore:
 
     async def save_refresh(self, refresh_digest: str, jti: str) -> None:
         self._refresh[refresh_digest] = jti
+
+    async def get_refresh(self, refresh_digest: str) -> str | None:
+        return self._refresh.get(refresh_digest)
 
     async def take_refresh(self, refresh_digest: str) -> str | None:
         return self._refresh.pop(refresh_digest, None)
@@ -274,11 +304,23 @@ class UpstreamOAuthProxy:
     access_token_ttl: float = 3600.0
     allow_dynamic_registration: bool = True
     store: UpstreamOAuthProxyStore = field(default_factory=InMemoryUpstreamOAuthProxyStore)
+    #: Lazily created, reused across every upstream call - never set by hand.
+    _http_client: Any = field(default=None, init=False, repr=False, compare=False)
 
     @property
     def callback_url(self) -> str:
         """This proxy's fixed redirect_uri, as presented to the upstream."""
         return self.issuer.rstrip("/") + self.redirect_path
+
+    async def aclose(self) -> None:
+        """Close the persistent upstream HTTP client, if one was ever created.
+
+        Call this from the app's own shutdown hook; the proxy has no
+        lifecycle of its own to do it automatically.
+        """
+        if self._http_client is not None:
+            await self._http_client.aclose()
+            self._http_client = None
 
     def metadata(self) -> dict[str, Any]:
         """Build the RFC 8414 authorization server metadata document."""
@@ -479,14 +521,26 @@ async def _token_response(
     )
 
 
+def _upstream_client(proxy: UpstreamOAuthProxy) -> Any:
+    """Return `proxy`'s persistent `httpx2` client, creating it on first use.
+
+    Every call targets the same `upstream_token_endpoint`, so reusing one
+    pooled client avoids a fresh TCP/TLS handshake per exchange.
+    """
+    if proxy._http_client is None:
+        httpx2 = _httpx2()
+        proxy._http_client = httpx2.AsyncClient(timeout=httpx2.Timeout(10.0))
+    return proxy._http_client
+
+
 async def _exchange_at_upstream(
     proxy: UpstreamOAuthProxy, data: dict[str, str]
 ) -> dict[str, Any] | None:
     """POST a grant to the upstream token endpoint; `None` on any failure."""
     httpx2 = _httpx2()
+    client = _upstream_client(proxy)
     try:
-        async with httpx2.AsyncClient(timeout=httpx2.Timeout(10.0)) as client:
-            response = await client.post(proxy.upstream_token_endpoint, data=data)
+        response = await client.post(proxy.upstream_token_endpoint, data=data)
     except httpx2.HTTPError:
         return None
     if response.status_code >= 400:
@@ -497,6 +551,13 @@ async def _exchange_at_upstream(
         return None
     if not isinstance(body, dict) or not isinstance(body.get("access_token"), str):
         return None
+    if "expires_in" in body:
+        expires_in = body["expires_in"]
+        # A `null` expires_in is also rejected here: `body.get(..., default)`
+        # downstream only falls back on a MISSING key, not a present-but-null
+        # one, so letting None through would still crash on `float(None)`.
+        if isinstance(expires_in, bool) or not isinstance(expires_in, (int, float)):
+            return None
     return body
 
 
@@ -525,13 +586,18 @@ async def _grant_authorization_code(proxy: UpstreamOAuthProxy, form: Any) -> Res
 
 
 async def _grant_refresh_token(proxy: UpstreamOAuthProxy, form: Any) -> Response:
-    """Re-run the upstream exchange with its refresh token and re-mint a JWT."""
+    """Re-run the upstream exchange with its refresh token and re-mint a JWT.
+
+    The presented refresh token is only invalidated once the upstream
+    exchange actually succeeds - peeked first, taken last - so a transient
+    upstream failure (a timeout, a 5xx) does not burn the client's only
+    refresh credential and force it back through `/authorize`.
+    """
     presented = form.get("refresh_token")
     if not presented:
         return _error_response("invalid_request", "refresh_token is required")
-    # Taken, not read: refreshing rotates the credential, same as the
-    # authorization server's own refresh grant.
-    jti = await proxy.store.take_refresh(_digest(presented))
+    digest = _digest(presented)
+    jti = await proxy.store.get_refresh(digest)
     if jti is None:
         return _error_response("invalid_grant", "the refresh token is unknown or has expired")
     tokens = await proxy.store.get_upstream_tokens(jti)
@@ -551,6 +617,7 @@ async def _grant_refresh_token(proxy: UpstreamOAuthProxy, form: Any) -> Response
     )
     if body is None:
         return _error_response("invalid_grant", "the upstream rejected the refresh")
+    await proxy.store.take_refresh(digest)
 
     refreshed = UpstreamTokenSet(
         access_token=body["access_token"],

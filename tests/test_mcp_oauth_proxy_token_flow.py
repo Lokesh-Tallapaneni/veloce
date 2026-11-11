@@ -309,6 +309,126 @@ async def test_a_malformed_upstream_refresh_response_is_rejected_cleanly(monkeyp
     assert response.json()["error"] == "invalid_grant"
 
 
+async def test_a_non_numeric_expires_in_on_refresh_is_rejected_cleanly(monkeypatch):
+    """A 200 response that passes the access_token check but carries a
+    non-numeric `expires_in` must not crash `float(...)` after the refresh
+    token has already been read."""
+    httpx2 = pytest.importorskip("httpx2")
+    proxy = _proxy()
+    verifier, challenge = _pkce()
+    code = await _seed(proxy, challenge, jti="jti-bad-expiry")
+
+    def handler(request):
+        return httpx2.Response(200, json={"access_token": "refreshed-access", "expires_in": "soon"})
+
+    transport = httpx2.MockTransport(handler)
+    real_async_client = httpx2.AsyncClient
+
+    def patched_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx2, "AsyncClient", patched_client)
+
+    async with AsyncTestClient(_app(proxy)) as client:
+        issued = await client.post("/token", data=_token_form(code, verifier))
+        response = await client.post(
+            "/token",
+            data={"grant_type": "refresh_token", "refresh_token": issued.json()["refresh_token"]},
+        )
+
+    assert response.status_code == 400
+    assert response.json()["error"] == "invalid_grant"
+
+
+async def test_a_transient_upstream_failure_during_refresh_does_not_burn_the_refresh_token(
+    monkeypatch,
+):
+    """The refresh credential must survive a failed exchange attempt - a
+    client retrying after a transient upstream hiccup should not be forced
+    into a full /authorize re-consent because the first attempt consumed
+    its only refresh token."""
+    httpx2 = pytest.importorskip("httpx2")
+    proxy = _proxy()
+    verifier, challenge = _pkce()
+    code = await _seed(proxy, challenge, jti="jti-transient")
+
+    calls = {"count": 0}
+
+    def handler(request):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return httpx2.Response(503, text="upstream unavailable")
+        return httpx2.Response(200, json={"access_token": "refreshed-access", "expires_in": 3600})
+
+    transport = httpx2.MockTransport(handler)
+    real_async_client = httpx2.AsyncClient
+
+    def patched_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx2, "AsyncClient", patched_client)
+
+    async with AsyncTestClient(_app(proxy)) as client:
+        issued = await client.post("/token", data=_token_form(code, verifier))
+        refresh_token = issued.json()["refresh_token"]
+
+        failed = await client.post(
+            "/token", data={"grant_type": "refresh_token", "refresh_token": refresh_token}
+        )
+        # Retry with the SAME refresh token once the upstream recovers.
+        retried = await client.post(
+            "/token", data={"grant_type": "refresh_token", "refresh_token": refresh_token}
+        )
+
+    assert failed.status_code == 400
+    assert failed.json()["error"] == "invalid_grant"
+    assert retried.status_code == 200
+    decode_jwt(retried.json()["access_token"], proxy.signing_key, algorithms=["HS256"])
+
+
+async def test_the_upstream_client_is_reused_across_token_exchanges(monkeypatch):
+    """Opening a fresh connection (and TLS handshake) per call is wasted
+    cost when every call targets the same upstream_token_endpoint - a
+    persistent client should be created once and reused. Two refresh
+    grants both call `_exchange_at_upstream`; a plain `authorization_code`
+    grant never does (the exchange already happened at the callback)."""
+    httpx2 = pytest.importorskip("httpx2")
+    proxy = _proxy()
+    verifier, challenge = _pkce()
+    code = await _seed(proxy, challenge, jti="jti-reuse")
+
+    created: list[object] = []
+    real_async_client = httpx2.AsyncClient
+
+    def handler(request):
+        return httpx2.Response(200, json={"access_token": "upstream-access", "expires_in": 3600})
+
+    transport = httpx2.MockTransport(handler)
+
+    def patched_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        instance = real_async_client(*args, **kwargs)
+        created.append(instance)
+        return instance
+
+    monkeypatch.setattr(httpx2, "AsyncClient", patched_client)
+
+    async with AsyncTestClient(_app(proxy)) as client:
+        issued = await client.post("/token", data=_token_form(code, verifier))
+        refresh_token = issued.json()["refresh_token"]
+        first = await client.post(
+            "/token", data={"grant_type": "refresh_token", "refresh_token": refresh_token}
+        )
+        await client.post(
+            "/token",
+            data={"grant_type": "refresh_token", "refresh_token": first.json()["refresh_token"]},
+        )
+
+    assert len(created) == 1
+
+
 async def test_a_token_minted_for_one_resource_is_rejected_by_another():
     """RFC 8707 audience binding: a token requested for one MCP server must
     not be accepted by a verifier configured for a different one."""
