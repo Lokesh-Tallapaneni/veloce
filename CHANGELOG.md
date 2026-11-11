@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-11-11
+
 ### Added
 
 - `use_json_backend` selects the JSON backend for every serialisation path at once. ([#346](https://github.com/Lokesh-Tallapaneni/veloce/pull/346))
