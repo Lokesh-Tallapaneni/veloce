@@ -1044,6 +1044,13 @@ class DependencyResolver:
 
     async def _resolve_pydantic_body(self, slot: Any, request: Request) -> Any:
         self._require_json_body(request)
+        raw = await request.body()
+        if not raw.strip():
+            if slot.is_optional:
+                return None
+            raise RequestValidationError(
+                [{"loc": ["body"], "msg": MSG_FIELD_REQUIRED, "type": "missing"}]
+            )
         try:
             body_data = await request.json()
             return slot.model.model_validate(body_data)
