@@ -22,10 +22,10 @@ RouteHandler = Callable[..., Coroutine[Any, Any, Any]]
 class MCPRouteOptions:
     """Everything a route declares for `contrib.mcp`, in one record.
 
-    Eleven fields in one record rather than eleven slots on `RouteInfo`, which
+    Twelve fields in one record rather than twelve slots on `RouteInfo`, which
     the router reads none of. `RouteInfo.mcp` is `None` for a route declaring no
     MCP exposure - almost every route - so an app that never mounts MCP carries
-    one slot rather than eleven, and the names stay readable as properties.
+    one slot rather than twelve, and the names stay readable as properties.
     """
 
     expose_as_mcp_tool: bool = False
@@ -39,6 +39,7 @@ class MCPRouteOptions:
     mcp_scopes: frozenset[str] | None = None
     mcp_icons: tuple[Any, ...] | None = None
     mcp_task_support: bool = False
+    mcp_annotations: dict[str, Any] | None = None
 
     @classmethod
     def build(cls, **options: Any) -> MCPRouteOptions | None:
@@ -48,7 +49,7 @@ class MCPRouteOptions:
         so the record is immutable all the way down.
         """
         # Every value is falsy exactly when it is the default, so one `any()`
-        # settles it without the eleven field comparisons a record would cost.
+        # settles it without the twelve field comparisons a record would cost.
         if not any(options.values()):
             return None
         scopes = options["mcp_scopes"]
@@ -146,6 +147,7 @@ class RouteInfo:
         mcp_scopes: Sequence[str] | None = None,
         mcp_icons: Sequence[Any] | None = None,
         mcp_task_support: bool = False,
+        mcp_annotations: dict[str, Any] | None = None,
         excluded_middleware: tuple[frozenset[str], tuple[type[Any], ...]] | None = None,
     ) -> None:
         self.handler = handler
@@ -239,6 +241,7 @@ class RouteInfo:
             mcp_scopes=mcp_scopes,
             mcp_icons=mcp_icons,
             mcp_task_support=mcp_task_support,
+            mcp_annotations=mcp_annotations,
         )
         # `None` lets the hot path iterate the app's list directly.
         #: A name matches exactly; a type matches by `isinstance`.
@@ -294,6 +297,10 @@ class RouteInfo:
     @property
     def mcp_task_support(self) -> bool:
         return False if self.mcp is None else self.mcp.mcp_task_support
+
+    @property
+    def mcp_annotations(self) -> dict[str, Any] | None:
+        return None if self.mcp is None else self.mcp.mcp_annotations
 
 
 class RouteMatch:

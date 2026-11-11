@@ -1003,7 +1003,9 @@ async def bind_arguments(
             kwargs[name] = marker.resolve_default()
         elif slot.has_default:
             kwargs[name] = slot.default
-        elif slot.is_optional:
+        elif slot.is_optional and kind != K_BODY_MODEL:
+            # A nullable body still demands a JSON document; only a default
+            # makes the parameter itself omittable (`slot.has_default` above).
             kwargs[name] = None
         elif kind in _INPUT_KINDS:
             # At the binding boundary, so the server maps it to invalid-params.

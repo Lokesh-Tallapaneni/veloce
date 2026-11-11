@@ -292,6 +292,7 @@ def _tool_from_route(
         tags=frozenset(getattr(info, "tags", None) or ()),
         icons=coerce_icons(getattr(info, "mcp_icons", None)),
         task_support=bool(getattr(info, "mcp_task_support", False)),
+        annotations=validate_tool_annotations(getattr(info, "mcp_annotations", None)),
     )
 
 

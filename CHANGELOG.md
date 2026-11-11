@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `mcp_annotations` on a route overrides its MCP tool's hints (`readOnlyHint`, `idempotentHint`, `destructiveHint`, `openWorldHint`, `title`), merged over the ones its HTTP verb implies. ([#354](https://github.com/Lokesh-Tallapaneni/veloce/pull/354))
+
+### Fixed
+
+- `body: Model | None = None` no longer answers `422` to a request sent with no body. ([#354](https://github.com/Lokesh-Tallapaneni/veloce/pull/354))
+
 ## [0.22.0] - 2026-11-11
 
 ### Added

@@ -286,6 +286,103 @@ def test_an_optional_dataclass_body_may_be_omitted():
         assert client.post("/point", content=b"").json() == {"got": False}
 
 
+def test_an_optional_typed_dataclass_body_with_no_default_is_still_required():
+    """`p: Point | None` with no `= None` still demands a body: the type
+    permits `None`, but nothing makes the parameter itself omittable."""
+    app = Veloce(title="AdaptedHTTP5", openapi_url=None)
+
+    @app.post("/point")
+    async def create(p: Point | None) -> dict:
+        return {"got": p is not None}
+
+    with app.test_client() as client:
+        assert client.post("/point", content=b"").status_code == 422
+
+
+# ── A BaseModel body is optional too ─────────────────────────────────
+
+
+class Probe(BaseModel):
+    x: int = 1
+
+
+def test_a_pydantic_body_may_be_omitted_when_optional():
+    """A bodyless POST with no Content-Type, the shape a bare `.post()` sends."""
+    app = Veloce(title="PydanticOptionalBody", openapi_url=None)
+
+    @app.post("/probe")
+    async def probe(body: Probe | None = None) -> dict:
+        return {"got": body is None}
+
+    with app.test_client() as client:
+        assert client.post("/probe").json() == {"got": True}
+
+
+def test_a_pydantic_body_may_be_explicitly_empty_with_json_content_type():
+    """`Content-Type: application/json` with a zero-byte body - a distinct
+    wire shape from omitting the header."""
+    app = Veloce(title="PydanticOptionalBody2", openapi_url=None)
+
+    @app.post("/probe")
+    async def probe(body: Probe | None = None) -> dict:
+        return {"got": body is None}
+
+    with app.test_client() as client:
+        response = client.post("/probe", content=b"", headers={"content-type": "application/json"})
+        assert response.json() == {"got": True}
+
+
+def test_an_optional_typed_pydantic_body_with_no_default_is_still_required():
+    """`body: Probe | None` without `= None` still demands a JSON document:
+    the type permits `None`, but nothing makes the parameter itself omittable."""
+    app = Veloce(title="PydanticOptionalBody5", openapi_url=None)
+
+    @app.post("/probe")
+    async def probe(body: Probe | None) -> dict:
+        return {"got": body}
+
+    with app.test_client() as client:
+        assert client.post("/probe").status_code == 422
+
+
+def test_a_required_pydantic_body_is_still_422_when_empty():
+    """Optionality, not the backend switch, is what changes behaviour."""
+    app = Veloce(title="PydanticRequiredBody", openapi_url=None)
+
+    @app.post("/probe")
+    async def probe(body: Probe) -> dict:
+        return {"got": body.x}
+
+    with app.test_client() as client:
+        response = client.post("/probe")
+        assert response.status_code == 422
+        assert response.json()["detail"][0]["loc"] == ["body"]
+
+
+def test_an_optional_pydantic_body_still_validates_when_present_and_valid():
+    app = Veloce(title="PydanticOptionalBody3", openapi_url=None)
+
+    @app.post("/probe")
+    async def probe(body: Probe | None = None) -> dict:
+        return {"got": body.x if body else None}
+
+    with app.test_client() as client:
+        assert client.post("/probe", json={"x": 7}).json() == {"got": 7}
+
+
+def test_an_optional_pydantic_body_still_422s_when_present_and_invalid():
+    """Optionality must not swallow a real validation failure."""
+    app = Veloce(title="PydanticOptionalBody4", openapi_url=None)
+
+    @app.post("/probe")
+    async def probe(body: Probe | None = None) -> dict:
+        return {"got": body.x if body else None}
+
+    with app.test_client() as client:
+        response = client.post("/probe", json={"x": "not-an-int"})
+        assert response.status_code == 422
+
+
 # ── A BaseModel parameter is unaffected ──────────────────────────────
 
 
