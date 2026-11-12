@@ -637,7 +637,8 @@ def find_field_info(annotation: Any) -> FieldInfo | None:
         # Rebuilt over an annotation carrying only the constraints, because
         # handing pydantic the original would read our own markers as metadata.
         declared = get_args(annotation)[0]
-        rebuilt = cast("type[Any]", Annotated[(declared, *bare)])
+        params = (declared, *bare)
+        rebuilt = cast("type[Any]", Annotated[params])
         found.insert(0, FieldInfo.from_annotation(rebuilt))
     if not found:
         return None
