@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `http_upstream`'s session-terminating `DELETE` carries the same custom headers as every other request, instead of a bare session id the upstream's own admission control would reject. ([#355](https://github.com/Lokesh-Tallapaneni/veloce/pull/355))
 - `http_upstream`'s `MCP-Protocol-Version` header no longer carries a stale, previously-negotiated version into a fresh `initialize` request. ([#355](https://github.com/Lokesh-Tallapaneni/veloce/pull/355))
 - A `str`-typed `Body()` scalar parameter refuses a non-string JSON value (`int`, `float`, `list`, `dict`, `bool`) instead of passing it through unchecked. ([#360](https://github.com/Lokesh-Tallapaneni/veloce/pull/360))
+- An `int`/`float`-typed `Body()` scalar refuses a `list`/`dict` value instead of passing it through unchecked. ([#364](https://github.com/Lokesh-Tallapaneni/veloce/pull/364))
+- An `int`-typed `Body()` scalar refuses a non-integer float instead of truncating it. ([#364](https://github.com/Lokesh-Tallapaneni/veloce/pull/364))
+- A `bool`-typed `Body()` scalar accepts only the values Pydantic itself accepts (`0`/`1`, `true`/`false`), instead of any truthy/falsy JSON value. ([#364](https://github.com/Lokesh-Tallapaneni/veloce/pull/364))
+- An embedded list `Body()` marker's element validation error names the field in its `loc`, instead of dropping it. ([#364](https://github.com/Lokesh-Tallapaneni/veloce/pull/364))
 
 ## [0.22.0] - 2026-11-11
 

@@ -179,19 +179,33 @@ def _coerce_via_pydantic(value: Any, target_type: Any, param_name: str, loc: str
         ) from err
 
 
+def _is_non_integer_float(value: Any) -> bool:
+    """Whether `value` is a `float` with no exact integer reading."""
+    return isinstance(value, float) and not value.is_integer()
+
+
 def _coerce_value(value: Any, target_type: Any, param_name: str, loc: str) -> Any:
     """Coerce a string value to the target type."""
     if target_type is str or target_type is Any or target_type is None:
         return value
     try:
         if target_type is int:
+            # Pydantic's lax mode: whole-number float is fine, fractional isn't.
+            if _is_non_integer_float(value):
+                raise ValueError(f"{value} is not an integer")
             return int(value)
         if target_type is float:
             return float(value)
         if target_type is bool:
             if isinstance(value, str):
                 return _coerce_bool_value(value)
-            return bool(value)
+            if isinstance(value, bool):
+                return value
+            # Pydantic accepts only 0/1 (int or float) for bool, not any
+            # truthy value - `bool(value)` would accept anything.
+            if isinstance(value, (int, float)) and value in (0, 1):
+                return bool(value)
+            raise ValueError(f"{value!r} is not a boolean")
         # Enum (or any class with __members__).
         if hasattr(target_type, "__members__"):
             try:
@@ -225,12 +239,13 @@ def _coerce_value(value: Any, target_type: Any, param_name: str, loc: str) -> An
 
 
 def _coerce_scalar(value: Any, target_type: Any, param_name: str, loc: str) -> Any:
-    """Coerce `value` to `target_type` unless it is already structured.
+    """Coerce `value` to `target_type`.
 
-    The tail shared by every marker kind's resolution. A `str` target is a
-    no-op for a query/path/header/cookie/form value - already a string off
-    the wire - but a body value is JSON-typed and may be anything, so it is
-    still checked rather than assumed to already satisfy the annotation.
+    The tail shared by every marker kind's resolution. A query/path/header/
+    cookie/form value is always a string off the wire; a body value is
+    JSON-typed and may be anything - including a `dict`/`list` a scalar
+    target never accepts - so it is checked against the real value rather
+    than assumed to already satisfy the annotation.
     """
     if target_type is str:
         if isinstance(value, str):
@@ -244,23 +259,26 @@ def _coerce_scalar(value: Any, target_type: Any, param_name: str, loc: str) -> A
                 }
             ]
         )
-    if target_type and not isinstance(value, (dict, list)):
+    if target_type:
         return _coerce_value(value, target_type, param_name, loc)
     return value
 
 
 def _err_body_validation(
-    exc: PydanticValidationError, root: str = "body"
+    exc: PydanticValidationError, root: str | list[Any] = "body"
 ) -> RequestValidationError:
     """Rebuild a Pydantic validation failure as this framework's 422 shape.
 
     Pydantic's per-field path is appended to `root`, so every way of declaring a
     body reports the same `["body", ...]` location; a marker reading from
-    elsewhere passes its own `MARKER_LOC` root.
+    elsewhere passes its own `MARKER_LOC` root. `root` is a list rather than a
+    single string when the failure is a list-typed field's own elements - the
+    field name is a path segment to prepend, not the whole location.
     """
+    prefix = root if isinstance(root, list) else [root]
     return RequestValidationError(
         [
-            {"loc": [root, *err["loc"]], "msg": err["msg"], "type": err["type"]}
+            {"loc": [*prefix, *err["loc"]], "msg": err["msg"], "type": err["type"]}
             for err in exc.errors()
         ]
     )
@@ -404,13 +422,18 @@ def _validate_list_marker(
         ) from e
 
 
-def _validate_body_list(raw: list[Any], slot: Any) -> Any:
+def _validate_body_list(raw: list[Any], slot: Any, embed: bool) -> Any:
     """Validate a JSON array body against the sequence type it declares.
 
     The members arrive already typed by the JSON decode, so the declared type is
     a contract to check rather than a string to parse. Checked through the same
     adapter a bare body model would use, which is Pydantic's lax answer: `"1"`
     is accepted for an `int`, `1.5` is not.
+
+    `embed` decides the error root: an embedded list lives under its own key
+    (`{"tags": [...]}`), so a member error's `loc` must name that key; a
+    non-embedded list is the whole body, where the field name is only the
+    Python parameter, not a key the client's wire data actually has.
     """
     adapter = slot.list_adapter
     if adapter is None:
@@ -422,7 +445,8 @@ def _validate_body_list(raw: list[Any], slot: Any) -> Any:
     try:
         validated: Any = adapter.validate_python(raw)
     except PydanticValidationError as e:
-        raise _err_body_validation(e) from e
+        root = ["body", slot.name] if embed else "body"
+        raise _err_body_validation(e, root) from e
     return validated
 
 
@@ -1173,12 +1197,15 @@ class DependencyResolver:
             # An endpoint parsing `text/plain` is reachable cross-origin unpreflighted.
             self._require_json_body(request)
             body = await request.json()
-            # `Body(embed=True)`: under the param name, not the whole body.
-            raw = body.get(lookup) if marker.embed and isinstance(body, dict) else body
+            # `Body(embed=True)`: under the param name, not the whole body -
+            # but only when the body is actually a dict; a bare array sent
+            # to an embedded param was never under that key to begin with.
+            embedded = marker.embed and isinstance(body, dict)
+            raw = body.get(lookup) if embedded else body
             # `marker.validate` bounds a scalar, so an array is checked here.
             if slot.marker_reads_list and isinstance(raw, list):
                 # The element type first, or a raw `["0"]` skips `items.minimum`.
-                items = _validate_body_list(raw, slot)
+                items = _validate_body_list(raw, slot, embedded)
                 if slot.list_checks is not None:
                     _validate_list_marker(items, slot.list_checks, slot.name, MARKER_LOC[mk])
                 return items

@@ -259,6 +259,124 @@ def test_a_str_query_marker_is_unaffected():
     assert TestClient(app).get("/s", params={"q": "hello"}).json() == {"q": "hello"}
 
 
+# ── a non-str Body() scalar checks the real JSON type too, not just str ──
+#
+# The same class of bug as the str case above: `_coerce_scalar` let a dict or
+# list through unchecked for any non-str target, and `_coerce_value` assumed
+# its input was always wire text, so `int(1.5)` silently truncated and
+# `bool(value)` accepted anything truthy. Matched against Pydantic's own lax
+# mode: bool->int/float is genuinely lenient there too, so only the cases
+# Pydantic itself rejects are pinned as bugs here.
+
+
+def test_an_int_body_scalar_refuses_a_list_or_dict():
+    app = Veloce(openapi_url=None)
+
+    @app.post("/n")
+    async def n(n: int = Body(embed=True)) -> dict:
+        return {"n": n}
+
+    client = TestClient(app)
+    for bad in ([1], {"x": 1}):
+        response = client.post("/n", json={"n": bad})
+        assert response.status_code == 422, bad
+        assert response.json()["detail"][0]["loc"] == ["body", "n"]
+
+
+def test_an_int_body_scalar_refuses_a_non_integer_float():
+    """`1.0` is a whole number and still becomes `1`, matching Pydantic's own
+    lax mode; `1.5` has no integer reading and must be refused, not truncated."""
+    app = Veloce(openapi_url=None)
+
+    @app.post("/n")
+    async def n(n: int = Body(embed=True)) -> dict:
+        return {"n": n}
+
+    client = TestClient(app)
+    assert client.post("/n", json={"n": 1.0}).json() == {"n": 1}
+    assert client.post("/n", json={"n": 1.5}).status_code == 422
+
+
+def test_an_int_body_scalar_accepts_a_bool_like_pydantic_does():
+    """Not a bug: Pydantic's own lax mode coerces bool -> int the same way."""
+    app = Veloce(openapi_url=None)
+
+    @app.post("/n")
+    async def n(n: int = Body(embed=True)) -> dict:
+        return {"n": n}
+
+    assert TestClient(app).post("/n", json={"n": True}).json() == {"n": 1}
+
+
+def test_a_float_body_scalar_accepts_a_bool_like_pydantic_does():
+    app = Veloce(openapi_url=None)
+
+    @app.post("/f")
+    async def f(f: float = Body(embed=True)) -> dict:
+        return {"f": f}
+
+    assert TestClient(app).post("/f", json={"f": True}).json() == {"f": 1.0}
+
+
+def test_a_bool_body_scalar_refuses_a_non_01_int_or_structured_value():
+    """Pydantic accepts only 0/1 for bool, not any truthy value - `bool.`"""
+    app = Veloce(openapi_url=None)
+
+    @app.post("/b")
+    async def b(b: bool = Body(embed=True)) -> dict:
+        return {"b": b}
+
+    client = TestClient(app)
+    assert client.post("/b", json={"b": 1}).json() == {"b": True}
+    assert client.post("/b", json={"b": 0}).json() == {"b": False}
+    for bad in (2, -1, [1], {"x": 1}):
+        response = client.post("/b", json={"b": bad})
+        assert response.status_code == 422, bad
+        assert response.json()["detail"][0]["loc"] == ["body", "b"]
+
+
+def test_a_list_body_scalars_element_error_names_the_field():
+    """The element-level error dropped the field name entirely: `["body", 0]`
+    instead of `["body", "tags", 0]`. The whole-body-wrong-type case next to
+    it already got this right, which is why only the per-element path needs
+    the fix."""
+    app = Veloce(openapi_url=None)
+
+    @app.post("/tags")
+    async def tags(tags: list[str] = Body(embed=True)) -> dict:
+        return {"tags": tags}
+
+    client = TestClient(app)
+    response = client.post("/tags", json={"tags": [1, 2]})
+    assert response.status_code == 422
+    locs = [err["loc"] for err in response.json()["detail"]]
+    assert locs == [["body", "tags", 0], ["body", "tags", 1]]
+
+    # The already-correct sibling case, pinned alongside the fix.
+    assert client.post("/tags", json={"tags": "hello"}).json()["detail"][0]["loc"] == [
+        "body",
+        "tags",
+    ]
+
+
+def test_a_bare_array_sent_to_an_embedded_list_param_keeps_the_index_only_loc():
+    """`embed=True` asks for the value under its own key, but a bare array
+    body was never under that key to begin with - the field name must not
+    be fabricated into the loc just because the marker asked to embed."""
+    app = Veloce(openapi_url=None)
+
+    @app.post("/tags")
+    async def tags(tags: list[str] = Body(embed=True)) -> dict:
+        return {"tags": tags}
+
+    response = TestClient(app).post(
+        "/tags", content=b"[1, 2]", headers={"content-type": "application/json"}
+    )
+    assert response.status_code == 422
+    locs = [err["loc"] for err in response.json()["detail"]]
+    assert locs == [["body", 0], ["body", 1]]
+
+
 # ── the content-type policy is unchanged ─────────────────────────────
 
 
