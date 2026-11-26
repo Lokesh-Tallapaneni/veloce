@@ -1179,6 +1179,8 @@ def _build_annotated_slot(
         slot.model = inner_type
         slot.backend = body_backend
         slot.is_optional = is_optional
+        slot.has_default = has_default
+        slot._static_default = default if has_default else None
         return slot
 
     # A SOURCE-LESS marker: choosing `Path` or `Query` needs the route template.

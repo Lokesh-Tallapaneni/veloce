@@ -98,6 +98,20 @@ def test_required_json_body_stays_required():
     assert _op(app, "post", "/reqbody")["requestBody"]["required"] is True
 
 
+def test_a_defaulted_optional_json_body_is_not_required():
+    """`item: _Item | None = None` is genuinely omittable at runtime; the
+    document must agree, not just the undefaulted `Optional` case above."""
+    app = Veloce(openapi_url=None)
+
+    @app.post("/optdefaultbody")
+    async def optdefaultbody(item: _Item | None = None):
+        return {}
+
+    with app.test_client() as client:
+        assert client.post("/optdefaultbody").status_code == 200
+    assert _op(app, "post", "/optdefaultbody")["requestBody"]["required"] is False
+
+
 def test_all_optional_form_body_is_not_required():
     app = Veloce(openapi_url=None)
 

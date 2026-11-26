@@ -149,8 +149,8 @@ def describe_slot(slot: _Slot, param_names: tuple[str, ...]) -> ParamDescriptor 
             model=slot.model,
             marker=None,
             is_file=False,
-            has_default=False,
-            default=None,
+            has_default=slot.has_default,
+            default=slot.default,
             is_optional=slot.is_optional,
         )
     if kind == K_UPLOAD_FILE:

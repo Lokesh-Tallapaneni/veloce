@@ -194,7 +194,7 @@ client can present it and reason about its effects without calling it:
     reading (destructive, open-world), so an undeclared tool is never assumed
     safe. A hint outside the spec's set is refused at the decorator rather than
     sent as wire data no client reads. A route-backed tool may pass
-    `annotations=` too, to correct a hint its verb implies.
+    `mcp_annotations=` too, to correct a hint its verb implies.
 - **`inputSchema`** / **`outputSchema`** - when the route declares a
   `response_model` (or the handler returns a Pydantic model), the tool advertises
   a standalone JSON Schema for its result. Both schemas declare the JSON Schema

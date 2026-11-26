@@ -204,6 +204,7 @@ class _RouteParameters:
 
     parameters: list[dict[str, Any]]
     request_body_schema: dict[str, Any] | None
+    request_body_required: bool
     form_fields: list[_FormField]
     body_fields: list[_BodyField]
     scalar_body: _ScalarBody | None
@@ -230,6 +231,7 @@ def _extract_parameters(info: Any, schemas_registry: SchemaRegistry) -> _RoutePa
     """
     parameters: list[dict[str, Any]] = []
     request_body_schema: dict[str, Any] | None = None
+    request_body_required = True
     form_fields: list[_FormField] = []
     body_fields: list[_BodyField] = []
     scalar_body: _ScalarBody | None = None
@@ -243,9 +245,16 @@ def _extract_parameters(info: Any, schemas_registry: SchemaRegistry) -> _RoutePa
         location = d.location
 
         if location == "body":
-            # A JSON body is always required: the resolver 422s even for `Optional`.
             if d.model is not None:
                 request_body_schema = schemas_registry.ref(d.model, mode="validation")
+                # A bare body model is required unless a default also makes it
+                # omittable; `Optional` typing alone still demands a document.
+                # A `Body(...)` marker's own default tracking is unaffected.
+                request_body_required = (
+                    not (d.has_default and d.is_optional)
+                    if marker is None
+                    else _is_required(d, marker)
+                )
                 continue
             # A `Body()` non-model is one named key when embedded, else the body.
             body_schema: dict[str, Any] = _python_type_to_schema(d.target_type)
@@ -337,7 +346,14 @@ def _extract_parameters(info: Any, schemas_registry: SchemaRegistry) -> _RoutePa
         parameters.append(param_info)
 
     _declare_undocumented_path_params(info, parameters)
-    return _RouteParameters(parameters, request_body_schema, form_fields, body_fields, scalar_body)
+    return _RouteParameters(
+        parameters,
+        request_body_schema,
+        request_body_required,
+        form_fields,
+        body_fields,
+        scalar_body,
+    )
 
 
 def _declare_undocumented_path_params(info: Any, parameters: list[dict[str, Any]]) -> None:
@@ -361,6 +377,7 @@ def _declare_undocumented_path_params(info: Any, parameters: list[dict[str, Any]
 
 def _extract_request_body(
     request_body_schema: dict[str, Any] | None,
+    request_body_required: bool,
     form_fields: list[_FormField],
     body_fields: list[_BodyField] | None = None,
     scalar_body: _ScalarBody | None = None,
@@ -370,11 +387,12 @@ def _extract_request_body(
     A JSON body takes precedence over form fields. For form fields the media
     type is `multipart/form-data` when any field is a file upload (OpenAPI 3.1
     Sec. 4.8.10.4), else `application/x-www-form-urlencoded`. A JSON body is
-    always required; a form body whose every field is optional is not.
+    required unless a default also makes it omittable; a form body whose every
+    field is optional is not required either way.
     """
     if request_body_schema:
         return {
-            "required": True,
+            "required": request_body_required,
             "content": {MIME_JSON: {"schema": request_body_schema}},
         }
     # `Body(embed=True)` keys make the body required only when one of them is.
@@ -770,7 +788,11 @@ def _build_operation(
         operation["parameters"] = inputs.parameters
 
     request_body = _extract_request_body(
-        inputs.request_body_schema, inputs.form_fields, inputs.body_fields, inputs.scalar_body
+        inputs.request_body_schema,
+        inputs.request_body_required,
+        inputs.form_fields,
+        inputs.body_fields,
+        inputs.scalar_body,
     )
     if request_body is not None:
         operation["requestBody"] = request_body

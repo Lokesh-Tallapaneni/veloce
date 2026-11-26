@@ -422,7 +422,13 @@ def _slot_schema(
     if d.is_optional and d.model is None:
         prop = _with_null_branch(prop)
 
-    return prop, not (d.has_default or d.is_optional)
+    # A body still demands a JSON document unless a default also makes the
+    # parameter itself omittable; every other kind treats either alone as enough.
+    if slot.kind == K_BODY_MODEL:
+        required = not (d.has_default and d.is_optional)
+    else:
+        required = not (d.has_default or d.is_optional)
+    return prop, required
 
 
 def _with_null_branch(prop: dict[str, Any]) -> dict[str, Any]:
@@ -1003,7 +1009,9 @@ async def bind_arguments(
             kwargs[name] = marker.resolve_default()
         elif slot.has_default:
             kwargs[name] = slot.default
-        elif slot.is_optional:
+        elif slot.is_optional and kind != K_BODY_MODEL:
+            # A nullable body still demands a JSON document; only a default
+            # makes the parameter itself omittable (`slot.has_default` above).
             kwargs[name] = None
         elif kind in _INPUT_KINDS:
             # At the binding boundary, so the server maps it to invalid-params.

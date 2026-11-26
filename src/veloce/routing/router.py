@@ -90,6 +90,11 @@ _DOC_MCP_TASK_SUPPORT = Doc(
     "Allow this route's MCP tool to run as a background task "
     "(task-augmented `tools/call`, polled via `tasks/get` / `tasks/result`)."
 )
+_DOC_MCP_ANNOTATIONS = Doc(
+    "Tool annotation overrides (`readOnlyHint`, `idempotentHint`, "
+    "`destructiveHint`, `openWorldHint`, `title`) for the route's MCP tool, "
+    "merged over the hints its HTTP verb would otherwise imply."
+)
 _DOC_RESPONSE_MODEL = Doc(
     "Type used to filter and serialize the handler's return value and the OpenAPI "
     "response schema. Defaults to the handler's return annotation when it names a "
@@ -446,6 +451,7 @@ class Router:
         "mcp_scopes",
         "mcp_icons",
         "mcp_task_support",
+        "mcp_annotations",
         "excluded_middleware",
     )
 
@@ -628,6 +634,7 @@ class Router:
             mcp_scopes=list(info.mcp_scopes) if info.mcp_scopes else None,
             mcp_icons=info.mcp_icons,
             mcp_task_support=info.mcp_task_support,
+            mcp_annotations=info.mcp_annotations,
             excluded_middleware=info.excluded_middleware,
         )
         # `stream` is assigned after construction rather than in `__init__`, so
@@ -891,6 +898,10 @@ class Router:
             bool,
             _DOC_MCP_TASK_SUPPORT,
         ] = False,
+        mcp_annotations: Annotated[
+            dict[str, Any] | None,
+            _DOC_MCP_ANNOTATIONS,
+        ] = None,
         exclude_middleware: Annotated[
             Sequence[str | type[Any]] | None,
             _DOC_EXCLUDE_MIDDLEWARE,
@@ -970,6 +981,7 @@ class Router:
             mcp_scopes=mcp_scopes,
             mcp_icons=mcp_icons,
             mcp_task_support=mcp_task_support,
+            mcp_annotations=mcp_annotations,
             excluded_middleware=_split_exclusions(exclude_middleware),
         )
         route_info.stream = stream
@@ -1494,6 +1506,10 @@ class Router:
             bool,
             _DOC_MCP_TASK_SUPPORT,
         ] = False,
+        mcp_annotations: Annotated[
+            dict[str, Any] | None,
+            _DOC_MCP_ANNOTATIONS,
+        ] = None,
         exclude_middleware: Annotated[
             Sequence[str | type[Any]] | None,
             _DOC_EXCLUDE_MIDDLEWARE,
@@ -1554,6 +1570,7 @@ class Router:
                 mcp_scopes=mcp_scopes,
                 mcp_icons=mcp_icons,
                 mcp_task_support=mcp_task_support,
+                mcp_annotations=mcp_annotations,
                 exclude_middleware=exclude_middleware,
                 stream=stream,
             )

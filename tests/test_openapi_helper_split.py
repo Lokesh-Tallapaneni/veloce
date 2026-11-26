@@ -208,7 +208,11 @@ def test_get_openapi_schema_helpers_assemble_same_operation() -> None:
     schemas_registry = SchemaRegistry()
     inputs = _extract_parameters(info, schemas_registry)
     request_body = _extract_request_body(
-        inputs.request_body_schema, inputs.form_fields, inputs.body_fields, inputs.scalar_body
+        inputs.request_body_schema,
+        inputs.request_body_required,
+        inputs.form_fields,
+        inputs.body_fields,
+        inputs.scalar_body,
     )
     # The orchestrator's own predicate, not a copy of it. This was written out
     # here and had already drifted - it omitted the `_dependency_graph_has_validatable`
@@ -284,7 +288,11 @@ def test_only_the_third_disjunct_fires_for_a_hidden_parameter():
     registry = SchemaRegistry()
     inputs = _extract_parameters(info, registry)
     request_body = _extract_request_body(
-        inputs.request_body_schema, inputs.form_fields, inputs.body_fields, inputs.scalar_body
+        inputs.request_body_schema,
+        inputs.request_body_required,
+        inputs.form_fields,
+        inputs.body_fields,
+        inputs.scalar_body,
     )
     assert inputs.parameters == []
     assert request_body is None
@@ -310,7 +318,11 @@ def test_the_dropped_disjunct_changes_the_answer():
     registry = SchemaRegistry()
     inputs = _extract_parameters(info, registry)
     request_body = _extract_request_body(
-        inputs.request_body_schema, inputs.form_fields, inputs.body_fields, inputs.scalar_body
+        inputs.request_body_schema,
+        inputs.request_body_required,
+        inputs.form_fields,
+        inputs.body_fields,
+        inputs.scalar_body,
     )
     dropped = bool(inputs.parameters) or request_body is not None
     correct = dropped or _dependency_graph_has_validatable(info)
@@ -326,7 +338,11 @@ def test_the_helpers_and_the_orchestrator_agree_on_that_route():
     registry = SchemaRegistry()
     inputs = _extract_parameters(info, registry)
     request_body = _extract_request_body(
-        inputs.request_body_schema, inputs.form_fields, inputs.body_fields, inputs.scalar_body
+        inputs.request_body_schema,
+        inputs.request_body_required,
+        inputs.form_fields,
+        inputs.body_fields,
+        inputs.scalar_body,
     )
     flag = (
         bool(inputs.parameters)
