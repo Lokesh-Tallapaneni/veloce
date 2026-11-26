@@ -61,6 +61,7 @@ from veloce.dependency import (
     _as_declared_sequence,
     _coerce_value,
     _fixed_shape_args,
+    _is_non_integer_float,
     _validate_list_marker,
 )
 from veloce.exceptions import RequestValidationError
@@ -506,7 +507,7 @@ def _coerce_json_scalar(slot: _Slot, value: Any, target: Any) -> Any:
         # `bool` subclasses `int`, so an unguarded number target would take `true`.
         if target is int or target is float:
             raise _wrong_type(slot.name, "a number", value)
-    elif target is int and isinstance(value, float) and not value.is_integer():
+    elif target is int and _is_non_integer_float(value):
         # JSON Schema's `integer` accepts only a zero fractional part.
         raise RequestValidationError(
             [

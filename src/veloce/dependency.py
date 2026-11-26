@@ -179,16 +179,19 @@ def _coerce_via_pydantic(value: Any, target_type: Any, param_name: str, loc: str
         ) from err
 
 
+def _is_non_integer_float(value: Any) -> bool:
+    """Whether `value` is a `float` with no exact integer reading."""
+    return isinstance(value, float) and not value.is_integer()
+
+
 def _coerce_value(value: Any, target_type: Any, param_name: str, loc: str) -> Any:
     """Coerce a string value to the target type."""
     if target_type is str or target_type is Any or target_type is None:
         return value
     try:
         if target_type is int:
-            # Pydantic's own lax mode: a whole-number float is fine, a
-            # fractional one has no integer reading and must be refused
-            # rather than silently truncated by `int()`.
-            if isinstance(value, float) and not value.is_integer():
+            # Pydantic's lax mode: whole-number float is fine, fractional isn't.
+            if _is_non_integer_float(value):
                 raise ValueError(f"{value} is not an integer")
             return int(value)
         if target_type is float:
@@ -1194,12 +1197,15 @@ class DependencyResolver:
             # An endpoint parsing `text/plain` is reachable cross-origin unpreflighted.
             self._require_json_body(request)
             body = await request.json()
-            # `Body(embed=True)`: under the param name, not the whole body.
-            raw = body.get(lookup) if marker.embed and isinstance(body, dict) else body
+            # `Body(embed=True)`: under the param name, not the whole body -
+            # but only when the body is actually a dict; a bare array sent
+            # to an embedded param was never under that key to begin with.
+            embedded = marker.embed and isinstance(body, dict)
+            raw = body.get(lookup) if embedded else body
             # `marker.validate` bounds a scalar, so an array is checked here.
             if slot.marker_reads_list and isinstance(raw, list):
                 # The element type first, or a raw `["0"]` skips `items.minimum`.
-                items = _validate_body_list(raw, slot, marker.embed)
+                items = _validate_body_list(raw, slot, embedded)
                 if slot.list_checks is not None:
                     _validate_list_marker(items, slot.list_checks, slot.name, MARKER_LOC[mk])
                 return items

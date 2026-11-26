@@ -360,6 +360,24 @@ def test_a_list_body_scalars_element_error_names_the_field():
     ]
 
 
+def test_a_bare_array_sent_to_an_embedded_list_param_keeps_the_index_only_loc():
+    """`embed=True` asks for the value under its own key, but a bare array
+    body was never under that key to begin with - the field name must not
+    be fabricated into the loc just because the marker asked to embed."""
+    app = Veloce(openapi_url=None)
+
+    @app.post("/tags")
+    async def tags(tags: list[str] = Body(embed=True)) -> dict:
+        return {"tags": tags}
+
+    response = TestClient(app).post(
+        "/tags", content=b"[1, 2]", headers={"content-type": "application/json"}
+    )
+    assert response.status_code == 422
+    locs = [err["loc"] for err in response.json()["detail"]]
+    assert locs == [["body", 0], ["body", 1]]
+
+
 # ── the content-type policy is unchanged ─────────────────────────────
 
 
