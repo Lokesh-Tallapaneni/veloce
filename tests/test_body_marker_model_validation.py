@@ -265,9 +265,8 @@ def test_a_str_query_marker_is_unaffected():
 # list through unchecked for any non-str target, and `_coerce_value` assumed
 # its input was always wire text, so `int(1.5)` silently truncated and
 # `bool(value)` accepted anything truthy. Matched against Pydantic's own lax
-# mode (the engine FastAPI's Body() validates through): bool->int/float is
-# genuinely lenient there too, so only the cases Pydantic itself rejects are
-# pinned as bugs here.
+# mode: bool->int/float is genuinely lenient there too, so only the cases
+# Pydantic itself rejects are pinned as bugs here.
 
 
 def test_an_int_body_scalar_refuses_a_list_or_dict():
