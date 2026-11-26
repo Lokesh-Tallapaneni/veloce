@@ -106,7 +106,7 @@ class HttpUpstreamRequest:
         """One POST + dispatch.
 
         `retry_signal` controls whether a 404 with a sent session id raises
-        `_SessionExpired` (`True`) or falls through to `raise_for_status()`
+        `_SessionExpired` (`True`) or falls through to `_UpstreamError`
         (`False` - the one retry already happened). `expect_body=False` is
         for `notifications/initialized` only: no id, no response to parse.
         """
@@ -133,7 +133,10 @@ class HttpUpstreamRequest:
                 if parsed is not None:
                     code, message, data = parsed
                     raise _UpstreamError(message, code, data=data)
-                response.raise_for_status()
+                raise _UpstreamError(
+                    f"upstream returned {response.status_code} with no JSON-RPC error body",
+                    -32603,  # INTERNAL_ERROR - opaque HTTP failure, nothing to unwrap
+                )
 
             if not expect_body:
                 return {}
@@ -151,10 +154,16 @@ class HttpUpstreamRequest:
             raise _UpstreamError(
                 err.get("message", "upstream error"), err.get("code", -32603), data=err.get("data")
             )
+        if "result" not in result:
+            raise _UpstreamError("upstream response has neither result nor error", -32603)
         upstream_result: dict[str, Any] = result["result"]
         return upstream_result
 
     async def _handshake(self) -> None:
+        # Reset before sending: a re-handshake's `initialize` body always asks
+        # for `LATEST_PROTOCOL_VERSION`, so a prior negotiation's cached value
+        # must not ride along as the header on this one.
+        self._protocol_version = LATEST_PROTOCOL_VERSION
         envelope = await self._attempt(
             "initialize",
             {
@@ -178,9 +187,10 @@ class HttpUpstreamRequest:
         if self._owns_client:
             if self._session_id is not None:
                 with contextlib.suppress(Exception):
-                    await self._client.delete(
-                        self._url, headers={"Mcp-Session-Id": self._session_id}
-                    )
+                    # Same headers as any other request: the upstream's own
+                    # admission control requires the same credential to
+                    # terminate a session as to use one.
+                    await self._client.delete(self._url, headers=self._build_headers())
             await self._client.aclose()
 
 
@@ -218,7 +228,10 @@ async def _read_sse_envelope(response: httpx2.Response) -> dict[str, Any]:
             data_lines = []
             if not payload.strip():
                 continue
-            event: dict[str, Any] = _json.loads(payload)
+            try:
+                event: dict[str, Any] = _json.loads(payload)
+            except (_json.JSONDecodeError, ValueError) as exc:
+                raise _UpstreamError(f"malformed SSE event: {exc}", -32603) from exc
             if "result" in event or "error" in event:
                 return event
     raise RuntimeError("upstream SSE stream ended without a JSON-RPC result or error event")

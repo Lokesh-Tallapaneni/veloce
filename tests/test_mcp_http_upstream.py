@@ -269,7 +269,7 @@ async def test_a_second_404_after_reinit_propagates_without_looping():
     client = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
     request = http_upstream("http://upstream/mcp", client=client)
 
-    with pytest.raises(httpx2.HTTPStatusError):
+    with pytest.raises(MCPError):
         await asyncio.wait_for(request("tools/list", {}), timeout=2)
 
 
@@ -408,3 +408,149 @@ async def test_headers_reach_every_request_and_protocol_headers_win_on_collision
     # design's own required header (§5.2 step 2), never actually asserted
     # until this test.
     assert seen[-1]["mcp-protocol-version"] == "2025-11-25"
+
+
+# ── Every protocol-level failure raises MCPError, documented at the top
+# of http_upstream()'s own docstring - not whatever exception the HTTP or
+# JSON layer happened to raise underneath it. ─────────────────────────
+
+
+async def test_an_opaque_http_error_raises_mcperror():
+    """A non-2xx response with no JSON-RPC error envelope at all - a plain
+    proxy failure, not an upstream-reported error."""
+
+    async def handler(request):
+        payload = json.loads(request.read())
+        if payload["method"] == "initialize":
+            return _json_response(payload, {"protocolVersion": "2025-11-25"})
+        if payload["method"] == "notifications/initialized":
+            return httpx2.Response(202)
+        return httpx2.Response(500, content=b"Internal Server Error")
+
+    client = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
+    request = http_upstream("http://upstream/mcp", client=client)
+
+    with pytest.raises(MCPError):
+        await request("tools/list", {})
+
+
+async def test_a_response_with_neither_result_nor_error_raises_mcperror():
+    """Syntactically valid JSON-RPC, 2xx, but spec-violating - missing the one
+    field a caller needs to know whether the call succeeded."""
+
+    async def handler(request):
+        payload = json.loads(request.read())
+        if payload["method"] == "initialize":
+            return _json_response(payload, {"protocolVersion": "2025-11-25"})
+        if payload["method"] == "notifications/initialized":
+            return httpx2.Response(202)
+        return httpx2.Response(
+            200,
+            json={"jsonrpc": "2.0", "id": payload.get("id")},
+            headers={"content-type": "application/json", "mcp-session-id": "sess-1"},
+        )
+
+    client = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
+    request = http_upstream("http://upstream/mcp", client=client)
+
+    with pytest.raises(MCPError):
+        await request("tools/list", {})
+
+
+async def test_a_malformed_sse_payload_raises_mcperror():
+    """A truncated or mangled `data:` payload is not valid JSON."""
+
+    async def handler(request):
+        payload = json.loads(request.read())
+        if payload["method"] == "initialize":
+            return _json_response(payload, {"protocolVersion": "2025-11-25"})
+        if payload["method"] == "notifications/initialized":
+            return httpx2.Response(202)
+        return httpx2.Response(
+            200,
+            content=b"data: {not valid json\n\n",
+            headers={"content-type": "text/event-stream", "mcp-session-id": "sess-1"},
+        )
+
+    client = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
+    request = http_upstream("http://upstream/mcp", client=client)
+
+    with pytest.raises(MCPError):
+        await request("tools/list", {})
+
+
+# ── aclose()'s session-termination DELETE is a request like any other: it
+# must carry the caller's custom headers, the upstream's own admission
+# control requires the same credential on a DELETE as on a POST. ───────
+
+
+async def test_aclose_sends_custom_headers_on_the_terminating_delete(monkeypatch):
+    seen_delete_headers: dict[str, str] = {}
+
+    async def handler(request):
+        if request.method == "DELETE":
+            seen_delete_headers.update(dict(request.headers))
+            return httpx2.Response(204)
+        payload = json.loads(request.read())
+        if payload["method"] == "initialize":
+            return _json_response(payload, {"protocolVersion": "2025-11-25"})
+        if payload["method"] == "notifications/initialized":
+            return httpx2.Response(202)
+        return _json_response(payload, {"tools": []})
+
+    real_async_client = httpx2.AsyncClient
+
+    def fake_async_client(*args, **kwargs):
+        kwargs["transport"] = httpx2.MockTransport(handler)
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx2, "AsyncClient", fake_async_client)
+
+    request = http_upstream("http://upstream/mcp", headers={"authorization": "Bearer secret"})
+    await request("tools/list", {})
+    await request.aclose()
+
+    assert seen_delete_headers.get("authorization") == "Bearer secret"
+    assert seen_delete_headers.get("mcp-protocol-version") == "2025-11-25"
+
+
+# ── A re-handshake's MCP-Protocol-Version header must match the body of
+# that same initialize request, not a prior negotiation's cached value. ─
+
+
+async def test_the_protocol_version_header_matches_the_rehandshake_body():
+    initialize_requests: list[dict] = []
+    session_counter = 0
+
+    async def handler(request):
+        nonlocal session_counter
+        if request.method == "DELETE":
+            return httpx2.Response(204)
+        payload = json.loads(request.read())
+        method = payload["method"]
+        if method == "notifications/initialized":
+            return httpx2.Response(202)
+        if method == "initialize":
+            initialize_requests.append(
+                {
+                    "body_version": payload["params"]["protocolVersion"],
+                    "header_version": dict(request.headers).get("mcp-protocol-version"),
+                }
+            )
+            session_counter += 1
+            return _json_response(
+                payload, {"protocolVersion": "2025-06-18"}, session_id=f"sess-{session_counter}"
+            )
+        if len(initialize_requests) == 1:
+            # The first real call after the first handshake: force a re-handshake.
+            return httpx2.Response(404)
+        return _json_response(payload, {"tools": []}, session_id=f"sess-{session_counter}")
+
+    client = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
+    request = http_upstream("http://upstream/mcp", client=client)
+
+    await request("tools/list", {})
+
+    assert len(initialize_requests) == 2
+    for sent in initialize_requests:
+        assert sent["header_version"] == sent["body_version"]

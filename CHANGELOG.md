@@ -18,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `http_upstream` builds a session-aware `request` callable for `add_mcp_proxy` against a real Streamable HTTP upstream server - handshake, `Mcp-Session-Id` carry, and one re-initialize-and-retry on an expired session. ([#355](https://github.com/Lokesh-Tallapaneni/veloce/pull/355))
 - The `mcp-proxy` extra installs `httpx2`, the dependency `http_upstream` needs (Python >= 3.11). ([#355](https://github.com/Lokesh-Tallapaneni/veloce/pull/355))
 
+### Fixed
+
+- `http_upstream`'s opaque HTTP errors, malformed SSE payloads, and a response with neither `result` nor `error` all raise `MCPError`, matching its documented contract, instead of a raw `httpx2`/`json` exception. ([#355](https://github.com/Lokesh-Tallapaneni/veloce/pull/355))
+- `http_upstream`'s session-terminating `DELETE` carries the same custom headers as every other request, instead of a bare session id the upstream's own admission control would reject. ([#355](https://github.com/Lokesh-Tallapaneni/veloce/pull/355))
+- `http_upstream`'s `MCP-Protocol-Version` header no longer carries a stale, previously-negotiated version into a fresh `initialize` request. ([#355](https://github.com/Lokesh-Tallapaneni/veloce/pull/355))
+
 ## [0.22.0] - 2026-11-11
 
 ### Added
