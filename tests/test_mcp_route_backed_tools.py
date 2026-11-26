@@ -571,6 +571,19 @@ def test_an_optional_typed_body_with_no_default_is_still_required_over_mcp():
     assert out["result"].get("isError") is True
 
 
+def test_an_optional_typed_body_with_no_default_is_advertised_as_required():
+    """The published `inputSchema` must agree with the call-time check above:
+    a no-default optional body is a required argument, not an optional one."""
+    app = Veloce(openapi_url=None)
+
+    @app.post("/probe", expose_as_mcp_tool=True, mcp_description="Probe")
+    async def probe(body: Item | None) -> dict:
+        return {"ok": True}
+
+    schema = build_registry(app).tools["probe"].input_schema
+    assert "body" in schema.get("required", [])
+
+
 def test_route_backed_tool_sees_route_method_and_path():
     """A route-backed tool's handler and a dependency must see the wrapped
     route's real HTTP method and rule path on `request`, not the synthetic

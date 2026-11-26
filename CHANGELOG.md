@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `body: Model | None = None` no longer answers `422` to a request sent with no body. ([#354](https://github.com/Lokesh-Tallapaneni/veloce/pull/354))
+- An optional body parameter's own non-`None` default is bound when the body is omitted, instead of `None`. ([#354](https://github.com/Lokesh-Tallapaneni/veloce/pull/354))
+- An MCP tool's `inputSchema` and the OpenAPI `requestBody` both mark a no-default optional body as required, matching the resolver, instead of omitting it just because its type permits `None`. ([#354](https://github.com/Lokesh-Tallapaneni/veloce/pull/354))
 
 ## [0.22.0] - 2026-11-11
 

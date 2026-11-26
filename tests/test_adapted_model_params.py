@@ -332,6 +332,19 @@ def test_a_pydantic_body_may_be_explicitly_empty_with_json_content_type():
         assert response.json() == {"got": True}
 
 
+def test_an_optional_pydantic_body_resolves_its_own_non_none_default():
+    """`body: Probe | None = Probe(x=99)` must bind the declared default, not
+    silently fall back to `None` just because the type permits it."""
+    app = Veloce(title="PydanticOptionalBody6", openapi_url=None)
+
+    @app.post("/probe")
+    async def probe(body: Probe | None = Probe(x=99)) -> dict:
+        return {"x": body.x if body else None}
+
+    with app.test_client() as client:
+        assert client.post("/probe").json() == {"x": 99}
+
+
 def test_an_optional_typed_pydantic_body_with_no_default_is_still_required():
     """`body: Probe | None` without `= None` still demands a JSON document:
     the type permits `None`, but nothing makes the parameter itself omittable."""

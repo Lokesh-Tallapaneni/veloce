@@ -422,7 +422,13 @@ def _slot_schema(
     if d.is_optional and d.model is None:
         prop = _with_null_branch(prop)
 
-    return prop, not (d.has_default or d.is_optional)
+    # A body still demands a JSON document unless a default also makes the
+    # parameter itself omittable; every other kind treats either alone as enough.
+    if slot.kind == K_BODY_MODEL:
+        required = not (d.has_default and d.is_optional)
+    else:
+        required = not (d.has_default or d.is_optional)
+    return prop, required
 
 
 def _with_null_branch(prop: dict[str, Any]) -> dict[str, Any]:

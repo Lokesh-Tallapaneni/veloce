@@ -1033,7 +1033,7 @@ class DependencyResolver:
         raw = await request.body()
         if not raw.strip():
             if slot.is_optional and slot.has_default:
-                return None
+                return slot.default
             raise RequestValidationError(
                 [{"loc": ["body"], "msg": MSG_FIELD_REQUIRED, "type": "missing"}]
             )
@@ -1049,7 +1049,7 @@ class DependencyResolver:
             # `request.json()`, not `.body()` - an MCP call never buffers bytes.
             # Only a default makes the body omittable, not `is_optional` alone.
             if body_data is None and slot.is_optional and slot.has_default:
-                return None
+                return slot.default
             return slot.model.model_validate(body_data)
         except PydanticValidationError as e:
             raise _err_body_validation(e) from e
@@ -1077,7 +1077,7 @@ class DependencyResolver:
         # "missing", not the opaque truncation error `decode(b"")` would raise.
         if not raw or not raw.strip():
             if slot.is_optional and slot.has_default:
-                return None
+                return slot.default
             raise RequestValidationError(
                 [{"loc": ["body"], "msg": "Missing request body", "type": "missing"}]
             )
