@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `mcp_annotations` on a route overrides its MCP tool's hints (`readOnlyHint`, `idempotentHint`, `destructiveHint`, `openWorldHint`, `title`), merged over the ones its HTTP verb implies. ([#354](https://github.com/Lokesh-Tallapaneni/veloce/pull/354))
 - `http_upstream` builds a session-aware `request` callable for `add_mcp_proxy` against a real Streamable HTTP upstream server - handshake, `Mcp-Session-Id` carry, and one re-initialize-and-retry on an expired session. ([#355](https://github.com/Lokesh-Tallapaneni/veloce/pull/355))
 - The `mcp-proxy` extra installs `httpx2`, the dependency `http_upstream` needs (Python >= 3.11). ([#355](https://github.com/Lokesh-Tallapaneni/veloce/pull/355))
+- `TestResponse.content` aliases `.body`, matching `httpx.Response`'s own attribute name. ([#365](https://github.com/Lokesh-Tallapaneni/veloce/pull/365))
 
 ### Fixed
 

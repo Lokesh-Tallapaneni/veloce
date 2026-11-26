@@ -744,6 +744,11 @@ class TestResponse:
         """Decode the response body as UTF-8 text."""
         return self.body.decode("utf-8", errors="replace")
 
+    @property
+    def content(self) -> bytes:
+        """Alias for `body`, matching `httpx.Response`'s own attribute name."""
+        return self.body
+
     def __repr__(self) -> str:
         return f"<TestResponse [{self.status_code}]>"
 
