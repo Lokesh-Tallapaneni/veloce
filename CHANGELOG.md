@@ -9,12 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `mcp_annotations` on a route overrides its MCP tool's hints (`readOnlyHint`, `idempotentHint`, `destructiveHint`, `openWorldHint`, `title`), merged over the ones its HTTP verb implies. ([#354](https://github.com/Lokesh-Tallapaneni/veloce/pull/354))
+- `http_upstream` builds a session-aware `request` callable for `add_mcp_proxy` against a real Streamable HTTP upstream server - handshake, `Mcp-Session-Id` carry, and one re-initialize-and-retry on an expired session. ([#355](https://github.com/Lokesh-Tallapaneni/veloce/pull/355))
+- The `mcp-proxy` extra installs `httpx2`, the dependency `http_upstream` needs (Python >= 3.11). ([#355](https://github.com/Lokesh-Tallapaneni/veloce/pull/355))
 
 ### Fixed
 
 - `body: Model | None = None` no longer answers `422` to a request sent with no body. ([#354](https://github.com/Lokesh-Tallapaneni/veloce/pull/354))
 - An optional body parameter's own non-`None` default is bound when the body is omitted, instead of `None`. ([#354](https://github.com/Lokesh-Tallapaneni/veloce/pull/354))
 - An MCP tool's `inputSchema` and the OpenAPI `requestBody` both mark a no-default optional body as required, matching the resolver, instead of omitting it just because its type permits `None`. ([#354](https://github.com/Lokesh-Tallapaneni/veloce/pull/354))
+- `http_upstream` raises `MCPError` for every protocol-level failure, matching its documented contract: an opaque HTTP error, a response with neither `result` nor `error`, a malformed JSON or SSE body, and an SSE stream that ends without one. ([#355](https://github.com/Lokesh-Tallapaneni/veloce/pull/355))
+- `http_upstream`'s session-terminating `DELETE` carries the same custom headers as every other request, instead of a bare session id the upstream's own admission control would reject. ([#355](https://github.com/Lokesh-Tallapaneni/veloce/pull/355))
+- `http_upstream`'s `MCP-Protocol-Version` header no longer carries a stale, previously-negotiated version into a fresh `initialize` request. ([#355](https://github.com/Lokesh-Tallapaneni/veloce/pull/355))
 
 ## [0.22.0] - 2026-11-11
 

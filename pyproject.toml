@@ -167,6 +167,13 @@ ciso8601 = ["ciso8601>=2.3"]
 # marker - see oauth_proxy.py's install-hint RuntimeError for the 3.10 story.
 # Install with `pip install veloceframework[mcp-oauth-proxy]`.
 mcp-oauth-proxy = ["httpx2>=2.10.0; python_version >= '3.11'"]
+# Streamable HTTP client support for veloce.contrib.mcp.proxy.http_upstream,
+# the handshake/session-aware request() helper for add_mcp_proxy against a
+# real upstream MCP server. httpx2 requires Python >= 3.11, so this (and its
+# mirror in `all` and `dev`) carries a marker - see http_upstream.py's
+# install-hint RuntimeError for the 3.10 story.
+# Install with `pip install veloceframework[mcp-proxy]`.
+mcp-proxy = ["httpx2>=2.10.0; python_version >= '3.11'"]
 # Everything optional in one shot.
 all = [
     "uvicorn[standard]>=0.23",
@@ -255,9 +262,11 @@ dev = [
     "brotli>=1.2.1",
     "zstandard>=0.25.0",
     "ciso8601>=2.3.3",
-    # The `mcp-oauth-proxy` extra's backend, so the default test run exercises
-    # oauth_proxy's OIDC-discovery path; the 3.10 leg installs without it and
-    # the guarded tests skip (same shape as the `tomli` marker above).
+    # The `mcp-oauth-proxy` and `mcp-proxy` extras' backend, so the default
+    # test run exercises oauth_proxy's OIDC-discovery path and
+    # http_upstream's handshake/session path; the 3.10 leg installs without
+    # it and both guarded test sets skip (same shape as the `tomli` marker
+    # above).
     "httpx2>=2.10.0; python_version >= '3.11'",
 ]
 docs = [

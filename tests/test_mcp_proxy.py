@@ -12,10 +12,13 @@ whoever knows the deployment.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from tests._mcp import FORBIDDEN, call_tool
 from veloce import Principal, Veloce
+from veloce.contrib.mcp.http_upstream import http_upstream
 from veloce.contrib.mcp.proxy import add_mcp_proxy
 from veloce.contrib.mcp.registry import build_registry
 from veloce.contrib.mcp.server import MCPServer
@@ -289,3 +292,47 @@ async def test_scopes_and_tags_default_to_nothing():
     tool = build_registry(await _gateway()).tools["up_add"]
     assert tool.required_scopes == frozenset()
     assert tool.tags == frozenset()
+
+
+# ── http_upstream is a real `request` callable, not just a matching
+# signature - this drives a real upstream MCPServer over Streamable-HTTP-
+# shaped JSON-RPC (handshake, session id, the lot), not the in-process
+# shortcut `_requester` takes. ──────────────────────────────────────────
+
+httpx2 = pytest.importorskip("httpx2")
+
+
+def _streamable_http_upstream(server: MCPServer):
+    """A mock transport that answers like a real Streamable HTTP MCP server.
+
+    `http_upstream` performs its own handshake before the real call; this
+    forwards every method but `notifications/initialized` to the upstream
+    `MCPServer` itself, so nothing about the handshake is faked by the test.
+    """
+    session = MCPSession()
+
+    async def handler(request: httpx2.Request) -> httpx2.Response:
+        payload = json.loads(request.read())
+        if payload["method"] == "notifications/initialized":
+            return httpx2.Response(202)
+        response = await server.handle_message(payload, session)
+        return httpx2.Response(
+            200,
+            json=response,
+            headers={"content-type": "application/json", "mcp-session-id": "sess-1"},
+        )
+
+    return httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
+
+
+async def test_http_upstream_discovers_and_forwards_over_a_real_handshake():
+    _app, server = _upstream()
+    client = _streamable_http_upstream(server)
+    request = http_upstream("http://upstream/mcp", client=client)
+
+    gateway = Veloce(title="Gateway", openapi_url=None)
+    names = await add_mcp_proxy(gateway, "up", request)
+
+    assert sorted(names) == ["up_add", "up_boom"]
+    result = await call_tool(gateway, "up_add", {"a": 3, "b": 4})
+    assert result["content"][0]["text"] == "7"

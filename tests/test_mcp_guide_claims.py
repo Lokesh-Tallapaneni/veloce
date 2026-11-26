@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import pathlib
 import re
+import sys
 
 import pytest
 
@@ -175,11 +176,30 @@ def test_no_python_block_leaves_a_name_undefined():
         except ModuleNotFoundError as exc:  # an optional dependency is not installed
             skipped.append(f"mcp.md:{line_no} needs {exc.name}")
             continue
+        except RuntimeError as exc:
+            # `http_upstream()`'s own install-hint, which wraps the ImportError
+            # rather than letting it propagate bare - same missing-dependency
+            # case as above, just raised through a friendlier message.
+            if isinstance(exc.__cause__, ImportError):
+                skipped.append(f"mcp.md:{line_no} needs {exc.__cause__.name}")
+                continue
+            raise
         except NameError as exc:
             pytest.fail(f"mcp.md:{line_no} leaves a name undefined: {exc}")
         checked += 1
     if not checked:
         pytest.skip(f"every runnable block needs a missing dependency: {skipped}")
+
+
+def test_an_http_upstream_block_on_a_pre_311_interpreter_is_skipped_not_failed(monkeypatch):
+    """`http_upstream()` raises `RuntimeError`, not `ModuleNotFoundError`, when
+    its own httpx2 dependency can't be used - on a pre-3.11 interpreter, or
+    one where httpx2 just isn't installed. Either way this is a missing
+    optional dependency, the exact case the sweep is meant to skip, not fail."""
+    monkeypatch.setattr(sys, "version_info", (3, 10, 0, "final", 0))
+    monkeypatch.setitem(sys.modules, "httpx2", None)
+
+    test_no_python_block_leaves_a_name_undefined()
 
 
 def test_every_named_config_key_exists():

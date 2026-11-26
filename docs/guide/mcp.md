@@ -1403,6 +1403,45 @@ upstream will validate against, so a schema rebuilt from a Python signature
 could only disagree with it. The upstream's answer is relayed as-is, so its
 `isError` and its content blocks reach the caller unwrapped.
 
+#### Against a real Streamable HTTP upstream
+
+Writing `call_upstream` by hand only works against a degenerate upstream that
+skips session issuance — a real Streamable HTTP server expects the
+`initialize` handshake, the `Mcp-Session-Id` it hands back on every call
+after, and `notifications/initialized` before any of that. `http_upstream`
+builds a `request` callable that does all of this, so you only ever need to
+pass it a URL:
+
+```python
+from veloce import Veloce
+from veloce.contrib.mcp import add_mcp_proxy, http_upstream
+
+app = Veloce(title="Gateway")
+
+upstream_request = http_upstream("https://upstream.example.com/mcp")
+
+
+@app.on_startup
+async def attach_upstream() -> None:
+    await add_mcp_proxy(app, "search", upstream_request)
+
+
+@app.on_shutdown
+async def close_upstream() -> None:
+    await upstream_request.aclose()
+
+
+app.mount_mcp(transport="http")
+```
+
+Pass your own `client=` (an `httpx2.AsyncClient`) if you want to keep owning
+pooling, auth, or retries yourself — `http_upstream` only creates and closes
+one when you don't. A protocol-level upstream failure (a JSON-RPC error, or
+an HTTP error with nothing to unwrap) raises `MCPError`; an in-band tool
+failure (`isError: true`) is returned as data, exactly as it would be from a
+hand-written `call_upstream`. `httpx2` is an optional dependency — install it
+with `pip install veloceframework[mcp-proxy]`.
+
 ### A narrower view of a tool you already have
 
 An internal tool is often nearly the tool worth publishing, differing only in
