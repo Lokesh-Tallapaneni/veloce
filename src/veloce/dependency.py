@@ -225,12 +225,26 @@ def _coerce_value(value: Any, target_type: Any, param_name: str, loc: str) -> An
 
 
 def _coerce_scalar(value: Any, target_type: Any, param_name: str, loc: str) -> Any:
-    """Coerce `value` to `target_type` unless it is a string or already structured.
+    """Coerce `value` to `target_type` unless it is already structured.
 
-    The guard shared by the marker and bare-query resolution tails, in HTTP and
-    in the MCP argument binder.
+    The tail shared by every marker kind's resolution. A `str` target is a
+    no-op for a query/path/header/cookie/form value - already a string off
+    the wire - but a body value is JSON-typed and may be anything, so it is
+    still checked rather than assumed to already satisfy the annotation.
     """
-    if target_type and target_type is not str and not isinstance(value, (dict, list)):
+    if target_type is str:
+        if isinstance(value, str):
+            return value
+        raise RequestValidationError(
+            [
+                {
+                    "loc": [loc, param_name],
+                    "msg": f"Invalid value for {param_name}: expected str",
+                    "type": "type_error",
+                }
+            ]
+        )
+    if target_type and not isinstance(value, (dict, list)):
         return _coerce_value(value, target_type, param_name, loc)
     return value
 
