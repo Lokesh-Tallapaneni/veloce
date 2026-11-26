@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `http_upstream` raises `MCPError` for every protocol-level failure, matching its documented contract: an opaque HTTP error, a response with neither `result` nor `error`, a malformed JSON or SSE body, and an SSE stream that ends without one. ([#355](https://github.com/Lokesh-Tallapaneni/veloce/pull/355))
 - `http_upstream`'s session-terminating `DELETE` carries the same custom headers as every other request, instead of a bare session id the upstream's own admission control would reject. ([#355](https://github.com/Lokesh-Tallapaneni/veloce/pull/355))
 - `http_upstream`'s `MCP-Protocol-Version` header no longer carries a stale, previously-negotiated version into a fresh `initialize` request. ([#355](https://github.com/Lokesh-Tallapaneni/veloce/pull/355))
-- A `str`-typed `Body()` scalar parameter refuses a non-string JSON value (`int`, `float`, `list`, `dict`, `bool`) instead of passing it through unchecked.
+- A `str`-typed `Body()` scalar parameter refuses a non-string JSON value (`int`, `float`, `list`, `dict`, `bool`) instead of passing it through unchecked. ([#360](https://github.com/Lokesh-Tallapaneni/veloce/pull/360))
 
 ## [0.22.0] - 2026-11-11
 
