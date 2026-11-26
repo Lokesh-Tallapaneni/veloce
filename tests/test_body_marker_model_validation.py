@@ -35,7 +35,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from veloce import Body, Veloce
+from veloce import Body, Query, Veloce
 from veloce._handler_plan import MK_BODY, build_plan
 from veloce.testclient import TestClient
 
@@ -203,6 +203,60 @@ def test_a_whole_body_scalar_still_binds():
         return {"note": note}
 
     assert TestClient(app).post("/s", json="hi").json() == {"note": "hi"}
+
+
+def test_a_str_body_scalar_refuses_a_non_string_value():
+    """A JSON body value is not already a string the way a query/path/header
+    value is - `title: str = Body()` must still check it, not assume it."""
+    app = Veloce(openapi_url=None)
+
+    @app.post("/s")
+    async def s(title: str = Body(embed=True)) -> dict:
+        return {"title": title}
+
+    client = TestClient(app)
+    for bad in (123, 1.5, ["a"], {"x": 1}, True):
+        response = client.post("/s", json={"title": bad})
+        assert response.status_code == 422, bad
+        detail = response.json()["detail"][0]
+        assert detail["loc"] == ["body", "title"]
+        # Matches `_coerce_value`'s own int/float/enum type errors, not
+        # Pydantic's wire vocabulary - this error never touches Pydantic.
+        assert detail["type"] == "type_error"
+
+
+def test_a_whole_body_str_scalar_refuses_a_non_string_value():
+    app = Veloce(openapi_url=None)
+
+    @app.post("/s")
+    async def s(note: str = Body()) -> dict:
+        return {"note": note}
+
+    assert TestClient(app).post("/s", json=123).status_code == 422
+
+
+def test_a_str_body_scalar_still_binds_a_plain_string():
+    """The common case, right next to the rejection tests above."""
+    app = Veloce(openapi_url=None)
+
+    @app.post("/s")
+    async def s(title: str = Body(embed=True)) -> dict:
+        return {"title": title}
+
+    assert TestClient(app).post("/s", json={"title": "hello"}).json() == {"title": "hello"}
+
+
+def test_a_str_query_marker_is_unaffected():
+    """`_coerce_scalar` is the shared tail for every marker kind - a
+    query value is already a string off the wire, so the new body-specific
+    check must stay a no-op here, not start rejecting normal query strings."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/s")
+    async def s(q: str = Query()) -> dict:
+        return {"q": q}
+
+    assert TestClient(app).get("/s", params={"q": "hello"}).json() == {"q": "hello"}
 
 
 # ── the content-type policy is unchanged ─────────────────────────────
