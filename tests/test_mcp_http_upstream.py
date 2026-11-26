@@ -479,6 +479,53 @@ async def test_a_malformed_sse_payload_raises_mcperror():
         await request("tools/list", {})
 
 
+async def test_a_malformed_non_streamed_json_body_raises_mcperror():
+    """The sibling of the SSE case above: a 2xx, non-SSE response whose body
+    is not valid JSON at all."""
+
+    async def handler(request):
+        payload = json.loads(request.read())
+        if payload["method"] == "initialize":
+            return _json_response(payload, {"protocolVersion": "2025-11-25"})
+        if payload["method"] == "notifications/initialized":
+            return httpx2.Response(202)
+        return httpx2.Response(
+            200,
+            content=b"{not valid json",
+            headers={"content-type": "application/json", "mcp-session-id": "sess-1"},
+        )
+
+    client = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
+    request = http_upstream("http://upstream/mcp", client=client)
+
+    with pytest.raises(MCPError):
+        await request("tools/list", {})
+
+
+async def test_an_sse_stream_with_no_result_or_error_event_raises_mcperror():
+    """The stream ends (connection closed, or a trailing comment-only event)
+    without ever sending a JSON-RPC result or error."""
+
+    async def handler(request):
+        payload = json.loads(request.read())
+        if payload["method"] == "initialize":
+            return _json_response(payload, {"protocolVersion": "2025-11-25"})
+        if payload["method"] == "notifications/initialized":
+            return httpx2.Response(202)
+        # A stream that ends after only a priming event - no result, no error.
+        return httpx2.Response(
+            200,
+            content=b"id: 1\ndata:\n\n",
+            headers={"content-type": "text/event-stream", "mcp-session-id": "sess-1"},
+        )
+
+    client = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
+    request = http_upstream("http://upstream/mcp", client=client)
+
+    with pytest.raises(MCPError):
+        await request("tools/list", {})
+
+
 # ── aclose()'s session-termination DELETE is a request like any other: it
 # must carry the caller's custom headers, the upstream's own admission
 # control requires the same credential on a DELETE as on a POST. ───────

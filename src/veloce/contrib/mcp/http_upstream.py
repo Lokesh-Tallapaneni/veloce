@@ -147,7 +147,10 @@ class HttpUpstreamRequest:
                 result = await _read_sse_envelope(response)
             else:
                 response_body = await response.aread()
-                result = _json.loads(response_body)
+                try:
+                    result = _json.loads(response_body)
+                except (_json.JSONDecodeError, ValueError) as exc:
+                    raise _UpstreamError(f"malformed JSON response: {exc}", -32603) from exc
 
         if "error" in result:
             err = result["error"]
@@ -234,7 +237,9 @@ async def _read_sse_envelope(response: httpx2.Response) -> dict[str, Any]:
                 raise _UpstreamError(f"malformed SSE event: {exc}", -32603) from exc
             if "result" in event or "error" in event:
                 return event
-    raise RuntimeError("upstream SSE stream ended without a JSON-RPC result or error event")
+    raise _UpstreamError(
+        "upstream SSE stream ended without a JSON-RPC result or error event", -32603
+    )
 
 
 def _veloce_version() -> str:
