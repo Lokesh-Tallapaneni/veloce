@@ -191,6 +191,18 @@ def test_text_response():
     assert resp.text == "hello"
 
 
+def test_content_aliases_body():
+    """`httpx.Response` callers reach for `.content`; `.body` predates it."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/text")
+    async def text(request: Request):
+        return "hello"
+
+    resp = TestClient(app).get("/text")
+    assert resp.content == resp.body == b"hello"
+
+
 class TestTestClientNoWarning:
     """Verify TestClient doesn't trigger pytest collection warning."""
 
