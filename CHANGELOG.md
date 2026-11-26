@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-11-27
+
 ### Added
 
 - `mcp_annotations` on a route overrides its MCP tool's hints (`readOnlyHint`, `idempotentHint`, `destructiveHint`, `openWorldHint`, `title`), merged over the ones its HTTP verb implies. ([#354](https://github.com/Lokesh-Tallapaneni/veloce/pull/354))
