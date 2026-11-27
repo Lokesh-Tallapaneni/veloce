@@ -90,6 +90,7 @@ VELOCE_ALL = {
     "SessionStoreBackend",
     "RateLimitStoreBackend",
     "JSONProviderBackend",
+    "WebSocketError",
     "InMemoryRateLimitBackend",
     "InMemorySessionStore",
     "InternalServerError",

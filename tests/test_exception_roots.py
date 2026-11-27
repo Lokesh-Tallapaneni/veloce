@@ -1,0 +1,51 @@
+"""Every subsystem's exceptions share a root that derives from `VeloceError`."""
+
+from __future__ import annotations
+
+import pytest
+
+import veloce
+from veloce import VeloceError, WebSocketDisconnect, WebSocketException
+from veloce._scaffold import ScaffoldError
+from veloce.contrib.mcp.errors import MCPError, ToolError
+from veloce.contrib.mcp.transports.stdio import MCPRequestError
+from veloce.exceptions import WebSocketRequestValidationError
+from veloce.security.jwt import ExpiredSignatureError, JWTError
+from veloce.signing import BadData, BadSignature, BadTimeSignature
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [WebSocketDisconnect(), WebSocketException(1008, "x"), WebSocketRequestValidationError([])],
+)
+def test_websocket_errors_share_a_root(exc):
+    with pytest.raises(veloce.WebSocketError):
+        raise exc
+
+
+def test_websocket_validation_error_keeps_its_http_lineage():
+    assert issubclass(WebSocketRequestValidationError, veloce.RequestValidationError)
+    assert issubclass(WebSocketRequestValidationError, veloce.WebSocketError)
+
+
+@pytest.mark.parametrize(
+    "cls",
+    [
+        veloce.WebSocketError,
+        MCPError,
+        ToolError,
+        MCPRequestError,
+        ScaffoldError,
+        JWTError,
+        ExpiredSignatureError,
+        BadSignature,
+        BadTimeSignature,
+        BadData,
+    ],
+)
+def test_every_subsystem_error_is_a_veloce_error(cls):
+    assert issubclass(cls, VeloceError)
+
+
+def test_mcp_error_still_renders_a_json_rpc_error():
+    assert MCPError("boom", data=1).to_error(7)["error"]["message"] == "boom"

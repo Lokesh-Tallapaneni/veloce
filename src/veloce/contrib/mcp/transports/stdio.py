@@ -36,6 +36,7 @@ from veloce.contrib.mcp._helpers import encode_envelope
 from veloce.contrib.mcp.context import _transport_var
 from veloce.contrib.mcp.errors import internal_error, invalid_request_error, parse_error
 from veloce.contrib.mcp.session import MCPSession
+from veloce.exceptions import VeloceError
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.server import MCPServer
@@ -285,7 +286,7 @@ class StdioTransport:
 # ── Errors ────────────────────────────────────────────────
 
 
-class MCPRequestError(Exception):
+class MCPRequestError(VeloceError):
     """A server->client request failed (the client replied with an error or closed)."""
 
 

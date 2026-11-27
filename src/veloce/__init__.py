@@ -89,6 +89,7 @@ if TYPE_CHECKING:  # pragma: no cover
         ValidationError,
         VeloceError,
         WebSocketDisconnect,
+        WebSocketError,
         WebSocketException,
         WebSocketRequestValidationError,
         http_exception_handler,
@@ -331,6 +332,7 @@ __all__ = [
     # WebSocket
     "WebSocket",
     "WebSocketDisconnect",
+    "WebSocketError",
     "WebSocketException",
     "WebSocketRequestValidationError",
     "WebSocketState",
@@ -633,6 +635,7 @@ _EXPORTS: dict[str, str | tuple[str, str]] = {
     "ValidationError": "veloce.exceptions",
     "VeloceError": "veloce.exceptions",
     "WebSocketDisconnect": "veloce.exceptions",
+    "WebSocketError": "veloce.exceptions",
     "WebSocketException": "veloce.exceptions",
     "WebSocketRequestValidationError": "veloce.exceptions",
     "http_exception_handler": "veloce.exceptions",

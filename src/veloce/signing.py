@@ -17,6 +17,10 @@ Token format: `<base64url(payload)>.<base64url(timestamp)>.<base64url(sig)>`
 Tokens are URL-safe (RFC 4648 Sec. 5 base64url, no `/`, `+`, `=`) and
 comparison is constant-time. The token shape is wire-compatible with
 `URLSafeTimedSerializer`, but no timestamped-signer code is copied.
+
+Exceptions: `BadSignature` is the root; `BadTimeSignature` (stale or malformed
+timestamp) and `BadData` (a payload that does not decode) derive from it, so
+`except BadSignature` covers a rejected token of any kind.
 """
 
 from __future__ import annotations

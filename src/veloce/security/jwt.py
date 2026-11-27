@@ -11,6 +11,11 @@ is never driven with unauthenticated bytes, the ``alg`` allow-list is required
 with no default, and ``alg: "none"`` is rejected unconditionally to prevent
 algorithm confusion.
 
+Exceptions: `JWTError` is the root; `InvalidTokenError`, `InvalidSignatureError`,
+`UnsupportedAlgorithmError`, `ExpiredSignatureError`, `ImmatureSignatureError`,
+`InvalidAudienceError`, `InvalidIssuerError` and `MissingClaimError` derive from
+it, so `except JWTError` covers any rejected token.
+
 Usage::
 
     token = encode_jwt({"sub": "42", "exp": 1893456000}, "secret")
