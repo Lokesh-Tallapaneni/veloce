@@ -3,7 +3,7 @@
 The rendering and parsing half of the pair: every attribute `dump_cookie` can
 emit, every shape `parse_cookie` accepts, and the round trip between them.
 
-What they *refuse* is `tests/test_cookies.py` - header injection through a key,
+What they *refuse* is `tests/http/test_cookies.py` - header injection through a key,
 path, domain or value, non-token and reserved names, and the propagation of
 that validation through `set_cookie`. Both modules named `parse_cookie` and
 `dump_cookie` in their docstrings and neither said which half it held.

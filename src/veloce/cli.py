@@ -850,7 +850,7 @@ def _builtin_command_names() -> frozenset[str]:
     plugin-free parser always has the same shape, so there is nothing to
     stale-cache. Reads `parser._actions` / `argparse._SubParsersAction`, which
     are private argparse internals: stable across CPython 3.x but not part of
-    the public API. `tests/test_cli.py::test_builtin_command_names_introspection`
+    the public API. `tests/app/test_cli.py::test_builtin_command_names_introspection`
     guards this so a future stdlib refactor fails loudly rather than silently
     returning an empty set (which would misclassify every built-in as a plugin).
     """

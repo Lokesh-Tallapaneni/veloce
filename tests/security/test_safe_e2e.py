@@ -4,7 +4,7 @@ Exercises through `StaticFiles` the fix in `src/veloce/safe.py` that compares
 the joined path against the base via `os.path.normcase`, so a Windows
 drive-letter or filename casing difference doesn't reject an in-tree path.
 
-`safe_join` itself is unit-tested in `tests/test_safe.py`; this module holds
+`safe_join` itself is unit-tested in `tests/security/test_safe.py`; this module holds
 only the requests that reach it through a served directory, so a new
 `safe_join` case has one obvious home.
 """

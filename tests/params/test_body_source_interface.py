@@ -126,7 +126,7 @@ class TestTheNativeProtocolReportsAVanishedClient:
 
     @staticmethod
     async def _protocol_with_streaming_route():
-        from ._protocol import _FakeTransport
+        from tests._protocol import _FakeTransport
 
         seen: dict[str, object] = {}
         app = Veloce(openapi_url=None)

@@ -41,7 +41,7 @@ def test_empty_body_returns_none():
 def test_non_json_content_type_is_reported():
     """Default behaviour: refuse non-JSON content types, and say so.
 
-    `tests/test_unsupported_media_type.py` holds the full contract.
+    `tests/http/test_unsupported_media_type.py` holds the full contract.
     """
     with pytest.raises(UnsupportedMediaType):
         _req(b'{"a": 1}', content_type="text/plain").get_json()

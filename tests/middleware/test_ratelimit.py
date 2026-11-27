@@ -899,7 +899,7 @@ def test_ratelimit_buckets_two_calls_from_one_peer_together():
 
     The complementary property (callers with *no* resolvable address must not
     share a bucket) is pinned at the key level in
-    `tests/test_request_client_peer.py`, where a peerless request can actually
+    `tests/http/test_request_client_peer.py`, where a peerless request can actually
     be constructed."""
     app = _rl_app(max_requests=1, window_seconds=60)
     with TestClient(app) as client:
