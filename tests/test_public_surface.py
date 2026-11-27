@@ -47,6 +47,7 @@ VELOCE_ALL = {
     "Claims",
     "ConditionalGetMiddleware",
     "Config",
+    "Settings",
     "ConfigurationError",
     "Conflict",
     "Converter",

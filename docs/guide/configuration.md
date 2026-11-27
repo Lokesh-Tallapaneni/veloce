@@ -105,6 +105,32 @@ is a complete setup. Explicit constructor arguments always win over config.
     unpredictable key. Generate one with `python -c "import secrets; print(secrets.token_hex(32))"`
     and load it from the environment, never hard-code it in source.
 
+## Typed access with `app.settings`
+
+`app.config` is a plain dictionary, so a typo or a wrong type shows up only when
+the value is used. `app.settings` is a typed, read-only view of the keys Veloce
+itself reads, which an editor and `mypy` can check:
+
+```python
+app = Veloce()
+app.config["REQUEST_TIMEOUT"] = 10
+
+timeout: float = app.settings.REQUEST_TIMEOUT   # 10
+app.settings.NO_SUCH_KEY                        # flagged by the type checker
+app.settings.DEBUG = True                       # AttributeError: use app.config
+```
+
+- It is a `veloce.Settings` frozen dataclass whose fields are the keys in the
+  table above. Each field carries its type, its default and a description, and
+  the dataclass is the one place those are declared: the defaults seeded into
+  `app.config` are read from it.
+- Each access builds a fresh snapshot of the current `app.config`, so it never
+  goes stale, but a held reference does not follow later changes. Read it once
+  and keep the result when you need several keys.
+- Keys you add to `app.config` for your own extensions stay allowed; they are
+  not part of `Settings`, which describes only what Veloce reads.
+- Writing through the view raises `AttributeError`. Change `app.config` instead.
+
 ## Loading from a Python object
 
 `from_object` imports every uppercase attribute of a module, class, or

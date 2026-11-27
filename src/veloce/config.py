@@ -16,7 +16,6 @@ from collections.abc import Callable, Mapping
 from typing import IO, Any
 
 import veloce._json as _json
-from veloce._protocol_constants import URL_SCHEME_HTTP
 
 _logger = logging.getLogger(__name__)
 
@@ -229,55 +228,10 @@ class Config(dict[str, Any]):
 
         Seeded into `app.config` at construction so reads never raise `KeyError`.
         """
-        return {
-            "DEBUG": False,
-            "TESTING": False,
-            "SECRET_KEY": None,
-            "SERVER_NAME": None,
-            "PREFERRED_URL_SCHEME": URL_SCHEME_HTTP,
-            # The body is buffered, so unbounded lets one request OOM us.
-            "MAX_CONTENT_LENGTH": 100 * 1024 * 1024,
-            "MAX_FORM_PARTS": 1000,
-            "MAX_FORM_PART_SIZE": 10 * 1024 * 1024,
-            "MAX_FORM_FILES": None,
-            "MAX_FORM_FIELDS": None,
-            "MAX_FORM_FILE_SIZE": None,
-            "MAX_FORM_FIELD_SIZE": None,
-            "MAX_FORM_FIELD_MEMORY": None,
-            # Finding ids the audit drops, so it stays on for everything else.
-            "SILENCED_AUDIT_IDS": (),
-            "JSON_SORT_KEYS": False,
-            "JSONIFY_PRETTYPRINT_REGULAR": False,
-            # The verbose reason can leak decoder internals; unset means DEBUG.
-            "JSON_ERRORS_VERBOSE": False,
-            "PROPAGATE_EXCEPTIONS": None,
-            "SEND_FILE_MAX_AGE_DEFAULT": None,
-            "REQUEST_HANDLER_TIMEOUT": 30,
-            "KEEP_ALIVE_TIMEOUT": 75,
-            "REQUEST_TIMEOUT": 30,
-            "MAX_PIPELINED_REQUESTS": 64,
-            "MAX_CONCURRENT_CONNECTIONS": DEFAULT_MAX_CONCURRENT_CONNECTIONS,
-            "WRITE_BUFFER_HIGH_WATER": DEFAULT_WRITE_BUFFER_HIGH_WATER,
-            # SO_KEEPALIVE, so the kernel tears down a peer that vanished
-            # without a FIN. The knobs map to TCP_KEEPIDLE / INTVL / CNT.
-            "TCP_KEEPALIVE": True,
-            "TCP_KEEPALIVE_IDLE": None,
-            "TCP_KEEPALIVE_INTERVAL": None,
-            "TCP_KEEPALIVE_COUNT": None,
-            # Truthy turns the watchdog on; a mapping tunes it.
-            "EVENT_LOOP_WATCHDOG": None,
-            # Declared so an env-file value is typed, not a bare string.
-            "MCP_CALL_TIMEOUT": None,
-            "MCP_ENFORCE_LIFECYCLE": False,
-            "MCP_RESOURCE_SUBSCRIPTIONS": False,
-            # Seconds a cancelled `app.spawn(...)` task is awaited on shutdown.
-            "GRACEFUL_TASK_TIMEOUT": 10,
-            # Seconds shutdown waits for in-flight requests; runs in sequence
-            # with the above, so a termination grace period must cover both.
-            "GRACEFUL_DRAIN_TIMEOUT": 30,
-            # Seconds a WebSocket may idle before a 1001 close, both transports.
-            "WEBSOCKET_IDLE_TIMEOUT": None,
-        }
+        # `Settings` declares every key, type and default; this seeds `app.config` from it.
+        from veloce.settings import Settings  # breaks config <-> settings cycle
+
+        return Settings.defaults()
 
     @staticmethod
     def _is_uppercase_key(name: str) -> bool:
