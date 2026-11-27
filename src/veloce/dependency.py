@@ -491,6 +491,7 @@ class Depends:
                 "Callable to resolve and inject; inferred from the parameter's type annotation when omitted."
             ),
         ] = None,
+        *,
         use_cache: Annotated[
             bool,
             Doc(
@@ -529,6 +530,7 @@ class Security(Depends):
                 "OAuth 2.0 scopes this dependency requires, accumulated for the `SecurityScopes` chain and OpenAPI."
             ),
         ] = None,
+        *,
         use_cache: Annotated[
             bool,
             Doc(

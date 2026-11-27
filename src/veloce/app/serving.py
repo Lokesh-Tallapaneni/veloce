@@ -69,6 +69,7 @@ class ServingMixin(AppHost):
         ] = None,
         port: Annotated[int, Doc("TCP port to listen on.")] = 8000,
         workers: Annotated[int, Doc("Must be `1`; the built-in server runs a single process.")] = 1,
+        *,
         access_log: Annotated[
             bool, Doc("Print the start-up banner and install the development access log.")
         ] = True,

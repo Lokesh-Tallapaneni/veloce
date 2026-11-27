@@ -225,6 +225,7 @@ class Jinja2Templates:
     def __init__(
         self,
         directory: str = "templates",
+        *,
         auto_reload: bool | None = None,
         autoescape: Any = None,
     ) -> None:

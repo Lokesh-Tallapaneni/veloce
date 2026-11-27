@@ -1219,6 +1219,7 @@ class Request:
 
     def get_json(
         self,
+        *,
         force: bool = False,
         silent: bool = False,
         cache: bool = True,
@@ -1386,7 +1387,7 @@ class Request:
                     return self.on_json_loading_failed(exc)
         return self._json
 
-    async def get_data(self, as_text: bool = False, cache: bool = True) -> bytes | str:
+    async def get_data(self, *, as_text: bool = False, cache: bool = True) -> bytes | str:
         """Return the raw request body, draining the source once.
 
         Async to match `body()` / `json()` / `form()`.

@@ -183,6 +183,7 @@ def build_input_schema(
 def build_output_schema(
     model: Any,
     schemas_registry: dict[str, dict[str, Any]],
+    *,
     by_alias: bool = True,
 ) -> dict[str, Any] | None:
     """Build a standalone MCP output JSON Schema from a Pydantic model.

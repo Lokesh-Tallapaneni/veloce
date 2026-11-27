@@ -181,6 +181,7 @@ class Veloce(
                 "server beside others."
             ),
         ] = None,
+        *,
         debug: Annotated[
             bool,
             Doc("Enable debug mode: verbose error pages and development conveniences."),

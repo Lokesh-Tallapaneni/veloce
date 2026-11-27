@@ -89,6 +89,7 @@ class ProxyFix(Middleware):
         x_host: int = 0,
         x_port: int = 0,
         x_prefix: int = 0,
+        *,
         trust_forwarded: bool = False,
         name: str | None = None,
     ) -> None:

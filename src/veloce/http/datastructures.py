@@ -350,6 +350,7 @@ class URL:
         query_string: str,
         scope_scheme: str | None = None,
         forwarded_port: int | None = None,
+        *,
         trust_forwarded_proto: bool = True,
     ) -> URL:
         """Construct a URL from request headers and path components.
@@ -657,7 +658,7 @@ class AcceptHeader:
 
     __slots__ = ("_options", "_mime")
 
-    def __init__(self, options: list[tuple[str, float]], mime: bool) -> None:
+    def __init__(self, options: list[tuple[str, float]], *, mime: bool) -> None:
         # Never re-sorted: `best_match` breaks ties on the configured option
         # order. A MIME option is decomposed once into a cached `_MimeKey`.
         self._mime = mime
@@ -670,7 +671,7 @@ class AcceptHeader:
     # ── Parsing ────────────────────────────────────────────
 
     @classmethod
-    def parse(cls, raw: str, mime: bool = False) -> AcceptHeader:
+    def parse(cls, raw: str, *, mime: bool = False) -> AcceptHeader:
         """Parse a comma-separated header into (value, q) tuples.
 
         A missing or unparseable q-value defaults to 1.0 (RFC 9110
@@ -679,7 +680,7 @@ class AcceptHeader:
         are retained and participate in matching (RFC 9110 Sec. 12.5.1).
         """
         if not raw:
-            return cls([], mime)
+            return cls([], mime=mime)
         items: list[tuple[str, float]] = []
         for chunk in raw.split(","):
             chunk = chunk.strip()
@@ -715,7 +716,7 @@ class AcceptHeader:
             if mime and params:
                 value = value + ";" + ";".join(params)
             items.append((value, q))
-        return cls(items, mime)
+        return cls(items, mime=mime)
 
     # ── Quality queries ────────────────────────────────────
 

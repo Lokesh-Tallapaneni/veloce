@@ -392,6 +392,7 @@ def _range_negotiable_request() -> Any:
 def send_file(
     path_or_file: Any,
     mimetype: str | None = None,
+    *,
     as_attachment: bool = False,
     download_name: str | None = None,
     last_modified: Any = None,
@@ -432,6 +433,7 @@ def send_file(
 async def async_send_file(
     path_or_file: Any,
     mimetype: str | None = None,
+    *,
     as_attachment: bool = False,
     download_name: str | None = None,
     last_modified: Any = None,
@@ -603,6 +605,7 @@ def send_from_directory(
     directory: str,
     filename: str,
     mimetype: str | None = None,
+    *,
     as_attachment: bool = False,
     download_name: str | None = None,
 ) -> FileResponse:
@@ -629,6 +632,7 @@ async def send_from_directory_async(
     directory: str,
     filename: str,
     mimetype: str | None = None,
+    *,
     as_attachment: bool = False,
     download_name: str | None = None,
 ) -> FileResponse:
@@ -688,7 +692,7 @@ def flash(message: str, category: str = "message") -> None:
 
 
 def get_flashed_messages(
-    with_categories: bool = False, category_filter: Sequence[str] | None = None
+    *, with_categories: bool = False, category_filter: Sequence[str] | None = None
 ) -> list[str] | list[tuple[str, str]]:
     """Get flashed messages - call in templates.
 

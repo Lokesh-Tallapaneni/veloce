@@ -41,7 +41,7 @@ class MCPSession:
         "log_level",
     )
 
-    def __init__(self, persistent: bool = True) -> None:
+    def __init__(self, *, persistent: bool = True) -> None:
         # The ownership key for tasks and the in-flight registry.
         self.connection_id = next(_connection_id_counter)
         # Whether the session outlives a single message. A stateless HTTP POST gets

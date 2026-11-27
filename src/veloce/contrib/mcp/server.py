@@ -396,6 +396,7 @@ class MCPServer(TasksMixin, InvocationMixin):
         tool_filter: ToolFilter | None = None,
         cache_ttl_ms: int = DEFAULT_CACHE_TTL_MS,
         page_size: int | None = None,
+        *,
         tool_search: bool = False,
         capabilities: Sequence[Capability] | None = None,
     ) -> None:

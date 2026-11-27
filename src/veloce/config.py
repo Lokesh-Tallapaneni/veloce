@@ -333,7 +333,7 @@ class Config(dict[str, Any]):
 
     # ── from_pyfile ───────────────────────────────────────
 
-    def from_pyfile(self, filename: str, silent: bool = False) -> bool:
+    def from_pyfile(self, filename: str, *, silent: bool = False) -> bool:
         """Execute a Python file and pull UPPERCASE module-level names.
 
         Returns True on success, or False when `silent=True` and the file is
@@ -354,7 +354,7 @@ class Config(dict[str, Any]):
 
     # ── from_env_file ─────────────────────────────────────
 
-    def from_env_file(self, filename: str = ".env", silent: bool = False) -> bool:
+    def from_env_file(self, filename: str = ".env", *, silent: bool = False) -> bool:
         """Load ``KEY=VALUE`` pairs from a dotenv-style ``.env`` file.
 
         Full-line `#` comments and blank lines are skipped, an optional `export `
@@ -388,7 +388,7 @@ class Config(dict[str, Any]):
 
     # ── from_envvar ───────────────────────────────────────
 
-    def from_envvar(self, varname: str, silent: bool = False) -> bool:
+    def from_envvar(self, varname: str, *, silent: bool = False) -> bool:
         """Read a filename from `os.environ[varname]` and `from_pyfile` it."""
         path = os.environ.get(varname)
         if not path:
@@ -449,6 +449,7 @@ class Config(dict[str, Any]):
         self,
         filename: str,
         load: Callable[[Any], Mapping[str, Any]] = _json_load,
+        *,
         silent: bool = False,
         text: bool = False,
     ) -> bool:

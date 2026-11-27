@@ -173,6 +173,7 @@ class IntConverter(Converter):
         self,
         min: int | None = None,
         max: int | None = None,
+        *,
         signed: bool = True,
     ) -> None:
         if min is not None and max is not None and max < min:
@@ -217,6 +218,7 @@ class FloatConverter(Converter):
         self,
         min: float | None = None,
         max: float | None = None,
+        *,
         signed: bool = True,
     ) -> None:
         if min is not None and max is not None and max < min:

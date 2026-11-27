@@ -102,6 +102,7 @@ class CORSMiddleware(Middleware):
         allow_origin_regex: str | None = None,
         allow_methods: list[str] | None = None,
         allow_headers: list[str] | None = None,
+        *,
         allow_credentials: bool = False,
         allow_private_network: bool = False,
         max_age: int = 600,

@@ -120,6 +120,7 @@ def register_http_transport(
     auth: MCPAuth | None = None,
     allowed_origins: frozenset[str] | None = None,
     exclude_middleware: Sequence[str] | None = None,
+    *,
     sessions: bool = False,
     resumable: bool = False,
     session_backend: SessionBackend | None = None,

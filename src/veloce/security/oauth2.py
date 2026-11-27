@@ -51,6 +51,7 @@ class OAuth2PasswordBearer(_OAuth2BearerScheme):
             str,
             Doc("Endpoint the password flow exchanges credentials at."),
         ],
+        *,
         auto_error: Annotated[
             bool,
             Doc("Raise 401 when the token is absent; False resolves to None."),
@@ -112,6 +113,7 @@ class OAuth2AuthorizationCodeBearer(_OAuth2BearerScheme):
             dict[str, str] | None,
             Doc("Scope name to description, published in the OpenAPI document."),
         ] = None,
+        *,
         auto_error: Annotated[
             bool,
             Doc("Raise 401 when the token is absent; False resolves to None."),
@@ -150,6 +152,7 @@ class OpenIdConnect(_OAuth2BearerScheme):
             str,
             Doc("OpenID Connect discovery document URL."),
         ],
+        *,
         auto_error: Annotated[
             bool,
             Doc("Raise 401 when the token is absent; False resolves to None."),

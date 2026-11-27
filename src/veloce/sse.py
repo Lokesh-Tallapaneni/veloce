@@ -175,7 +175,7 @@ class EventSourceResponse(Response):
         # Normalised to bytes up front, so both transports consume one stream.
         self._stream = self._encode_stream(content)
 
-    def encode(self, keep_alive: bool = True) -> bytes:
+    def encode(self, *, keep_alive: bool = True) -> bytes:
         """Encode the event-stream head.
 
         The native transport calls `encode()` to answer a HEAD, and RFC 9110
@@ -196,6 +196,7 @@ class EventSourceResponse(Response):
         self,
         transport: Any,
         drain: Callable[[], Awaitable[None]] | None = None,
+        *,
         keep_alive: bool = True,
     ) -> None:
         """Stream SSE events to transport.

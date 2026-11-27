@@ -191,6 +191,7 @@ class StaticFiles:
         self,
         directory: str,
         prefix: str = "/static",
+        *,
         html: bool = False,
         directory_index: bool = False,
         must_exist: bool = True,

@@ -124,8 +124,8 @@ class Signal:
     def connect(
         self,
         receiver: T_route,
-        weak: bool = True,
         *,
+        weak: bool = True,
         sender: Any = ANY_SENDER,
     ) -> T_route:
         """Register `receiver` to fire when `send(sender)` runs.

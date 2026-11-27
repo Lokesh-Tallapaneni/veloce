@@ -777,6 +777,7 @@ class TestClient:
         self,
         app: Any,
         base_url: str = f"{URL_SCHEME_HTTP}://testserver",
+        *,
         follow_redirects: bool = False,
         loop: asyncio.AbstractEventLoop | None = None,
     ) -> None:
@@ -958,6 +959,7 @@ class TestClient:
         path: str,
         headers: _HeadersArg = None,
         params: dict[str, str] | Sequence[tuple[str, str]] | None = None,
+        *,
         follow_redirects: bool | None = None,
     ) -> TestResponse:
         """Send a GET request and return the response."""
@@ -1000,6 +1002,7 @@ class TestClient:
         headers: _HeadersArg = None,
         content: bytes | None = None,
         files: dict[str, Any] | None = None,
+        *,
         follow_redirects: bool | None = None,
         stream: StreamBody | None = None,
     ) -> TestResponse:
@@ -1029,6 +1032,7 @@ class TestClient:
         headers: _HeadersArg = None,
         content: bytes | None = None,
         files: dict[str, Any] | None = None,
+        *,
         follow_redirects: bool | None = None,
         stream: StreamBody | None = None,
     ) -> TestResponse:
@@ -1053,6 +1057,7 @@ class TestClient:
         headers: _HeadersArg = None,
         content: bytes | None = None,
         files: dict[str, Any] | None = None,
+        *,
         follow_redirects: bool | None = None,
         stream: StreamBody | None = None,
     ) -> TestResponse:
@@ -1073,6 +1078,7 @@ class TestClient:
         self,
         path: str,
         headers: _HeadersArg = None,
+        *,
         follow_redirects: bool | None = None,
     ) -> TestResponse:
         """Send a DELETE request and return the response."""
@@ -1084,6 +1090,7 @@ class TestClient:
         self,
         path: str,
         headers: _HeadersArg = None,
+        *,
         follow_redirects: bool | None = None,
     ) -> TestResponse:
         """Send a HEAD request and return the response."""
@@ -1095,6 +1102,7 @@ class TestClient:
         self,
         path: str,
         headers: _HeadersArg = None,
+        *,
         follow_redirects: bool | None = None,
     ) -> TestResponse:
         """Send an OPTIONS request and return the response."""
@@ -1112,6 +1120,7 @@ class TestClient:
         content: bytes | None = None,
         files: dict[str, Any] | None = None,
         params: dict[str, str] | Sequence[tuple[str, str]] | None = None,
+        *,
         follow_redirects: bool | None = None,
         stream: StreamBody | None = None,
     ) -> TestResponse:
@@ -1421,6 +1430,7 @@ class AsyncTestClient:
         self,
         app: Any,
         base_url: str = f"{URL_SCHEME_HTTP}://testserver",
+        *,
         follow_redirects: bool = False,
     ) -> None:
         self.app = app
@@ -1545,6 +1555,7 @@ class AsyncTestClient:
         path: str,
         headers: _HeadersArg = None,
         params: dict[str, str] | Sequence[tuple[str, str]] | None = None,
+        *,
         follow_redirects: bool | None = None,
     ) -> TestResponse:
         """Send a GET request and return the response."""
@@ -1587,6 +1598,7 @@ class AsyncTestClient:
         headers: _HeadersArg = None,
         content: bytes | None = None,
         files: dict[str, Any] | None = None,
+        *,
         follow_redirects: bool | None = None,
         stream: StreamBody | None = None,
     ) -> TestResponse:
@@ -1616,6 +1628,7 @@ class AsyncTestClient:
         headers: _HeadersArg = None,
         content: bytes | None = None,
         files: dict[str, Any] | None = None,
+        *,
         follow_redirects: bool | None = None,
         stream: StreamBody | None = None,
     ) -> TestResponse:
@@ -1640,6 +1653,7 @@ class AsyncTestClient:
         headers: _HeadersArg = None,
         content: bytes | None = None,
         files: dict[str, Any] | None = None,
+        *,
         follow_redirects: bool | None = None,
         stream: StreamBody | None = None,
     ) -> TestResponse:
@@ -1660,6 +1674,7 @@ class AsyncTestClient:
         self,
         path: str,
         headers: _HeadersArg = None,
+        *,
         follow_redirects: bool | None = None,
     ) -> TestResponse:
         """Send a DELETE request and return the response."""
@@ -1671,6 +1686,7 @@ class AsyncTestClient:
         self,
         path: str,
         headers: _HeadersArg = None,
+        *,
         follow_redirects: bool | None = None,
     ) -> TestResponse:
         """Send a HEAD request and return the response."""
@@ -1682,6 +1698,7 @@ class AsyncTestClient:
         self,
         path: str,
         headers: _HeadersArg = None,
+        *,
         follow_redirects: bool | None = None,
     ) -> TestResponse:
         """Send an OPTIONS request and return the response."""
@@ -1699,6 +1716,7 @@ class AsyncTestClient:
         content: bytes | None = None,
         files: dict[str, Any] | None = None,
         params: dict[str, str] | Sequence[tuple[str, str]] | None = None,
+        *,
         follow_redirects: bool | None = None,
         stream: StreamBody | None = None,
     ) -> TestResponse:

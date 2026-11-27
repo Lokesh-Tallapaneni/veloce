@@ -403,7 +403,7 @@ class Response:
 
     # ── Wire encoding ─────────────────────────────────────────
 
-    def encode(self, keep_alive: bool = True) -> bytes:
+    def encode(self, *, keep_alive: bool = True) -> bytes:
         """Encode to raw HTTP/1.1 bytes - called once, cached.
 
         `keep_alive` is what the transport decided about this connection. Only
@@ -442,6 +442,7 @@ class Response:
         expires: int | float | datetime | date | str | None = None,
         path: str = "/",
         domain: str | None = None,
+        *,
         secure: bool = False,
         httponly: bool = False,
         samesite: str | None = "Lax",
@@ -707,6 +708,7 @@ class Response:
     def set_cache_control(
         self,
         max_age: int | None = None,
+        *,
         public: bool = False,
         private: bool = False,
         no_cache: bool = False,
@@ -1030,7 +1032,7 @@ class Response:
 
     # ── ETags ─────────────────────────────────────────────────
 
-    def set_etag(self, etag: str, weak: bool = False) -> None:
+    def set_etag(self, etag: str, *, weak: bool = False) -> None:
         """Set the `ETag` header from an explicit value.
 
         Quotes the value if the caller passed it bare. Prepends `W/`
@@ -1145,6 +1147,7 @@ class Response:
             self,
             transport: Any,
             drain: Callable[[], Awaitable[None]] | None = None,
+            *,
             keep_alive: bool = True,
         ) -> None: ...
 
@@ -1163,7 +1166,7 @@ class Response:
         parts.append("\r\n")
         return "".join(parts).encode("latin-1")
 
-    def add_etag(self, weak: bool = False) -> str:
+    def add_etag(self, *, weak: bool = False) -> str:
         """Compute and attach an ETag derived from the body.
 
         Uses MD5 of the response body, opaque-quoted per RFC 9110 Sec. 8.8.3.
@@ -1306,6 +1309,7 @@ class Response:
         key: str,
         path: str = "/",
         domain: str | None = None,
+        *,
         secure: bool = False,
         httponly: bool = False,
         samesite: str | None = None,
@@ -1592,7 +1596,7 @@ class StreamingResponse(Response):
         async for chunk in iterable:
             yield chunk.encode("utf-8") if isinstance(chunk, str) else chunk
 
-    def encode(self, keep_alive: bool = True) -> bytes:
+    def encode(self, *, keep_alive: bool = True) -> bytes:
         """For streaming, encode headers with chunked transfer."""
         return self._encode_streaming_head(
             {
@@ -1606,6 +1610,7 @@ class StreamingResponse(Response):
         self,
         transport: Any,
         drain: Callable[[], Awaitable[None]] | None = None,
+        *,
         keep_alive: bool = True,
     ) -> None:
         """Stream chunks to transport.
@@ -1839,6 +1844,7 @@ class FileResponse(Response):
         self,
         transport: Any,
         drain: Callable[[], Awaitable[None]] | None = None,
+        *,
         keep_alive: bool = True,
     ) -> None:
         """Write the head, then the file's chunks, on the raw transport.

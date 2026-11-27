@@ -53,6 +53,7 @@ class HttpUpstreamRequest:
         self,
         url: str,
         client: httpx2.AsyncClient,
+        *,
         owns_client: bool,
         headers: Mapping[str, str] | None,
     ) -> None:
@@ -297,4 +298,4 @@ def http_upstream(
         if client is not None
         else httpx2.AsyncClient(timeout=httpx2.Timeout(10.0, read=120.0))
     )
-    return HttpUpstreamRequest(url, resolved_client, owns_client, headers)
+    return HttpUpstreamRequest(url, resolved_client, owns_client=owns_client, headers=headers)

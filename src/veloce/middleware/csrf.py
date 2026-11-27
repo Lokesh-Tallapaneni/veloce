@@ -99,6 +99,7 @@ class CSRFMiddleware(Middleware):
             HTTP_METHOD_QUERY,
             HTTP_METHOD_TRACE,
         ),
+        *,
         cookie_secure: bool = True,
         cookie_httponly: bool = False,
         cookie_samesite: str = "Lax",

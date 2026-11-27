@@ -954,7 +954,7 @@ class WebSocketOriginMiddleware(Middleware):
     """
 
     def __init__(
-        self, allowed_origins: list[str], allow_missing: bool = True, *, name: str | None = None
+        self, allowed_origins: list[str], *, allow_missing: bool = True, name: str | None = None
     ) -> None:
         super().__init__(name=name)
         self._allowed: frozenset[str] = frozenset(o.rstrip("/").lower() for o in allowed_origins)

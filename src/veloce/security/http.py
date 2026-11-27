@@ -81,6 +81,7 @@ class HTTPBasic(SecurityScheme):
 
     def __init__(
         self,
+        *,
         auto_error: Annotated[
             bool,
             Doc("Raise 401 when credentials are absent; False resolves to None."),
@@ -199,6 +200,7 @@ class HTTPDigest(SecurityScheme):
             str,
             Doc("Digest algorithm published in the challenge."),
         ] = "SHA-256",
+        *,
         auto_error: Annotated[
             bool,
             Doc("Raise 401 when credentials are absent; False resolves to None."),
@@ -255,6 +257,7 @@ class HTTPBearer(_BearerScheme):
 
     def __init__(
         self,
+        *,
         auto_error: Annotated[
             bool,
             Doc("Raise 401 when the token is absent; False resolves to None."),

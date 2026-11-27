@@ -416,8 +416,8 @@ def test_request_signals_carry_the_request():
     def on_finish(sender, request=None, response=None, **extra):
         finished.append((request, response))
 
-    request_started.connect(on_start, app)
-    request_finished.connect(on_finish, app)
+    request_started.connect(on_start, sender=app)
+    request_finished.connect(on_finish, sender=app)
     try:
         app.test_client().get("/items/5")
     finally:
