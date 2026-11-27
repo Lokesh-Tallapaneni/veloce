@@ -1,4 +1,4 @@
-"""A tool call is answered as a stream only when it can produce one.
+"""A tool call is answered as a stream only when it actually produces one.
 
 The spec lets a POST carrying a request be answered either as JSON or as an SSE
 stream, and tells clients to accept both - so choosing on the `Accept` header
@@ -6,18 +6,19 @@ alone means a conformant client pays for stream framing on every call,
 including one that emits exactly its own reply. Measured, that framing is a
 third of the cost of a plain tool call.
 
-What decides it instead is whether the call can produce a second message. Only
-a handler that can reach the `MCPContext` emits progress, logging, a sampling
-or an elicitation message, and the registry settles that per tool at
-registration. Everything else keeps the stream, because the cost of being wrong
-is a client that stops hearing about work it asked for: a task-augmented call
-whose `notifications/tasks/status` follows the reply, a client that asked for
-progress, or a server whose resumability replay needs the event ids the stream
-carries.
+What decides it is whether the call actually produces a second message, found
+out by running it and watching what arrives first - not by guessing from the
+method or the tool's registration. Only a few cases are forced to keep the
+stream regardless of what this one call does: resumability (the stream mints
+the event ids a replay needs), an open subscription connection (the only
+delivery window for an out-of-band push), a task-augmented call (whose
+`notifications/tasks/status` is defined to follow the reply), and a client
+that refuses JSON outright.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -28,6 +29,7 @@ from veloce._handler_plan import build_plan
 from veloce.contrib.mcp.context import MCPContext
 from veloce.contrib.mcp.registry import MCPTool
 from veloce.contrib.mcp.toolsearch import _meta_tool
+from veloce.contrib.mcp.transports import http as mcp_http
 from veloce.testclient import TestClient
 
 INITIALIZE = initialize()
@@ -45,12 +47,22 @@ def _app() -> Veloce:
     async def plain(x: int = 1) -> dict:
         return {"x": x}
 
-    @app.get("/ctx", expose_as_mcp_tool=True, mcp_description="Takes the context")
+    @app.get("/ctx", expose_as_mcp_tool=True, mcp_description="Takes the context, sends nothing")
     async def takes_ctx(ctx: MCPContext, x: int = 1) -> dict:
         return {"x": x}
 
     @app.get("/depctx", expose_as_mcp_tool=True, mcp_description="A dependency takes it")
     async def dep_ctx(d: int = Depends(_ctx_dependency), x: int = 1) -> dict:
+        return {"x": x}
+
+    @app.get("/notifies", expose_as_mcp_tool=True, mcp_description="Logs before replying")
+    async def notifies(ctx: MCPContext, x: int = 1) -> dict:
+        await ctx.info("working")
+        return {"x": x}
+
+    @app.get("/slow", expose_as_mcp_tool=True, mcp_description="Replies late, emits nothing")
+    async def slow(ctx: MCPContext, x: int = 1) -> dict:
+        await asyncio.sleep(0.2)
         return {"x": x}
 
     app.mount_mcp(transport="http", path="/mcp")
@@ -86,7 +98,7 @@ def _content_type(response) -> str:
     return response.headers.get("content-type", "").split(";")[0]
 
 
-# ── the saving ────────────────────────────────────────────────────────
+# ── the saving: nothing was emitted, so JSON is all there is ──────────
 
 
 def test_a_streamless_tool_is_answered_as_json(client):
@@ -100,13 +112,46 @@ def test_the_json_reply_carries_the_same_result(client):
     assert json.loads(result["content"][0]["text"]) == {"x": 7}
 
 
-# ── and everything that could still speak keeps its channel ───────────
-
-
 @pytest.mark.parametrize("tool", ["takes_ctx", "dep_ctx"])
-def test_a_tool_that_can_reach_the_context_keeps_the_stream(client, tool):
-    """Directly or through a dependency - either can report progress."""
-    assert _content_type(_call(client, tool)) == "text/event-stream"
+def test_a_context_reaching_tool_that_sends_nothing_is_answered_as_json(client, tool):
+    """Being able to reach the context is not the same as using it."""
+    assert _content_type(_call(client, tool)) == "application/json"
+
+
+def test_a_method_that_is_not_a_tool_call_is_answered_as_json(client):
+    """`tools/list` never notifies, so the narrowing is not scoped to calls."""
+    response = client.post(
+        "/mcp",
+        json={"jsonrpc": "2.0", "id": 5, "method": "tools/list"},
+        headers=client._mcp_headers,  # type: ignore[attr-defined]
+    )
+    assert _content_type(response) == "application/json"
+
+
+def test_an_unknown_tool_is_answered_as_json(client):
+    """Its error reply is produced immediately, with nothing ahead of it."""
+    assert _content_type(_call(client, "no_such_tool")) == "application/json"
+
+
+def test_a_progress_token_alone_does_not_force_the_stream(client):
+    """`plain` cannot reach the context, so no progress is ever possible."""
+    response = _call(client, "plain", _meta={"progressToken": "p1"})
+    assert _content_type(response) == "application/json"
+
+
+# ── and anything that actually speaks first keeps its channel ─────────
+
+
+def test_a_tool_that_notifies_keeps_the_stream(client):
+    """Something arrived before the reply, so the call needed the stream."""
+    assert _content_type(_call(client, "notifies")) == "text/event-stream"
+
+
+def test_the_notification_arrives_before_the_result(client):
+    """The stream carries what was already produced, in the order it happened."""
+    response = _call(client, "notifies")
+    body = response.text
+    assert body.index('"method":"notifications/message"') < body.index('"result"')
 
 
 def test_a_task_augmented_call_keeps_the_stream(client):
@@ -118,22 +163,6 @@ def test_a_task_augmented_call_keeps_the_stream(client):
     finished.
     """
     assert _content_type(_call(client, "plain", task={})) == "text/event-stream"
-
-
-def test_a_progress_token_keeps_the_stream(client):
-    """The client asked to be kept informed; give it somewhere to be informed."""
-    response = _call(client, "plain", _meta={"progressToken": "p1"})
-    assert _content_type(response) == "text/event-stream"
-
-
-def test_a_method_that_is_not_a_tool_call_keeps_the_stream(client):
-    """The narrowing is scoped to `tools/call` and nothing else."""
-    response = client.post(
-        "/mcp",
-        json={"jsonrpc": "2.0", "id": 5, "method": "tools/list"},
-        headers=client._mcp_headers,  # type: ignore[attr-defined]
-    )
-    assert _content_type(response) == "text/event-stream"
 
 
 def test_a_client_that_refuses_json_still_gets_the_stream(client):
@@ -153,21 +182,23 @@ def test_a_client_that_refuses_json_still_gets_the_stream(client):
     assert _content_type(response) == "text/event-stream"
 
 
-def test_an_unknown_tool_keeps_the_stream(client):
-    """Nothing to classify, so the reply shape stays what it was."""
-    assert _content_type(_call(client, "no_such_tool")) == "text/event-stream"
+def test_waiting_for_a_reply_that_never_comes_falls_back_to_the_stream(client, monkeypatch):
+    """A handler that outlasts the wait is not left with no answer at all."""
+    monkeypatch.setattr(mcp_http, "_LAZY_REPLY_TIMEOUT_SECONDS", 0.05)
+    response = _call(client, "slow")
+    assert _content_type(response) == "text/event-stream"
 
 
 # ── a handler the walk cannot see through ─────────────────────────────
 
 
-def test_a_tool_that_dispatches_other_tools_keeps_the_stream():
+def test_a_tool_that_dispatches_other_tools_is_marked_may_stream():
     """`run_tools` calls other tools, and one of them may log through a context.
 
-    Its own signature takes no `MCPContext`, so the plan walk alone would call
-    it streamless - and every message from the tools it ran would be dropped on
-    a 200 with a well-formed result. The flag is what the walk cannot infer:
-    where a handler sends the call next.
+    Its own signature takes no `MCPContext`, so the flag is what a static walk
+    of the plan cannot infer: where a handler sends the call next. The HTTP
+    transport no longer reads this directly - it watches what the call actually
+    produces - but the flag stays as a registration-time description of intent.
     """
 
     async def _run_tools(self, steps, stop_on_error=True):  # noqa: ANN001

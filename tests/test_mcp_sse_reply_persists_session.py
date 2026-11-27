@@ -1,9 +1,9 @@
 """An SSE-answered request publishes its session, exactly as a JSON-answered one does.
 
 A spec-conformant client MUST offer both `application/json` and `text/event-stream`
-on its POST, and `_needs_stream` keeps the stream for every method other than
-`tools/call`. So `initialize` - the one message that establishes the whole
-session - is answered as SSE for every real client.
+on its POST. A client that refuses JSON outright still forces the stream
+regardless of what the call produces, so `initialize` - the one message that
+establishes the whole session - can still be answered as SSE.
 
 That path returned the stream before reaching `store.persist`, so the record
 written to the backend carried `client_capabilities={}` and `client_info=None`.
@@ -89,7 +89,7 @@ async def test_an_sse_answered_initialize_publishes_the_handshake():
     app.mount_mcp(transport="http", sessions=True, session_backend=backend)
 
     async with AsyncTestClient(app) as client:
-        opened = await _post(client, _INIT, BOTH)
+        opened = await _post(client, _INIT, "text/event-stream")
         session_id = opened.headers["mcp-session-id"]
 
     # `initialized` flips on `notifications/initialized`, not here - `initialize`
@@ -122,7 +122,7 @@ async def test_both_doors_publish_the_same_record():
     json_app.mount_mcp(transport="http", sessions=True, session_backend=plain)
 
     async with AsyncTestClient(sse_app) as a, AsyncTestClient(json_app) as b:
-        sse_id = (await _post(a, _INIT, BOTH)).headers["mcp-session-id"]
+        sse_id = (await _post(a, _INIT, "text/event-stream")).headers["mcp-session-id"]
         json_id = (await _post(b, _INIT, "application/json")).headers["mcp-session-id"]
 
     assert streamed.records[sse_id] == plain.records[json_id]
@@ -153,7 +153,7 @@ async def test_a_second_worker_sees_the_sse_handshake():
     worker_b.mount_mcp(transport="http", sessions=True, session_backend=backend)
 
     async with AsyncTestClient(worker_a) as a, AsyncTestClient(worker_b) as b:
-        session_id = (await _post(a, _INIT, BOTH)).headers["mcp-session-id"]
+        session_id = (await _post(a, _INIT, "text/event-stream")).headers["mcp-session-id"]
 
         served = await _post(b, _CALL, "application/json", session_id)
         assert served.status_code == 200
@@ -161,13 +161,17 @@ async def test_a_second_worker_sees_the_sse_handshake():
 
 
 async def test_the_stream_still_carries_the_initialize_response():
-    """Persisting must not cost the reply the stream exists to deliver."""
+    """Persisting must not cost the reply the stream exists to deliver.
+
+    `initialize` emits nothing before its reply, so a client offering both types
+    gets JSON now; refusing JSON outright is what still forces the stream.
+    """
     backend = MemoryBackend()
     app = _app()
     app.mount_mcp(transport="http", sessions=True, session_backend=backend)
 
     async with AsyncTestClient(app) as client:
-        opened = await _post(client, _INIT, BOTH)
+        opened = await _post(client, _INIT, "text/event-stream")
 
     assert opened.status_code == 200
     assert "text/event-stream" in opened.headers["content-type"]
@@ -180,7 +184,7 @@ async def test_a_streamed_reply_without_a_backend_still_works():
     app.mount_mcp(transport="http", sessions=True)
 
     async with AsyncTestClient(app) as client:
-        opened = await _post(client, _INIT, BOTH)
+        opened = await _post(client, _INIT, "text/event-stream")
         session_id = opened.headers["mcp-session-id"]
         served = await _post(client, _CALL, "application/json", session_id)
 

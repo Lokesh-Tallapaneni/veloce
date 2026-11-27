@@ -5,9 +5,12 @@ JSON-RPC message and replies through the same transport-agnostic
 `MCPServer.handle_message` the stdio transport uses, so tools, resources and
 prompts behave identically over HTTP; a ``GET`` is answered ``405`` unless it
 resumes a dropped stream. When the client's ``Accept`` header offers
-``text/event-stream`` the POST reply is an SSE stream carrying the call's progress
-/ log notifications followed by the JSON-RPC response; otherwise a single JSON
-response is returned. A message needing no reply is answered ``202 Accepted``.
+``text/event-stream`` the POST reply is JSON unless the call produces a
+notification before its response - resumability, an open subscription
+connection, a task-augmented call, and a client that refuses JSON all keep the
+stream unconditionally (see `_must_stream`, `_provably_streamless`,
+`_lazy_reply`); otherwise a single JSON response is returned. A message needing
+no reply is answered ``202 Accepted``.
 
 Before dispatch the transport enforces three spec MUSTs: a present ``Origin``
 outside the configured allowlist is rejected ``403`` (DNS-rebinding defense; a
@@ -108,6 +111,10 @@ _event_id = count(1)
 _STREAM_ID_ENTROPY_BYTES = 12
 
 _STREAM_END = object()
+
+# Long enough a legitimately slow handler is never forced into a partial reply;
+# short enough a client still gets a response promptly when nothing ever arrives.
+_LAZY_REPLY_TIMEOUT_SECONDS = 15.0
 
 
 # ── Route registration ────────────────────────────────────
@@ -225,18 +232,22 @@ async def _handle_http(
     is_request = "id" in message and isinstance(message.get("method"), str)
     # The real parser: a substring test reads `text/event-streaming` as a match.
     accepts_sse = request.accept_mimetypes.quality_explicit("text/event-stream") > 0
-    # In the branch, so a client offering the stream but not JSON keeps the stream.
-    if (
-        is_request
-        and accepts_sse
-        and (
-            request.accept_mimetypes.quality("application/json") <= 0
-            or _needs_stream(server, message, event_store)
-        )
-    ):
-        return _stream_response(
-            server, message, current_principal(), session, session_id, event_store, store
-        )
+    if is_request and accepts_sse:
+        principal = current_principal()
+        # A client offering the stream but not JSON keeps the stream unconditionally.
+        if request.accept_mimetypes.quality("application/json") <= 0 or _must_stream(
+            server, message, event_store
+        ):
+            return _stream_response(
+                server, message, principal, session, session_id, event_store, store
+            )
+        # A resolved tool that cannot reach `MCPContext` can never notify, so there
+        # is nothing for `_lazy_reply`'s background dispatch to watch for - the flat
+        # path below answers it directly, without paying for a task and a queue.
+        if not _provably_streamless(server, message):
+            return await _lazy_reply(
+                server, message, principal, session, session_id, event_store, store
+            )
 
     response = await server.handle_message(message, session)
     # So a later request landing on another worker sees it; no-op without a backend.
@@ -390,44 +401,49 @@ def _require_header(request: Request, name: str) -> str:
     return value
 
 
-def _needs_stream(
+def _must_stream(
     server: MCPServer, message: dict[str, Any], event_store: SSEEventStore | None
 ) -> bool:
-    """Whether this request can produce anything beyond its own single reply.
+    """Whether this request's reply cannot be settled by waiting on its first message.
 
-    The spec lets a POST carrying a request be answered either as JSON or as an SSE
-    stream, and tells clients to accept both - so keying the choice on the `Accept`
-    header alone means a conformant client always pays for stream framing, including
-    for a call that emits exactly one message. Measured, that framing is a third of
-    the cost of a plain tool call.
-
-    A `tools/call` produces extra messages only when the handler can reach the
-    `MCPContext`, which the registry settles per tool at registration. A handler
-    reaching the connection WITHOUT binding one - through
-    `MCPServer.send_to_current_connection` - is not visible to that walk and should
-    be registered with `dispatches_tools=True`. Everything else keeps the stream.
+    Everything else goes through `_lazy_reply`, which answers JSON when the first
+    thing the handler produces is its own response, and only pays for stream framing
+    when something - progress, a log, a sampling or elicitation message - arrives
+    first. These three stay forced because none of them can be decided that way:
+    resumability needs the event ids the stream mints, a connection registered for
+    subscription fan-out needs an open channel regardless of what this one call
+    emits (`GET` only resumes, so an open POST stream is the only delivery window),
+    and a task-augmented call's `notifications/tasks/status` is defined to follow
+    the reply, not precede it.
     """
     if event_store is not None:
         return True
     if getattr(server, "_connections", None) is not None:
-        # `GET` only resumes, so an open POST stream is the only delivery window.
         return True
     if message.get("method") != "tools/call":
-        return True
+        return False
+    params = message.get("params")
+    return isinstance(params, dict) and "task" in params
+
+
+def _provably_streamless(server: MCPServer, message: dict[str, Any]) -> bool:
+    """Whether a `tools/call` is already known, from registration alone, to emit nothing.
+
+    Resolving the tool is a dict lookup, far cheaper than the background dispatch
+    `_lazy_reply` starts to watch for a notification that a tool unable to reach
+    `MCPContext` can never produce. An unresolved name is not provably anything -
+    it goes through `_lazy_reply`, whose first (and only) item is the error reply.
+    """
+    if message.get("method") != "tools/call":
+        return False
     params = message.get("params")
     if not isinstance(params, dict):
-        return True
-    if "task" in params:
-        # A task emits `notifications/tasks/status` after its reply.
-        return True
-    meta = params.get("_meta")
-    if isinstance(meta, dict) and meta.get("progressToken") is not None:
-        return True
+        return False
     name = params.get("name")
     if not isinstance(name, str):
-        return True
+        return False
     tool = server.registry.resolve(name, _requested_version(params))
-    return tool is None or tool.may_stream
+    return tool is not None and not tool.may_stream
 
 
 def _validate_standard_headers(request: Request, message: dict[str, Any]) -> None:
@@ -495,43 +511,68 @@ def _forbidden(response: dict[str, Any], scopes: list[str]) -> Response:
 # ── SSE streaming ─────────────────────────────────────────
 
 
-def _stream_response(
+class _Dispatch:
+    """The queue and background task one request's dispatch runs behind.
+
+    Shared by `_stream_response` and `_lazy_reply` so the choice between a plain
+    JSON reply and an SSE stream can be made after the handler has already
+    started, without dispatching it twice. Each queued item is `(event_id,
+    payload, is_final)`; `is_final` marks the call's own response or
+    internal-error payload, which is what `_lazy_reply` waits for.
+    """
+
+    __slots__ = ("queue", "draining", "client_gone", "prime_id", "runner_task")
+
+    def __init__(self, stream_id: str | None) -> None:
+        self.queue: asyncio.Queue[Any] = asyncio.Queue()
+        # A disconnect does not cancel the call, so a chatty tool would buffer forever.
+        self.draining = True
+        # A `subscriptions/listen` is answered by its own close, nothing else.
+        self.client_gone = asyncio.Event()
+        # An id plus empty data marks the stream open; `SSEEventStore` owns the sep.
+        self.prime_id = (
+            f"{stream_id}{_EVENT_ID_SEP}0" if stream_id is not None else str(next(_event_id))
+        )
+        self.runner_task: asyncio.Task[None] | None = None
+
+    def close(self) -> None:
+        """Stop queueing and release anyone waiting on `client_gone`.
+
+        Called once the runner task has finished; nothing will read the queue
+        again, so any straggler left by a last-moment `draining` check is dropped.
+        """
+        self.draining = False
+        self.client_gone.set()
+        while not self.queue.empty():
+            self.queue.get_nowait()
+
+
+def _begin_dispatch(
     server: MCPServer,
     message: dict[str, Any],
     principal: Principal | None,
     session: MCPSession,
-    session_id: str | None = None,
-    event_store: SSEEventStore | None = None,
-    store: HttpSessionStore | None = None,
-) -> EventSourceResponse:
-    """Answer one request as an SSE stream: its notifications then its response.
+    session_id: str | None,
+    event_store: SSEEventStore | None,
+    store: HttpSessionStore | None,
+) -> _Dispatch:
+    """Start `server.handle_message` in the background and return its dispatch state.
 
-    The request is dispatched in a background task whose context carries an outbound
-    sink wired to a queue; the SSE generator drains that queue. Per-request
-    `_notifier_var` scoping keeps concurrent HTTP calls from crossing notifications.
-
-    For the open lifetime of the stream the connection is registered with the server
-    keyed by its `session`, with this stream's sink as its outbound channel, so an
-    application-signalled `notifications/resources/updated` reaches a client that
-    has `resources/subscribe`d; it is unregistered when the stream closes.
-
-    The stream opens with a priming event so the first frame is addressable, and
-    closes with a `retry` field hinting the reconnect delay (MCP 2025-11-25
-    transport). The dispatch task is left running on client disconnection rather
-    than cancelled - the spec forbids treating a dropped connection as a cancel.
+    The task's context carries an outbound sink wired to the dispatch's queue;
+    per-request `_notifier_var` scoping keeps concurrent HTTP calls from crossing
+    notifications. For its open lifetime the connection is registered with the
+    server keyed by `session`, so an application-signalled
+    `notifications/resources/updated` reaches a client that has
+    `resources/subscribe`d; it is unregistered once dispatch finishes.
 
     Under resumability each payload event is recorded before being queued, so a
-    client that drops can replay the tail via a `Last-Event-ID` GET. The runner
-    records regardless of the generator's state, so events produced after a
-    disconnect are still available.
+    client that drops can replay the tail via a `Last-Event-ID` GET. The task
+    records regardless of whether anything is still reading the queue, so events
+    produced after a disconnect are still available.
     """
-    queue: asyncio.Queue[Any] = asyncio.Queue()
-    # A disconnect does not cancel the call, so a chatty tool would buffer forever.
-    draining = True
-    # A `subscriptions/listen` is answered by its own close, nothing else.
-    client_gone = asyncio.Event()
-    # `seq` advances per payload; 0 is the priming event, so the replay base is known.
     stream_id = secrets.token_urlsafe(_STREAM_ID_ENTROPY_BYTES) if event_store is not None else None
+    dispatch = _Dispatch(stream_id)
+    # `seq` advances per payload; 0 is the priming event, so the replay base is known.
     seq = count(1)
 
     def emit_id(payload: dict[str, Any]) -> str | None:
@@ -540,10 +581,10 @@ def _stream_response(
         return event_store.record(stream_id, next(seq), payload)
 
     # The HTTP transport's `Transport.send`; the recording survives a dropped stream.
-    async def send(message: dict[str, Any]) -> None:
-        event_id = emit_id(message)
-        if draining:
-            await queue.put((event_id, message))
+    async def send(payload: dict[str, Any]) -> None:
+        event_id = emit_id(payload)
+        if dispatch.draining:
+            await dispatch.queue.put((event_id, payload, False))
 
     async def runner() -> None:
         token = _notifier_var.set(send)
@@ -557,11 +598,11 @@ def _stream_response(
                 await store.persist(session_id, session)
             if response is not None:
                 response_id = emit_id(response)
-                if draining:
-                    await queue.put((response_id, response))
+                if dispatch.draining:
+                    await dispatch.queue.put((response_id, response, True))
             elif message.get("id") in session.listen_streams:
                 # Held until the client goes away, so the fan-out has a target.
-                await client_gone.wait()
+                await dispatch.client_gone.wait()
         except asyncio.CancelledError:
             # Cancelled deliberately: close without an error frame, as it expects.
             pass
@@ -569,36 +610,102 @@ def _stream_response(
             _logger.exception("MCP HTTP request handling failed")
             err = _error(message.get("id"), _JSONRPC_INTERNAL_ERROR, "internal error")
             err_id = emit_id(err)
-            if draining:
-                await queue.put((err_id, err))
+            if dispatch.draining:
+                await dispatch.queue.put((err_id, err, True))
         finally:
             server.unregister_connection(conn_token)
             _notifier_var.reset(token)
-            if draining:
-                await queue.put(_STREAM_END)
+            if dispatch.draining:
+                await dispatch.queue.put(_STREAM_END)
+
+    # Disconnection is not cancellation (MCP transport); the binding holds it.
+    dispatch.runner_task = asyncio.ensure_future(runner())
+    return dispatch
+
+
+def _sse_from_dispatch(
+    dispatch: _Dispatch,
+    session_id: str | None,
+    seed: tuple[str | None, dict[str, Any], bool] | None = None,
+) -> EventSourceResponse:
+    """Stream `dispatch`'s queue as SSE: its notifications then its response.
+
+    `seed` is an item `_lazy_reply` already dequeued before deciding the call
+    needed the stream after all; it is replayed first so nothing already taken
+    off the queue is lost. The stream closes with a `retry` field hinting the
+    reconnect delay (MCP 2025-11-25 transport).
+    """
 
     async def events() -> AsyncIterator[ServerSentEvent]:
-        nonlocal draining
-        # Disconnection is not cancellation (MCP transport); the binding holds it.
-        runner_task = asyncio.ensure_future(runner())
-        # An id plus empty data marks the stream open; `SSEEventStore` owns the sep.
-        prime_id = f"{stream_id}{_EVENT_ID_SEP}0" if stream_id is not None else str(next(_event_id))
         try:
-            yield ServerSentEvent(data="", id=prime_id)
+            yield ServerSentEvent(data="", id=dispatch.prime_id)
+            if seed is not None:
+                event_id, payload, _is_final = seed
+                yield ServerSentEvent(data=encode_envelope(payload).decode(), id=event_id)
             while True:
-                item = await queue.get()
+                item = await dispatch.queue.get()
                 if item is _STREAM_END:
                     break
-                event_id, payload = item
+                event_id, payload, _is_final = item
                 yield ServerSentEvent(data=encode_envelope(payload).decode(), id=event_id)
             yield ServerSentEvent(retry=_SSE_RETRY_MS)
-            await runner_task
+            assert dispatch.runner_task is not None
+            await dispatch.runner_task
         finally:
-            # Nothing will read this queue again; release a waiting listen stream too.
-            draining = False
-            client_gone.set()
-            while not queue.empty():
-                queue.get_nowait()
+            dispatch.close()
 
     headers = {_SESSION_ID_HEADER: session_id} if session_id is not None else None
     return EventSourceResponse(events(), headers=headers)
+
+
+def _stream_response(
+    server: MCPServer,
+    message: dict[str, Any],
+    principal: Principal | None,
+    session: MCPSession,
+    session_id: str | None = None,
+    event_store: SSEEventStore | None = None,
+    store: HttpSessionStore | None = None,
+) -> EventSourceResponse:
+    """Answer one request as an SSE stream: its notifications then its response."""
+    dispatch = _begin_dispatch(server, message, principal, session, session_id, event_store, store)
+    return _sse_from_dispatch(dispatch, session_id)
+
+
+async def _lazy_reply(
+    server: MCPServer,
+    message: dict[str, Any],
+    principal: Principal | None,
+    session: MCPSession,
+    session_id: str | None,
+    event_store: SSEEventStore | None,
+    store: HttpSessionStore | None,
+) -> Response:
+    """Answer as JSON when the call's own reply is all it ever produces.
+
+    This starts the same background dispatch `_stream_response` would, so the
+    handler runs identically either way - only the framing of its single reply
+    changes. If a notification arrives first, or the wait times out before
+    anything does, the call needed the stream after all; this falls through to
+    one, replaying whatever was already dequeued so nothing is lost.
+    """
+    dispatch = _begin_dispatch(server, message, principal, session, session_id, event_store, store)
+    try:
+        item = await asyncio.wait_for(dispatch.queue.get(), timeout=_LAZY_REPLY_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        return _sse_from_dispatch(dispatch, session_id)
+
+    if item is _STREAM_END:  # pragma: no cover - a request-with-id always replies
+        raise AssertionError("a request's dispatch ended with no reply")
+    _event_id, payload, is_final = item
+    if not is_final:
+        return _sse_from_dispatch(dispatch, session_id, seed=item)
+
+    assert dispatch.runner_task is not None
+    await dispatch.runner_task
+    dispatch.close()
+    error = payload.get("error")
+    if isinstance(error, dict) and error.get("code") == _JSONRPC_FORBIDDEN:
+        scopes = (error.get("data") or {}).get("requiredScopes") or []
+        return _forbidden(payload, scopes)
+    return _with_session(_protocol_response(payload), session_id)
