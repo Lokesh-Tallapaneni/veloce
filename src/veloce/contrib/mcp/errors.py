@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from veloce.exceptions import VeloceError
+
 # JSON-RPC 2.0 error codes (Sec. 5.1) plus the MCP "method not found" reuse.
 _JSONRPC_PARSE_ERROR = -32700
 _JSONRPC_INVALID_REQUEST = -32600
@@ -72,7 +74,7 @@ def _insufficient_scope(required: frozenset[str]) -> str:
     return f"insufficient_scope: requires {sorted(required)}"
 
 
-class MCPError(Exception):
+class MCPError(VeloceError):
     """Base for any MCP failure that maps to a JSON-RPC error object."""
 
     # Class-level default; each subclass overrides with its JSON-RPC code.

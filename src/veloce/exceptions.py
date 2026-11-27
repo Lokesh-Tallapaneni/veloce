@@ -5,6 +5,14 @@ Semantics) and RFC 6585 (Additional HTTP Status Codes), and the subclass identit
 lets a handler registered against one class catch every subclass. The two default
 handler functions at the end render ``HTTPException`` and
 ``RequestValidationError`` as JSON responses.
+
+Roots, so one ``except`` covers a whole family: ``VeloceError`` (everything
+Veloce raises), ``HTTPException`` (every HTTP status error, including
+``ValidationError`` and ``RequestValidationError``) and ``WebSocketError``
+(``WebSocketDisconnect``, ``WebSocketException`` and
+``WebSocketRequestValidationError``). ``ConfigurationError`` and ``SetupError``
+cover misconfiguration at startup; ``BuildError``, ``DuplicateRouteError`` and
+``FilesKeyError`` are the routing and request-data lookups.
 """
 
 from __future__ import annotations
@@ -299,7 +307,11 @@ class RequestValidationError(ValidationError):
 # ── WebSocket exceptions ──────────────────────────────────
 
 
-class WebSocketDisconnect(VeloceError):
+class WebSocketError(VeloceError):
+    """Root of every exception a WebSocket connection raises or is closed by."""
+
+
+class WebSocketDisconnect(WebSocketError):
     """WebSocket connection closed."""
 
     def __init__(self, code: int = WS_1000_NORMAL_CLOSURE) -> None:
@@ -309,7 +321,7 @@ class WebSocketDisconnect(VeloceError):
         self.code = code
 
 
-class WebSocketException(VeloceError):
+class WebSocketException(WebSocketError):
     """Raised inside a WebSocket handler to close the connection cleanly.
 
     The dispatch layer catches it and sends a close frame carrying `code`
@@ -322,7 +334,7 @@ class WebSocketException(VeloceError):
         super().__init__(f"{code}: {reason or ''}")
 
 
-class WebSocketRequestValidationError(RequestValidationError):
+class WebSocketRequestValidationError(RequestValidationError, WebSocketError):
     """A WebSocket dependency failed parameter validation.
 
     The dispatch layer closes the connection with code 1008 (policy violation)

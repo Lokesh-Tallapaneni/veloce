@@ -10,10 +10,12 @@ Work that runs after the response, the cache interface, rate-limit strategies, a
 ::: veloce.BackgroundTasks
 ::: veloce.Cache
 ::: veloce.InMemoryCache
+::: veloce.CacheBackend
 ::: veloce.cached
 ::: veloce.rate_limit
 ::: veloce.RateLimitBackend
 ::: veloce.InMemoryRateLimitBackend
+::: veloce.RateLimitStoreBackend
 ::: veloce.RateLimitResult
 ::: veloce.RateLimitState
 ::: veloce.RateLimitStrategy

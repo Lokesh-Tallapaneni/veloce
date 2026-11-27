@@ -52,6 +52,7 @@ if TYPE_CHECKING:  # pragma: no cover
     )
     from veloce.dependency import Depends, Security, SecurityScopes
     from veloce.encoders import jsonable_encoder, register_encoder, unregister_encoder
+    from veloce.enums import MCPTransport, SameSite
     from veloce.exceptions import (
         BadGateway,
         BadRequest,
@@ -89,6 +90,7 @@ if TYPE_CHECKING:  # pragma: no cover
         ValidationError,
         VeloceError,
         WebSocketDisconnect,
+        WebSocketError,
         WebSocketException,
         WebSocketRequestValidationError,
         http_exception_handler,
@@ -190,6 +192,12 @@ if TYPE_CHECKING:  # pragma: no cover
         verify_password_async,
     )
     from veloce.principal import Principal, current_principal, set_principal
+    from veloce.protocols import (
+        CacheBackend,
+        JSONProviderBackend,
+        RateLimitStoreBackend,
+        SessionStoreBackend,
+    )
     from veloce.ratelimit import (
         FixedWindow,
         InMemoryRateLimitBackend,
@@ -325,6 +333,7 @@ __all__ = [
     # WebSocket
     "WebSocket",
     "WebSocketDisconnect",
+    "WebSocketError",
     "WebSocketException",
     "WebSocketRequestValidationError",
     "WebSocketState",
@@ -379,6 +388,12 @@ __all__ = [
     # Caching
     "Cache",
     "InMemoryCache",
+    "CacheBackend",
+    "MCPTransport",
+    "SameSite",
+    "SessionStoreBackend",
+    "RateLimitStoreBackend",
+    "JSONProviderBackend",
     "cached",
     # Static
     "StaticFiles",
@@ -568,6 +583,12 @@ _EXPORTS: dict[str, str | tuple[str, str]] = {
     "BackgroundTasks": "veloce.background",
     "Blueprint": "veloce.blueprints",
     "Cache": "veloce.cache",
+    "CacheBackend": "veloce.protocols",
+    "MCPTransport": "veloce.enums",
+    "SameSite": "veloce.enums",
+    "SessionStoreBackend": "veloce.protocols",
+    "RateLimitStoreBackend": "veloce.protocols",
+    "JSONProviderBackend": "veloce.protocols",
     "InMemoryCache": "veloce.cache",
     "cached": "veloce.cache",
     "Config": "veloce.config",
@@ -619,6 +640,7 @@ _EXPORTS: dict[str, str | tuple[str, str]] = {
     "ValidationError": "veloce.exceptions",
     "VeloceError": "veloce.exceptions",
     "WebSocketDisconnect": "veloce.exceptions",
+    "WebSocketError": "veloce.exceptions",
     "WebSocketException": "veloce.exceptions",
     "WebSocketRequestValidationError": "veloce.exceptions",
     "http_exception_handler": "veloce.exceptions",

@@ -56,6 +56,7 @@ from veloce._protocol_constants import (
     HTTP_METHOD_TRACE,
     URL_SCHEME_HTTPS,
 )
+from veloce.enums import SameSite
 from veloce.http.request import Request
 from veloce.http.response import JSONResponse, Response
 from veloce.middleware.base import Middleware
@@ -102,7 +103,7 @@ class CSRFMiddleware(Middleware):
         *,
         cookie_secure: bool = True,
         cookie_httponly: bool = False,
-        cookie_samesite: str = "Lax",
+        cookie_samesite: SameSite | str = "Lax",
         token_factory: Callable[[], str] | None = None,
         secret: str | None = None,
         max_age: int | None = None,
