@@ -101,7 +101,7 @@ class TestShutdownAggregatesEveryTeardownFailure:
     async def test_both_failures_reach_the_caller(self) -> None:
         app = self._app_with_two_failing_teardowns()
         await app._run_lifecycle("startup")
-        with pytest.raises(BaseException) as excinfo:
+        with pytest.raises(BaseException) as excinfo:  # group or bare
             await app._run_lifecycle("shutdown")
 
         raised = excinfo.value
@@ -170,7 +170,7 @@ class TestSubappShutdownAggregates:
         parent.mount("/b", child("b", fail=False))
 
         await parent._run_lifecycle("startup")
-        with pytest.raises(BaseException):
+        with pytest.raises(BaseException):  # the aggregate
             await parent._run_lifecycle("shutdown")
 
         assert set(torn) == {"a", "b"}, "a failing child stopped the others"

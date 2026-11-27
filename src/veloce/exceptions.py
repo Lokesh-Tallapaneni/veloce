@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from veloce.http.response import JSONResponse
 from veloce.status import (
     HTTP_400_BAD_REQUEST,
     HTTP_401_UNAUTHORIZED,
@@ -484,6 +483,8 @@ async def http_exception_handler(request: Any, exc: HTTPException) -> Response:
     Honours ``exc.status_code``, ``exc.detail`` (falling back to the
     subclass description), and ``exc.headers``.
     """
+    from veloce.http.response import JSONResponse  # breaks exceptions <-> http cycle
+
     payload = http_exception_payload(exc)
     return JSONResponse(
         payload,
@@ -499,6 +500,8 @@ async def request_validation_exception_handler(
 
     Uses the structured shape ``{"detail": [ ...per-field errors... ]}``.
     """
+    from veloce.http.response import JSONResponse  # breaks exceptions <-> http cycle
+
     return JSONResponse({"detail": exc.errors or []}, status_code=HTTP_422_UNPROCESSABLE_ENTITY)
 
 

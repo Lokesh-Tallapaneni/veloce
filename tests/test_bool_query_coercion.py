@@ -93,7 +93,7 @@ def test_the_refusal_names_the_parameter_and_its_location():
 @pytest.mark.parametrize("value", _REFUSED)
 def test_pydantic_refuses_the_same_values(value):
     """The refusal set is Pydantic's, not one invented here."""
-    with pytest.raises(Exception):
+    with pytest.raises(Exception):  # any validation failure
         TypeAdapter(bool).validate_python(value)
 
 

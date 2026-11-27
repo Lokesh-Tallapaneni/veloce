@@ -100,6 +100,7 @@ async def test_shutdown_runs_all_teardowns_and_groups_failures():
         raise KeyError("b")
 
     await app._run_lifecycle("startup")
+    # The aggregate type differs by interpreter: a group on 3.11+, a chain on 3.10.
     with pytest.raises(BaseException) as excinfo:
         await app._run_lifecycle("shutdown")
 

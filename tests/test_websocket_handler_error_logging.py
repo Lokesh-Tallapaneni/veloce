@@ -57,7 +57,7 @@ async def _run(handler) -> WebSocket:
     app, ws, route_info = _wired(handler)
     # Broad on purpose: which exception escapes is what the caller asserts on
     # `ws._handler_exc`, and it differs per test.
-    with pytest.raises(BaseException):
+    with pytest.raises(BaseException):  # see above
         await app._run_websocket(ws, route_info)
     return ws
 

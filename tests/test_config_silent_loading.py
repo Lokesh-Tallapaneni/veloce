@@ -71,6 +71,6 @@ def test_an_error_from_the_loader_itself_is_not_swallowed(tmp_path: pathlib.Path
     # raises on malformed input is not this module's contract. What is, and
     # is asserted below, is that it is not an `OSError` - the class `silent=`
     # swallows.
-    with pytest.raises(Exception) as excinfo:
+    with pytest.raises(Exception) as excinfo:  # see above
         Config().from_file(str(js), silent=True)
     assert not isinstance(excinfo.value, OSError)
