@@ -126,8 +126,9 @@ UNEXPORTED: dict[str, str] = {
     # `status.py` — a predicate over the status constants, used by the response
     # encoders to decide whether a body may be emitted.
     "status.status_permits_body": "internal predicate used by the response encoders",
-    # `websocket.py` — handshake internals. `WebSocket` is the public object.
-    "websocket.compute_accept": "RFC 6455 handshake internals",
+    # `websocket/` — handshake internals. `WebSocket` is the public object.
+    "websocket.handshake.compute_accept": "RFC 6455 handshake internals",
+    "websocket.raw.RawTransportMixin": "the raw-transport half of `WebSocket`, composed into it",
     # `workers.py` — the gunicorn worker class, named to gunicorn by dotted
     # string on the command line, never imported.
     "workers.VeloceWorker": "gunicorn worker, referenced by dotted path",

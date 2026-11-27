@@ -426,6 +426,7 @@ ignore = [
 # reach a library directly to check the seam against something independent.
 "tests/**" = ["B", "BLE", "D", "TID251", "N801", "N802", "N817"]  # bugbear false positives in test patterns; see above
 "src/veloce/__init__.py" = ["F401"]  # re-exports
+"src/veloce/websocket/__init__.py" = ["F401"]  # re-exports, including the private names in-tree callers import
 # `TemplateResponse` is the documented public method name.
 "src/veloce/contrib/templating.py" = ["N802"]
 # The OAuth2 flow parameters are named after the OpenAPI flow object fields.
@@ -544,6 +545,7 @@ module = [
     "veloce.testclient",
     "veloce.views",
     "veloce.websocket",
+    "veloce.websocket.*",
     "veloce.workers",
 ]
 warn_return_any = false
