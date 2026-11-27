@@ -190,6 +190,12 @@ if TYPE_CHECKING:  # pragma: no cover
         verify_password_async,
     )
     from veloce.principal import Principal, current_principal, set_principal
+    from veloce.protocols import (
+        CacheBackend,
+        JSONProviderBackend,
+        RateLimitStoreBackend,
+        SessionStoreBackend,
+    )
     from veloce.ratelimit import (
         FixedWindow,
         InMemoryRateLimitBackend,
@@ -379,6 +385,10 @@ __all__ = [
     # Caching
     "Cache",
     "InMemoryCache",
+    "CacheBackend",
+    "SessionStoreBackend",
+    "RateLimitStoreBackend",
+    "JSONProviderBackend",
     "cached",
     # Static
     "StaticFiles",
@@ -568,6 +578,10 @@ _EXPORTS: dict[str, str | tuple[str, str]] = {
     "BackgroundTasks": "veloce.background",
     "Blueprint": "veloce.blueprints",
     "Cache": "veloce.cache",
+    "CacheBackend": "veloce.protocols",
+    "SessionStoreBackend": "veloce.protocols",
+    "RateLimitStoreBackend": "veloce.protocols",
+    "JSONProviderBackend": "veloce.protocols",
     "InMemoryCache": "veloce.cache",
     "cached": "veloce.cache",
     "Config": "veloce.config",
