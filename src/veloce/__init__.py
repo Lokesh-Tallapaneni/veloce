@@ -248,6 +248,7 @@ if TYPE_CHECKING:  # pragma: no cover
         make_reset_token,
     )
     from veloce.sessions import InMemorySessionStore, Session, SessionStore
+    from veloce.settings import Settings
     from veloce.signals import (
         Namespace,
         Signal,
@@ -281,6 +282,7 @@ __all__ = [
     "URLMap",
     "URLRule",
     "Config",
+    "Settings",
     # Responses
     "Response",
     "JSONResponse",
@@ -784,6 +786,7 @@ _EXPORTS: dict[str, str | tuple[str, str]] = {
     "Session": "veloce.sessions",
     "SessionStore": "veloce.sessions",
     "Namespace": "veloce.signals",
+    "Settings": "veloce.settings",
     "Signal": "veloce.signals",
     "SignalResult": "veloce.signals",
     "appcontext_popped": "veloce.signals",

@@ -8,6 +8,7 @@ The application object and its configuration.
 
 ::: veloce.Veloce
 ::: veloce.Config
+::: veloce.Settings
 ::: veloce.Plugin
 ::: veloce.HealthPlugin
 

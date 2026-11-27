@@ -69,6 +69,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.icons import Icon
     from veloce.contrib.staticfiles import StaticFiles
     from veloce.middleware import Middleware
+    from veloce.settings import Settings
 
 
 @functools.lru_cache(maxsize=1)
@@ -438,6 +439,13 @@ class Veloce(
     def debug(self, value: bool) -> None:
         # Coerced like the getter, so `app.debug = "false"` stores False.
         self.config["DEBUG"] = _coerce_bool(value)
+
+    @property
+    def settings(self) -> Settings:
+        """Typed, read-only snapshot of `app.config`, rebuilt on each access."""
+        from veloce.settings import Settings
+
+        return Settings.from_config(self.config)
 
     @property
     def secret_key(self) -> str | None:
