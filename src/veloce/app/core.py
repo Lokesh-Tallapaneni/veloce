@@ -62,6 +62,7 @@ from veloce.exceptions import (
 from veloce.helpers import Aborter, send_from_directory, send_from_directory_async
 from veloce.http.datastructures import State
 from veloce.http.request import Request
+from veloce.routing.route_info import RouteHandler, RouteOptions
 from veloce.routing.router import Router
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -539,19 +540,18 @@ class Veloce(
 
     # ── Registration APIs ──────────────────────────────────
 
-    def add_route(self, *args: Any, **kwargs: Any) -> None:
-        """Register a route. See `Router.add_route` for the full signature.
+    def _add_route_options(
+        self, path: str, handler: RouteHandler, methods: list[str], options: RouteOptions
+    ) -> None:
+        """Register a route, bracketed by the mutability check and cache reset.
 
-        Brackets the base implementation: refuse a mutation once the app is
-        serving, then drop the caches the new route invalidates. Everything is
-        forwarded untouched.
+        Refuse a mutation once the app is serving, then drop the caches the new
+        route invalidates. Every registration path (`add_route`, `route`,
+        blueprint splicing) reaches the base implementation through here.
         """
         self._assert_mutable()
-        super().add_route(*args, **kwargs)
+        super()._add_route_options(path, handler, methods, options)
         self._invalidate_route_caches()
-
-    # Introspection recovers the documented signature the `*args` forward hides.
-    add_route.__signature__ = inspect.signature(Router.add_route)  # type: ignore[attr-defined]  # function attributes are not declared on callables
 
     def include_router(
         self,

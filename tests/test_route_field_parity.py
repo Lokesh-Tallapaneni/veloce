@@ -31,6 +31,7 @@ import pytest
 import typing_extensions
 
 from veloce import Blueprint, Request, Router, Veloce
+from veloce.routing.route_info import RouteOptions
 from veloce.routing.router import MCPRouteOptions, RouteInfo
 from veloce.testclient import TestClient
 
@@ -39,7 +40,7 @@ from veloce.testclient import TestClient
 #: merged, and this guard - which read `router.py` alone - stopped finding it.
 #: A guard that only works while the code stays put is not a guard, so the
 #: source is now resolved per function rather than pinned to one file.
-_SEARCHED_MODULES = (Router.__module__, "veloce._internal")
+_SEARCHED_MODULES = (Router.__module__, "veloce._internal", RouteInfo.__module__)
 
 
 def _module_source(module_name: str) -> str:
@@ -137,9 +138,9 @@ def test_the_scanned_source_stops_at_the_function():
     neighbour's indentation - so the count is over `def ` at **any** column, not
     just column zero.
     """
-    for name in ("_readd_route", "_build_merged_route_info"):
+    for name in ("from_info", "_build_merged_route_info"):
         body = _function_source(name)
-        assert body.startswith(f"def {name}("), name
+        assert body.lstrip().startswith(f"def {name}("), name
         others = [
             line.strip()
             for line in body.splitlines()
@@ -150,8 +151,7 @@ def test_the_scanned_source_stops_at_the_function():
 
 def test_the_scan_finds_the_fields_it_is_meant_to():
     """A boundary fix that returned nothing would make the guard vacuous."""
-    for name in ("_readd_route", "_build_merged_route_info"):
-        assert len(_forwarded_in(name)) > 10, name
+    assert len(_forwarded_in("from_info")) > 10
 
 
 def _carried_fields() -> set[str]:
@@ -168,11 +168,33 @@ def _carried_fields() -> set[str]:
     return fields
 
 
+def test_every_route_field_is_carried_across():
+    """The guard: a field the copy forgets is a silent behaviour change.
+
+    Both copy paths - blueprint splicing (`_readd_route`) and router merging
+    (`_build_merged_route_info`) - read a source route through the one mapping,
+    `RouteOptions.from_info`, so that mapping is what is checked.
+    """
+    missing = sorted(_carried_fields() - _REWRITTEN - _forwarded_in("from_info"))
+    assert not missing, f"RouteOptions.from_info does not carry: {missing}"
+
+
 @pytest.mark.parametrize("function_name", ["_readd_route", "_build_merged_route_info"])
-def test_every_route_field_is_carried_across(function_name: str):
-    """The guard: a field neither copy forwards is a silent behaviour change."""
-    missing = sorted(_carried_fields() - _REWRITTEN - _forwarded_in(function_name))
-    assert not missing, f"{function_name} does not carry: {missing}"
+def test_each_copy_path_goes_through_the_one_mapping(function_name: str):
+    """Neither copy re-lists the fields: both reach `RouteOptions.from_info`."""
+    source = _function_source(function_name)
+    assert "from_info" in source or "_add_route_from_info" in source, function_name
+
+
+def test_the_options_record_holds_exactly_the_route_parameters():
+    """`RouteOptions` is the single list the entry points collect into."""
+    fields = set(RouteOptions.__dataclass_fields__)
+    params = {
+        name
+        for name in inspect.signature(Router.add_route).parameters
+        if name not in ("self", "path", "handler", "methods")
+    }
+    assert fields == params
 
 
 def test_the_mcp_record_stands_in_for_its_eleven_fields():
@@ -396,7 +418,8 @@ def _forwarded_by_route() -> set[str]:
 def test_every_parameter_route_accepts_is_forwarded():
     """One `route` accepts but drops is silent - it is not a `TypeError`."""
     accepted = {name for name in inspect.signature(Router.route).parameters if name != "self"}
-    missing = sorted(accepted - _forwarded_by_route() - {"kwargs"})
+    # `path` and `methods` travel positionally; every option goes into `RouteOptions`.
+    missing = sorted(accepted - _forwarded_by_route() - {"kwargs", "path", "methods"})
     assert not missing, f"route accepts but does not forward: {missing}"
 
 

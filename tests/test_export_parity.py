@@ -155,6 +155,7 @@ UNEXPORTED: dict[str, str] = {
     # the old `veloce.routing.router.X` paths still resolve; these are the names
     # under their new home.
     "routing.route_info.MCPRouteOptions": "the record behind RouteInfo.mcp; read through its properties",
+    "routing.route_info.RouteOptions": "the record add_route and route collect their options into; registration plumbing, not user-facing",
     "routing.route_info.RouteHandler": "router-internal handler alias; RouteInfo/RouteMatch are equally internal",
     "testclient.StreamBody": "accepted shape of TestClient's `stream=`; callers pass an iterable, not the alias",
     # MCP integration internals, consistent with the other names from these

@@ -1,16 +1,10 @@
 """`Veloce.add_route` keeps the documented signature it forwards to.
 
 `Router.add_route` is the primary programmatic registration API and carries a
-fully `Annotated[T, Doc(...)]`-typed signature. `Veloce` overrode it with
-`def add_route(self, *args, **kwargs)` and no docstring, purely to bracket the
-base call with a mutability check and a cache invalidation - so every user of
-`help(app.add_route)`, and every editor signature hint, saw `(*args, **kwargs)`
-and nothing else.
-
-Restating the parameter list in the override would have added a ninth
-hand-maintained copy of it - the duplication this same review reports elsewhere.
-Instead `__signature__` and the docstring are re-pointed at the base, so
-introspection recovers what the forward hides while the list stays in one place.
+fully `Annotated[T, Doc(...)]`-typed signature. The mutability check and cache
+invalidation `Veloce` adds bracket `_add_route_options`, the one choke point
+every registration path reaches, so `add_route` itself is inherited and
+`help(app.add_route)` shows the documented parameters.
 """
 
 from __future__ import annotations
@@ -27,15 +21,10 @@ from veloce.testclient import TestClient
 # ── introspection sees the documented surface ────────────────────────
 
 
-def test_the_override_does_not_report_star_args():
-    """The defect: this was `(self, *args, **kwargs)`."""
-    names = list(inspect.signature(Veloce.add_route).parameters)
-    assert names != ["self", "args", "kwargs"]
-
-
-def test_the_signature_matches_the_base():
-    """One list, not two - that is the whole point of re-pointing rather than
-    restating."""
+def test_the_application_inherits_the_documented_signature():
+    """`Veloce` no longer overrides `add_route`: the bracketing lives on the one
+    registration choke point, so the signature is the base's by construction."""
+    assert "add_route" not in vars(Veloce)
     assert inspect.signature(Veloce.add_route) == inspect.signature(Router.add_route)
 
 
@@ -46,11 +35,17 @@ def test_a_documented_parameter_is_visible(parameter):
     assert parameter in inspect.signature(Veloce.add_route).parameters
 
 
-def test_the_override_is_documented():
-    """It had no docstring at all."""
-    doc = Veloce.add_route.__doc__ or ""
-    assert doc.strip()
-    assert "Router.add_route" in doc
+def test_the_options_after_methods_are_keyword_only():
+    """A boolean such as `deprecated` cannot be passed positionally by mistake."""
+    parameters = inspect.signature(Router.add_route).parameters
+    positional = [
+        name for name, p in parameters.items() if p.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    ]
+    assert positional == ["self", "path", "handler", "methods"]
+
+
+def test_the_documentation_is_the_bases():
+    assert (Veloce.add_route.__doc__ or "").strip()
 
 
 # ── and it still does what the override exists for ───────────────────

@@ -7,6 +7,7 @@ import keyword
 import logging
 import re
 from collections.abc import Callable, Iterator, Sequence
+from dataclasses import replace
 from typing import Annotated, Any
 from urllib.parse import quote, urlencode
 
@@ -51,20 +52,18 @@ from veloce.routing.converters import (
     path_param_converters,
 )
 from veloce.routing.route_info import (
-    MCPRouteOptions as MCPRouteOptions,
-)
-from veloce.routing.route_info import (
+    _INFER_RESPONSE_MODEL,
     RouteHandler,
     RouteInfo,
     RouteMatch,
+    RouteOptions,
+)
+from veloce.routing.route_info import (
+    MCPRouteOptions as MCPRouteOptions,
 )
 from veloce.status import HTTP_200_OK
 
 _logger = logging.getLogger(__name__)
-
-# Distinguishes "not supplied" - derive the model from the handler's return
-# annotation - from an explicit `response_model=None`, which declares none.
-_INFER_RESPONSE_MODEL: Any = object()
 
 # ── Module constants and helpers ───────────────────────────
 
@@ -589,52 +588,22 @@ class Router:
         combined_deps = list(self.router_dependencies)
         if info.dependencies:
             combined_deps.extend(info.dependencies)
+        options = RouteOptions.from_info(info)
         merged = RouteInfo(
             handler=info.handler,
             param_names=param_names,
-            dependencies=combined_deps if combined_deps else info.dependencies,
-            response_model=info.response_model,
-            tags=(info.tags or []) + list(self.tags),
-            summary=info.summary,
-            name=info.name,
             path_template=full_path,
-            description=info.description,
-            deprecated=info.deprecated,
-            response_description=info.response_description,
-            status_code=info.status_code,
-            response_class=info.response_class or self.default_response_class,
-            response_model_include=info.response_model_include,
-            response_model_exclude=info.response_model_exclude,
-            response_model_exclude_unset=info.response_model_exclude_unset,
-            response_model_exclude_defaults=info.response_model_exclude_defaults,
-            response_model_by_alias=info.response_model_by_alias,
-            response_model_exclude_none=info.response_model_exclude_none,
-            include_in_schema=info.include_in_schema,
-            responses=(
-                None
-                if not self.router_responses and not info.responses
-                else {**self.router_responses, **(info.responses or {})}
+            options=replace(
+                options,
+                dependencies=combined_deps if combined_deps else info.dependencies,
+                tags=(info.tags or []) + list(self.tags),
+                response_class=info.response_class or self.default_response_class,
+                responses=(
+                    None
+                    if not self.router_responses and not info.responses
+                    else {**self.router_responses, **(info.responses or {})}
+                ),
             ),
-            operation_id=info.operation_id,
-            # Carried from the source, or a sub-router merged via
-            # `include_router` loses its subdomain / host / defaults.
-            openapi_extra=info.openapi_extra,
-            defaults=info.defaults,
-            callbacks=info.callbacks,
-            subdomain=info.subdomain,
-            host=info.host,
-            expose_as_mcp_tool=info.expose_as_mcp_tool,
-            mcp_description=info.mcp_description,
-            expose_as_mcp_resource=info.expose_as_mcp_resource,
-            mcp_resource_uri=info.mcp_resource_uri,
-            mcp_resource_mime_type=info.mcp_resource_mime_type,
-            mcp_meta=info.mcp_meta,
-            mcp_resource_size=info.mcp_resource_size,
-            mcp_resource_annotations=info.mcp_resource_annotations,
-            mcp_scopes=list(info.mcp_scopes) if info.mcp_scopes else None,
-            mcp_icons=info.mcp_icons,
-            mcp_task_support=info.mcp_task_support,
-            mcp_annotations=info.mcp_annotations,
             excluded_middleware=info.excluded_middleware,
         )
         # `stream` is assigned after construction rather than in `__init__`, so
@@ -744,6 +713,7 @@ class Router:
             list[str],
             Doc("HTTP methods this handler serves (uppercased internally)."),
         ],
+        *,
         dependencies: Annotated[
             list[Any] | None,
             Doc("Dependencies run for this route, appended after the router-level ones."),
@@ -923,69 +893,108 @@ class Router:
         use `subdomain="*"` and inspect `request.subdomain` inside the
         handler.
         """
+        self._add_route_options(
+            path,
+            handler,
+            methods,
+            RouteOptions(
+                dependencies=dependencies,
+                response_model=response_model,
+                tags=tags,
+                summary=summary,
+                name=name,
+                description=description,
+                deprecated=deprecated,
+                response_description=response_description,
+                status_code=status_code,
+                response_class=response_class,
+                response_model_include=response_model_include,
+                response_model_exclude=response_model_exclude,
+                response_model_exclude_unset=response_model_exclude_unset,
+                response_model_exclude_defaults=response_model_exclude_defaults,
+                response_model_by_alias=response_model_by_alias,
+                response_model_exclude_none=response_model_exclude_none,
+                include_in_schema=include_in_schema,
+                responses=responses,
+                operation_id=operation_id,
+                openapi_extra=openapi_extra,
+                defaults=defaults,
+                callbacks=callbacks,
+                strict_slashes=strict_slashes,
+                subdomain=subdomain,
+                host=host,
+                expose_as_mcp_tool=expose_as_mcp_tool,
+                mcp_description=mcp_description,
+                expose_as_mcp_resource=expose_as_mcp_resource,
+                mcp_resource_uri=mcp_resource_uri,
+                mcp_resource_mime_type=mcp_resource_mime_type,
+                mcp_meta=mcp_meta,
+                mcp_resource_size=mcp_resource_size,
+                mcp_resource_annotations=mcp_resource_annotations,
+                mcp_scopes=mcp_scopes,
+                mcp_icons=mcp_icons,
+                mcp_task_support=mcp_task_support,
+                mcp_annotations=mcp_annotations,
+                exclude_middleware=exclude_middleware,
+                stream=stream,
+            ),
+        )
+
+    def _add_route_from_info(
+        self, full_path: str, methods: list[str], info: RouteInfo, endpoint: str
+    ) -> None:
+        """Register another router's route here under `full_path` and `endpoint`."""
+        self._add_route_options(
+            full_path, info.handler, methods, RouteOptions.from_info(info, name=endpoint)
+        )
+
+    def _add_route_options(
+        self, path: str, handler: RouteHandler, methods: list[str], options: RouteOptions
+    ) -> None:
+        """Register a route from its collected options.
+
+        The single choke point every registration path reaches - `add_route`,
+        the `route` decorator, blueprint splicing and router merging - so the
+        application brackets this, not each caller.
+        """
         full_path = self.prefix + path
         # Before any node or regex is built, so both branches share one error.
         _check_duplicate_params(full_path)
-        node, regex_route, param_names = self._classify_route_path(full_path, strict_slashes)
+        node, regex_route, param_names = self._classify_route_path(
+            full_path, options.strict_slashes
+        )
 
-        route_name = name or handler.__name__
+        route_name = options.name or handler.__name__
         # Router-level dependencies run first: outer scope before inner.
         combined_deps = list(self.router_dependencies)
-        if dependencies:
-            combined_deps.extend(dependencies)
+        if options.dependencies:
+            combined_deps.extend(options.dependencies)
         # A return annotation naming a model becomes the enforced contract; an
         # explicit `response_model=` wins, and an explicit `None` opts out.
+        response_model = options.response_model
         if response_model is _INFER_RESPONSE_MODEL:
             response_model = resolve_response_contract(handler)
 
+        merged_options = replace(
+            options,
+            dependencies=combined_deps if combined_deps else None,
+            response_model=response_model,
+            tags=(options.tags or []) + self.tags,
+            name=route_name,
+            response_class=options.response_class or self.default_response_class,
+            responses=(
+                None
+                if not self.router_responses and not options.responses
+                else {**self.router_responses, **(options.responses or {})}
+            ),
+        )
         route_info = RouteInfo(
             handler=handler,
             param_names=param_names,
-            dependencies=combined_deps if combined_deps else None,
-            response_model=response_model,
-            tags=(tags or []) + self.tags,
-            summary=summary,
-            name=route_name,
             path_template=full_path,
-            description=description,
-            deprecated=deprecated,
-            response_description=response_description,
-            status_code=status_code,
-            response_class=response_class or self.default_response_class,
-            response_model_include=response_model_include,
-            response_model_exclude=response_model_exclude,
-            response_model_exclude_unset=response_model_exclude_unset,
-            response_model_exclude_defaults=response_model_exclude_defaults,
-            response_model_by_alias=response_model_by_alias,
-            response_model_exclude_none=response_model_exclude_none,
-            include_in_schema=include_in_schema,
-            responses=(
-                None
-                if not self.router_responses and not responses
-                else {**self.router_responses, **(responses or {})}
-            ),
-            operation_id=operation_id,
-            openapi_extra=openapi_extra,
-            defaults=defaults,
-            callbacks=callbacks,
-            subdomain=subdomain,
-            host=host,
-            expose_as_mcp_tool=expose_as_mcp_tool,
-            mcp_description=mcp_description,
-            expose_as_mcp_resource=expose_as_mcp_resource,
-            mcp_resource_uri=mcp_resource_uri,
-            mcp_resource_mime_type=mcp_resource_mime_type,
-            mcp_meta=mcp_meta,
-            mcp_resource_size=mcp_resource_size,
-            mcp_resource_annotations=mcp_resource_annotations,
-            mcp_scopes=mcp_scopes,
-            mcp_icons=mcp_icons,
-            mcp_task_support=mcp_task_support,
-            mcp_annotations=mcp_annotations,
-            excluded_middleware=_split_exclusions(exclude_middleware),
+            options=merged_options,
+            excluded_middleware=_split_exclusions(options.exclude_middleware),
         )
-        route_info.stream = stream
-        route_info.strict_slashes = strict_slashes
 
         # A WebSocket route's plan is built in websocket mode, so the connection
         # binds by annotation or name through the shared resolver.
@@ -1352,6 +1361,7 @@ class Router:
             list[str] | None,
             Doc("HTTP methods this handler serves; defaults to `GET`."),
         ] = None,
+        *,
         dependencies: Annotated[
             list[Any] | None,
             Doc("Dependencies run for this route, appended after the router-level ones."),
@@ -1527,53 +1537,51 @@ class Router:
         without forking the middleware. Routes that declare no exclusions
         pay no extra per-request cost.
         """
+        options = RouteOptions(
+            dependencies=dependencies,
+            response_model=response_model,
+            tags=tags,
+            summary=summary,
+            name=name,
+            description=description,
+            deprecated=deprecated,
+            response_description=response_description,
+            status_code=status_code,
+            response_class=response_class,
+            response_model_include=response_model_include,
+            response_model_exclude=response_model_exclude,
+            response_model_exclude_unset=response_model_exclude_unset,
+            response_model_exclude_defaults=response_model_exclude_defaults,
+            response_model_by_alias=response_model_by_alias,
+            response_model_exclude_none=response_model_exclude_none,
+            include_in_schema=include_in_schema,
+            responses=responses,
+            operation_id=operation_id,
+            openapi_extra=openapi_extra,
+            defaults=defaults,
+            callbacks=callbacks,
+            strict_slashes=strict_slashes,
+            subdomain=subdomain,
+            host=host,
+            expose_as_mcp_tool=expose_as_mcp_tool,
+            mcp_description=mcp_description,
+            expose_as_mcp_resource=expose_as_mcp_resource,
+            mcp_resource_uri=mcp_resource_uri,
+            mcp_resource_mime_type=mcp_resource_mime_type,
+            mcp_meta=mcp_meta,
+            mcp_resource_size=mcp_resource_size,
+            mcp_resource_annotations=mcp_resource_annotations,
+            mcp_scopes=mcp_scopes,
+            mcp_icons=mcp_icons,
+            mcp_task_support=mcp_task_support,
+            mcp_annotations=mcp_annotations,
+            exclude_middleware=exclude_middleware,
+            stream=stream,
+        )
 
         def decorator(func: T_route) -> T_route:
             """Register `func` for the route and return it unchanged."""
-            self.add_route(
-                path=path,
-                handler=func,
-                methods=methods or [HTTP_METHOD_GET],
-                dependencies=dependencies,
-                response_model=response_model,
-                tags=tags,
-                summary=summary,
-                name=name,
-                description=description,
-                deprecated=deprecated,
-                response_description=response_description,
-                status_code=status_code,
-                response_class=response_class,
-                response_model_include=response_model_include,
-                response_model_exclude=response_model_exclude,
-                response_model_exclude_unset=response_model_exclude_unset,
-                response_model_exclude_defaults=response_model_exclude_defaults,
-                response_model_by_alias=response_model_by_alias,
-                response_model_exclude_none=response_model_exclude_none,
-                include_in_schema=include_in_schema,
-                responses=responses,
-                operation_id=operation_id,
-                openapi_extra=openapi_extra,
-                defaults=defaults,
-                callbacks=callbacks,
-                strict_slashes=strict_slashes,
-                subdomain=subdomain,
-                host=host,
-                expose_as_mcp_tool=expose_as_mcp_tool,
-                mcp_description=mcp_description,
-                expose_as_mcp_resource=expose_as_mcp_resource,
-                mcp_resource_uri=mcp_resource_uri,
-                mcp_resource_mime_type=mcp_resource_mime_type,
-                mcp_meta=mcp_meta,
-                mcp_resource_size=mcp_resource_size,
-                mcp_resource_annotations=mcp_resource_annotations,
-                mcp_scopes=mcp_scopes,
-                mcp_icons=mcp_icons,
-                mcp_task_support=mcp_task_support,
-                mcp_annotations=mcp_annotations,
-                exclude_middleware=exclude_middleware,
-                stream=stream,
-            )
+            self._add_route_options(path, func, methods or [HTTP_METHOD_GET], options)
             return func
 
         return decorator

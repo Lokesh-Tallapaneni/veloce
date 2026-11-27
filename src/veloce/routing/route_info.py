@@ -59,6 +59,109 @@ class MCPRouteOptions:
         return cls(**options)
 
 
+# Distinguishes "not supplied" - derive the model from the handler's return
+# annotation - from an explicit `response_model=None`, which declares none.
+_INFER_RESPONSE_MODEL: Any = object()
+
+
+@dataclass(frozen=True, slots=True)
+class RouteOptions:
+    """Every per-route option `add_route` and `route` accept, as one record.
+
+    The public signatures stay spelled out so a route's options are documented
+    and completable at the call site; internally they are collected here once
+    and passed as a single object, rather than being re-listed at each hand-off
+    between `route`, `add_route`, `RouteInfo` and the blueprint and router
+    merge paths. A field added here is forwarded by all of them.
+    """
+
+    dependencies: list[Any] | None = None
+    response_model: Any = _INFER_RESPONSE_MODEL
+    tags: list[str] | None = None
+    summary: str | None = None
+    name: str | None = None
+    description: str | None = None
+    deprecated: bool = False
+    response_description: str = MSG_SUCCESSFUL_RESPONSE
+    status_code: int = HTTP_200_OK
+    response_class: Any = None
+    response_model_include: set[str] | None = None
+    response_model_exclude: set[str] | None = None
+    response_model_exclude_unset: bool = False
+    response_model_exclude_defaults: bool = False
+    response_model_by_alias: bool = False
+    response_model_exclude_none: bool = False
+    include_in_schema: bool = True
+    responses: dict[int, dict[str, Any]] | None = None
+    operation_id: str | None = None
+    openapi_extra: dict[str, Any] | None = None
+    defaults: dict[str, Any] | None = None
+    callbacks: dict[str, Any] | None = None
+    strict_slashes: bool | None = None
+    subdomain: str | None = None
+    host: str | None = None
+    expose_as_mcp_tool: bool = False
+    mcp_description: str | None = None
+    expose_as_mcp_resource: bool = False
+    mcp_resource_uri: str | None = None
+    mcp_resource_mime_type: str | None = None
+    mcp_meta: dict[str, Any] | None = None
+    mcp_resource_size: int | None = None
+    mcp_resource_annotations: dict[str, Any] | None = None
+    mcp_scopes: Sequence[str] | None = None
+    mcp_icons: Sequence[Any] | None = None
+    mcp_task_support: bool = False
+    mcp_annotations: dict[str, Any] | None = None
+    exclude_middleware: Sequence[str | type[Any]] | None = None
+    stream: bool = False
+
+    @classmethod
+    def from_info(cls, info: RouteInfo, *, name: str | None = None) -> RouteOptions:
+        """Read the options a registered route was built from back off `info`."""
+        excluded = info.excluded_middleware
+        return cls(
+            dependencies=info.dependencies,
+            response_model=info.response_model,
+            tags=info.tags,
+            summary=info.summary,
+            description=info.description,
+            deprecated=info.deprecated,
+            response_description=info.response_description,
+            status_code=info.status_code,
+            response_class=info.response_class,
+            response_model_include=info.response_model_include,
+            response_model_exclude=info.response_model_exclude,
+            response_model_exclude_unset=info.response_model_exclude_unset,
+            response_model_exclude_defaults=info.response_model_exclude_defaults,
+            response_model_by_alias=info.response_model_by_alias,
+            response_model_exclude_none=info.response_model_exclude_none,
+            include_in_schema=info.include_in_schema,
+            responses=info.responses,
+            operation_id=info.operation_id,
+            openapi_extra=info.openapi_extra,
+            defaults=info.defaults,
+            callbacks=info.callbacks,
+            strict_slashes=info.strict_slashes,
+            subdomain=info.subdomain,
+            host=info.host,
+            expose_as_mcp_tool=info.expose_as_mcp_tool,
+            mcp_description=info.mcp_description,
+            expose_as_mcp_resource=info.expose_as_mcp_resource,
+            mcp_resource_uri=info.mcp_resource_uri,
+            mcp_resource_mime_type=info.mcp_resource_mime_type,
+            mcp_meta=info.mcp_meta,
+            mcp_resource_size=info.mcp_resource_size,
+            mcp_resource_annotations=info.mcp_resource_annotations,
+            mcp_icons=info.mcp_icons,
+            mcp_task_support=info.mcp_task_support,
+            mcp_annotations=info.mcp_annotations,
+            stream=info.stream,
+            name=name if name is not None else info.name,
+            mcp_scopes=list(info.mcp_scopes) if info.mcp_scopes else None,
+            exclude_middleware=[*excluded[0], *excluded[1]] if excluded else None,
+        )
+
+
 class RouteInfo:
     """Stored route metadata."""
 
@@ -111,45 +214,36 @@ class RouteInfo:
         self,
         handler: RouteHandler,
         param_names: list[str],
-        dependencies: list[Any] | None = None,
-        response_model: Any = None,
-        tags: list[str] | None = None,
-        summary: str | None = None,
-        name: str | None = None,
-        path_template: str = "",
-        description: str | None = None,
-        deprecated: bool = False,
-        response_description: str = MSG_SUCCESSFUL_RESPONSE,
-        status_code: int = HTTP_200_OK,
-        response_class: Any = None,
-        response_model_include: set[str] | None = None,
-        response_model_exclude: set[str] | None = None,
-        response_model_exclude_unset: bool = False,
-        response_model_exclude_defaults: bool = False,
-        response_model_by_alias: bool = False,
-        response_model_exclude_none: bool = False,
-        include_in_schema: bool = True,
-        responses: dict[int, dict[str, Any]] | None = None,
-        operation_id: str | None = None,
-        openapi_extra: dict[str, Any] | None = None,
-        defaults: dict[str, Any] | None = None,
-        callbacks: dict[str, Any] | None = None,
-        subdomain: str | None = None,
-        host: str | None = None,
-        expose_as_mcp_tool: bool = False,
-        mcp_description: str | None = None,
-        expose_as_mcp_resource: bool = False,
-        mcp_resource_uri: str | None = None,
-        mcp_resource_mime_type: str | None = None,
-        mcp_meta: dict[str, Any] | None = None,
-        mcp_resource_size: int | None = None,
-        mcp_resource_annotations: dict[str, Any] | None = None,
-        mcp_scopes: Sequence[str] | None = None,
-        mcp_icons: Sequence[Any] | None = None,
-        mcp_task_support: bool = False,
-        mcp_annotations: dict[str, Any] | None = None,
+        path_template: str,
+        options: RouteOptions,
         excluded_middleware: tuple[frozenset[str], tuple[type[Any], ...]] | None = None,
     ) -> None:
+        # Unpacked once so the body below reads as it always has; none of these
+        # are touched after construction.
+        dependencies = options.dependencies
+        response_model = options.response_model
+        tags = options.tags
+        summary = options.summary
+        name = options.name
+        description = options.description
+        deprecated = options.deprecated
+        response_description = options.response_description
+        status_code = options.status_code
+        response_class = options.response_class
+        response_model_include = options.response_model_include
+        response_model_exclude = options.response_model_exclude
+        response_model_exclude_unset = options.response_model_exclude_unset
+        response_model_exclude_defaults = options.response_model_exclude_defaults
+        response_model_by_alias = options.response_model_by_alias
+        response_model_exclude_none = options.response_model_exclude_none
+        include_in_schema = options.include_in_schema
+        responses = options.responses
+        operation_id = options.operation_id
+        openapi_extra = options.openapi_extra
+        defaults = options.defaults
+        callbacks = options.callbacks
+        subdomain = options.subdomain
+        host = options.host
         self.handler = handler
         self.param_names = param_names
         self.dependencies = dependencies or []
@@ -223,25 +317,25 @@ class RouteInfo:
         self.is_fast_eligible = False
         # Opt-in request-body streaming: dispatch does not eagerly buffer, so
         # the synchronous body accessors are unavailable until it is drained.
-        self.stream = False
+        self.stream = options.stream
         # The message contract of a typed `websocket_listener`, else `None`.
         self.ws_messages: Any = None
         # Carried here so `_readd_route` can rebuild the route without losing it.
-        self.strict_slashes: bool | None = None
+        self.strict_slashes: bool | None = options.strict_slashes
         # Every MCP option in one record; `None` when the route declares none.
         self.mcp = MCPRouteOptions.build(
-            expose_as_mcp_tool=expose_as_mcp_tool,
-            mcp_description=mcp_description,
-            expose_as_mcp_resource=expose_as_mcp_resource,
-            mcp_resource_uri=mcp_resource_uri,
-            mcp_resource_mime_type=mcp_resource_mime_type,
-            mcp_meta=mcp_meta,
-            mcp_resource_size=mcp_resource_size,
-            mcp_resource_annotations=mcp_resource_annotations,
-            mcp_scopes=mcp_scopes,
-            mcp_icons=mcp_icons,
-            mcp_task_support=mcp_task_support,
-            mcp_annotations=mcp_annotations,
+            expose_as_mcp_tool=options.expose_as_mcp_tool,
+            mcp_description=options.mcp_description,
+            expose_as_mcp_resource=options.expose_as_mcp_resource,
+            mcp_resource_uri=options.mcp_resource_uri,
+            mcp_resource_mime_type=options.mcp_resource_mime_type,
+            mcp_meta=options.mcp_meta,
+            mcp_resource_size=options.mcp_resource_size,
+            mcp_resource_annotations=options.mcp_resource_annotations,
+            mcp_scopes=options.mcp_scopes,
+            mcp_icons=options.mcp_icons,
+            mcp_task_support=options.mcp_task_support,
+            mcp_annotations=options.mcp_annotations,
         )
         # `None` lets the hot path iterate the app's list directly.
         #: A name matches exactly; a type matches by `isinstance`.
