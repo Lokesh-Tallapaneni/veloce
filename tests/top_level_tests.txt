@@ -3,6 +3,7 @@ test_app_binding_uses_the_public_seam.py
 test_app_metadata_and_prefix_scope.py
 test_app_mixin_host_manifest.py
 test_asyncio_marker_discipline.py
+test_boolean_parameters_are_keyword_only.py
 test_cache_and_session_concurrency.py
 test_changelog_pr_links.py
 test_class_grouping_earns_it.py
