@@ -52,6 +52,7 @@ if TYPE_CHECKING:  # pragma: no cover
     )
     from veloce.dependency import Depends, Security, SecurityScopes
     from veloce.encoders import jsonable_encoder, register_encoder, unregister_encoder
+    from veloce.enums import MCPTransport, SameSite
     from veloce.exceptions import (
         BadGateway,
         BadRequest,
@@ -388,6 +389,8 @@ __all__ = [
     "Cache",
     "InMemoryCache",
     "CacheBackend",
+    "MCPTransport",
+    "SameSite",
     "SessionStoreBackend",
     "RateLimitStoreBackend",
     "JSONProviderBackend",
@@ -581,6 +584,8 @@ _EXPORTS: dict[str, str | tuple[str, str]] = {
     "Blueprint": "veloce.blueprints",
     "Cache": "veloce.cache",
     "CacheBackend": "veloce.protocols",
+    "MCPTransport": "veloce.enums",
+    "SameSite": "veloce.enums",
     "SessionStoreBackend": "veloce.protocols",
     "RateLimitStoreBackend": "veloce.protocols",
     "JSONProviderBackend": "veloce.protocols",

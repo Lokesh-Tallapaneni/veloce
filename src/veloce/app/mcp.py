@@ -9,12 +9,13 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from typing_extensions import Doc
 
 from veloce._internal import _refuse_string_scopes
 from veloce.app._host import AppHost
+from veloce.enums import MCPTransport
 from veloce.http.response import JSONResponse
 from veloce.principal import set_principal
 from veloce.status import HTTP_409_CONFLICT
@@ -318,8 +319,9 @@ class MCPMixin(AppHost):
     def mount_mcp(
         self,
         transport: Annotated[
-            str, Doc("One of `stdio`, `http`, or the deprecated `sse`.")
-        ] = "stdio",
+            MCPTransport | Literal["stdio", "http", "sse"],
+            Doc("One of `stdio`, `http`, or the deprecated `sse`."),
+        ] = MCPTransport.STDIO,
         *,
         path: Annotated[
             str, Doc("Where an HTTP or SSE transport mounts; ignored on stdio.")

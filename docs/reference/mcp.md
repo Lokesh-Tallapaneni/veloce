@@ -7,6 +7,7 @@ description: Veloce API reference - mcp (ai tools).
 The Model Context Protocol server, registries, and transports. Most applications drive MCP through `app.mount_mcp(...)`, `@app.mcp_tool`, and `@app.mcp_prompt`; these names are for callers that assemble or serve the registry themselves.
 
 ::: veloce.MCPContext
+::: veloce.MCPTransport
 ::: veloce.contrib.mcp.MCPSession
 
 ::: veloce.contrib.mcp.MCPServer

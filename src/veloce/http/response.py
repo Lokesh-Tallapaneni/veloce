@@ -70,6 +70,7 @@ from veloce._protocol_constants import (
 )
 from veloce._warnings import VeloceDeprecationWarning
 from veloce.background import coerce_background
+from veloce.enums import SameSite
 from veloce.http.cache_control import CacheControl
 from veloce.http.cookies import dump_cookie, iter_cookies
 from veloce.http.dates import http_date, parse_date
@@ -444,7 +445,7 @@ class Response:
         domain: str | None = None,
         secure: bool = False,
         httponly: bool = False,
-        samesite: str | None = "Lax",
+        samesite: SameSite | str | None = "Lax",
         partitioned: bool = False,
         prefix: Literal["host", "secure"] | None = None,
     ) -> None:
@@ -1308,7 +1309,7 @@ class Response:
         domain: str | None = None,
         secure: bool = False,
         httponly: bool = False,
-        samesite: str | None = None,
+        samesite: SameSite | str | None = None,
         partitioned: bool = False,
         prefix: Literal["host", "secure"] | None = None,
     ) -> None:

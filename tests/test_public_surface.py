@@ -90,6 +90,8 @@ VELOCE_ALL = {
     "SessionStoreBackend",
     "RateLimitStoreBackend",
     "JSONProviderBackend",
+    "MCPTransport",
+    "SameSite",
     "WebSocketError",
     "InMemoryRateLimitBackend",
     "InMemorySessionStore",
