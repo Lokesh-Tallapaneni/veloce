@@ -36,7 +36,7 @@ def _ruff() -> str:
 
 
 def _d401_summaries() -> list[tuple[str, int, str]]:
-    result = subprocess.run(  # noqa: S603 - fixed argv, no shell
+    result = subprocess.run(
         [_ruff(), "check", str(SRC), "--select", "D401", "--output-format", "json"],
         capture_output=True,
         text=True,

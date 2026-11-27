@@ -107,7 +107,7 @@ def test_app_query_list_param_uses_getall():
     app = Veloce(debug=True, openapi_url=None)
 
     @app.get("/items")
-    async def items(tag: list[str] = []):  # noqa: B006
+    async def items(tag: list[str] = []):
         return {"tags": tag}
 
     client = TestClient(app)

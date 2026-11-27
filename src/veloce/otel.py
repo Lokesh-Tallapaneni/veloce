@@ -107,7 +107,7 @@ except ImportError as exc:  # pragma: no cover - exercised only without opentele
     # `Any`, not four suppressions: no checker can follow `_OTEL_IMPORT_ERROR`,
     # and that flag is what gates every use of these names.
     _otel_context = _otel_trace = cast("Any", None)
-    _OtelContext = _W3CPropagator = cast("Any", None)  # type: ignore[misc]
+    _OtelContext = _W3CPropagator = cast("Any", None)  # type: ignore[misc]  # placeholder when the optional dependency is missing
     _OTEL_IMPORT_ERROR = exc
 
 
@@ -379,7 +379,7 @@ def instrument_with_otel(
         return existing
 
     tracer = _otel_trace.get_tracer(__name__, tracer_provider=tracer_provider)
-    SpanKind = _otel_trace.SpanKind
+    span_kind = _otel_trace.SpanKind
     propagator = _W3CPropagator()
 
     def _emit_span(metrics: RequestMetrics) -> None:
@@ -397,14 +397,14 @@ def instrument_with_otel(
             # A malformed `traceparent` raises, which must not abort the span.
             try:
                 parent = propagator.extract(cast("dict[str, str]", carrier))
-            except Exception:
+            except Exception:  # noqa: BLE001 - a malformed carrier starts a fresh trace
                 parent = _OtelContext()
         else:
             parent = _OtelContext()
         span = tracer.start_span(
             span_name,
             context=parent,
-            kind=SpanKind.SERVER,
+            kind=span_kind.SERVER,
             start_time=start_time,
         )
         try:

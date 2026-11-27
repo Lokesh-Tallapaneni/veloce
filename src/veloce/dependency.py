@@ -90,7 +90,7 @@ def _type_adapter(target_type: Any) -> TypeAdapter[Any] | None:
     """
     try:
         return TypeAdapter(target_type)
-    except Exception:
+    except Exception:  # noqa: BLE001 - a type with no adapter is simply not validated
         return None
 
 

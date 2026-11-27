@@ -354,6 +354,10 @@ select = [
     "SIM",  # flake8-simplify
     "ASYNC",
     "TID251",  # banned APIs, named under `flake8-tidy-imports.banned-api`
+    "N",       # PEP 8 naming
+    "PGH004",  # blanket `noqa` without a rule code
+    "RUF100",  # unused `noqa` - keeps every suppression load-bearing
+    "BLE",     # blind `except`; each deliberate one carries its reason inline
     # PEP 257 docstring rules. The style guide names ruff as the write-time gate
     # for its PEP 257 clause; before this, `select` carried no `D` family at all,
     # so that clause was prose nothing executed. The subset below is every `D`
@@ -390,6 +394,9 @@ ignore = [
     "D415",  # first line should end with punctuation - as D400
     "D203",  # incompatible with D211, which is the convention here
     "D213",  # incompatible with D212, which is the convention here
+    # Public exception names are part of the documented API and are kept as
+    # shipped; a rename would break every `except` clause that names them.
+    "N818",  # exception name without an `Error` suffix
 ]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
@@ -417,8 +424,12 @@ ignore = [
 # docstring and the test name, not in a per-function docstring.
 # TID251: the JSON ban keeps the *framework* on one backend. A test has to
 # reach a library directly to check the seam against something independent.
-"tests/**" = ["B", "D", "TID251"]  # bugbear false positives in test patterns; see above
+"tests/**" = ["B", "BLE", "D", "TID251", "N801", "N802", "N817"]  # bugbear false positives in test patterns; see above
 "src/veloce/__init__.py" = ["F401"]  # re-exports
+# `TemplateResponse` is the documented public method name.
+"src/veloce/contrib/templating.py" = ["N802"]
+# The OAuth2 flow parameters are named after the OpenAPI flow object fields.
+"src/veloce/security/oauth2.py" = ["N803"]
 "benchmarks/**" = ["D"]
 "example_app.py" = ["D"]
 "bench/**" = ["D"]

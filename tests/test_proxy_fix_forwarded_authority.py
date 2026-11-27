@@ -30,7 +30,7 @@ def _client(**kwargs) -> TestClient:
     app.add_middleware(ProxyFix(**kwargs))
 
     @app.get("/who")
-    async def who(request):  # noqa: ANN001, ANN202
+    async def who(request):
         return {
             "client": request.client.host if request.client else None,
             "scheme": request.scheme,

@@ -66,7 +66,7 @@ def _in_own_loop(app: Veloce, path: str = "/health") -> tuple[int | None, str | 
     loop = asyncio.new_event_loop()
     try:
         return loop.run_until_complete(_request(app, path)), None
-    except Exception as exc:  # noqa: BLE001 - the failure itself is the result
+    except Exception as exc:
         return None, f"{type(exc).__name__}: {exc}"
     finally:
         loop.close()

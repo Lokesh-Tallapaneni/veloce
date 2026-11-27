@@ -100,7 +100,7 @@ async def test_shutdown_runs_all_teardowns_and_groups_failures():
         raise KeyError("b")
 
     await app._run_lifecycle("startup")
-    with pytest.raises(BaseException) as excinfo:  # noqa: PT011
+    with pytest.raises(BaseException) as excinfo:
         await app._run_lifecycle("shutdown")
 
     # Every teardown ran even though two raised.
@@ -395,11 +395,11 @@ def test_draining_serves_inflight_request_and_declines_pipelined_followup():
             app = Veloce(openapi_url=None)
 
             @app.get("/a")
-            async def a(request):  # noqa: ANN001, ANN202
+            async def a(request):
                 return {"who": "A"}
 
             @app.get("/b")
-            async def b(request):  # noqa: ANN001, ANN202
+            async def b(request):
                 return {"who": "B"}
 
             proto = HttpProtocol(app, loop)

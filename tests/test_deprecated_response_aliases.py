@@ -92,9 +92,9 @@ def test_a_non_deprecated_lazy_export_does_not_warn(fresh_veloce):
 
 def test_an_unknown_attribute_still_raises_attribute_error():
     with pytest.raises(AttributeError):
-        veloce.NoSuchName  # noqa: B018
+        veloce.NoSuchName
     with pytest.raises(AttributeError):
-        veloce.http.NoSuchName  # noqa: B018
+        veloce.http.NoSuchName
 
 
 # ── the behaviour the deprecation exists to retire ───────────────────
@@ -114,11 +114,11 @@ def test_the_deprecated_aliases_still_serve_responses():
     app = Veloce()
 
     @app.get("/orjson", response_class=ORJSONResponse)
-    async def orjson_route(request):  # noqa: ANN001, ANN202
+    async def orjson_route(request):
         return {"v": 1}
 
     @app.get("/ujson", response_class=UJSONResponse)
-    async def ujson_route(request):  # noqa: ANN001, ANN202
+    async def ujson_route(request):
         return {"v": 1}
 
     with TestClient(app) as client:
@@ -140,11 +140,11 @@ def test_ujson_response_drops_the_provider_and_orjson_response_does_not():
     app.json_provider_class = _Envelope
 
     @app.get("/alias", response_class=ORJSONResponse)
-    async def alias(request):  # noqa: ANN001, ANN202
+    async def alias(request):
         return {"v": 1}
 
     @app.get("/bound", response_class=UJSONResponse)
-    async def bound(request):  # noqa: ANN001, ANN202
+    async def bound(request):
         return {"v": 1}
 
     with TestClient(app) as client:

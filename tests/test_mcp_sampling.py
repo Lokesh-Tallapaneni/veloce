@@ -67,7 +67,7 @@ class _Client:
             self.requests.append(message)
             try:
                 reply = self._responder(message)
-            except BaseException as err:  # noqa: BLE001 - re-raised from `run`
+            except BaseException as err:
                 if self._responder_failure is None:
                     self._responder_failure = err
                 # Keep the protocol moving so the call still settles and `run`

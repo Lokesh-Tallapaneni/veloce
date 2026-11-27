@@ -191,7 +191,7 @@ class _MultipartCollector:
         self.headers = {}
         self.header_field = bytearray()
         self.header_value = bytearray()
-        self.spool = tempfile.SpooledTemporaryFile(  # noqa: SIM115
+        self.spool = tempfile.SpooledTemporaryFile(  # noqa: SIM115 - closed by the part's cleanup
             max_size=MULTIPART_SPOOL_MAX_SIZE
         )
         self.part_size = 0

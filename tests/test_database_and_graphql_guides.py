@@ -333,7 +333,7 @@ def test_the_page_runs_cumulatively(page):
                 "declare in its `pytest.importorskip` header - add it there, so the "
                 "skip is visible and total rather than mid-page"
             )
-        except Exception as exc:  # noqa: BLE001 - the point is to report it
+        except Exception as exc:
             pytest.fail(f"{page.name}:{line_no} raised {type(exc).__name__}: {exc}")
 
 

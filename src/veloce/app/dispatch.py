@@ -438,7 +438,7 @@ class DispatchMixin(AppHost):
         `cp.http_around` is `None` when none are registered, in which case the
         caller does not reach here - so the slot is read with no `None` guard.
         """
-        funcs: tuple[Callable[..., Any], ...] = cp.http_around  # type: ignore[assignment]
+        funcs: tuple[Callable[..., Any], ...] = cp.http_around  # type: ignore[assignment]  # narrowed by the is_bare check above
 
         def _make_next(level: int) -> Callable[..., Any]:
             _called = False
@@ -649,8 +649,8 @@ class DispatchMixin(AppHost):
         if match is not None and match.route_info.excluded_middleware is not None:
             # `None` would mean no exclusions, which the caller ruled out.
             filtered = self._route_middleware_chains(match.route_info)
-            request._state[_MW_RESPONSE_CHAIN_KEY] = filtered[1]  # type: ignore[index]
-            for mw in filtered[0]:  # type: ignore[index]
+            request._state[_MW_RESPONSE_CHAIN_KEY] = filtered[1]  # type: ignore[index]  # filtered is a pair once the chain is set
+            for mw in filtered[0]:  # type: ignore[index]  # filtered is a pair once the chain is set
                 early = await mw.process_request(request)
                 if early is not None:
                     return await self._run_response_middleware(request, early), True

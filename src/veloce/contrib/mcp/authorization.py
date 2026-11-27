@@ -754,7 +754,7 @@ async def _handle_register(server: MCPAuthorizationServer, request: Request) -> 
     """Register a client on the spot (RFC 7591), so no credential is pre-arranged."""
     try:
         body = await request.json()
-    except Exception:
+    except Exception:  # noqa: BLE001 - an undecodable body is treated as absent
         body = None
     if not isinstance(body, dict):
         return _error_response("invalid_client_metadata", "the body must be a JSON object")

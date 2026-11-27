@@ -116,7 +116,7 @@ def _accumulating_app() -> Veloce:
     app = Veloce(title="probe", openapi_url=None)
 
     @app.get("/acc", expose_as_mcp_tool=True, mcp_description="Accumulate a tag")
-    async def accumulate(tags: list = []):  # noqa: B006 - the defect under test
+    async def accumulate(tags: list = []):
         tags.append("x")
         return {"len": len(tags)}
 

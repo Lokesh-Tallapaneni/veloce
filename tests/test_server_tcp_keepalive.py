@@ -148,7 +148,7 @@ def test_native_server_serves_query_method_with_body():
         app = Veloce(openapi_url=None)
 
         @app.query("/search")
-        async def search(request):  # noqa: ANN001, ANN202
+        async def search(request):
             payload = await request.json()
             return {"term": payload["term"]}
 

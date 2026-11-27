@@ -404,7 +404,7 @@ class StaticFiles:
 
             # ── Resolve the target, traversal-safe ────────────────────
             # `safe_join` rejects `..`, absolute components and NUL bytes.
-            file_path = safe_join(self.directory, relative)  # noqa: ASYNC240
+            file_path = safe_join(self.directory, relative)
             if file_path is None:
                 return _forbidden()
 
@@ -627,7 +627,7 @@ class StaticFiles:
         """
 
         def _open() -> Any:
-            return open(path, "rb")  # noqa: SIM115 - closed in finally
+            return open(path, "rb")
 
         chunk_size = self.STREAM_CHUNK_SIZE
         remaining = length

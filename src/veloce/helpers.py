@@ -637,7 +637,7 @@ async def send_from_directory_async(
     Traversal-safe via `safe_join`.
     """
     # `safe_join` is pure string arithmetic; the file read happens below.
-    resolved = safe_join(directory, filename)  # noqa: ASYNC240
+    resolved = safe_join(directory, filename)
     if resolved is None:
         abort(HTTP_403_FORBIDDEN, MSG_ACCESS_DENIED)
 

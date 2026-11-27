@@ -106,7 +106,7 @@ class ResourceRegistry(Registry[MCPResource]):
         if static is not None and not static.is_template:
             return static, {}
         for resource in self._ranked_templates:
-            matched = resource.pattern.fullmatch(uri)  # type: ignore[union-attr]
+            matched = resource.pattern.fullmatch(uri)  # type: ignore[union-attr]  # pattern is set for template resources
             if matched is not None:
                 return resource, _decode_values(matched.groupdict())
         return None

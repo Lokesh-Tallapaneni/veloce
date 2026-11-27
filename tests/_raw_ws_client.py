@@ -99,9 +99,7 @@ class RawWSClient:
         """Assert the reply was a 101 carrying the accept value for our key."""
         assert "101" in self.status_line, self.status_line
         expected = base64.b64encode(
-            hashlib.sha1(  # noqa: S324
-                (self.handshake_key + RFC6455_GUID).encode()
-            ).digest()
+            hashlib.sha1((self.handshake_key + RFC6455_GUID).encode()).digest()
         ).decode()
         assert self.resp_headers.get("sec-websocket-accept") == expected
 

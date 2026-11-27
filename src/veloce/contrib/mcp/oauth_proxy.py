@@ -652,7 +652,7 @@ async def _handle_register(proxy: UpstreamOAuthProxy, request: Request) -> Respo
     """
     try:
         body = await request.json()
-    except Exception:
+    except Exception:  # noqa: BLE001 - an undecodable body is treated as absent
         body = None
     if not isinstance(body, dict):
         return _error_response("invalid_client_metadata", "the body must be a JSON object")

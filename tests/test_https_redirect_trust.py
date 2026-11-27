@@ -52,7 +52,7 @@ def test_a_refused_hop_is_consistent_with_the_request_scheme():
     app.add_middleware(ProxyFix(x_proto=2))
 
     @app.get("/scheme")
-    async def scheme(request):  # noqa: ANN001, ANN202
+    async def scheme(request):
         return {"scheme": request.scheme}
 
     with TestClient(app) as client:

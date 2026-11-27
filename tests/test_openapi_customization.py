@@ -325,7 +325,7 @@ def test_a_declared_default_is_published_however_it_was_written():
         warnings.simplefilter("ignore")
 
         @app.get("/bare")
-        async def bare(tags: list[str] = ["x"]) -> dict:  # noqa: B006
+        async def bare(tags: list[str] = ["x"]) -> dict:
             return {}
 
         @app.get("/marker")

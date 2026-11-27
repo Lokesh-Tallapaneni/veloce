@@ -328,7 +328,7 @@ def _model_field_shape(model: Any) -> tuple[dict[str, Any], dict[str, Any]]:
         return hints, defaults
     try:
         hints = dict(get_type_hints(model))
-    except Exception:
+    except Exception:  # noqa: BLE001 - unresolvable model hints yield an empty contract
         return {}, {}
     for name in hints:
         if hasattr(model, name):

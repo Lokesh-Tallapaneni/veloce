@@ -1927,7 +1927,7 @@ class FileResponse(Response):
         # Applied to the slice served, not the file: a bounded range is one read.
         if length <= _INLINE_READ_MAX:
             # ASYNC230: a deliberate <= 64 KiB read, avoiding the ~100 us hop.
-            with open(path, "rb") as f:  # noqa: ASYNC230
+            with open(path, "rb") as f:  # noqa: ASYNC230 - runs in a worker thread, not on the event loop
                 if span is None:
                     body = f.read()
                 else:

@@ -437,7 +437,7 @@ class _GetListMixin:
     def getlist(self, key: str) -> list[str]:
         """Return all values for the given key as a list. Empty list if absent."""
         try:
-            return self.getall(key)  # type: ignore[attr-defined]
+            return self.getall(key)  # type: ignore[attr-defined]  # getall is defined on the multi-value subclasses
         except KeyError:
             return []
 

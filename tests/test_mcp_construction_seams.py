@@ -52,7 +52,7 @@ def test_every_slot_is_set_before_the_catalogue_is_built():
 
     real_init = toolsearch.ToolSearch.__init__
 
-    def spy(self, server):  # noqa: ANN001 - a test double
+    def spy(self, server):
         captured.append([name for name in MCPServer.__slots__ if not hasattr(server, name)])
         real_init(self, server)
 

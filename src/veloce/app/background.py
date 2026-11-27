@@ -203,7 +203,7 @@ class BackgroundTasksMixin(AppHost):
                 awaitable = coro_factory()
             except asyncio.CancelledError:
                 raise
-            except BaseException as exc:  # noqa: BLE001 - logged and restarted
+            except BaseException as exc:
                 self.logger.error("Supervised task %r crashed; will restart", name, exc_info=exc)
             else:
                 # A non-awaitable RETURN is a programmer error, not a crash, so
@@ -219,7 +219,7 @@ class BackgroundTasksMixin(AppHost):
                 except asyncio.CancelledError:
                     # Propagated, so the task drains rather than restarting.
                     raise
-                except BaseException as exc:  # noqa: BLE001 - logged and restarted
+                except BaseException as exc:
                     self.logger.error(
                         "Supervised task %r crashed; will restart", name, exc_info=exc
                     )

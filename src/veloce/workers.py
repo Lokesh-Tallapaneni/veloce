@@ -127,10 +127,10 @@ def _warn_if_chain_expired(certfile: str) -> None:
     and never fatal: a certificate may be renewed under a running server.
     """
     try:
-        decoded = ssl._ssl._test_decode_cert(certfile)  # type: ignore[attr-defined]
+        decoded = ssl._ssl._test_decode_cert(certfile)  # type: ignore[attr-defined]  # private stdlib helper; the call is guarded below
         not_after = decoded.get("notAfter")
         not_before = decoded.get("notBefore")
-    except Exception:
+    except Exception:  # noqa: BLE001 - an unreadable certificate skips the expiry check
         return
     now = time.time()
     for label, value, expired in (

@@ -730,7 +730,7 @@ class AsgiMixin(AppHost):
                 try:
                     await self._run_lifecycle(LIFECYCLE_STARTUP)
                     await send({"type": ASGI_EVENT_LIFESPAN_STARTUP_COMPLETE})
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - startup failure is reported to the server as a lifespan event
                     await send({"type": ASGI_EVENT_LIFESPAN_STARTUP_FAILED, "message": str(exc)})
                     return
             elif message["type"] == ASGI_EVENT_LIFESPAN_SHUTDOWN:
@@ -738,7 +738,7 @@ class AsgiMixin(AppHost):
                 try:
                     await self._run_lifecycle(LIFECYCLE_SHUTDOWN)
                     await send({"type": ASGI_EVENT_LIFESPAN_SHUTDOWN_COMPLETE})
-                except BaseException:
+                except BaseException:  # noqa: BLE001 - shutdown failure is reported to the server as a lifespan event
                     await send(
                         {
                             "type": ASGI_EVENT_LIFESPAN_SHUTDOWN_FAILED,

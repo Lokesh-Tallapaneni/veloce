@@ -45,7 +45,7 @@ def _app(template: str, annotation: object, name: str = "item_id", **kwargs: obj
     else:
         source = f"async def handler({name}: ann):\n    return {{'v': {name}}}"
     namespace["ann"] = annotation
-    exec(compile(source, "<handler>", "exec"), namespace)  # noqa: S102
+    exec(compile(source, "<handler>", "exec"), namespace)
     app.add_route(template, namespace["handler"], methods=["GET"])
     return app
 

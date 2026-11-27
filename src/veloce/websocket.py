@@ -61,9 +61,7 @@ def compute_accept(key: str) -> str:
     SHA-1 is mandated by the spec for the handshake fingerprint; it is not used
     here as a security primitive.
     """
-    return base64.b64encode(
-        hashlib.sha1((key + _WS_ACCEPT_GUID).encode()).digest()  # noqa: S324
-    ).decode()
+    return base64.b64encode(hashlib.sha1((key + _WS_ACCEPT_GUID).encode()).digest()).decode()
 
 
 def _validate_positive_seconds(value: float | None, name: str) -> None:
@@ -459,7 +457,7 @@ class WebSocket:
         for k, v in scope.get("headers", []):
             headers[k.decode("latin-1").lower()] = v.decode("latin-1")
         ws = cls.__new__(cls)
-        ws.transport = None  # type: ignore[assignment]
+        ws.transport = None  # type: ignore[assignment]  # transport is detached once the connection closes
         ws.headers = headers
         ws._idle_timeout = idle_timeout
         ws._init_common()

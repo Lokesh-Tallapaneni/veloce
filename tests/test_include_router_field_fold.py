@@ -142,7 +142,7 @@ def test_merging_does_not_repeat_the_childs_registration_warnings():
         router = APIRouter()
 
         @router.get("/items")
-        async def items(tenant_id: Bounded, opts: list = []):  # noqa: B006
+        async def items(tenant_id: Bounded, opts: list = []):
             return {"tenant": tenant_id, "opts": opts}
 
         def mutable() -> int:

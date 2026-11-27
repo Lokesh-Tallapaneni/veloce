@@ -225,7 +225,7 @@ def test_plan_recognises_optional_upload_file():
 
 
 def test_plan_recognises_query_list():
-    async def h(tags: list[str] = []):  # noqa: B006
+    async def h(tags: list[str] = []):
         return tags
 
     slot = build_plan(h).slots[0]

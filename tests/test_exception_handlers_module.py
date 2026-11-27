@@ -108,6 +108,7 @@ async def test_existing_validation_error_handler_still_catches():
 
 def test_request_validation_error_in_exports():
     """`from veloce import RequestValidationError` works."""
-    from veloce import RequestValidationError as RVE_top  # noqa: N814
+    # Imported inside the body on purpose: the test asserts the top-level re-export.
+    from veloce import RequestValidationError as RVE_top
 
     assert RVE_top is RequestValidationError

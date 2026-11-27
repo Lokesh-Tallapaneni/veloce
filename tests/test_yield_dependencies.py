@@ -224,7 +224,7 @@ async def test_yield_dep_teardown_exception_propagates_when_configured():
     async def handler(s: str = Depends(db)):
         return {"ok": True}
 
-    with pytest.raises(Exception):  # noqa: B017 - 3.11 raises an ExceptionGroup
+    with pytest.raises(Exception):
         await app.handle_request(_req("/x"))
 
 
@@ -248,7 +248,7 @@ async def test_teardown_request_runs_even_when_yield_teardown_propagates():
     async def handler(s: str = Depends(db)):
         return {"ok": True}
 
-    with pytest.raises(Exception):  # noqa: B017 - the propagated teardown failure
+    with pytest.raises(Exception):
         await app.handle_request(_req("/x"))
     # The hook ran despite the teardown failure that then propagated.
     assert events == ["teardown_request"]

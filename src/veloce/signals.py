@@ -62,7 +62,7 @@ def _matches(subscribed: Any, sent: Any) -> bool:
     # Equality so a primitive sender ("login", 1) works; `__eq__` may raise.
     try:
         return bool(subscribed == sent)
-    except Exception:
+    except Exception:  # noqa: BLE001 - an incomparable receiver is not a match
         return False
 
 
@@ -172,7 +172,7 @@ class Signal:
                 if sub_sender == sender:
                     del self._subs[i]
                     return
-            except Exception:
+            except Exception:  # noqa: BLE001 - an incomparable receiver is skipped
                 continue
 
     def send(self, sender: Any = None, **kwargs: Any) -> SignalResult:
@@ -200,7 +200,7 @@ class Signal:
         for target in self._iter_live_targets(sender):
             try:
                 value: Any = target(sender, **kwargs)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - a failing receiver must not stop the others
                 self._log_receiver_raised(target, exc)
                 value = exc
             else:
@@ -282,7 +282,7 @@ class Signal:
         for target, is_async in self._iter_live_pairs(sender):
             try:
                 value: Any = target(sender, **kwargs)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - a failing receiver must not stop the others
                 self._log_receiver_raised(target, exc)
                 targets.append((target, exc))
                 continue

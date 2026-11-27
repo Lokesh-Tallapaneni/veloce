@@ -43,7 +43,7 @@ def _safe_str(value: object) -> str:
     """
     try:
         result = str(value)
-    except Exception:
+    except Exception:  # noqa: BLE001 - a value whose __str__ raises is rendered as a placeholder
         return _STR_FAILED
     return result
 

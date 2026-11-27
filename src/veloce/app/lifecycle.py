@@ -47,7 +47,7 @@ def _collect_chained(exc: BaseException) -> list[BaseException]:
         seen.add(id(current))
         if _BaseExceptionGroup is not None and isinstance(current, _BaseExceptionGroup):
             # Reversed, because the whole list is; a group's members are siblings.
-            out.extend(reversed(current.exceptions))  # type: ignore[attr-defined]
+            out.extend(reversed(current.exceptions))  # type: ignore[attr-defined]  # ExceptionGroup exists only on 3.11+
         else:
             out.append(current)
         current = current.__context__
@@ -92,7 +92,7 @@ def _attach_note(error: BaseException, note: str) -> None:
     if not isinstance(notes, list):
         notes = []
         with contextlib.suppress(AttributeError):
-            error.__notes__ = notes  # type: ignore[attr-defined]
+            error.__notes__ = notes  # type: ignore[attr-defined]  # __notes__ exists only on 3.11+
     notes.append(note)
 
 

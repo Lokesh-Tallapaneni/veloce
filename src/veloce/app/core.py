@@ -551,7 +551,7 @@ class Veloce(
         self._invalidate_route_caches()
 
     # Introspection recovers the documented signature the `*args` forward hides.
-    add_route.__signature__ = inspect.signature(Router.add_route)  # type: ignore[attr-defined]
+    add_route.__signature__ = inspect.signature(Router.add_route)  # type: ignore[attr-defined]  # function attributes are not declared on callables
 
     def include_router(
         self,

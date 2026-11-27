@@ -811,7 +811,7 @@ class HttpProtocol(asyncio.Protocol):
                 body=b"",
                 transport=transport,
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 - a refused upgrade falls back to bare framing
             # A refusal never goes unsent: the caller falls back to bare framing.
             return None
 

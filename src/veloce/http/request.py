@@ -209,7 +209,7 @@ class Request:
             # Empty list - cheap to materialize, no point deferring.
             self._headers = Headers()
         else:
-            self._headers = Headers(headers)  # type: ignore[arg-type]
+            self._headers = Headers(headers)  # type: ignore[arg-type]  # headers is normalised to the accepted shapes upstream
         # Either `body` already holds every byte, or `body_source` is fed by the
         # protocol; `_body` caches the assembled bytes for the sync accessors.
         self._body_source: Any = body_source
@@ -1311,7 +1311,7 @@ class Request:
         detail = f"Invalid JSON body: {error}" if verbose else "Invalid JSON body"
         exc = BadRequest(detail)
         # Informational only, and never read by the error renderer.
-        setattr(exc, "debug_detail", str(error))  # noqa: B010
+        setattr(exc, "debug_detail", str(error))  # noqa: B010 - a dynamic attribute name keeps the exception slot-free
         raise exc from error
 
     # ── Async body, form, and streaming ────────────────────

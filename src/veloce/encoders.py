@@ -119,7 +119,7 @@ def _resolve_encoder(cls: type[Any]) -> Callable[[Any], Any] | None:
     """
     cached = _RESOLVED_ENCODERS.get(cls, _MISSING)
     if cached is not _MISSING:
-        return cached  # type: ignore[return-value]
+        return cached  # type: ignore[return-value]  # the cache stores the encoder's own return type
     resolved: Callable[[Any], Any] | None = None
     # The registry must win for the same base, so it is probed first.
     registry = _REGISTERED_ENCODERS
@@ -324,7 +324,7 @@ def jsonable_encoder(
     if resolved_encoder is _MISSING:
         resolved_encoder = _resolve_encoder(type(obj))
     if resolved_encoder is not None:
-        return resolved_encoder(obj)  # type: ignore[operator]
+        return resolved_encoder(obj)  # type: ignore[operator]  # resolved_encoder is callable by construction
 
     # Only containers can cycle, so the seen-set is allocated lazily.
     if _seen is None:

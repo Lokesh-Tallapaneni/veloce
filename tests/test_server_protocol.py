@@ -214,12 +214,12 @@ def test_pipelined_responses_preserve_request_order():
         app = Veloce(openapi_url=None)
 
         @app.get("/slow")
-        async def slow(request):  # noqa: ANN001, ANN202
+        async def slow(request):
             await asyncio.sleep(0.05)
             return {"who": "A"}
 
         @app.get("/fast")
-        async def fast(request):  # noqa: ANN001, ANN202
+        async def fast(request):
             return {"who": "B"}
 
         proto = HttpProtocol(app, loop)
@@ -259,12 +259,12 @@ def test_chunked_trailers_do_not_leak_into_next_pipelined_request():
         app = Veloce(openapi_url=None)
 
         @app.post("/upload")
-        async def upload(request):  # noqa: ANN001, ANN202
+        async def upload(request):
             body = await request.body()
             return {"got": len(body)}
 
         @app.get("/next")
-        async def next_route(request):  # noqa: ANN001, ANN202
+        async def next_route(request):
             return {"trailer": request.headers.get("x-trailer")}
 
         proto = HttpProtocol(app, loop)
@@ -301,12 +301,12 @@ def test_split_packet_pipelined_followup_dispatches_with_real_url():
         gate = asyncio.Event()
 
         @app.get("/slow")
-        async def slow(request):  # noqa: ANN001, ANN202
+        async def slow(request):
             await gate.wait()
             return {"who": "A"}
 
         @app.get("/fast")
-        async def fast(request):  # noqa: ANN001, ANN202
+        async def fast(request):
             return {"who": "B"}
 
         proto = HttpProtocol(app, loop)
@@ -360,12 +360,12 @@ def test_split_packet_followup_does_not_double_arm_timers():
         gate = asyncio.Event()
 
         @app.get("/slow")
-        async def slow(request):  # noqa: ANN001, ANN202
+        async def slow(request):
             await gate.wait()
             return {"who": "A"}
 
         @app.get("/fast")
-        async def fast(request):  # noqa: ANN001, ANN202
+        async def fast(request):
             return {"who": "B"}
 
         proto = HttpProtocol(app, loop)
@@ -406,7 +406,7 @@ def test_single_request_dispatches_and_keeps_alive():
         app = Veloce(openapi_url=None)
 
         @app.get("/")
-        async def index(request):  # noqa: ANN001, ANN202
+        async def index(request):
             return {"ok": True}
 
         proto = HttpProtocol(app, loop)
@@ -434,7 +434,7 @@ def test_head_response_omits_body_keeps_content_length():
         app = Veloce(openapi_url=None)
 
         @app.get("/hello")
-        async def hello(request):  # noqa: ANN001, ANN202
+        async def hello(request):
             return "hello-body"
 
         proto = HttpProtocol(app, loop)
@@ -463,11 +463,11 @@ def test_keep_alive_serves_second_sequential_request():
         app = Veloce(openapi_url=None)
 
         @app.get("/a")
-        async def a(request):  # noqa: ANN001, ANN202
+        async def a(request):
             return {"r": "a"}
 
         @app.get("/b")
-        async def b(request):  # noqa: ANN001, ANN202
+        async def b(request):
             return {"r": "b"}
 
         proto = HttpProtocol(app, loop)
@@ -498,7 +498,7 @@ def test_connection_close_header_closes_after_response():
         app = Veloce(openapi_url=None)
 
         @app.get("/one")
-        async def one(request):  # noqa: ANN001, ANN202
+        async def one(request):
             return {"n": 1}
 
         proto = HttpProtocol(app, loop)
@@ -524,12 +524,12 @@ def test_connection_lost_mid_pipeline_cancels_server_loop():
         app = Veloce(openapi_url=None)
 
         @app.get("/slow")
-        async def slow(request):  # noqa: ANN001, ANN202
+        async def slow(request):
             await asyncio.sleep(1.0)
             return {"who": "A"}
 
         @app.get("/fast")
-        async def fast(request):  # noqa: ANN001, ANN202
+        async def fast(request):
             return {"who": "B"}
 
         proto = HttpProtocol(app, loop)
@@ -574,7 +574,7 @@ def test_streaming_handler_receives_chunks_as_fed():
         first_chunk = asyncio.Event()
 
         @app.post("/stream", stream=True)
-        async def stream(request):  # noqa: ANN001, ANN202
+        async def stream(request):
             async for chunk in request.stream():
                 seen.append(chunk)
                 if len(seen) == 1:
@@ -618,12 +618,12 @@ def test_body_ignoring_handler_does_not_wedge_next_pipelined_request():
         app = Veloce(openapi_url=None)
 
         @app.post("/ignore")
-        async def ignore(request):  # noqa: ANN001, ANN202
+        async def ignore(request):
             # Deliberately never reads the body.
             return {"r": "A"}
 
         @app.get("/next")
-        async def nxt(request):  # noqa: ANN001, ANN202
+        async def nxt(request):
             return {"r": "B"}
 
         proto = HttpProtocol(app, loop)
@@ -663,12 +663,12 @@ def test_body_ignoring_handler_blocks_in_drain_until_eof_then_serves_next_fifo()
         app = Veloce(openapi_url=None)
 
         @app.post("/ignore")
-        async def ignore(request):  # noqa: ANN001, ANN202
+        async def ignore(request):
             # Returns immediately without reading the body — drain must wait.
             return {"r": "A"}
 
         @app.get("/next")
-        async def nxt(request):  # noqa: ANN001, ANN202
+        async def nxt(request):
             return {"r": "B"}
 
         proto = HttpProtocol(app, loop)
@@ -722,7 +722,7 @@ def test_connection_lost_unblocks_a_drain_awaiting_eof():
         app = Veloce(openapi_url=None)
 
         @app.post("/ignore")
-        async def ignore(request):  # noqa: ANN001, ANN202
+        async def ignore(request):
             return {"r": "A"}
 
         proto = HttpProtocol(app, loop)
@@ -763,7 +763,7 @@ def test_oversized_streamed_body_rejected_413_mid_stream():
         app.config["MAX_CONTENT_LENGTH"] = 8
 
         @app.post("/u")
-        async def upload(request):  # noqa: ANN001, ANN202
+        async def upload(request):
             body = await request.body()
             return {"len": len(body)}
 
@@ -797,7 +797,7 @@ def test_declared_content_length_over_limit_rejected_413_before_body():
         app.config["MAX_CONTENT_LENGTH"] = 8
 
         @app.post("/u")
-        async def upload(request):  # noqa: ANN001, ANN202
+        async def upload(request):
             return {"ok": True}
 
         proto = HttpProtocol(app, loop)
@@ -826,7 +826,7 @@ def test_slowloris_timer_arms_across_body_window():
         body_started = asyncio.Event()
 
         @app.post("/u")
-        async def upload(request):  # noqa: ANN001, ANN202
+        async def upload(request):
             body_started.set()
             # Block reading the body — the client stalls mid-upload.
             return {"len": len(await request.body())}
@@ -878,7 +878,7 @@ def test_slow_consumer_triggers_pause_then_resume_across_reads():
         release = asyncio.Event()
 
         @app.post("/stream", stream=True)
-        async def stream(request):  # noqa: ANN001, ANN202
+        async def stream(request):
             # Hold off consuming until the producer has fed past the bound, so
             # the buffer fills and pause_reading is forced to fire.
             await release.wait()
@@ -948,7 +948,7 @@ def test_single_segment_burst_exceeds_chunk_bound_but_byte_cap_holds():
         release = asyncio.Event()
 
         @app.post("/stream", stream=True)
-        async def stream(request):  # noqa: ANN001, ANN202
+        async def stream(request):
             await release.wait()
             async for _chunk in request.stream():
                 pass
@@ -1006,12 +1006,12 @@ def test_drain_resumes_then_second_burst_repauses_still_reaches_eof():
         gate = asyncio.Event()
 
         @app.post("/ignore", stream=True)
-        async def ignore(request):  # noqa: ANN001, ANN202
+        async def ignore(request):
             await gate.wait()
             return {"r": "A"}
 
         @app.get("/next")
-        async def nxt(request):  # noqa: ANN001, ANN202
+        async def nxt(request):
             return {"r": "B"}
 
         proto = HttpProtocol(app, loop)
@@ -1090,12 +1090,12 @@ def test_paused_connection_with_body_ignoring_handler_resumes_and_drains():
         gate = asyncio.Event()
 
         @app.post("/ignore")
-        async def ignore(request):  # noqa: ANN001, ANN202
+        async def ignore(request):
             await gate.wait()
             return {"r": "A"}
 
         @app.get("/next")
-        async def nxt(request):  # noqa: ANN001, ANN202
+        async def nxt(request):
             return {"r": "B"}
 
         proto = HttpProtocol(app, loop)
@@ -1162,7 +1162,7 @@ def test_connection_lost_while_paused_unblocks_drain():
         gate = asyncio.Event()
 
         @app.post("/ignore")
-        async def ignore(request):  # noqa: ANN001, ANN202
+        async def ignore(request):
             await gate.wait()
             return {"r": "A"}
 
@@ -1214,7 +1214,7 @@ def test_streaming_handler_timeout_does_not_race_drain_with_live_consumer():
         handler_finished = asyncio.Event()
 
         @app.post("/stream", stream=True)
-        async def stream(request):  # noqa: ANN001, ANN202
+        async def stream(request):
             try:
                 async for chunk in request.stream():
                     seen.append(chunk)
@@ -1361,12 +1361,12 @@ def test_serve_loop_stops_at_boundary_when_keep_serving_false():
         served: list[str] = []
 
         @app.get("/a")
-        async def a(request):  # noqa: ANN001, ANN202
+        async def a(request):
             served.append("a")
             return {"r": "a"}
 
         @app.get("/b")
-        async def b(request):  # noqa: ANN001, ANN202
+        async def b(request):
             served.append("b")
             return {"r": "b"}
 
@@ -1404,11 +1404,11 @@ def test_serve_loop_continues_when_keep_serving_true():
         app = Veloce(openapi_url=None)
 
         @app.get("/a")
-        async def a(request):  # noqa: ANN001, ANN202
+        async def a(request):
             return {"r": "a"}
 
         @app.get("/b")
-        async def b(request):  # noqa: ANN001, ANN202
+        async def b(request):
             return {"r": "b"}
 
         HttpProtocol.should_keep_serving = lambda: True
@@ -1480,7 +1480,7 @@ def test_expect_100_continue_emits_interim_before_response():
         app = Veloce(openapi_url=None)
 
         @app.post("/u")
-        async def upload(request):  # noqa: ANN001, ANN202
+        async def upload(request):
             return {"len": len(await request.body())}
 
         proto = HttpProtocol(app, loop)
@@ -1518,7 +1518,7 @@ def test_no_expect_header_does_not_emit_interim():
         app = Veloce(openapi_url=None)
 
         @app.post("/u")
-        async def upload(request):  # noqa: ANN001, ANN202
+        async def upload(request):
             return {"ok": True}
 
         proto = HttpProtocol(app, loop)
@@ -1543,7 +1543,7 @@ def test_expect_100_continue_not_sent_to_http_10_client():
         app = Veloce(openapi_url=None)
 
         @app.post("/u")
-        async def upload(request):  # noqa: ANN001, ANN202
+        async def upload(request):
             return {"ok": True}
 
         proto = HttpProtocol(app, loop)
@@ -1570,7 +1570,7 @@ def test_expect_100_continue_over_limit_yields_413_not_interim():
         app.config["MAX_CONTENT_LENGTH"] = 8
 
         @app.post("/u")
-        async def upload(request):  # noqa: ANN001, ANN202
+        async def upload(request):
             return {"ok": True}
 
         proto = HttpProtocol(app, loop)

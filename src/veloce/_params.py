@@ -133,7 +133,7 @@ def _guarded(read: Callable[[], Any]) -> Any:
     except AttributeError:
         # An unset slot holds nothing, so there is nothing to share.
         return None
-    except Exception:
+    except Exception:  # noqa: BLE001 - an unreadable value is reported, not raised
         return _UNREADABLE
 
 
@@ -192,7 +192,7 @@ def is_immutable(value: Any, depth: int = 0) -> bool:
     if getattr(_guarded(functools.partial(getattr, kind, "__dataclass_params__")), "frozen", False):
         try:
             return _frozen_dataclass_is_immutable(value, kind, depth)
-        except Exception:
+        except Exception:  # noqa: BLE001 - unreadable is not vouched for and must not block registration
             # Unreadable is not vouched for; it must not block registration.
             return False
     return False
@@ -249,7 +249,7 @@ def deepcopyable(value: Any) -> bool:
             _deepcopy_below_margin(value, _COPY_STACK_MARGIN)
         else:
             copy.deepcopy(value)
-    except Exception:
+    except Exception:  # noqa: BLE001 - a value that cannot be copied is not shareable
         return False
     return True
 

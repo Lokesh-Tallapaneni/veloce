@@ -307,7 +307,7 @@ class RedisCache(Cache):
     async def get(self, key: str) -> bytes | None:
         # The redis stub widens get() to `bytes | str | None` (a client may set
         # decode_responses=True); this cache stores and reads bytes.
-        return await self._redis.get(self._prefix + key)  # type: ignore[return-value]
+        return await self._redis.get(self._prefix + key)  # type: ignore[return-value]  # the client returns bytes with decode_responses off
 
     async def set(self, key: str, value: bytes, ttl: int) -> None:
         await self._redis.set(self._prefix + key, value, ex=ttl)

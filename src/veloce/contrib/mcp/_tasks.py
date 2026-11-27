@@ -306,13 +306,13 @@ class TasksMixin:
                 if not model_filtered:
                     try:
                         shaped = self.app._apply_response_model(shaped, route_info)
-                    except Exception:
+                    except Exception:  # noqa: BLE001 - a model that cannot shape the result falls back to text
                         return _text_result(_stringify(shaped, self._result_dumps))
             elif tool.output_model is not None:
                 # From the annotation, which `_build_response` never filtered to.
                 try:
                     shaped = shape_through_model(shaped, tool.output_model)
-                except Exception:
+                except Exception:  # noqa: BLE001 - a model that cannot shape the result falls back to text
                     return _text_result(_stringify(shaped, self._result_dumps))
         return self._success_result(tool, shaped)
 

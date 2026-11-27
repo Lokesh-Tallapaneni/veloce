@@ -181,7 +181,7 @@ class CSRFMiddleware(Middleware):
         if MIME_FORM_URLENCODED in ct or MIME_MULTIPART_FORM_DATA in ct:
             try:
                 form = await request.form()
-            except Exception:
+            except Exception:  # noqa: BLE001 - an unreadable form means no token, not a 500
                 # No form-field token available: the mismatch verdict, not a 500.
                 form = None
             # Multipart parts can resolve to UploadFile; only a string echoes the cookie.

@@ -50,7 +50,7 @@ def _build(app: Veloce, log: list[str]) -> None:
         log.append("catcher:setup")
         try:
             yield "caught"
-        except Exception as exc:  # noqa: BLE001 - the point is observing it
+        except Exception as exc:
             log.append(f"catcher:saw:{type(exc).__name__}")
             raise
         finally:

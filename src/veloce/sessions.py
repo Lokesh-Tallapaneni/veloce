@@ -116,7 +116,7 @@ class Session(dict[str, Any]):
         super().__delitem__(key)
         self.modified = True
 
-    def __ior__(self, other: Any) -> Session:  # type: ignore[override,misc]
+    def __ior__(self, other: Any) -> Session:  # type: ignore[override,misc]  # in-place union returns the session itself
         # PEP 584 `|=` bypasses `__setitem__`, so `.modified` would miss it.
         super().__ior__(other)
         self.modified = True

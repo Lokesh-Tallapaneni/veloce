@@ -40,7 +40,7 @@ from veloce.testclient import TestClient
 
 pytest.importorskip("veloce.contrib.mcp")
 
-from veloce.contrib.mcp.context import MCPContext  # noqa: E402
+from veloce.contrib.mcp.context import MCPContext
 
 
 # Module scope: with `from __future__ import annotations`, a locally-defined

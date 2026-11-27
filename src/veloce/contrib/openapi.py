@@ -67,7 +67,7 @@ def _group_field_schema(model: Any, wire_name: str) -> dict[str, Any] | None:
     """
     try:
         properties = _grouped_model_properties(model)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - schema generation degrades to no properties with a warning
         _warn_schema_fallback(f"grouped field {wire_name!r} on {model!r}", exc)
         return None
     prop = properties.get(wire_name)
@@ -107,7 +107,7 @@ def _handler_intro(handler: Any) -> tuple[Any, dict[str, Any]]:
         try:
             # `include_extras=True` keeps the PEP 593 metadata a marker lives in.
             hints = get_type_hints(hint_target, include_extras=True)
-        except Exception:
+        except Exception:  # noqa: BLE001 - unresolvable hints degrade to none rather than failing /docs
             # Degrades to no hints rather than failing the whole `/docs` build.
             hints = {}
     result = (sig, hints)

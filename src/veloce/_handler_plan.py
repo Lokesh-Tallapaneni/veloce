@@ -785,7 +785,7 @@ def _inspect_handler(
 
     try:
         hints = get_type_hints(hint_target, include_extras=True)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - one unresolvable annotation must not drop a Depends() marker
         # `get_type_hints` is all-or-none, so one unresolvable annotation would
         # take a `Depends()` marker with it. Not cached: it varies by route.
         return sig, _salvage_hints(hint_target, exc, path_params, sig.parameters)
@@ -911,7 +911,7 @@ def _annotation_markers(hint_target: Any, annotation: Any) -> tuple[Any, tuple[A
         # The target's own globals are applied last so they always win.
         namespace.update(getattr(hint_target, "__globals__", None) or {})
         try:
-            live = eval(annotation, {}, namespace)  # noqa: S307 - the target's own annotation
+            live = eval(annotation, {}, namespace)
         except Exception:  # noqa: BLE001 - an annotation that will not evaluate tells us nothing
             return None, (), False
 

@@ -220,7 +220,7 @@ class StdioTransport:
                 # `Task.cancelling()` would say the same, but only from 3.11.
                 if not previous.cancelled():
                     raise
-            except Exception:
+            except Exception:  # noqa: BLE001 - a failed predecessor must not block the next message
                 pass
         await self._dispatch(message, session)
 
@@ -423,4 +423,4 @@ async def _serve_on(
 
 if TYPE_CHECKING:  # pragma: no cover
     # Static assertion that the transport satisfies the bidirectional contract.
-    _: BidirectionalTransport = StdioTransport(None, None, None)  # type: ignore[arg-type]
+    _: BidirectionalTransport = StdioTransport(None, None, None)  # type: ignore[arg-type]  # import-time conformance probe; never run

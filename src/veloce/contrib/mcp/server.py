@@ -1266,7 +1266,7 @@ class MCPServer(TasksMixin, InvocationMixin):
             # The author named a code and wrote the message; in-band loses both.
             await self._instrument(tool, started, _http_status_for(exc))
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - any tool failure becomes a protocol error result
             # A pure `@app.mcp_tool` has no exception handlers to route through.
             await self._instrument(tool, started, status.HTTP_500_INTERNAL_SERVER_ERROR)
             return _text_result(
@@ -1308,7 +1308,7 @@ class MCPServer(TasksMixin, InvocationMixin):
         if tool.output_model is not None:
             try:
                 shaped = shape_through_model(shaped, tool.output_model)
-            except Exception:
+            except Exception:  # noqa: BLE001 - a result that fails the output schema is reported as a tool error
                 return _text_result(
                     "tool result does not conform to the declared output schema", is_error=True
                 )

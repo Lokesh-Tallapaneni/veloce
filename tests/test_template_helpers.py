@@ -157,15 +157,15 @@ def _string_app(suffix: str = "") -> Veloce:
     app = Veloce(openapi_url=None)
 
     @app.template_filter("shout")
-    def shout(value):  # noqa: ANN001, ANN202
+    def shout(value):
         return str(value).upper() + suffix
 
     @app.template_global()
-    def house():  # noqa: ANN202
+    def house():
         return "nordwind" + suffix
 
     @app.template_test("loud")
-    def loud(value):  # noqa: ANN001, ANN202
+    def loud(value):
         return str(value).isupper()
 
     return app
@@ -239,7 +239,7 @@ def test_a_filter_registered_after_the_first_render_is_picked_up():
         assert client.get("/").status_code == 500
 
         @app.template_filter("whisper")
-        def whisper(value):  # noqa: ANN001, ANN202
+        def whisper(value):
             return str(value).lower()
 
         assert client.get("/").text == "hi"

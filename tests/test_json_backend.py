@@ -317,7 +317,7 @@ def test_a_switch_changes_what_a_response_is_encoded_with(restore_backend):
     app = Veloce()
 
     @app.get("/")
-    async def index(request):  # noqa: ANN001, ANN202
+    async def index(request):
         return {"b": 2, "a": 1}
 
     for name in BACKENDS:
@@ -434,10 +434,10 @@ def test_the_native_types_win_over_a_default_hook(backend):
 class _OrjsonProvider(JSONProvider):
     """A provider that names a library itself, rather than taking the backend."""
 
-    def dumps(self, obj, **kwargs):  # noqa: ANN001, ANN003, ANN201
+    def dumps(self, obj, **kwargs):
         return _orjson.dumps(obj)
 
-    def loads(self, data):  # noqa: ANN001, ANN201
+    def loads(self, data):
         return _orjson.loads(data)
 
 
@@ -452,7 +452,7 @@ def test_a_response_class_does_not_override_the_backend(restore_backend):
     app = Veloce()
 
     @app.get("/", response_class=ORJSONResponse)
-    async def index(request):  # noqa: ANN001, ANN202
+    async def index(request):
         return {"b": 2, "a": 1}
 
     with TestClient(app) as client:
@@ -466,7 +466,7 @@ def test_the_stock_provider_follows_the_backend(restore_backend):
     app.json_provider_class = DefaultJSONProvider
 
     @app.get("/")
-    async def index(request):  # noqa: ANN001, ANN202
+    async def index(request):
         return {"b": 2, "a": 1}
 
     with TestClient(app) as client:
@@ -486,7 +486,7 @@ def test_a_provider_that_names_a_library_wins_for_bodies_only(restore_backend):
     app.json_provider_class = _OrjsonProvider
 
     @app.get("/")
-    async def index(request):  # noqa: ANN001, ANN202
+    async def index(request):
         return {"b": 2, "a": 1}
 
     with TestClient(app) as client:

@@ -503,7 +503,7 @@ def _iter_command_entry_points() -> list[importlib.metadata.EntryPoint]:
     """
     try:
         return list(importlib.metadata.entry_points().select(group=_COMMAND_ENTRY_POINT_GROUP))
-    except Exception:  # pragma: no cover - corrupt distribution metadata
+    except Exception:  # pragma: no cover - corrupt distribution metadata  # noqa: BLE001 - corrupt distribution metadata must not break the CLI
         return []
 
 
@@ -619,7 +619,7 @@ class _VeloceArgumentParser(argparse.ArgumentParser):
     `argparse.REMAINDER` without breaking `--env-file` placed before them.
     """
 
-    def parse_known_args(  # type: ignore[override]
+    def parse_known_args(  # type: ignore[override]  # narrower return than the stdlib stub declares
         self,
         args: list[str] | None = None,
         namespace: argparse.Namespace | None = None,

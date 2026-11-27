@@ -169,7 +169,7 @@ class EventLoopWatchdog:
             return ""
         try:
             label = self._attributor(frame)
-        except Exception:
+        except Exception:  # noqa: BLE001 - a failing attributor must not break the report
             return ""
         return f" while serving {label}" if label else ""
 

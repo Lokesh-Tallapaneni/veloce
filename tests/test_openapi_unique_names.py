@@ -86,7 +86,7 @@ def test_two_models_with_the_same_name_get_distinct_components():
         class Item(BaseModel):
             a: int
 
-        class Item2(BaseModel):  # noqa: N801 - deliberately same __name__ below
+        class Item2(BaseModel):
             b: str
 
         Item2.__name__ = "Item"

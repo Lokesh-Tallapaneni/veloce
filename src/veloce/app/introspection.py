@@ -224,7 +224,7 @@ class IntrospectionMixin(AppHost):
             values = path_params
 
         try:
-            built: str = super().url_for(name, **values)  # type: ignore[misc]
+            built: str = super().url_for(name, **values)  # type: ignore[misc]  # the mixin's super() resolves to the Router implementation
         except (ValueError, KeyError) as exc:
             return self._handle_build_error(name, values, exc)
         return built

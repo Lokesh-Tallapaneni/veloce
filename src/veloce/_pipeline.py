@@ -188,7 +188,7 @@ def flatten_asgi_wrap(slot: object) -> list[AsgiWrapPair]:
     if isinstance(slot, list):
         return slot
     flat: list[AsgiWrapPair] = []
-    for part in slot:  # type: ignore[attr-defined]
+    for part in slot:  # type: ignore[attr-defined]  # slot is a tuple here, not a callable
         flat.extend(part)
     return flat
 

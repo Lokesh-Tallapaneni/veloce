@@ -170,7 +170,7 @@ def test_a_tool_that_dispatches_other_tools_keeps_the_stream():
     where a handler sends the call next.
     """
 
-    async def _run_tools(self, steps, stop_on_error=True):  # noqa: ANN001
+    async def _run_tools(self, steps, stop_on_error=True):
         return []
 
     tool = _meta_tool(_run_tools, "run_tools", "Run several tools in order")

@@ -32,11 +32,11 @@ import pytest
 pytest.importorskip("fakeredis")
 pytest.importorskip("lupa", reason="fakeredis needs lupa to execute Lua")
 
-from fakeredis.aioredis import FakeRedis  # noqa: E402
+from fakeredis.aioredis import FakeRedis
 
-from veloce import FixedWindow, SlidingWindow, TokenBucket  # noqa: E402
-from veloce.contrib.redis import RedisRateLimitBackend  # noqa: E402
-from veloce.ratelimit import (  # noqa: E402
+from veloce import FixedWindow, SlidingWindow, TokenBucket
+from veloce.contrib.redis import RedisRateLimitBackend
+from veloce.ratelimit import (
     InMemoryRateLimitBackend,
     RateLimitResult,
     RateLimitStrategy,

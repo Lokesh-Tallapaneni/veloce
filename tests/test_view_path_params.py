@@ -22,10 +22,10 @@ from veloce.testclient import TestClient
 
 
 class _UserView(MethodView):
-    async def get(self, request, uid: int):  # noqa: ANN001, ANN201
+    async def get(self, request, uid: int):
         return {"verb": "get", "uid": uid, "type": type(uid).__name__}
 
-    async def post(self, request, uid: int):  # noqa: ANN001, ANN201
+    async def post(self, request, uid: int):
         return {"verb": "post", "uid": uid}
 
 
@@ -34,16 +34,16 @@ class _SharedView(MethodView):
 
     init_every_request = False
 
-    async def get(self, request, code: str):  # noqa: ANN001, ANN201
+    async def get(self, request, code: str):
         return {"code": code}
 
 
 class _PlainView(View):
-    async def dispatch_request(self, request):  # noqa: ANN001, ANN201
+    async def dispatch_request(self, request):
         return {"plain": True}
 
 
-def _client(rule: str, view, **kwargs) -> TestClient:  # noqa: ANN001
+def _client(rule: str, view, **kwargs) -> TestClient:
     app = Veloce(openapi_url=None)
     app.add_url_rule(rule, view_func=view, **kwargs)
     return TestClient(app)
@@ -83,7 +83,7 @@ def test_a_view_with_no_path_parameters_is_unaffected():
 
 def test_several_path_parameters_all_arrive():
     class _Pair(MethodView):
-        async def get(self, request, left: int, right: str):  # noqa: ANN001, ANN201
+        async def get(self, request, left: int, right: str):
             return {"left": left, "right": right}
 
     with _client("/pair/{left:int}/{right}", _Pair.as_view("pair")) as client:
@@ -116,7 +116,7 @@ def test_a_plain_function_still_defaults_to_get():
     """The derivation reads an attribute a function does not have."""
     app = Veloce(openapi_url=None)
 
-    async def handler(request):  # noqa: ANN001, ANN202
+    async def handler(request):
         return {"ok": True}
 
     app.add_url_rule("/fn", view_func=handler)
@@ -137,7 +137,7 @@ def test_a_verb_method_that_does_not_declare_them_still_works():
     """
 
     class _Manual(MethodView):
-        async def get(self, request):  # noqa: ANN001, ANN201
+        async def get(self, request):
             return {"uid": request.path_params["uid"]}
 
     with _client("/users/{uid:int}", _Manual.as_view("manual")) as client:
@@ -146,7 +146,7 @@ def test_a_verb_method_that_does_not_declare_them_still_works():
 
 def test_a_verb_method_may_declare_only_some_of_them():
     class _Partial(MethodView):
-        async def get(self, request, left: int):  # noqa: ANN001, ANN201
+        async def get(self, request, left: int):
             return {"left": left, "right": request.path_params["right"]}
 
     with _client("/pair/{left:int}/{right}", _Partial.as_view("partial")) as client:
@@ -157,10 +157,10 @@ def test_one_verb_may_declare_them_and_another_not():
     """The filter is per verb, so two methods on one class can differ."""
 
     class _Mixed(MethodView):
-        async def get(self, request, uid: int):  # noqa: ANN001, ANN201
+        async def get(self, request, uid: int):
             return {"verb": "get", "uid": uid}
 
-        async def post(self, request):  # noqa: ANN001, ANN201
+        async def post(self, request):
             return {"verb": "post", "uid": request.path_params["uid"]}
 
     with _client("/users/{uid:int}", _Mixed.as_view("mixed")) as client:
@@ -170,7 +170,7 @@ def test_one_verb_may_declare_them_and_another_not():
 
 def test_a_verb_taking_kwargs_receives_every_value():
     class _Kwargs(MethodView):
-        async def get(self, request, **params):  # noqa: ANN001, ANN201
+        async def get(self, request, **params):
             return params
 
     with _client("/pair/{left:int}/{right}", _Kwargs.as_view("kw")) as client:
@@ -183,7 +183,7 @@ def test_a_plain_view_reading_them_itself_works():
     class _Reader(View):
         methods = ["GET"]
 
-        async def dispatch_request(self, request):  # noqa: ANN001, ANN201
+        async def dispatch_request(self, request):
             return {"code": request.path_params["code"]}
 
     with _client("/codes/{code}", _Reader.as_view("reader")) as client:
@@ -194,7 +194,7 @@ def test_an_inherited_verb_is_filtered_by_its_own_signature():
     """Each subclass rebuilds the map, so the MRO decides which method wins."""
 
     class _Base(MethodView):
-        async def get(self, request):  # noqa: ANN001, ANN201
+        async def get(self, request):
             return {"from": "base", "uid": request.path_params["uid"]}
 
     class _Child(_Base):

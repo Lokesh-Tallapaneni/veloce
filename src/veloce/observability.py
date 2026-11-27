@@ -80,7 +80,7 @@ def _register_access_log(
     installed. Marked rather than identified by `__module__`, so a user's own
     access-log instrumentation can set it too and suppress the built-in one.
     """
-    emit.is_access_log = True  # type: ignore[attr-defined]
+    emit.is_access_log = True  # type: ignore[attr-defined]  # marker attribute read by the access-log installer
     app.add_instrumentation(emit)
     return emit
 

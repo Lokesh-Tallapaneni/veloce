@@ -481,7 +481,7 @@ def _check_async(fn: Callable[..., Any]) -> bool:
     if inspect.iscoroutinefunction(fn):
         return True
     # The bound `__call__`: `callable()` says nothing about `async def`.
-    call = getattr(fn, "__call__", None)  # noqa: B004
+    call = getattr(fn, "__call__", None)  # noqa: B004 - __call__ is looked up dynamically to tell callables from classes
     return call is not None and inspect.iscoroutinefunction(call)
 
 

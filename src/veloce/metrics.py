@@ -42,7 +42,7 @@ try:
 except ImportError as exc:  # pragma: no cover - exercised only without prometheus_client
     # `Any` rather than three suppressions: `_PROM_IMPORT_ERROR` gates every use.
     _prom = cast("Any", None)
-    Counter = Histogram = cast("Any", None)  # type: ignore[misc]
+    Counter = Histogram = cast("Any", None)  # type: ignore[misc]  # placeholder when the optional dependency is missing
     _PROM_IMPORT_ERROR = exc
 
 

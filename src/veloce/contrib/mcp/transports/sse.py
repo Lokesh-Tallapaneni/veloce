@@ -149,7 +149,7 @@ def register_sse_transport(
         # An unreadable id has no stream frame, so the POST carries the failure.
         try:
             message = await request.json()
-        except Exception:
+        except Exception:  # noqa: BLE001 - an undecodable body is a JSON-RPC parse error
             return _protocol_response(parse_error(), status_code=status.HTTP_400_BAD_REQUEST)
         if message is None:
             return _protocol_response(parse_error(), status_code=status.HTTP_400_BAD_REQUEST)

@@ -150,10 +150,10 @@ def test_a_capability_written_without_the_revision_parameter_still_works():
     class Legacy(Capability):
         __slots__ = ()
 
-        def advertise(self):  # noqa: ANN201 - deliberately the pre-revision signature
+        def advertise(self):
             return {"house": {}}
 
-        def handlers(self):  # noqa: ANN201
+        def handlers(self):
             return {}
 
     # Handed to the constructor, so the server classifies it. Appending to

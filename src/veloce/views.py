@@ -156,8 +156,8 @@ class View:
                 )
 
         view.__name__ = name
-        view.view_class = cls  # type: ignore[attr-defined]
-        view.methods = cls._allowed_methods()  # type: ignore[attr-defined]
+        view.view_class = cls  # type: ignore[attr-defined]  # attribute set on the generated view function
+        view.methods = cls._allowed_methods()  # type: ignore[attr-defined]  # attribute set on the generated view function
 
         for decorator in cls.decorators:
             view = decorator(view)

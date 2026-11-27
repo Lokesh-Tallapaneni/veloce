@@ -262,7 +262,7 @@ class ServingMixin(AppHost):
         reuse_port = True if hasattr(socket, "SO_REUSEPORT") else None
         server = await loop.create_server(
             # `self` is always a `Veloce` (this mixin is only composed into it).
-            lambda: HttpProtocol(self, loop),  # type: ignore[arg-type]
+            lambda: HttpProtocol(self, loop),  # type: ignore[arg-type]  # HttpProtocol is built against the app's own protocol surface
             host,
             port,
             backlog=_resolve_listen_backlog(),

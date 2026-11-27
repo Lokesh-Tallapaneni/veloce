@@ -26,7 +26,7 @@ import json
 import urllib.parse
 import uuid
 from datetime import date, datetime
-from typing import Union  # noqa: UP035 — exercises the typing.Union (not PEP 604) origin
+from typing import Union
 
 from pydantic import BaseModel
 
