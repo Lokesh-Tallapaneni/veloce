@@ -128,7 +128,7 @@ class _Conditional:
     """The precondition fields `make_conditional` / `check_preconditions` read.
 
     A stub rather than a `Request`: these assert how the *response* finds its
-    own ETag. `tests/test_response_conditional.py` drives the same two methods
+    own ETag. `tests/http/test_response_conditional.py` drives the same two methods
     from a real request.
     """
 

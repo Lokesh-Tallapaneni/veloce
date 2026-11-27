@@ -107,7 +107,7 @@ def _import_string(dotted_path: str) -> object:
 
 
 #: Keys typed but defaulting to `None`, so the type cannot be read off the
-#: default. `tests/test_env_file_typing.py` pins this table as complete.
+#: default. `tests/app/test_env_file_typing.py` pins this table as complete.
 _ENV_TYPED_NONE_DEFAULTS: dict[str, str] = {
     "MAX_FORM_FIELDS": "int",
     "MAX_FORM_FIELD_MEMORY": "int",

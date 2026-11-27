@@ -14,6 +14,7 @@ import asyncio
 
 import pytest
 
+from tests._protocol import _FakeTransport
 from tests.conftest import make_request
 from veloce import Request, StreamingResponse, Veloce
 from veloce.http._body import (
@@ -23,8 +24,6 @@ from veloce.http._body import (
     _discard_outcome,
 )
 from veloce.serving.protocol import HttpProtocol
-
-from ._protocol import _FakeTransport
 
 DISCONNECT = {"type": "http.disconnect"}
 

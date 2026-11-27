@@ -195,7 +195,7 @@ def test_a_list_typed_header_still_resolves_over_http():
 
     A single value here rather than repeats: `TestClient` takes a header mapping,
     which folds duplicates before they reach the app. Repeated headers over HTTP
-    are covered in `tests/test_header_list_marker.py`, which drives raw ASGI
+    are covered in `tests/params/test_header_list_marker.py`, which drives raw ASGI
     header tuples to get more than one of the same name onto the wire.
     """
     app = Veloce(openapi_url=None)

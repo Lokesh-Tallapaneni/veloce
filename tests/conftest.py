@@ -77,7 +77,7 @@ def _short_close_handshake_timeout(monkeypatch):
 
     No test asserted on the timeout's duration, so nothing is lost by shortening
     it here - and what the timeout actually does is now covered properly, and
-    deterministically, in `tests/test_websocket_close_handshake.py`.
+    deterministically, in `tests/websocket/test_websocket_close_handshake.py`.
     """
     monkeypatch.setattr(WebSocket, "CLOSE_HANDSHAKE_TIMEOUT", 0.05)
 

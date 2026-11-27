@@ -4,7 +4,7 @@ The fold used to pick `Path` or `Query` at plan build, which needed the route
 template and so made the plan route-dependent. It does not any more: the `Field`
 becomes a source-less marker on the bare path-or-query slot and the resolver
 validates whatever its own lookup found (see
-`tests/test_annotated_field_resolve_time.py`).
+`tests/params/test_annotated_field_resolve_time.py`).
 
 What is asserted here is the part that must survive that: the bounds are
 enforced and published through the HTTP route, the OpenAPI document, the MCP

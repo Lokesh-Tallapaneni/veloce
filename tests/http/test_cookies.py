@@ -5,7 +5,7 @@ value; non-token and reserved names; and that `Response.set_cookie` propagates
 the same refusals rather than validating separately.
 
 What they *render and parse* when the input is valid is
-`tests/test_cookie_helpers.py`. Both modules named `parse_cookie` and
+`tests/http/test_cookie_helpers.py`. Both modules named `parse_cookie` and
 `dump_cookie` in their docstrings and neither said which half it held.
 """
 

@@ -76,7 +76,7 @@ def test_setting_openapi_version_changes_the_document():
     """The defect: the attribute changed and the document did not.
 
     The dialect warning a 3.0 version raises is covered where it belongs, in
-    `tests/test_openapi_customization.py`.
+    `tests/openapi/test_openapi_customization.py`.
     """
     app = _app(openapi_url=None)
     app.openapi_version = "3.0.3"
