@@ -19,7 +19,7 @@ import weakref
 
 import pytest
 
-from veloce import _handler_plan
+from veloce import _plan_hints
 from veloce._handler_plan import build_plan
 
 # ── the cache hits ──────────────────────────────────────────────────
@@ -27,13 +27,13 @@ from veloce._handler_plan import build_plan
 
 def test_planning_a_handler_twice_inspects_it_once(monkeypatch):
     calls = []
-    real = _handler_plan.get_type_hints
+    real = _plan_hints.get_type_hints
 
     def counted(*args, **kwargs):
         calls.append(args[0])
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(_handler_plan, "get_type_hints", counted)
+    monkeypatch.setattr(_plan_hints, "get_type_hints", counted)
 
     async def handler(item_id: int, q: str = "all"):
         return item_id

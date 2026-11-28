@@ -506,6 +506,12 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = [
     "veloce._handler_plan",
+    "veloce._plan_kinds",
+    "veloce._plan_annotations",
+    "veloce._plan_slot",
+    "veloce._plan_core",
+    "veloce._plan_hints",
+    "veloce._plan_build",
     "veloce._pipeline",
     "veloce._resolver_codegen",
     "veloce.app.asgi",
