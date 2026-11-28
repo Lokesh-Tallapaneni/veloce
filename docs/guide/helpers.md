@@ -465,3 +465,5 @@ an empty list, so it is safe to call during a template render.
   called from a template.
 - The [API reference](../reference/index.md) lists every helper with full
   signatures.
+
+**Source and tests:** [`src/veloce/helpers.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/helpers.py), [`tests/http/test_aborter.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/http/test_aborter.py), [`tests/http/test_flash.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/http/test_flash.py), [`tests/http/test_redirect_helper.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/http/test_redirect_helper.py)

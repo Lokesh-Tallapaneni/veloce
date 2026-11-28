@@ -174,3 +174,5 @@ by string at runtime, so PyInstaller cannot trace them and you must add them as
 - [Run a server manually](manually.md) — `app.run()`, `veloce run`, and uvicorn compared.
 - [Native server deep dive](../why-veloce/native-server.md) — what the built-in server does and its hardening knobs.
 - Full signatures are in the [API reference](../reference/index.md).
+
+**Source and tests:** [`src/veloce/app/serving.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/app/serving.py), [`tests/serving/test_http_e2e.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/serving/test_http_e2e.py)

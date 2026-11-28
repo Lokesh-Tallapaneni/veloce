@@ -354,3 +354,5 @@ assert resp.json() == {"name": "Widget", "price": 12.5, "tags": []}
 - [Error handling](error-handling.md) — the `422` validation-error body and custom handlers.
 - [msgspec models](msgspec.md) — validate bodies with `msgspec.Struct` instead of Pydantic.
 - Full signatures are in the [API reference](../reference/index.md).
+
+**Source and tests:** [`src/veloce/_model_backend.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/_model_backend.py), [`src/veloce/_params.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/_params.py), [`tests/params/test_body_marker_model_validation.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/params/test_body_marker_model_validation.py), [`tests/params/test_validation_error_body.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/params/test_validation_error_body.py)

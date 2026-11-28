@@ -346,3 +346,5 @@ running loop.
   values supplied via `Depends`.
 - API reference: [`BackgroundTask`](../reference/tasks.md#veloce.BackgroundTask),
   [`BackgroundTasks`](../reference/tasks.md#veloce.BackgroundTasks).
+
+**Source and tests:** [`src/veloce/background.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/background.py), [`src/veloce/app/background.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/app/background.py), [`tests/dependency/test_background_tasks.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/dependency/test_background_tasks.py), [`tests/dependency/test_background_task_waiting.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/dependency/test_background_task_waiting.py)

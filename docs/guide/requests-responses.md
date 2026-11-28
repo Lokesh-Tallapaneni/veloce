@@ -671,3 +671,5 @@ if __name__ == "__main__":
 - [Server-sent events](sse.md) — push streams with `EventSourceResponse`.
 - [Caching](caching.md) — ETags, conditional requests, and `Cache-Control`.
 - Full signatures are in the [API reference](../reference/index.md).
+
+**Source and tests:** [`src/veloce/http/request/request.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/http/request/request.py), [`src/veloce/http/response/response.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/http/response/response.py), [`tests/http/test_request_json.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/http/test_request_json.py), [`tests/http/test_make_response.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/http/test_make_response.py)

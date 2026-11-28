@@ -161,3 +161,5 @@ same way — see [Sessions](sessions.md).
 
 - [Databases](databases.md) — the Redis backend and session/rate-limit helpers
 - [Dependency Injection](dependency-injection.md) — `cached` composes with `Depends`
+
+**Source and tests:** [`src/veloce/cache.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/cache.py), [`tests/core/test_cache.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/core/test_cache.py)

@@ -387,3 +387,5 @@ precedence order.
   attributes.
 - The [API reference](../reference/index.md) documents the public `veloce`
   surface; `Config` and its loader methods live in `veloce.config`.
+
+**Source and tests:** [`src/veloce/config.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/config.py), [`src/veloce/settings.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/settings.py), [`tests/test_config_documentation_parity.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/test_config_documentation_parity.py), [`tests/core/test_settings.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/core/test_settings.py)

@@ -218,3 +218,5 @@ assert resp.json() == {"message": "Hello from Veloce"}
 - Terminate TLS correctly in production — see [HTTPS concepts](https.md).
 - Put the app behind a reverse proxy or container — see [Docker](docker.md).
 - Full signatures are in the [API reference](../reference/index.md).
+
+**Source and tests:** [`src/veloce/app/serving.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/app/serving.py), [`src/veloce/cli.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/cli.py), [`tests/app/test_cli.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/app/test_cli.py), [`tests/serving/test_dev_server_worker_count.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/serving/test_dev_server_worker_count.py)

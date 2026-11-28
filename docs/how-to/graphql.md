@@ -193,3 +193,5 @@ mounted Strawberry app, and neither interferes with the other.
 - [Lifespan and events](../guide/lifespan.md) — `on_startup` / `on_shutdown` and the `lifespan=` context manager that own parent-side resources.
 - [Behind a proxy](../guide/behind-a-proxy.md) — how `root_path` and a stripped prefix interact with mounted applications.
 - Full signatures are in the [API reference](../reference/index.md).
+
+**Source and tests:** [`src/veloce/app/mounting.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/app/mounting.py), [`tests/test_database_and_graphql_guides.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/test_database_and_graphql_guides.py), [`tests/routing/test_mount_subapp.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/routing/test_mount_subapp.py)

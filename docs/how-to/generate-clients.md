@@ -294,3 +294,5 @@ module) by most generators, mirroring how the operation appears in the interacti
 - [Migrating from FastAPI](../why-veloce/migrating-from-fastapi.md) — `operation_id=` in place of `generate_unique_id_function`.
 - [Testing](../guide/testing.md) — render `/openapi.json` in-process with the `TestClient`.
 - Full signatures are in the [API reference](../reference/index.md).
+
+**Source and tests:** [`src/veloce/contrib/openapi/_operations.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/contrib/openapi/_operations.py), [`tests/openapi/test_openapi_operation_id.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/openapi/test_openapi_operation_id.py), [`tests/openapi/test_openapi_unique_names.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/openapi/test_openapi_unique_names.py)

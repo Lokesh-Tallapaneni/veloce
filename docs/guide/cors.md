@@ -235,3 +235,5 @@ assert denied.status_code == 400
 - Reject cross-site WebSocket handshakes with `WebSocketOriginMiddleware` — see [WebSockets](websockets.md).
 - Lock down host headers and add hardening headers in [Security schemes](security-schemes.md).
 - Full signatures are in the [API reference](../reference/index.md).
+
+**Source and tests:** [`src/veloce/middleware/cors.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/middleware/cors.py), [`tests/middleware/test_cors_spec.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/middleware/test_cors_spec.py)

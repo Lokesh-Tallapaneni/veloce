@@ -197,3 +197,5 @@ SessionMiddleware(secret_key=[os.environ["SECRET_KEY"],
   signing primitives.
 - The [API reference](../reference/index.md) has full signatures for `Signer`
   and the exception hierarchy.
+
+**Source and tests:** [`src/veloce/signing.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/signing.py), [`tests/security/test_signing.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/security/test_signing.py)

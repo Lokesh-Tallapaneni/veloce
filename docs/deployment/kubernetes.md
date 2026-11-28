@@ -123,3 +123,5 @@ health-check traffic does not dominate your request counters — see
 - [Deployment concepts](concepts.md) — workers, restarts, and process models
 - [Docker](docker.md) — building the image this Deployment runs
 - [Observability](../guide/observability.md) — metrics and access logs
+
+**Source and tests:** [`src/veloce/health.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/health.py), [`tests/app/test_health.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/app/test_health.py)

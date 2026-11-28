@@ -20,6 +20,7 @@ test_docs_examples_parse.py
 test_docs_llmstxt_config.py
 test_docs_name_real_methods.py
 test_docs_reference_targets_resolve.py
+test_docs_source_links_resolve.py
 test_docs_version_notes_exist.py
 test_docstring_claims_hold.py
 test_docstring_mood.py

@@ -498,3 +498,5 @@ Propagation is also implied when both `DEBUG` and `TESTING` are enabled.
 - Run startup and shutdown hooks under test — see [Lifespan and events](lifespan.md).
 - Swap a real database for an in-memory fake — see [Databases](databases.md).
 - Full signatures are in the [API reference](../reference/index.md).
+
+**Source and tests:** [`src/veloce/testclient/client.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/testclient/client.py), [`tests/testclient/test_testclient_request.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/testclient/test_testclient_request.py), [`tests/testclient/test_test_client_parity.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/testclient/test_test_client_parity.py)

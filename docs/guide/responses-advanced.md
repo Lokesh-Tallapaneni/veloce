@@ -398,3 +398,5 @@ assert resp.status_code == 200
 - Control how values are serialised to JSON — see [JSON and encoding](encoding.md).
 - Document operations and schemas — see [OpenAPI](openapi.md).
 - Full signatures are in the [API reference](../reference/index.md).
+
+**Source and tests:** [`src/veloce/http/response/streaming.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/http/response/streaming.py), [`src/veloce/http/response/file.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/http/response/file.py), [`tests/http/test_streaming_response_asgi.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/http/test_streaming_response_asgi.py), [`tests/http/test_fileresponse_range.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/http/test_fileresponse_range.py)
