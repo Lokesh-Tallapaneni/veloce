@@ -89,25 +89,27 @@ def test_a_client_that_accepts_only_the_stream_gets_the_stream():
     assert "data:" in _reply("text/event-stream")
 
 
-def test_a_tool_that_can_report_progress_gets_the_stream():
+def test_a_tool_that_reports_progress_gets_the_stream():
     """The other half of the negative, for a client that accepts both types.
 
-    Offering both leaves the server the choice, and it now makes that choice on
-    whether the call can produce a second message rather than on the header
-    alone: this tool takes an `MCPContext`, so it can report progress and the
-    stream has to be there to carry it.
+    Offering both leaves the server the choice, and it makes that choice on
+    whether the call actually produces a second message rather than on the
+    header alone: this tool reports progress before replying, so the stream
+    has to be there to carry it.
     """
     app = Veloce(title="Headers", version="1.0.0", openapi_url=None)
 
-    @app.mcp_tool(description="Add nothing, but could report progress")
+    @app.mcp_tool(description="Reports progress, then adds nothing")
     async def add(ctx: MCPContext) -> str:
+        await ctx.report_progress(1, total=1)
         return "ok"
 
     app.mount_mcp(transport="http", path="/mcp")
     client = TestClient(app)
     client.post("/mcp", json=INITIALIZE, headers={"Accept": "application/json"})
+    call = {**CALL, "params": {**CALL["params"], "_meta": {"progressToken": "p1"}}}
     body = client.post(
-        "/mcp", json=CALL, headers={"Accept": "application/json, text/event-stream"}
+        "/mcp", json=call, headers={"Accept": "application/json, text/event-stream"}
     ).text
     assert "data:" in body
 

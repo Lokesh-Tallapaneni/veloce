@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Reply to a Streamable HTTP request as JSON unless the call notifies first. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
+
 ## [0.23.0] - 2026-11-27
 
 ### Added
