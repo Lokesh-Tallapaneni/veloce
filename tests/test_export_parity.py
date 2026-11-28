@@ -85,7 +85,6 @@ UNEXPORTED: dict[str, str] = {
     # a 304. Not underscore-prefixed because `app/asgi.py` imports it across a
     # subpackage boundary, which guardrails L173 forbids for a private name; not
     # exported because it describes an emit-time detail no user chooses.
-    "http.response.advertised_length": "shared by the three emit paths; internal to the transport, not a user-facing name",
     # `cli.py` — console-script entry points, reached through `[project.scripts]`
     # by dotted string, never imported by application code.
     "cli.build_parser": "console-script entry point, referenced by dotted path",
@@ -146,7 +145,7 @@ UNEXPORTED: dict[str, str] = {
     "config.DEFAULT_WRITE_BUFFER_HIGH_WATER": "tuning default; set through Config, not by import",
     "http.formparsers.DEFAULT_MAX_MULTIPART_PART_SIZE": "tuning default for the multipart parser",
     "http.formparsers.MULTIPART_SPOOL_MAX_SIZE": "tuning default for the multipart parser",
-    "http.response.FILE_STREAM_CHUNK": "file-response read size; an implementation constant",
+    "http.response.file.FILE_STREAM_CHUNK": "file-response read size; an implementation constant",
     # Callback aliases whose owning object is itself unexported, so the alias
     # is written as `veloce.health.ReadinessCheck` if it is written at all.
     "health.ReadinessCheck": "callback alias for a health check; used as veloce.health.ReadinessCheck",
@@ -154,6 +153,12 @@ UNEXPORTED: dict[str, str] = {
     # fallback layers split out of `router.py`. `router.py` re-imports each, so
     # the old `veloce.routing.router.X` paths still resolve; these are the names
     # under their new home.
+    "routing.router.decorators.DecoratorsMixin": "one layer of the Router class; reached through Router",
+    "routing.router.matching.MatchingMixin": "one layer of the Router class; reached through Router",
+    "routing.router.merging.MergingMixin": "one layer of the Router class; reached through Router",
+    "routing.router.registration.RegistrationMixin": "one layer of the Router class; reached through Router",
+    "routing.router.tree.TreeMixin": "one layer of the Router class; reached through Router",
+    "routing.router.urls.UrlsMixin": "one layer of the Router class; reached through Router",
     "routing.route_info.MCPRouteOptions": "the record behind RouteInfo.mcp; read through its properties",
     "routing.route_info.RouteOptions": "the record add_route and route collect their options into; registration plumbing, not user-facing",
     "routing.route_info.RouteHandler": "router-internal handler alias; RouteInfo/RouteMatch are equally internal",
@@ -253,7 +258,6 @@ UNEXPORTED: dict[str, str] = {
     "http.cookies.dump_cookie": "header-level helper behind Response.set_cookie",
     "http.dates.http_date": "header-level date formatting behind the response helpers",
     "http.dates.parse_date": "header-level date parsing behind the request helpers",
-    "http.response.header_pop": "raw header-list helper used by the emit paths",
     "middleware.base.Auditable": "protocol the startup audit checks middleware against",
     "serving.reloader.is_reloader_child": "reloader process-role probe, used by the runner",
     "serving.reloader.run_with_reloader": "reloader entry point, reached through Veloce.run",

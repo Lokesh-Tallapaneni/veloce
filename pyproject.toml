@@ -442,7 +442,7 @@ ignore = [
 # else goes through `veloce._json`, which the TID251 bans above enforce.
 "src/veloce/_json.py" = ["TID251"]  # owns the backend choice
 "src/veloce/_model_backend.py" = ["TID251"]  # msgspec for model validation, not encoding
-"src/veloce/http/response.py" = ["TID251"]  # `UJSONResponse` is an explicit opt-out
+"src/veloce/http/response/json_response.py" = ["TID251"]  # `UJSONResponse` is an explicit opt-out
 
 [tool.pyright]
 include = ["src/veloce"]
@@ -538,6 +538,7 @@ module = [
     "veloce.helpers",
     "veloce.http.datastructures",
     "veloce.http.request",
+    "veloce.http.request.*",
     "veloce.middleware.base",
     "veloce.middleware.compression",
     "veloce.middleware.security",

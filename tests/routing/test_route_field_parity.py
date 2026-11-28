@@ -40,7 +40,23 @@ from veloce.testclient import TestClient
 #: merged, and this guard - which read `router.py` alone - stopped finding it.
 #: A guard that only works while the code stays put is not a guard, so the
 #: source is now resolved per function rather than pinned to one file.
-_SEARCHED_MODULES = (Router.__module__, "veloce._internal", RouteInfo.__module__)
+_SEARCHED_MODULES = (
+    *(
+        f"veloce.routing.router.{name}"
+        for name in (
+            "core",
+            "_state",
+            "matching",
+            "tree",
+            "registration",
+            "decorators",
+            "urls",
+            "merging",
+        )
+    ),
+    "veloce._internal",
+    RouteInfo.__module__,
+)
 
 
 def _module_source(module_name: str) -> str:

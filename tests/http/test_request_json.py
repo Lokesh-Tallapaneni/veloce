@@ -11,7 +11,7 @@ import inspect
 
 import pytest
 
-import veloce.http.request as reqmod
+import veloce._json as jsonseam
 from tests.conftest import make_request
 from veloce import Request
 from veloce.exceptions import BadRequest, UnsupportedMediaType
@@ -149,13 +149,13 @@ def _count_loads(monkeypatch) -> dict:
     """Patch the JSON seam's `loads` with a call counter; return the counter."""
 
     calls = {"n": 0}
-    real = reqmod._json.loads
+    real = jsonseam.loads
 
     def counting(raw):
         calls["n"] += 1
         return real(raw)
 
-    monkeypatch.setattr(reqmod._json, "loads", counting)
+    monkeypatch.setattr(jsonseam, "loads", counting)
     return calls
 
 

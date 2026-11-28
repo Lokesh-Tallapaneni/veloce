@@ -14,7 +14,7 @@ from veloce.middleware.sessions import SessionMiddleware
 from veloce.testclient import TestClient
 
 _SRC = pathlib.Path(__file__).resolve().parent.parent / "src" / "veloce"
-_REQUEST_PY = _SRC / "http" / "request.py"
+_REQUEST_PY = _SRC / "http" / "request" / "_body.py"
 _SECURITY_SESSION_PY = _SRC / "security" / "session.py"
 
 
