@@ -99,9 +99,6 @@ UNEXPORTED: dict[str, str] = {
     # `debug.py` — the debug traceback renderer, wired by the app when
     # `DEBUG` is set.
     "debug.render_traceback_html": "internal debug-page renderer wired by the app",
-    # `dependency.py` — the resolver behind `Depends()`. Users declare
-    # dependencies; they do not drive the resolver.
-    "dependency.DependencyResolver": "DI engine; `Depends`/`Security` are the public surface",
     # `encoders.py` — the orjson `default=` hook. `register_encoder` is the
     # public way to extend encoding.
     "encoders.orjson_default": "orjson hook; `register_encoder` is the public extension point",
