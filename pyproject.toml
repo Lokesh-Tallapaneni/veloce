@@ -479,6 +479,7 @@ pylint.max-statements = 104
 "src/veloce/serving/reloader.py" = ["T20"]
 "example_app.py" = ["D", "ANN", "T20"]  # a demo script
 "bench/**" = ["D", "ANN", "T20"]
+"scripts/**" = ["D", "ANN", "T20"]
 "mkdocs_hooks.py" = ["D"]  # a build hook, not shipped API
 
 # The only three modules allowed to name a JSON library directly. Everything

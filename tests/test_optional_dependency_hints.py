@@ -19,10 +19,12 @@ would go wrong when a new extra is added and a message is not updated.
 from __future__ import annotations
 
 import re
+import sys
 
 import pytest
 
 from tests._source import SRC
+from veloce.http.response import UJSONResponse
 
 # Messages, not prose: docstrings and module headers document install lines too,
 # and those are not what a blocked user sees.
@@ -89,15 +91,12 @@ def test_the_extra_backed_hints_name_their_extra(extra):
 # ── the messages still reach a user ──────────────────────────────────
 
 
-def test_a_missing_optional_dependency_raises_with_its_hint():
+def test_a_missing_optional_dependency_raises_with_its_hint(monkeypatch):
     """The negative: consistent wording is worthless if the message never
     surfaces. Checked through the real guard rather than by reading source."""
-    import sys
-
-    from veloce.http.response import UJSONResponse
-
-    if "ujson" in sys.modules:
-        pytest.skip("ujson is installed in this environment")
+    # A `None` entry makes `import ujson` raise `ImportError`, so the guard runs
+    # whether or not the package happens to be installed here.
+    monkeypatch.setitem(sys.modules, "ujson", None)
     with pytest.raises(ImportError) as excinfo:
         UJSONResponse({"a": 1})
     assert "Install it with: pip install ujson" in str(excinfo.value)
