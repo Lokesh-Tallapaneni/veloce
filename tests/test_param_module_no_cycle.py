@@ -93,18 +93,25 @@ def _in_fresh_interpreter(code: str) -> subprocess.CompletedProcess:
 
 def test_the_router_imports_the_handler_plan_at_module_scope():
     """The defect: this had to be deferred into a method body."""
-    tree = ast.parse((SRC / "veloce/routing/router.py").read_text(encoding="utf-8"))
+    trees = [
+        ast.parse(path.read_text(encoding="utf-8"))
+        for path in sorted((SRC / "veloce/routing/router").glob("*.py"))
+    ]
     # `Module.body` is exactly the module scope, so this cannot be satisfied
     # by an import nested in a function or a class body - which is the
     # deferral the cycle used to force.
     assert any(
         isinstance(node, ast.ImportFrom) and node.module == "veloce._handler_plan"
+        for tree in trees
         for node in tree.body
     )
 
 
 def test_no_comment_still_claims_the_cycle():
-    source = (SRC / "veloce/routing/router.py").read_text(encoding="utf-8")
+    source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted((SRC / "veloce/routing/router").glob("*.py"))
+    )
     assert "routing.router <-> _handler_plan" not in source
 
 

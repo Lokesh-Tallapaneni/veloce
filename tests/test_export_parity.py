@@ -154,6 +154,12 @@ UNEXPORTED: dict[str, str] = {
     # fallback layers split out of `router.py`. `router.py` re-imports each, so
     # the old `veloce.routing.router.X` paths still resolve; these are the names
     # under their new home.
+    "routing.router.decorators.DecoratorsMixin": "one layer of the Router class; reached through Router",
+    "routing.router.matching.MatchingMixin": "one layer of the Router class; reached through Router",
+    "routing.router.merging.MergingMixin": "one layer of the Router class; reached through Router",
+    "routing.router.registration.RegistrationMixin": "one layer of the Router class; reached through Router",
+    "routing.router.tree.TreeMixin": "one layer of the Router class; reached through Router",
+    "routing.router.urls.UrlsMixin": "one layer of the Router class; reached through Router",
     "routing.route_info.MCPRouteOptions": "the record behind RouteInfo.mcp; read through its properties",
     "routing.route_info.RouteOptions": "the record add_route and route collect their options into; registration plumbing, not user-facing",
     "routing.route_info.RouteHandler": "router-internal handler alias; RouteInfo/RouteMatch are equally internal",
