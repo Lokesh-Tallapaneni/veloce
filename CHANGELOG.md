@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Speed up WebSocket TEXT frame UTF-8 validation with the stdlib's incremental decoder. ([#371](https://github.com/Lokesh-Tallapaneni/veloce/pull/371))
+- `list[Model]` responses serialize in one pass through pydantic-core; a model using `datetime`, `Decimal`, `bytes`, `timedelta`, or `set` keeps the per-item path. ([#370](https://github.com/Lokesh-Tallapaneni/veloce/pull/370))
 ### Added
 
 - `StreamingResponse(..., coalesce=False)` opts a producer out of chunk batching, for one write per chunk. ([#369](https://github.com/Lokesh-Tallapaneni/veloce/pull/369))

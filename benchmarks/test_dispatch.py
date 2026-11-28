@@ -150,6 +150,31 @@ def test_dispatch_body_validation(benchmark):
     assert response.status_code == 200
 
 
+# ── list[Model] response ───────────────────────────────────
+
+
+def _build_list_model_app() -> Veloce:
+    app = Veloce(openapi_url=None)
+
+    @app.get("/items", response_model=list[ItemOut])
+    async def list_items() -> list[ItemOut]:
+        return LIST_MODEL_PAYLOAD
+
+    return _warm(app, lambda: make_request(path="/items"))
+
+
+LIST_MODEL_PAYLOAD = [ItemOut(name=f"item-{i}", price=9.99) for i in range(100)]
+LIST_MODEL_APP = _build_list_model_app()
+
+
+def test_dispatch_list_model_response(benchmark):
+    """A 100-item `list[Model]` response - tracks the single-pass fast path."""
+    response = benchmark(
+        lambda: run_async(LIST_MODEL_APP.handle_request(make_request(path="/items")))
+    )
+    assert response.status_code == 200
+
+
 # ── Dependency injection ───────────────────────────────────
 
 
