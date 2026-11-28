@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- WebSocket TEXT frame UTF-8 validation runs through the stdlib's incremental decoder instead of a hand-rolled byte loop, with a pure-ASCII fast path; RFC 6455's fail-fast rejection of a surrogate half is unchanged. ([#PENDING](https://github.com/Lokesh-Tallapaneni/veloce/pull/PENDING))
+
 ## [0.23.0] - 2026-11-27
 
 ### Added

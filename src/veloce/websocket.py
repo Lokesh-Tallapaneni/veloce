@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import codecs
 import contextlib
 import enum
 import hashlib
@@ -194,56 +195,35 @@ class _Utf8Validator:
     partial multi-byte sequence straddling a fragment boundary and rejects a bad
     byte on the first offending fragment rather than at the end.
 
-    A compact form of the Unicode UTF-8 acceptance automaton, so overlong
-    encodings, surrogate halves (U+D800-U+DFFF) and values past U+10FFFF are
-    rejected without decoding to `str`. `feed` returns False on the first invalid
-    byte; `done` is True only at a codepoint boundary.
+    Backed by the stdlib's own incremental UTF-8 decoder (C-accelerated), which
+    already rejects overlong encodings, surrogate halves (U+D800-U+DFFF) and
+    values past U+10FFFF - except it waits for a surrogate's third byte before
+    rejecting it, where RFC 6455 wants the second: `feed` checks the decoder's
+    buffered lead bytes for that one case itself. A pure-ASCII chunk arriving
+    with nothing buffered skips the decoder entirely. `feed` returns False on
+    the first invalid byte; `done` is True only at a codepoint boundary.
     """
 
-    __slots__ = ("_need", "_lo", "_hi")
+    __slots__ = ("_decoder",)
 
     def __init__(self) -> None:
-        self._need = 0
-        self._lo = 0x80
-        self._hi = 0xBF
+        self._decoder = codecs.getincrementaldecoder("utf-8")("strict")
 
     @property
     def done(self) -> bool:
-        return self._need == 0
+        return not self._decoder.getstate()[0]
 
     def feed(self, chunk: bytes | bytearray) -> bool:
-        need = self._need
-        lo = self._lo
-        hi = self._hi
-        for byte in chunk:
-            if need == 0:
-                if byte < 0x80:
-                    continue
-                if 0xC2 <= byte <= 0xDF:
-                    need, lo, hi = 1, 0x80, 0xBF
-                elif byte == 0xE0:
-                    need, lo, hi = 2, 0xA0, 0xBF
-                elif 0xE1 <= byte <= 0xEC or byte in (0xEE, 0xEF):
-                    need, lo, hi = 2, 0x80, 0xBF
-                elif byte == 0xED:
-                    need, lo, hi = 2, 0x80, 0x9F
-                elif byte == 0xF0:
-                    need, lo, hi = 3, 0x90, 0xBF
-                elif 0xF1 <= byte <= 0xF3:
-                    need, lo, hi = 3, 0x80, 0xBF
-                elif byte == 0xF4:
-                    need, lo, hi = 3, 0x80, 0x8F
-                else:
-                    return False
-            else:
-                if byte < lo or byte > hi:
-                    return False
-                need -= 1
-                lo, hi = 0x80, 0xBF
-        self._need = need
-        self._lo = lo
-        self._hi = hi
-        return True
+        if not self._decoder.getstate()[0] and chunk.isascii():
+            return True
+        try:
+            self._decoder.decode(bytes(chunk), False)
+        except UnicodeDecodeError:
+            return False
+        # RFC 6455 Sec. 8.1 fail-fast: the decoder itself waits for a
+        # surrogate's third byte to reject it; `ED A0..BF` already commits one.
+        pending = self._decoder.getstate()[0]
+        return not (len(pending) >= 2 and pending[0] == 0xED and 0xA0 <= pending[1] <= 0xBF)
 
 
 class WebSocketState(enum.IntEnum):
