@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import functools
 import inspect
 import time
@@ -52,7 +53,9 @@ from veloce._model_backend import (
     _HAS_MSGSPEC,
     ModelBackend,
     _msgspec,
+    adapter_for,
     backend_of,
+    dump_json_matches_model_dump,
     is_msgspec_struct,
     is_pydantic_model,
     shape_through_model,
@@ -163,6 +166,37 @@ def _is_struct_list_model(model: Any) -> bool:
         args = get_args(model)
         return bool(args) and is_msgspec_struct(args[0])
     return False
+
+
+def _list_adapter_dump_kwargs(dump_kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Translate per-item `model_dump()` kwargs to `TypeAdapter(list[M])` ones.
+
+    `include`/`exclude` mean something different one level up: a bare field
+    set is read as per-index selection on the list itself - `{"id"}` matches
+    nothing, since `"id"` is not a list index - and silently dumps every item
+    as empty rather than raising. `{"__all__": ...}` is the documented way to
+    apply one field set to every item instead.
+    """
+    if "include" not in dump_kwargs and "exclude" not in dump_kwargs:
+        return dump_kwargs
+    translated = dict(dump_kwargs)
+    for key in ("include", "exclude"):
+        if key in translated:
+            translated[key] = {"__all__": translated[key]}
+    return translated
+
+
+@dataclasses.dataclass(slots=True)
+class _PreEncodedJSON:
+    """A `_apply_response_model` result already serialized to JSON bytes.
+
+    Lets the `list[Model]` fast path skip the generic Python-value encode
+    `_coerce_response` would otherwise run, while still going through its
+    ordinary handling for status code and injected-header merging - unlike a
+    `Response` the handler itself returned, which bypasses both.
+    """
+
+    body: bytes
 
 
 # `BaseException` rather than the raised class, so any base of it matches alike.
@@ -1223,6 +1257,24 @@ class DispatchMixin(AppHost):
                 if not isinstance(result, (list, tuple)):
                     return result  # let downstream coercion handle the mismatch
                 if is_pydantic_model(inner):
+                    # One pass through pydantic-core beats a `model_dump()`
+                    # per item followed by a separate JSON encode of the
+                    # resulting list - but only when every item already is
+                    # exactly `inner`, no custom JSON dialect is configured
+                    # (its encoder would never run on this path), no
+                    # response_class needs the plain list to build itself,
+                    # and `inner` has no field pydantic-core's native writer
+                    # formats differently (`dump_json_matches_model_dump`).
+                    if (
+                        route_info.response_class is None
+                        and self._json_dumps_override() is None
+                        and dump_json_matches_model_dump(inner)
+                        and all(type(item) is inner for item in result)
+                    ):
+                        adapter = adapter_for(model)
+                        return _PreEncodedJSON(
+                            adapter.dump_json(result, **_list_adapter_dump_kwargs(dump_kwargs))
+                        )
                     dumped: list[Any] = []
                     for item in result:
                         # Dumped directly, preserving what `exclude_unset` reads.
@@ -1302,6 +1354,8 @@ class DispatchMixin(AppHost):
         """Convert handler return value to a Response object."""
         if isinstance(result, Response):
             return result
+        if isinstance(result, _PreEncodedJSON):
+            return JSONResponse._from_encoded(result.body)
         # Gated so the JSONResponse-subclass branch below still owns dicts.
         if type(result) is dict and response_class is None:
             return self._json_from_handler(result)
