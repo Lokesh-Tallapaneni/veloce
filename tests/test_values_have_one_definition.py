@@ -364,7 +364,10 @@ def test_the_sse_retry_hint_has_one_definition():
 
 
 def test_the_prior_protocol_revision_has_one_definition():
-    source = (SRC / "contrib" / "mcp" / "server.py").read_text(encoding="utf-8")
+    # The dispatcher's constants live in `_protocol.py`; the server modules share one copy.
+    mcp = SRC / "contrib" / "mcp"
+    names = ("server.py", "_protocol.py", "_listing.py", "_handshake.py")
+    source = chr(10).join((mcp / name).read_text(encoding="utf-8") for name in names)
     assert source.count('"2025-06-18"') == 1
 
 

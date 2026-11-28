@@ -81,8 +81,13 @@ def test_the_dispatcher_holds_no_second_table():
     moving the brace broke it and a second table written on one line evaded it.
     """
     server = tree("server.py")
+    # The core table is defined beside the other protocol constants.
+    protocol = tree("_protocol.py")
     tables = {
-        name for name in module_level_names(server) if name.endswith("_HANDSHAKE_ONLY_METHODS")
+        name
+        for module in (server, protocol)
+        for name in module_level_names(module)
+        if name.endswith("_HANDSHAKE_ONLY_METHODS")
     }
     assert tables == {"_CORE_HANDSHAKE_ONLY_METHODS"}, (
         f"the dispatcher declares a second retirement table: {tables}"
