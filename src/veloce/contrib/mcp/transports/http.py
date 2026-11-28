@@ -256,12 +256,7 @@ async def _handle_http(
     if response is None:
         # A notification or a response carries no reply (JSON-RPC 2.0 Sec. 4.1).
         return _with_session(Response(status_code=status.HTTP_202_ACCEPTED), session_id)
-    # A 403 with an RFC 6750 challenge; an SSE reply has committed its 200.
-    error = response.get("error")
-    if isinstance(error, dict) and error.get("code") == _JSONRPC_FORBIDDEN:
-        scopes = (error.get("data") or {}).get("requiredScopes") or []
-        return _forbidden(response, scopes)
-    return _with_session(_protocol_response(response), session_id)
+    return _json_reply(response, session_id)
 
 
 async def _bind_session(
@@ -290,6 +285,20 @@ def _with_session(response: Response, session_id: str | None) -> Response:
     if session_id is not None:
         response.headers[_SESSION_ID_HEADER] = session_id
     return response
+
+
+def _json_reply(response: dict[str, Any], session_id: str | None) -> Response:
+    """Answer one JSON-RPC response or error as plain JSON.
+
+    Shared by the flat-dispatch path and `_lazy_reply`'s final-item branch,
+    which must not drift apart on how a scope-forbidden error is challenged.
+    """
+    error = response.get("error")
+    # A 403 with an RFC 6750 challenge; an SSE reply has committed its 200.
+    if isinstance(error, dict) and error.get("code") == _JSONRPC_FORBIDDEN:
+        scopes = (error.get("data") or {}).get("requiredScopes") or []
+        return _forbidden(response, scopes)
+    return _with_session(_protocol_response(response), session_id)
 
 
 async def _handle_delete(store: HttpSessionStore | None, request: Request) -> Response:
@@ -694,8 +703,18 @@ async def _lazy_reply(
         item = await asyncio.wait_for(dispatch.queue.get(), timeout=_LAZY_REPLY_TIMEOUT_SECONDS)
     except asyncio.TimeoutError:
         return _sse_from_dispatch(dispatch, session_id)
+    except BaseException:
+        # Mirrors `_sse_from_dispatch`'s own `finally`: release anyone that
+        # might be waiting on `client_gone` and stop draining, without
+        # touching `runner_task` itself - the dispatch task is left running
+        # on a dropped connection rather than cancelled, same as there, since
+        # the spec forbids treating a disconnect as a cancel.
+        dispatch.close()
+        raise
 
     if item is _STREAM_END:  # pragma: no cover - a request-with-id always replies
+        # Holds because `_must_stream` already routes the one no-reply case
+        # (`subscriptions/listen`) away from here; a future one must do the same.
         raise AssertionError("a request's dispatch ended with no reply")
     _event_id, payload, is_final = item
     if not is_final:
@@ -704,8 +723,4 @@ async def _lazy_reply(
     assert dispatch.runner_task is not None
     await dispatch.runner_task
     dispatch.close()
-    error = payload.get("error")
-    if isinstance(error, dict) and error.get("code") == _JSONRPC_FORBIDDEN:
-        scopes = (error.get("data") or {}).get("requiredScopes") or []
-        return _forbidden(payload, scopes)
-    return _with_session(_protocol_response(payload), session_id)
+    return _json_reply(payload, session_id)

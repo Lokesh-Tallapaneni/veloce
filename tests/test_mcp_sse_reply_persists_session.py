@@ -29,9 +29,6 @@ import orjson
 from veloce import AsyncTestClient, Veloce
 from veloce.contrib.mcp.transports.session_store import SessionRecord
 
-#: What a spec-conformant client sends: both types, stream preferred where offered.
-BOTH = "application/json, text/event-stream"
-
 _INIT = {
     "jsonrpc": "2.0",
     "id": 1,
@@ -129,13 +126,18 @@ async def test_both_doors_publish_the_same_record():
 
 
 async def test_the_handshake_survives_a_later_call_on_the_same_worker():
-    """`resolve` overwrites live state from the record, so a bad record wipes it."""
+    """`resolve` overwrites live state from the record, so a bad record wipes it.
+
+    What is answered as SSE vs JSON is not what this test is about - the
+    `text/event-stream` Accept header here only keeps it consistent with its
+    siblings above, all of which force the stream the same way.
+    """
     backend = MemoryBackend()
     app = _app()
     app.mount_mcp(transport="http", sessions=True, session_backend=backend)
 
     async with AsyncTestClient(app) as client:
-        session_id = (await _post(client, _INIT, BOTH)).headers["mcp-session-id"]
+        session_id = (await _post(client, _INIT, "text/event-stream")).headers["mcp-session-id"]
         served = await _post(client, _CALL, "application/json", session_id)
         assert served.status_code == 200
 

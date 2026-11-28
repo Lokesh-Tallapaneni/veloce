@@ -24,7 +24,7 @@ import json
 import pytest
 
 from tests._mcp import initialize
-from veloce import Depends, Veloce
+from veloce import AsyncTestClient, Depends, Veloce
 from veloce._handler_plan import build_plan
 from veloce.contrib.mcp.context import MCPContext
 from veloce.contrib.mcp.registry import MCPTool
@@ -187,6 +187,46 @@ def test_waiting_for_a_reply_that_never_comes_falls_back_to_the_stream(client, m
     monkeypatch.setattr(mcp_http, "_LAZY_REPLY_TIMEOUT_SECONDS", 0.05)
     response = _call(client, "slow")
     assert _content_type(response) == "text/event-stream"
+
+
+async def test_cancelling_the_wait_cleans_up_and_does_not_wedge_the_app():
+    """A dropped connection while waiting on the first message must not leave
+    the dispatch's queue/client_gone state behind for the next request to
+    trip over."""
+    app = _app()
+
+    async with AsyncTestClient(app) as client:
+        init = await client.post("/mcp", json=INITIALIZE, headers={"Accept": BOTH})
+        headers = {"Accept": BOTH}
+        session = init.headers.get("mcp-session-id")
+        if session:
+            headers["mcp-session-id"] = session
+        await client.post(
+            "/mcp",
+            json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+            headers=headers,
+        )
+
+        call = {
+            "jsonrpc": "2.0",
+            "id": 9,
+            "method": "tools/call",
+            "params": {"name": "slow", "arguments": {"x": 7}},
+        }
+        task = asyncio.ensure_future(client.post("/mcp", json=call, headers=headers))
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        # The connection still works afterward - nothing from the cancelled
+        # call's dispatch state leaked into a later request.
+        again = await client.post(
+            "/mcp",
+            json={**call, "id": 10, "params": {"name": "plain", "arguments": {"x": 1}}},
+            headers=headers,
+        )
+        assert json.loads(again.text)["result"]["content"]
 
 
 # ── a handler the walk cannot see through ─────────────────────────────
