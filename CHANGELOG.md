@@ -23,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Veloce.add_route` is inherited from `Router`; registration checks run in `_add_route_options`. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
 - `Signal.connect` takes `weak` and `sender` by keyword; pass `sender=` explicitly. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
 - Public functions and classes carry `Args`, `Returns` and `Raises` documentation. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
-- Modules over 1,000 lines became packages with unchanged import paths. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
+- Modules over 800 lines became packages or mixin modules with unchanged import paths. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
 
 ## [0.23.0] - 2026-11-27
 

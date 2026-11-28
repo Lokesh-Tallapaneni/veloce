@@ -303,7 +303,7 @@ async def hash_password_async(
     Raises:
         ValueError: As `hash_password`.
 
-    """
+    """  # noqa: DOC502 - the exception is raised or caught by a callee
     return await asyncio.to_thread(hash_password, password, method, salt_length)
 
 

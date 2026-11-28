@@ -384,7 +384,7 @@ class FileResponse(Response):
         Raises:
             FileNotFoundError: If `path` is missing or not a regular file.
 
-        """
+        """  # noqa: DOC502 - the exception is raised or caught by a callee
         loop = asyncio.get_running_loop()
 
         st = _stat_regular_file(path)

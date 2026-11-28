@@ -2,11 +2,6 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:  # pragma: no cover
-    pass
-
 
 class _Utf8Validator:
     """Incremental UTF-8 validator for streamed TEXT payloads.

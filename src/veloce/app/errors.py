@@ -100,7 +100,7 @@ class ErrorsMixin(AppHost):
         Raises:
             TypeError: If the key is neither a status code nor an exception class.
 
-        """
+        """  # noqa: DOC502 - the exception is raised or caught by a callee
         self.register_error_handler(exc_class_or_status, handler)
 
     def log_exception(self, exc: BaseException, request: Request | None = None) -> None:

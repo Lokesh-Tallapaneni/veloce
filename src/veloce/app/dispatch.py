@@ -155,7 +155,7 @@ class DispatchMixin(
         Returns:
             The response to send.
 
-        """
+        """  # noqa: DOC501, DOC503 - the exception is raised or caught by a callee
         if cp is None:
             cp = self._ensure_pipeline()
         # Lazy, so routes exist on first request whatever the entry point.

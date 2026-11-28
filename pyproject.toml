@@ -348,6 +348,10 @@ extend-exclude = ["build", "dist", ".pytest_cache"]
 exclude = ["*.md"]
 
 [tool.ruff.lint]
+# Codes owned by another tool (pydoclint's `DOC5xx`): `RUF100` must not report
+# a `noqa` for them as unused.
+external = ["DOC"]
+
 select = [
     "E",    # pycodestyle errors
     "W",    # pycodestyle warnings
@@ -358,10 +362,19 @@ select = [
     "SIM",  # flake8-simplify
     "ASYNC",
     "TID251",  # banned APIs, named under `flake8-tidy-imports.banned-api`
-    # Not selected, on purpose: `PLR0913` (argument count) flags the public route
-    # and response signatures whose width is the documented API, and `TC` would
-    # move imports under `TYPE_CHECKING` that handler-annotation resolution reads
-    # at runtime. Both would need a blanket suppression rather than a fix.
+    # Size and shape ceilings, set at today's maximum like `max-complexity`
+    # below: no new function exceeds them, and they can only be lowered. The
+    # argument ceiling is the width of the documented route signatures.
+    "PLR0911",  # too many return statements
+    "PLR0912",  # too many branches
+    "PLR0913",  # too many arguments
+    "PLR0915",  # too many statements
+    # Only the type-checking-block correctness checks. The rest of `TC` would
+    # move imports under `TYPE_CHECKING` that handler-annotation resolution
+    # reads at runtime, which a linter cannot tell apart from the harmless ones.
+    "TC004",  # a runtime use of a name imported only for type checking
+    "TC005",  # an empty `if TYPE_CHECKING:` block
+    "TC006",  # `cast()` with an unquoted type
     "N",       # PEP 8 naming
     "PGH004",  # blanket `noqa` without a rule code
     "RUF100",  # unused `noqa` - keeps every suppression load-bearing
@@ -416,6 +429,10 @@ ignore = [
 # A ceiling set at the most complex function today, so no new function exceeds
 # it and the number can only be lowered as functions are decomposed.
 mccabe.max-complexity = 37
+pylint.max-args = 42
+pylint.max-returns = 20
+pylint.max-branches = 41
+pylint.max-statements = 104
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 # The event-loop policy API is deprecated as of Python 3.14 and scheduled for
@@ -483,7 +500,6 @@ check-return-types = false
 check-class-attributes = false
 # A function that documents the exceptions its callee raises would be reported
 # as a mismatch, since the checker reads only the function's own `raise`s.
-skip-checking-raises = true
 exclude = "/(tests|benchmarks|bench|docs|examples)/|example_app.py|mkdocs_hooks.py"
 
 [tool.pyright]

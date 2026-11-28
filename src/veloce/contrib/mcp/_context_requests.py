@@ -88,7 +88,7 @@ class _ServerRequestsMixin:
             MCPCapabilityError: If the client did not advertise `sampling`, or `sampling.tools`
                 when tools are given.
 
-        """
+        """  # noqa: DOC503 - the exception is raised or caught by a callee
         if include_context is not None and include_context not in _SAMPLING_CONTEXT_MODES:
             raise ValueError(
                 f"include_context must be one of {sorted(_SAMPLING_CONTEXT_MODES)}, "
@@ -163,7 +163,7 @@ class _ServerRequestsMixin:
             ValueError: If `tools` names a tool this server does not register.
             MCPCapabilityError: If the client did not advertise `sampling.tools`.
 
-        """
+        """  # noqa: DOC503 - the exception is raised or caught by a callee
         server = self._require_server("sample_with_tools")
         declared = self._declare_tools(server, tools)
         allowed = frozenset(tools)
@@ -303,7 +303,7 @@ class _ServerRequestsMixin:
             MCPCapabilityError: If the client did not advertise `elicitation` (or its `url`
                 mode, for URL elicitation).
 
-        """
+        """  # noqa: DOC503 - the exception is raised or caught by a callee
         if requested_schema is not None and url is not None:
             raise ValueError("elicit takes either requested_schema (form) or url, not both")
         params: dict[str, Any] = {"message": message}

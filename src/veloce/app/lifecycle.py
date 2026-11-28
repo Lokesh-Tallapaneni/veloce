@@ -327,7 +327,7 @@ class LifecycleMixin(AppHost):
         Raises:
             ValueError: If `event` is not a known event name.
 
-        """
+        """  # noqa: DOC502 - the exception is raised or caught by a callee
         warnings.warn(
             "Veloce.add_event_handler() is deprecated and will be removed "
             "in v1.0.0; use app.on_startup(fn) / app.on_shutdown(fn) instead.",

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from veloce._route_contract import RouteContract, iter_param_descriptors
 from veloce.contrib._jsonschema import (
@@ -17,12 +17,8 @@ from veloce.contrib._jsonschema import (
 # Deliberate re-exports (`X as X`); the schema layer itself lives in `_jsonschema`.
 from veloce.contrib._jsonschema import _local_def_refs as _local_def_refs
 from veloce.contrib._jsonschema import _rewrite_byte_format as _rewrite_byte_format
-from veloce.routing.converters import path_param_schemas
-
-if TYPE_CHECKING:  # pragma: no cover
-    pass
-
 from veloce.contrib.openapi._introspection import _group_field_schema
+from veloce.routing.converters import path_param_schemas
 
 
 @dataclasses.dataclass(frozen=True, slots=True)

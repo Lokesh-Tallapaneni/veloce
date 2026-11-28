@@ -7,7 +7,7 @@ import copy
 import functools
 from collections.abc import Callable
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Literal, get_args, get_origin
+from typing import Any, Literal, get_args, get_origin
 
 from pydantic import TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
@@ -20,9 +20,6 @@ from veloce._handler_plan import (
 )
 from veloce._model_backend import _msgspec, is_pydantic_model
 from veloce.exceptions import RequestValidationError
-
-if TYPE_CHECKING:  # pragma: no cover
-    pass
 
 # ── Helpers ───────────────────────────────────────────────
 

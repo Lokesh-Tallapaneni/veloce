@@ -7,7 +7,7 @@ import contextlib
 import socket
 import struct
 import sys
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from urllib.parse import unquote
 
 from veloce._protocol_constants import (
@@ -21,9 +21,6 @@ from veloce._protocol_constants import (
 from veloce.status import (
     HTTP_500_INTERNAL_SERVER_ERROR,
 )
-
-if TYPE_CHECKING:  # pragma: no cover
-    pass
 from veloce.testclient._body import StreamBody, _aiter_body_chunks
 from veloce.testclient.response import TestResponse
 

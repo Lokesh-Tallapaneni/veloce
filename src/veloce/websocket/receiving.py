@@ -23,10 +23,6 @@ from veloce.websocket.handshake import (
     _validate_idle_timeout,
 )
 
-if TYPE_CHECKING:  # pragma: no cover
-    pass
-
-
 _logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:  # pragma: no cover

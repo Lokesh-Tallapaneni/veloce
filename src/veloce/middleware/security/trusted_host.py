@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 import veloce.status as status
 from veloce._constants import (
     HEADER_HOST,
@@ -12,9 +10,6 @@ from veloce._internal import _extract_host
 from veloce.http.request import Request
 from veloce.http.response import Response
 from veloce.middleware.base import Middleware
-
-if TYPE_CHECKING:  # pragma: no cover
-    pass
 
 
 # ── Host validation ───────────────────────────────────────

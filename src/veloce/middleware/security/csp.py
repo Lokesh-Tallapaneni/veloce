@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import secrets
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING
 
 from veloce._constants import (
     HEADER_CONTENT_SECURITY_POLICY,
@@ -14,10 +13,6 @@ from veloce._internal import _current_request_var
 from veloce.http.request import Request
 from veloce.http.response import Response, header_present
 from veloce.middleware.base import Middleware
-
-if TYPE_CHECKING:  # pragma: no cover
-    pass
-
 
 # request.state slot holding the per-request CSP nonce (materialized lazily).
 _CSP_NONCE_STATE_KEY = "csp_nonce"
@@ -104,7 +99,7 @@ class CSPMiddleware(Middleware):
                 while `nonce=False`.
             TypeError: If a policy is neither a string nor a mapping.
 
-        """
+        """  # noqa: DOC503 - the exception is raised or caught by a callee
         super().__init__(name=name)
         # `ValueError`, not `assert`: `python -O` strips asserts, and an empty
         # configuration would then emit no header while the stack claims it does.

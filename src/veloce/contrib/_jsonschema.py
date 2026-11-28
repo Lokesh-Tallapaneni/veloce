@@ -23,7 +23,7 @@ import types
 import uuid
 import weakref
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, Literal, Union, get_args, get_origin
+from typing import Any, Literal, Union, get_args, get_origin
 
 from pydantic import BaseModel, create_model
 
@@ -38,9 +38,6 @@ from veloce._model_backend import (
     is_msgspec_struct,
     is_pydantic_model,
 )
-
-if TYPE_CHECKING:  # pragma: no cover
-    pass
 
 _logger = logging.getLogger(__name__)
 

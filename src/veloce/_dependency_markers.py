@@ -11,9 +11,6 @@ from veloce._internal import (
     _refuse_string_scopes,
 )
 
-if TYPE_CHECKING:  # pragma: no cover
-    pass
-
 
 class Depends:
     """Dependency marker — use in function signature defaults.

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import collections.abc
 import warnings
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from veloce._params import ParamBase
 from veloce.contrib._jsonschema import (
@@ -14,13 +14,9 @@ from veloce.contrib._jsonschema import (
 # Deliberate re-exports (`X as X`); the schema layer itself lives in `_jsonschema`.
 from veloce.contrib._jsonschema import _local_def_refs as _local_def_refs
 from veloce.contrib._jsonschema import _rewrite_byte_format as _rewrite_byte_format
+from veloce.contrib.openapi._introspection import _handler_intro, _param_marker
 from veloce.dependency import Depends
 from veloce.security.base import SecurityScheme
-
-if TYPE_CHECKING:  # pragma: no cover
-    pass
-
-from veloce.contrib.openapi._introspection import _handler_intro, _param_marker
 
 
 def _scheme_definition(scheme: Any) -> tuple[str, dict[str, Any]] | None:

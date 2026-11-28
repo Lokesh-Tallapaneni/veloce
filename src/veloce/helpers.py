@@ -271,7 +271,7 @@ class Aborter:
             HTTPException: Always - the class registered for `code` on this
                 aborter, then on `mapping`, then the stock class for the status.
 
-        """
+        """  # noqa: DOC503 - the exception is raised or caught by a callee
         if not detail:
             detail = _default_detail(code)
         cls = self._mapping.get(code) or self.mapping.get(code) or exception_for_status(code)
@@ -330,7 +330,7 @@ def abort(status_code: int, detail: str = "", headers: dict[str, str] | None = N
     Raises:
         HTTPException: Always - the typed subclass for `status_code`.
 
-    """
+    """  # noqa: DOC502 - the exception is raised or caught by a callee
     app = _current_app_var.get()
     aborter: Aborter = _default_aborter if app is None else app.aborter
     aborter(status_code, detail, headers)
@@ -552,7 +552,7 @@ def flash(message: str, category: str = "message") -> None:
         RuntimeError: Outside a request, or when no session middleware is
             installed.
 
-    """
+    """  # noqa: DOC502 - the exception is raised or caught by a callee
     store = _flash_store()
     flashes = store.setdefault("_flashes", [])
     flashes.append((category, message))

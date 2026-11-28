@@ -106,7 +106,7 @@ class APIKeyHeader(_APIKeyBase):
         Raises:
             HTTPException: `401` when the header is missing and `auto_error` is set.
 
-        """
+        """  # noqa: DOC502 - the exception is raised or caught by a callee
         # Not the header collection: on a WebSocket route that is a plain
         # lowercase-keyed dict, which a canonically-cased `name` would miss.
         key = request._peek_header(self.name)

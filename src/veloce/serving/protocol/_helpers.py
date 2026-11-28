@@ -5,11 +5,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import socket as _socket
-from typing import TYPE_CHECKING, Protocol
-
-if TYPE_CHECKING:  # pragma: no cover
-    pass
-
+from typing import Protocol
 
 _logger = logging.getLogger(__name__)
 

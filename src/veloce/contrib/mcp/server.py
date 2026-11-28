@@ -432,7 +432,7 @@ class MCPServer(CallsMixin, ListingMixin, HandshakeMixin, TasksMixin, Invocation
         Returns:
             The response object, or `None` for a notification.
 
-        """
+        """  # noqa: DOC501, DOC503 - the exception is raised or caught by a callee
         # ── 1. Envelope: is this a well-formed JSON-RPC 2.0 request at all ──
         msg_id = message.get("id")
         method = message.get("method")

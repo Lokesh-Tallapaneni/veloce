@@ -3,15 +3,10 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
 
 from veloce.status import (
     WS_1000_NORMAL_CLOSURE,
 )
-
-if TYPE_CHECKING:  # pragma: no cover
-    pass
-
 
 # Close codes a peer may send (RFC 6455 Sec. 7.4). Reserved, undefined and
 # unassigned ones answer 1002; >=3000 is taken as given.

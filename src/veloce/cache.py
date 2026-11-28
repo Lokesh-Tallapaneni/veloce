@@ -178,7 +178,7 @@ def cached(
         TypeError: When decorating a non-async function, or when a result is
             not JSON-serialisable (raised by the wrapped call).
 
-    """
+    """  # noqa: DOC503 - the exception is raised or caught by a callee
     if ttl < 1:
         raise ValueError("cached ttl must be >= 1 second")
 

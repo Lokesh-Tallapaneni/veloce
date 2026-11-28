@@ -295,14 +295,21 @@ async def test_the_port_is_released_once_the_server_shuts_down():
 
 
 async def test_shutdown_leaves_no_connection_or_dispatch_task_behind():
+    # Both registries live on the class and are shared by every server in the
+    # process, so a connection another test left open would otherwise be blamed
+    # on this one. The baseline is taken before this test's server starts and
+    # only what this server added is held against it.
+    connections_before = set(HttpProtocol._live_connections)
+    tasks_before = set(HttpProtocol._active_tasks)
+
     async with LiveServer(_app()) as server, server.connect() as connection:
         assert (await connection.get("/items")).status_code == 200
 
     # The protocol tracks every live connection and every in-flight dispatch
-    # task on the class, so these two being empty is the framework's own answer
-    # to whether anything outlived the server.
-    assert list(HttpProtocol._live_connections) == []
-    assert HttpProtocol._active_tasks == set()
+    # task on the class, so nothing new in these two is the framework's own
+    # answer to whether anything outlived the server.
+    assert set(HttpProtocol._live_connections) - connections_before == set()
+    assert set(HttpProtocol._active_tasks) - tasks_before == set()
     assert server._connections == set()
 
 

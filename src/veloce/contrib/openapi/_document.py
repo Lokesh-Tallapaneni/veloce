@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 import warnings
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from veloce._protocol_constants import HTTP_METHOD_QUERY
 from veloce._warnings import _RegistrationWarning
@@ -17,10 +17,6 @@ from veloce.contrib._jsonschema import (
 # Deliberate re-exports (`X as X`); the schema layer itself lives in `_jsonschema`.
 from veloce.contrib._jsonschema import _local_def_refs as _local_def_refs
 from veloce.contrib._jsonschema import _rewrite_byte_format as _rewrite_byte_format
-
-if TYPE_CHECKING:  # pragma: no cover
-    pass
-
 from veloce.contrib.openapi._introspection import _build_info_object
 from veloce.contrib.openapi._operations import (
     _build_operation,

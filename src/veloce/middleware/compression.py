@@ -261,7 +261,7 @@ class CompressionMiddleware(Middleware):
                 requested codings has its package installed, or `levels` names an
                 unknown coding.
 
-        """
+        """  # noqa: DOC502 - the exception is raised or caught by a callee
         super().__init__(name=name)
         self.minimum_size = minimum_size
         self.algorithms, self.levels = self._resolve_codings(algorithms, levels, compresslevel)

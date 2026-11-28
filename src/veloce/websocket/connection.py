@@ -6,7 +6,7 @@ import asyncio
 import contextlib
 import logging
 import struct
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import Any, NoReturn
 
 from veloce._constants import (
     HEADER_SEC_WEBSOCKET_KEY,
@@ -41,10 +41,6 @@ from veloce.websocket.receiving import ReceiveMixin
 from veloce.websocket.state import WebSocketState as WebSocketState
 from veloce.websocket.utf8 import _Utf8Validator
 from veloce.websocket.view import HandshakeViewMixin
-
-if TYPE_CHECKING:  # pragma: no cover
-    pass
-
 
 _logger = logging.getLogger(__name__)
 
@@ -566,7 +562,7 @@ class WebSocket(HandshakeViewMixin, ReceiveMixin, RawTransportMixin):
             RuntimeError: If called before `accept()`, or on a raw-transport connection.
             WebSocketDisconnect: If the peer disconnected.
 
-        """
+        """  # noqa: DOC503 - the exception is raised or caught by a callee
         self._check_can_receive("receive")
         if not self._is_asgi:
             raise RuntimeError(

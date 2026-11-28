@@ -101,7 +101,7 @@ class RedisSessionStore(SessionStore):
         Raises:
             RuntimeError: If the `redis` package is not installed (the `redis` extra).
 
-        """
+        """  # noqa: DOC502 - the exception is raised or caught by a callee
         return cls(_load_redis_from_url(url, **kwargs), prefix=prefix)
 
     def _key(self, session_id: str) -> str:
@@ -218,7 +218,7 @@ class RedisRateLimitBackend(RateLimitBackend):
         Raises:
             RuntimeError: If the `redis` package is not installed (the `redis` extra).
 
-        """
+        """  # noqa: DOC502 - the exception is raised or caught by a callee
         return cls(_load_redis_from_url(url, **kwargs), prefix=prefix)
 
     async def evaluate(self, key: str, strategy: RateLimitStrategy, now: float) -> RateLimitResult:
@@ -346,7 +346,7 @@ class RedisCache(Cache):
         Raises:
             RuntimeError: If the `redis` package is not installed (the `redis` extra).
 
-        """
+        """  # noqa: DOC502 - the exception is raised or caught by a callee
         return cls(_load_redis_from_url(url, **kwargs), prefix=prefix)
 
     async def get(self, key: str) -> bytes | None:

@@ -4,15 +4,10 @@ from __future__ import annotations
 
 import secrets
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, Literal
+from typing import Any, Literal
 
 from veloce.http.request import Request
 from veloce.http.response import Response
-from veloce.sessions import InMemorySessionStore, Session, SessionStore
-
-if TYPE_CHECKING:  # pragma: no cover
-    pass
-
 from veloce.middleware.sessions._shared import (
     _UNSET,
     _begin_session_response,
@@ -22,6 +17,7 @@ from veloce.middleware.sessions._shared import (
 from veloce.middleware.sessions.base import (
     SessionMiddlewareBase,
 )
+from veloce.sessions import InMemorySessionStore, Session, SessionStore
 
 
 class ServerSessionMiddleware(SessionMiddlewareBase):
@@ -84,7 +80,7 @@ class ServerSessionMiddleware(SessionMiddlewareBase):
             ValueError: If the cookie settings are an invalid combination, as for
                 `SessionMiddleware`.
 
-        """
+        """  # noqa: DOC502 - the exception is raised or caught by a callee
         super().__init__(name=name)
         self._configure_cookie(
             cookie_name=cookie_name,

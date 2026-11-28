@@ -241,7 +241,7 @@ def decode_jwt(
         InvalidSignatureError: If the signature does not verify.
         MissingClaimError: If a `require`d claim is absent.
 
-    """
+    """  # noqa: DOC503 - the exception is raised or caught by a callee
     if not algorithms:
         raise ValueError("algorithms allow-list is required and must be non-empty")
     secret_bytes = _coerce_secret_bytes(secret)

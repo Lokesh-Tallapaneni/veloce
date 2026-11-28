@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from veloce._constants import (
     HEADER_ACCEPT,
     HEADER_ACCEPT_CHARSET,
@@ -29,9 +27,6 @@ from veloce.http.datastructures import (
     RangeSpec,
 )
 from veloce.http.dates import parse_date
-
-if TYPE_CHECKING:  # pragma: no cover
-    pass
 from veloce.http.request._base import (
     _UNSET,
     RequestBase,

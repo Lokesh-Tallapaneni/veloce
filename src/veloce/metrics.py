@@ -137,7 +137,7 @@ def instrument_with_prometheus(
         ImportError: If `prometheus_client` is not installed (the `metrics` extra).
         ValueError: If the metric names already exist in `registry`.
 
-    """
+    """  # noqa: DOC503 - the exception is raised or caught by a callee
     if _PROM_IMPORT_ERROR is not None:
         raise ImportError(_INSTALL_HINT) from _PROM_IMPORT_ERROR
 

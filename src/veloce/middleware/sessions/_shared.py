@@ -4,14 +4,11 @@ from __future__ import annotations
 
 import warnings
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, Final, Literal
+from typing import Any, Final, Literal
 
 from veloce._constants import HEADER_COOKIE
 from veloce.http.response import Response
 from veloce.signing import Signer
-
-if TYPE_CHECKING:  # pragma: no cover
-    pass
 
 
 class _UnsetType:

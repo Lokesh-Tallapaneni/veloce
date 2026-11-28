@@ -5,13 +5,10 @@ from __future__ import annotations
 import os
 import sys
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from veloce.app._host import AppHost
 from veloce.helpers import Aborter, send_from_directory, send_from_directory_async
-
-if TYPE_CHECKING:  # pragma: no cover
-    pass
 
 
 class AccessorsMixin(AppHost):

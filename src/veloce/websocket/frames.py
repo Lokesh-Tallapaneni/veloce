@@ -2,11 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:  # pragma: no cover
-    pass
-
+from typing import Any
 
 # RFC 6455 Sec. 5.2 frame opcodes, by name on the cold paths only: the
 # per-frame comparisons fold the literal and carry a `# _OP_*` tag instead.

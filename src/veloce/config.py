@@ -302,7 +302,7 @@ class Config(dict[str, Any]):
         Raises:
             OSError: If the file cannot be opened and `silent` is false.
 
-        """
+        """  # noqa: DOC502 - the exception is raised or caught by a callee
         module = types.ModuleType("veloce_config")
         module.__file__ = filename
         source = _read_config_file(filename, "rb", lambda handle: handle.read(), silent=silent)
@@ -348,7 +348,7 @@ class Config(dict[str, Any]):
             OSError: If the file cannot be opened and `silent` is false.
             ValueError: If a value for a typed key cannot be converted.
 
-        """
+        """  # noqa: DOC502 - the exception is raised or caught by a callee
         lines = _read_config_file(
             filename, "r", lambda handle: handle.readlines(), silent=silent, encoding="utf-8"
         )
@@ -468,7 +468,7 @@ class Config(dict[str, Any]):
             OSError: If the file cannot be opened and `silent` is false.
             TypeError: If `load` returns something other than a mapping.
 
-        """
+        """  # noqa: DOC503 - the exception is raised or caught by a callee
         mode = "r" if text else "rb"
         data = _read_config_file(filename, mode, load, silent=silent)
         if data is _SILENT_MISS:

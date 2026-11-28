@@ -9,7 +9,7 @@ from collections.abc import (
     AsyncIterator,
     Iterable,
 )
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from urllib.parse import urlencode
 
 import veloce._json as _json
@@ -21,9 +21,6 @@ from veloce._constants import (
     MIME_OCTET_STREAM,
 )
 from veloce._internal import _quote_header_value
-
-if TYPE_CHECKING:  # pragma: no cover
-    pass
 from veloce.testclient._headers import _has_header, _header_pairs, _HeadersArg, _set_header
 
 # What a `stream=` body may be. `_aiter_body_chunks` normalises either shape

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from multidict import CIMultiDict
 
@@ -14,9 +14,6 @@ from veloce._constants import (
 from veloce._protocol_constants import (
     SET_COOKIE_JOINER,
 )
-
-if TYPE_CHECKING:  # pragma: no cover
-    pass
 from veloce.testclient._cookies import _SET_COOKIE_LOWER, _parse_set_cookie_first_pair
 
 

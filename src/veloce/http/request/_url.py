@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from veloce._constants import (
     HEADER_HOST,
@@ -16,9 +16,6 @@ from veloce.http.datastructures import (
     URL,
     Address,
 )
-
-if TYPE_CHECKING:  # pragma: no cover
-    pass
 from veloce.http.request._negotiation import NegotiationMixin
 
 

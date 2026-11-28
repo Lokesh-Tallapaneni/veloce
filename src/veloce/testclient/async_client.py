@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import (
     Sequence,
 )
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from urllib.parse import urlencode
 
 from veloce._protocol_constants import (
@@ -20,9 +20,6 @@ from veloce._protocol_constants import (
     LIFECYCLE_STARTUP,
     URL_SCHEME_HTTP,
 )
-
-if TYPE_CHECKING:  # pragma: no cover
-    pass
 from veloce.testclient._asgi import _send_one_request
 from veloce.testclient._body import StreamBody, _prepare_body_request
 from veloce.testclient._cookies import _apply_set_cookie_to_jar, _TestClientCookies

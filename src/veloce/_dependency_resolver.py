@@ -8,12 +8,23 @@ import inspect
 import logging
 import weakref
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 
 from veloce._constants import (
     MSG_YIELD_NO_VALUE,
     STATE_INJECTED_RESPONSE,
 )
+from veloce._dependency_body import _BodyResolutionMixin
+from veloce._dependency_coerce import (
+    _coerce_scalar,
+    _coerce_value,
+    _collect_sequence_marker,
+    _err_missing_marker,
+    _validate_body_list,
+    _validate_list_marker,
+)
+from veloce._dependency_markers import Depends, SecurityScopes
+from veloce._dependency_params import _every_value, _resolve_list_param, _resolve_scalar_param
 from veloce._handler_plan import (
     K_BG_TASKS,
     K_BODY_MODEL,
@@ -39,20 +50,6 @@ from veloce._internal import (
 from veloce._resolver_codegen import compile_graph_resolver, compile_param_resolver
 from veloce.background import BackgroundTasks
 from veloce.exceptions import RequestValidationError
-
-if TYPE_CHECKING:  # pragma: no cover
-    pass
-from veloce._dependency_body import _BodyResolutionMixin
-from veloce._dependency_coerce import (
-    _coerce_scalar,
-    _coerce_value,
-    _collect_sequence_marker,
-    _err_missing_marker,
-    _validate_body_list,
-    _validate_list_marker,
-)
-from veloce._dependency_markers import Depends, SecurityScopes
-from veloce._dependency_params import _every_value, _resolve_list_param, _resolve_scalar_param
 from veloce.http.request import Request
 from veloce.http.response import Response
 
@@ -135,7 +132,7 @@ class DependencyResolver(_BodyResolutionMixin):
             RequestValidationError: If a parameter is missing or fails validation.
             HTTPException: If a dependency or security scheme refuses the request.
 
-        """
+        """  # noqa: DOC502 - the exception is raised or caught by a callee
         # Public, so a reused instance must not leak a prior resolve's state.
         self.reset()
 
@@ -200,7 +197,7 @@ class DependencyResolver(_BodyResolutionMixin):
             RequestValidationError: If a parameter is missing or fails validation.
             HTTPException: If a dependency or security scheme refuses the connection.
 
-        """
+        """  # noqa: DOC502 - the exception is raised or caught by a callee
         self.reset()
 
         if route_dep_plans:
@@ -225,7 +222,7 @@ class DependencyResolver(_BodyResolutionMixin):
             BaseExceptionGroup: If one or more teardowns failed (the first failure
                 itself on 3.10).
 
-        """
+        """  # noqa: DOC503 - the exception is raised or caught by a callee
         failures: list[BaseException] = []
         # In reverse, matching `contextlib.ExitStack` semantics.
         while self._teardowns:
@@ -287,7 +284,7 @@ class DependencyResolver(_BodyResolutionMixin):
             RequestValidationError: If a parameter is missing or fails validation.
             HTTPException: If a dependency or security scheme refuses the request.
 
-        """
+        """  # noqa: DOC502 - the exception is raised or caught by a callee
         plan = build_plan(handler, path_params=frozenset(path_params))
         rdp = build_route_dep_plans(route_dependencies) if route_dependencies else None
         return await self.resolve_plan(plan, request, path_params, rdp)

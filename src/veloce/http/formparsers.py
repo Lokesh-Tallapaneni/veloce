@@ -391,7 +391,7 @@ def parse_multipart_form(
         RequestEntityTooLarge: If any limit is exceeded.
         BadRequest: If the boundary is missing or malformed, or a field cannot be decoded.
 
-    """
+    """  # noqa: DOC503 - the exception is raised or caught by a callee
     # The same walker as the part headers, so a quoted `boundary=` parses alike.
     _, ct_params = parse_header_params(content_type, delimiter=";", unescape=True)
     boundary_present = "boundary" in ct_params

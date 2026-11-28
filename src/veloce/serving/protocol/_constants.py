@@ -3,15 +3,10 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
 
 from veloce.config import (
     DEFAULT_WRITE_BUFFER_HIGH_WATER,
 )
-
-if TYPE_CHECKING:  # pragma: no cover
-    pass
-
 
 _logger = logging.getLogger(__name__)
 

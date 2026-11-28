@@ -6,11 +6,6 @@ from collections.abc import (
     Mapping,
     Sequence,
 )
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:  # pragma: no cover
-    pass
-
 
 #: A mapping, or ordered pairs when a header must appear more than once.
 #: Private: callers pass the value, not the name of its type.

@@ -27,10 +27,6 @@ from veloce.websocket.frames import (
 from veloce.websocket.utf8 import _Utf8Validator
 
 if TYPE_CHECKING:  # pragma: no cover
-    pass
-
-
-if TYPE_CHECKING:  # pragma: no cover
 
     class _Host:
         """The `WebSocket` state and members this mixin reads and writes.

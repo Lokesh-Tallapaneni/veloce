@@ -311,7 +311,7 @@ def jsonable_encoder(
         ValueError: If the object graph refers to itself.
         TypeError: If a `Secret` reaches the serialiser.
 
-    """
+    """  # noqa: DOC503 - the exception is raised or caught by a callee
     # Checked before `custom_encoder`, so a caller cannot register the guard away.
     if isinstance(obj, Secret):
         _reject_secret()

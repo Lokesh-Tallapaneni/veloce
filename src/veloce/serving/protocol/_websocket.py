@@ -4,18 +4,12 @@ from __future__ import annotations
 
 import functools
 import logging
-from typing import TYPE_CHECKING
 
 import veloce.status as status
 from veloce._internal import _extract_host, _ws_handshake_rejection
 from veloce._protocol_constants import (
     ROUTE_METHOD_WEBSOCKET,
 )
-from veloce.serving.protocol._host import ProtocolHost
-from veloce.websocket import WebSocket, compute_accept
-
-if TYPE_CHECKING:  # pragma: no cover
-    pass
 from veloce.serving.protocol._constants import (
     _WS_HEADER_CONNECTION,
     _WS_HEADER_HOST,
@@ -25,6 +19,8 @@ from veloce.serving.protocol._constants import (
     _WS_HEADER_VERSION,
     _WS_SUPPORTED_VERSION,
 )
+from veloce.serving.protocol._host import ProtocolHost
+from veloce.websocket import WebSocket, compute_accept
 
 _logger = logging.getLogger(__name__)
 

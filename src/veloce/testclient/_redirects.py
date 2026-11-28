@@ -6,7 +6,7 @@ from collections.abc import (
     Awaitable,
     Callable,
 )
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from urllib.parse import urlparse
 
 from veloce._constants import (
@@ -22,9 +22,6 @@ from veloce.status import (
     HTTP_307_TEMPORARY_REDIRECT,
     HTTP_308_PERMANENT_REDIRECT,
 )
-
-if TYPE_CHECKING:  # pragma: no cover
-    pass
 from veloce.testclient._body import StreamBody
 from veloce.testclient._headers import _HeadersArg
 from veloce.testclient.response import TestResponse

@@ -205,7 +205,7 @@ def send_from_directory(
     Raises:
         Forbidden: If `filename` resolves outside `directory`.
 
-    """
+    """  # noqa: DOC502 - the exception is raised or caught by a callee
     resolved = safe_join(directory, filename)
     if resolved is None:
         from veloce.helpers import abort  # breaks helpers <-> _helpers_files cycle
@@ -246,7 +246,7 @@ async def send_from_directory_async(
     Raises:
         Forbidden: If `filename` resolves outside `directory`.
 
-    """
+    """  # noqa: DOC502 - the exception is raised or caught by a callee
     # `safe_join` is pure string arithmetic; the file read happens below.
     resolved = safe_join(directory, filename)
     if resolved is None:

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 import veloce.status as status
 from veloce._constants import (
     HEADER_HOST,
@@ -13,9 +11,6 @@ from veloce._protocol_constants import URL_SCHEME_HTTPS
 from veloce.http.request import Request
 from veloce.http.response import RedirectResponse, Response
 from veloce.middleware.base import Middleware
-
-if TYPE_CHECKING:  # pragma: no cover
-    pass
 
 
 # ── Transport upgrade ─────────────────────────────────────

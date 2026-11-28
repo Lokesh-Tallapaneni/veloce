@@ -2,17 +2,13 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from veloce._constants import MIME_FORM_URLENCODED, MIME_JSON, MIME_MULTIPART_FORM_DATA
 
 # Deliberate re-exports (`X as X`); the schema layer itself lives in `_jsonschema`.
 from veloce.contrib._jsonschema import _local_def_refs as _local_def_refs
 from veloce.contrib._jsonschema import _rewrite_byte_format as _rewrite_byte_format
-
-if TYPE_CHECKING:  # pragma: no cover
-    pass
-
 from veloce.contrib.openapi._parameters import _BodyField, _FormField, _ScalarBody
 
 

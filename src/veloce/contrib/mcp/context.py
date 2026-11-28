@@ -415,7 +415,7 @@ class MCPContext(_ServerRequestsMixin):
             RuntimeError: If this context has no serving `MCPServer`, as with a bare
                 `MCPContext`.
 
-        """
+        """  # noqa: DOC502 - the exception is raised or caught by a callee
         server = self._require_server("get_prompt")
         params: dict[str, Any] = {"name": name}
         if arguments is not None:
