@@ -163,7 +163,9 @@ def test_formparsers_still_imports_datastructures():
 
 def test_request_imports_the_parser_from_its_own_module():
     """Not through a re-export, which is what kept the back-edge alive."""
-    assert "veloce.http.formparsers" in _module_level_imports(ROOT / "http" / "request.py")
+    assert "veloce.http.formparsers" in _module_level_imports(
+        ROOT / "http" / "request" / "_body.py"
+    )
 
 
 # ── the scan is not vacuous ──────────────────────────────────────────

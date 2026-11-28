@@ -77,7 +77,7 @@ def test_a_package_with_no_extra_is_named_directly():
 
     lines = {path: line for path, line in _hint_lines()}
     assert "pip install jinja2" in lines["contrib/templating.py"]
-    assert "pip install ujson" in lines["http/response.py"]
+    assert "pip install ujson" in lines["http/response/json_response.py"]
 
 
 @pytest.mark.parametrize("extra", ["metrics", "otel", "gunicorn", "cli", "redis"])

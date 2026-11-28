@@ -533,6 +533,7 @@ module = [
     "veloce.helpers",
     "veloce.http.datastructures",
     "veloce.http.request",
+    "veloce.http.request.*",
     "veloce.middleware.base",
     "veloce.middleware.compression",
     "veloce.middleware.security",
