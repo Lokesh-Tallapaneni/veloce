@@ -32,10 +32,18 @@ class ConditionalGetMiddleware(Middleware):
     """
 
     def __init__(self, *, auto_etag: bool = True, name: str | None = None) -> None:
+        """Configure validator generation.
+
+        Args:
+            auto_etag: Add a weak ETag to eligible responses that have none.
+            name: Name for `exclude_middleware`.
+
+        """
         super().__init__(name=name)
         self.auto_etag = auto_etag
 
     async def process_response(self, request: Request, response: Response) -> Response:
+        """Add a weak ETag to an eligible `200` and downgrade to `304` when the request's validators match."""
         if request.method not in ("GET", "HEAD"):
             return response
 

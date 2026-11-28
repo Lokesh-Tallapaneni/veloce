@@ -242,6 +242,26 @@ class CompressionMiddleware(Middleware):
         algorithms: tuple[str, ...] | None = None,
         levels: dict[str, int] | None = None,
     ) -> None:
+        """Choose what is compressed and how.
+
+        Args:
+            minimum_size: Smallest body, in bytes, worth compressing.
+            compresslevel: Level for gzip; use `levels` to set several codings.
+            include_types: Media-type prefixes eligible for compression.
+            exclude_types: Media-type prefixes never compressed.
+            min_stream_chunk_offload: Size, in bytes, above which compression runs on a
+                worker thread instead of the event loop.
+            latency_sensitive_types: Media types sent unbuffered, such as event streams.
+            name: Name for `exclude_middleware`.
+            algorithms: Content codings to offer, in preference order.
+            levels: Compression level per coding.
+
+        Raises:
+            ValueError: If `algorithms` is empty or names an unknown coding, none of the
+                requested codings has its package installed, or `levels` names an
+                unknown coding.
+
+        """
         super().__init__(name=name)
         self.minimum_size = minimum_size
         self.algorithms, self.levels = self._resolve_codings(algorithms, levels, compresslevel)

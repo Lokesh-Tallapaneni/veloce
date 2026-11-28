@@ -110,6 +110,20 @@ class HTTPBasic(SecurityScheme):
         return dict(self._challenge_template)
 
     def __call__(self, request: Request) -> HTTPBasicCredentials | None:
+        """Return the decoded Basic credentials.
+
+        Args:
+            request: The incoming request.
+
+        Returns:
+            The credentials, or `None` when the header is missing and `auto_error` is off.
+
+        Raises:
+            HTTPException: `401` with a `WWW-Authenticate` challenge when the header is
+                missing and `auto_error` is set, and always when the credentials are
+                present but malformed (bad base64, not UTF-8, or no colon).
+
+        """
         auth = request._peek_header_key(_AUTHORIZATION_KEY) or ""
         if auth[:_BASIC_PREFIX_LEN].lower() != _BASIC_PREFIX:
             if self.auto_error:
@@ -232,6 +246,19 @@ class HTTPDigest(SecurityScheme):
         return {HEADER_WWW_AUTHENTICATE: self._challenge_prefix + nonce + self._challenge_suffix}
 
     def __call__(self, request: Request) -> HTTPDigestCredentials | None:
+        """Return the parsed Digest credentials.
+
+        Args:
+            request: The incoming request.
+
+        Returns:
+            The parsed fields, or `None` when the header is missing and `auto_error` is off.
+
+        Raises:
+            HTTPException: `401` with a fresh nonce challenge when the header is missing
+                and `auto_error` is set. Field values are parsed, not verified.
+
+        """
         auth = request._peek_header_key(_AUTHORIZATION_KEY) or ""
         if auth[:_DIGEST_PREFIX_LEN].lower() != _DIGEST_PREFIX:
             if self.auto_error:

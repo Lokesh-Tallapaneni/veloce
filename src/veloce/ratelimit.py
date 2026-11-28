@@ -26,9 +26,9 @@ from veloce._internal import _require_slots
 # Round-trips through the backend as JSON, so the values are plain numbers.
 RateLimitState = dict[str, float]
 
-# Stamped on a handler for `RateLimitMiddleware`; `functools.wraps` copies
-# `__dict__`, so the tag survives a decorator applied above it.
-RATE_LIMIT_ATTR = "_veloce_rate_limit"
+RATE_LIMIT_ATTR: str = "_veloce_rate_limit"
+"""Attribute `rate_limit` stamps on a handler for `RateLimitMiddleware`; `functools.wraps`
+copies `__dict__`, so the tag survives a decorator applied above it."""
 
 T_handler = TypeVar("T_handler", bound=Callable[..., object])
 
@@ -38,10 +38,15 @@ class RateLimitResult:
     """The outcome of evaluating one request against a strategy."""
 
     allowed: bool
+    """Whether the request may proceed."""
     limit: int
+    """The ceiling the strategy enforces."""
     remaining: int
-    retry_after: int  # seconds until the next request is allowed (0 when allowed)
-    reset: int  # seconds until the limit replenishes (for X-RateLimit-Reset)
+    """Requests left before the limit is hit."""
+    retry_after: int
+    """Seconds until the next request is allowed; 0 when allowed."""
+    reset: int
+    """Seconds until the limit replenishes, for `X-RateLimit-Reset`."""
 
 
 class RateLimitStrategy:
@@ -64,7 +69,19 @@ class RateLimitStrategy:
     def evaluate(
         self, state: RateLimitState | None, now: float
     ) -> tuple[RateLimitResult, RateLimitState, int]:
-        """Decide on this request, returning `(result, next state, TTL seconds)`."""
+        """Decide on this request, returning `(result, next state, TTL seconds)`.
+
+        Args:
+            state: The client's prior state; `None` on the first request or after expiry.
+            now: The current wall-clock time in seconds.
+
+        Returns:
+            The decision, the state to store, and the seconds the state should live.
+
+        Raises:
+            NotImplementedError: Subclasses must implement it.
+
+        """
         raise NotImplementedError
 
     #: Optional server-side Lua `evaluate` over `KEYS[1]` and `lua_argv(now)`; it
@@ -72,7 +89,18 @@ class RateLimitStrategy:
     lua_script: str | None = None
 
     def lua_argv(self, now: float) -> list[str]:
-        """Build the `ARGV` for `lua_script`. Unused when it is `None`."""
+        """Build the `ARGV` for `lua_script`. Unused when it is `None`.
+
+        Args:
+            now: The current wall-clock time in seconds.
+
+        Returns:
+            The script arguments, as strings.
+
+        Raises:
+            NotImplementedError: Subclasses that set `lua_script` must implement it.
+
+        """
         raise NotImplementedError
 
 
@@ -95,6 +123,16 @@ class FixedWindow(RateLimitStrategy):
     __slots__ = ("limit", "window")
 
     def __init__(self, limit: int, window: int = 60) -> None:
+        """Configure the window.
+
+        Args:
+            limit: Requests allowed per window; at least 1.
+            window: Window length in seconds; at least 1.
+
+        Raises:
+            ValueError: If `limit` or `window` is below 1.
+
+        """
         if limit < 1:
             raise ValueError("FixedWindow limit must be >= 1")
         if window < 1:
@@ -151,6 +189,16 @@ class SlidingWindow(RateLimitStrategy):
     __slots__ = ("limit", "window")
 
     def __init__(self, limit: int, window: int = 60) -> None:
+        """Configure the window.
+
+        Args:
+            limit: Requests allowed per window; at least 1.
+            window: Window length in seconds; at least 1.
+
+        Raises:
+            ValueError: If `limit` or `window` is below 1.
+
+        """
         if limit < 1:
             raise ValueError("SlidingWindow limit must be >= 1")
         if window < 1:
@@ -225,6 +273,17 @@ class TokenBucket(RateLimitStrategy):
     __slots__ = ("rate", "per", "burst", "_refill")
 
     def __init__(self, rate: int, per: float = 1.0, burst: int | None = None) -> None:
+        """Configure the bucket.
+
+        Args:
+            rate: Tokens added every `per` seconds; at least 1.
+            per: Refill interval in seconds; above 0.
+            burst: Bucket capacity; defaults to `rate`.
+
+        Raises:
+            ValueError: If `rate` or `burst` is below 1, or `per` is not above 0.
+
+        """
         if rate < 1:
             raise ValueError("TokenBucket rate must be >= 1")
         if per <= 0:
@@ -305,7 +364,20 @@ class RateLimitBackend:
         _require_slots(cls)
 
     async def evaluate(self, key: str, strategy: RateLimitStrategy, now: float) -> RateLimitResult:
-        """Load, run `strategy.evaluate` and persist for `key`, atomically."""
+        """Load, run `strategy.evaluate` and persist for `key`, atomically.
+
+        Args:
+            key: The client identity the state is stored under.
+            strategy: The algorithm to apply.
+            now: The current wall-clock time in seconds.
+
+        Returns:
+            The decision for this request.
+
+        Raises:
+            NotImplementedError: Subclasses must implement it.
+
+        """
         raise NotImplementedError
 
 
@@ -320,6 +392,15 @@ class InMemoryRateLimitBackend(RateLimitBackend):
     __slots__ = ("_states", "_max_keys")
 
     def __init__(self, max_keys: int = 100_000) -> None:
+        """Bound the state held.
+
+        Args:
+            max_keys: Most client keys kept; expired entries go first, then the oldest.
+
+        Raises:
+            ValueError: If `max_keys` is below 1.
+
+        """
         if max_keys < 1:
             raise ValueError("InMemoryRateLimitBackend max_keys must be >= 1")
         # key -> (state, wall-clock expiry)
@@ -361,6 +442,16 @@ def rate_limit(strategy: RateLimitStrategy) -> Callable[[T_handler], T_handler]:
         @app.post("/login")
         @rate_limit(TokenBucket(rate=5, per=60))
         async def login(request): ...
+
+    Args:
+        strategy: The algorithm applied to this route.
+
+    Returns:
+        A decorator that tags the handler and returns it unchanged.
+
+    Raises:
+        TypeError: If `strategy` is not a `RateLimitStrategy`.
+
     """
     if not isinstance(strategy, RateLimitStrategy):
         raise TypeError("rate_limit() requires a RateLimitStrategy")

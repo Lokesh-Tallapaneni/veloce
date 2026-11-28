@@ -110,6 +110,23 @@ class CSRFMiddleware(Middleware):
         trusted_origins: tuple[str, ...] | None = None,
         name: str | None = None,
     ) -> None:
+        """Configure the token cookie and its checks.
+
+        Args:
+            cookie_name: Cookie the token is issued in.
+            header_name: Request header the token is echoed in.
+            form_field: Form field the token is echoed in.
+            safe_methods: Methods that skip the check.
+            cookie_secure: Mark the cookie `Secure`.
+            cookie_httponly: Mark the cookie `HttpOnly`; script-based clients need it off.
+            cookie_samesite: The cookie's `SameSite` attribute.
+            token_factory: Mints a token; random by default.
+            secret: When set, tokens are HMAC-signed and unsigned ones are refused.
+            max_age: Seconds a signed token stays valid; `None` for no limit.
+            trusted_origins: Origins, or `.suffix` hosts, whose requests pass the origin check.
+            name: Name for `exclude_middleware`.
+
+        """
         super().__init__(name=name)
         self.cookie_name = cookie_name
         self.header_name = header_name

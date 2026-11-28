@@ -220,7 +220,23 @@ class DependencyResolver:
         path_params: dict[str, str],
         route_dep_plans: list[Any] | None = None,
     ) -> dict[str, Any]:
-        """Fast path - consume a pre-built `HandlerPlan`."""
+        """Fast path - consume a pre-built `HandlerPlan`.
+
+        Args:
+            plan: The handler's pre-built plan.
+            request: The request the parameters come from.
+            path_params: Path parameters matched for the route.
+            route_dep_plans: Plans of dependencies declared on the route itself, run
+                before the handler's own.
+
+        Returns:
+            The keyword arguments to call the handler with.
+
+        Raises:
+            RequestValidationError: If a parameter is missing or fails validation.
+            HTTPException: If a dependency or security scheme refuses the request.
+
+        """
         # Public, so a reused instance must not leak a prior resolve's state.
         self.reset()
 
@@ -271,6 +287,20 @@ class DependencyResolver:
         The `WebSocket` is passed where an HTTP resolve passes the `Request`, so
         the shared slot machinery serves both. Run teardowns with
         `run_teardowns()` once the handler returns.
+
+        Args:
+            plan: The handler's pre-built plan.
+            websocket: The connection the parameters come from.
+            path_params: Path parameters matched for the route.
+            route_dep_plans: Plans of dependencies declared on the route itself.
+
+        Returns:
+            The keyword arguments to call the handler with.
+
+        Raises:
+            RequestValidationError: If a parameter is missing or fails validation.
+            HTTPException: If a dependency or security scheme refuses the connection.
+
         """
         self.reset()
 
@@ -287,6 +317,15 @@ class DependencyResolver:
         the code after its ``yield`` executes. Every teardown runs even when an
         earlier one fails; the failures are logged, then re-raised together as a
         `BaseExceptionGroup` (PEP 654) on 3.11+, or singly on 3.10.
+
+        Args:
+            exc: The exception the handler raised, thrown into each generator so its
+                `finally` and `except` blocks see it; `None` after a normal return.
+
+        Raises:
+            BaseExceptionGroup: If one or more teardowns failed (the first failure
+                itself on 3.10).
+
         """
         failures: list[BaseException] = []
         # In reverse, matching `contextlib.ExitStack` semantics.
@@ -335,6 +374,20 @@ class DependencyResolver:
         """Build a plan on demand, for a caller that did not pre-plan.
 
         The back-compat path: tests and direct callers land here.
+
+        Args:
+            handler: The callable whose parameters are resolved.
+            request: The request the parameters come from.
+            path_params: Path parameters matched for the route.
+            route_dependencies: Dependencies declared on the route itself.
+
+        Returns:
+            The keyword arguments to call `handler` with.
+
+        Raises:
+            RequestValidationError: If a parameter is missing or fails validation.
+            HTTPException: If a dependency or security scheme refuses the request.
+
         """
         plan = build_plan(handler, path_params=frozenset(path_params))
         rdp = build_route_dep_plans(route_dependencies) if route_dependencies else None

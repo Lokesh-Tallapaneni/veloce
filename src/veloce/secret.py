@@ -34,6 +34,15 @@ class Secret:
     __slots__ = ("_value",)
 
     def __init__(self, value: str | bytes) -> None:
+        """Wrap `value`.
+
+        Args:
+            value: The plaintext to guard.
+
+        Raises:
+            TypeError: If `value` is neither `str` nor `bytes`.
+
+        """
         if not isinstance(value, (str, bytes)):
             raise TypeError("Secret value must be str or bytes")
         self._value = value

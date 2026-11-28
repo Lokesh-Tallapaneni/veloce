@@ -66,11 +66,33 @@ class JSONProvider:
 
         `bytes`, not `str`, so a caller can write straight to a response body.
         The kwargs catch-all is provider-specific.
+
+        Args:
+            obj: The value to encode.
+            **kwargs: Provider-specific options.
+
+        Returns:
+            The encoded document.
+
+        Raises:
+            NotImplementedError: Subclasses must implement it.
+
         """
         raise NotImplementedError
 
     def loads(self, data: bytes | str) -> Any:
-        """Parse JSON `data` into Python objects."""
+        """Parse JSON `data` into Python objects.
+
+        Args:
+            data: The JSON text or bytes.
+
+        Returns:
+            The decoded value.
+
+        Raises:
+            NotImplementedError: Subclasses must implement it.
+
+        """
         raise NotImplementedError
 
     def response(self, value: Any, **kwargs: Any) -> Response:
@@ -97,6 +119,16 @@ class DefaultJSONProvider(JSONProvider):
         self._config_options = config_orjson_options(getattr(app, "config", None))
 
     def dumps(self, obj: Any, **kwargs: Any) -> bytes:
+        """Encode `obj` to JSON bytes, honouring the configured option flags.
+
+        Args:
+            obj: The value to encode.
+            **kwargs: `sort_keys` and `indent` add the matching option; others are ignored.
+
+        Returns:
+            The encoded document.
+
+        """
         opts = self._config_options
         if kwargs.get("sort_keys"):
             opts |= _json.OPT_SORT_KEYS
@@ -109,6 +141,7 @@ class DefaultJSONProvider(JSONProvider):
         return _json.dumps(obj, default=orjson_default)
 
     def loads(self, data: bytes | str) -> Any:
+        """Decode JSON `data` through the configured backend."""
         return _json.loads(data)
 
 
