@@ -64,7 +64,7 @@ class MCPRouteOptions:
 _INFER_RESPONSE_MODEL: Any = object()
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class RouteOptions:
     """Every per-route option `add_route` and `route` accept, as one record.
 
@@ -73,6 +73,10 @@ class RouteOptions:
     and passed as a single object, rather than being re-listed at each hand-off
     between `route`, `add_route`, `RouteInfo` and the blueprint and router
     merge paths. A field added here is forwarded by all of them.
+
+    Not frozen: a frozen dataclass sets each of its 39 fields through
+    `object.__setattr__`, which measured as most of the cost this record adds to
+    registering a route. Nothing mutates it after construction.
     """
 
     dependencies: list[Any] | None = None
@@ -226,19 +230,26 @@ class RouteInfo:
         path_template: str,
         options: RouteOptions,
         excluded_middleware: tuple[frozenset[str], tuple[type[Any], ...]] | None = None,
+        *,
+        dependencies: list[Any] | None,
+        response_model: Any,
+        tags: list[str] | None,
+        name: str | None,
+        response_class: Any,
+        responses: dict[int, dict[str, Any]] | None,
     ) -> None:
-        # Unpacked once so the body below reads as it always has; none of these
-        # are touched after construction.
-        dependencies = options.dependencies
-        response_model = options.response_model
-        tags = options.tags
+        # The six keyword-only values are the ones registration derives from the
+        # router it lands on (its dependencies, tags, responses and default
+        # response class, the inferred model, the settled name). They are passed
+        # in rather than copied into a second `RouteOptions`: building and
+        # `dataclasses.replace`-ing a 39-field record per route added about 30%
+        # to registration. The rest is read from `options` once, so the body
+        # below reads as it always has; none of these are touched afterwards.
         summary = options.summary
-        name = options.name
         description = options.description
         deprecated = options.deprecated
         response_description = options.response_description
         status_code = options.status_code
-        response_class = options.response_class
         response_model_include = options.response_model_include
         response_model_exclude = options.response_model_exclude
         response_model_exclude_unset = options.response_model_exclude_unset
@@ -246,7 +257,6 @@ class RouteInfo:
         response_model_by_alias = options.response_model_by_alias
         response_model_exclude_none = options.response_model_exclude_none
         include_in_schema = options.include_in_schema
-        responses = options.responses
         operation_id = options.operation_id
         openapi_extra = options.openapi_extra
         defaults = options.defaults

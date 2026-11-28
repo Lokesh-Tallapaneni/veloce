@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from veloce._protocol_constants import (
@@ -41,23 +40,22 @@ class MergingMixin(UrlsMixin):
         combined_deps = list(self.router_dependencies)
         if info.dependencies:
             combined_deps.extend(info.dependencies)
-        options = RouteOptions.from_info(info)
         merged = RouteInfo(
             handler=info.handler,
             param_names=param_names,
             path_template=full_path,
-            options=replace(
-                options,
-                dependencies=combined_deps if combined_deps else info.dependencies,
-                tags=(info.tags or []) + list(self.tags),
-                response_class=info.response_class or self.default_response_class,
-                responses=(
-                    None
-                    if not self.router_responses and not info.responses
-                    else {**self.router_responses, **(info.responses or {})}
-                ),
-            ),
+            options=RouteOptions.from_info(info),
             excluded_middleware=info.excluded_middleware,
+            dependencies=combined_deps if combined_deps else info.dependencies,
+            response_model=info.response_model,
+            tags=(info.tags or []) + list(self.tags),
+            name=info.name,
+            response_class=info.response_class or self.default_response_class,
+            responses=(
+                None
+                if not self.router_responses and not info.responses
+                else {**self.router_responses, **(info.responses or {})}
+            ),
         )
         # `stream` is assigned after construction rather than in `__init__`, so
         # it has to be carried across explicitly.

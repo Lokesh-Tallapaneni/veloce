@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
-from dataclasses import replace
 from typing import Annotated, Any
 
 from typing_extensions import Doc
@@ -393,8 +392,12 @@ class RegistrationMixin(TreeMixin):
         if response_model is _INFER_RESPONSE_MODEL:
             response_model = resolve_response_contract(handler)
 
-        merged_options = replace(
-            options,
+        route_info = RouteInfo(
+            handler=handler,
+            param_names=param_names,
+            path_template=full_path,
+            options=options,
+            excluded_middleware=_split_exclusions(options.exclude_middleware),
             dependencies=combined_deps if combined_deps else None,
             response_model=response_model,
             tags=(options.tags or []) + self.tags,
@@ -405,13 +408,6 @@ class RegistrationMixin(TreeMixin):
                 if not self.router_responses and not options.responses
                 else {**self.router_responses, **(options.responses or {})}
             ),
-        )
-        route_info = RouteInfo(
-            handler=handler,
-            param_names=param_names,
-            path_template=full_path,
-            options=merged_options,
-            excluded_middleware=_split_exclusions(options.exclude_middleware),
         )
 
         # A WebSocket route's plan is built in websocket mode, so the connection
