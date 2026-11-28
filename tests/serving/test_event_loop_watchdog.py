@@ -33,6 +33,23 @@ async def _wait_for_log(
     return False
 
 
+def _wait_for_log_sync(caplog, needle: str, *, timeout: float = 5.0) -> bool:
+    """Block until a record contains `needle`, or `timeout` seconds pass.
+
+    For the tests that drive the app through the synchronous test client: the
+    watchdog reports from its own thread, and formatting the blocked loop's stack
+    can take longer than the request it is reporting on (the test client runs the
+    loop deep inside the pytest stack, and coverage slows the formatting), so the
+    record may land just after the request returns.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if any(needle in r.getMessage() for r in caplog.records):
+            return True
+        time.sleep(0.02)
+    return False
+
+
 # ── classification (deterministic, no timing) ─────────────────────────
 
 
@@ -177,6 +194,7 @@ def test_report_attributes_the_stall_to_the_blocking_route(caplog):
     try:
         with caplog.at_level(logging.WARNING, logger="veloce.watchdog"):
             client.get("/block")
+            _wait_for_log_sync(caplog, "event loop blocked")
     finally:
         if app._watchdog is not None:
             app._watchdog.stop()
@@ -203,6 +221,7 @@ def test_report_attributes_the_stall_to_the_blocking_dependency(caplog):
     try:
         with caplog.at_level(logging.WARNING, logger="veloce.watchdog"):
             client.get("/dep")
+            _wait_for_log_sync(caplog, "event loop blocked")
     finally:
         if app._watchdog is not None:
             app._watchdog.stop()
