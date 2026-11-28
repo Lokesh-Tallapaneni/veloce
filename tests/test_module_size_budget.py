@@ -24,7 +24,6 @@ LEGACY: dict[str, int] = {
     "contrib/mcp/authorization.py": 840,
     "helpers.py": 880,  # grew past the budget only through Args/Returns/Raises sections
     "http/datastructures.py": 1050,
-    "middleware/security.py": 1060,
     "middleware/sessions.py": 960,
     "routing/converters.py": 890,
     "websocket/connection.py": 1090,

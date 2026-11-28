@@ -446,6 +446,7 @@ mccabe.max-complexity = 37
 "src/veloce/__init__.py" = ["F401"]  # re-exports
 "src/veloce/websocket/__init__.py" = ["F401"]  # re-exports, including the private names in-tree callers import
 "src/veloce/serving/protocol/__init__.py" = ["F401"]  # re-exports, including the private names in-tree callers import
+"src/veloce/middleware/security/__init__.py" = ["F401"]  # re-exports, including the private names in-tree callers import
 "src/veloce/testclient/__init__.py" = ["F401"]  # re-exports, including the private names in-tree callers import
 # `TemplateResponse` is the documented public method name.
 "src/veloce/contrib/templating.py" = ["N802"]
@@ -599,6 +600,7 @@ module = [
     "veloce.middleware.base",
     "veloce.middleware.compression",
     "veloce.middleware.security",
+    "veloce.middleware.security.*",
     "veloce.otel",
     "veloce.routing.router",
     "veloce.security._utils",
