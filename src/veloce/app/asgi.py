@@ -25,6 +25,7 @@ from veloce._internal import (
     MIME_HTML,
     MIME_JSON,
     MIME_OCTET,
+    _coalesce,
     _current_app_var,
     _current_request_var,
     _encode_header_value,
@@ -203,7 +204,10 @@ async def _emit_stream(send: Callable[..., Any], response: Response, method: str
     )
     # A `HEAD` carries its `GET`'s headers and no body (RFC 9110 Sec. 9.3.2).
     if allowed and method != HTTP_METHOD_HEAD:
-        async for chunk in response._stream:
+        stream = response._stream
+        if getattr(response, "_coalesce", True):
+            stream = _coalesce(stream)
+        async for chunk in stream:
             await send(
                 {
                     "type": ASGI_EVENT_HTTP_RESPONSE_BODY,

@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Speed up WebSocket TEXT frame UTF-8 validation with the stdlib's incremental decoder. ([#371](https://github.com/Lokesh-Tallapaneni/veloce/pull/371))
+### Added
+
+- `StreamingResponse(..., coalesce=False)` opts a producer out of chunk batching, for one write per chunk. ([#369](https://github.com/Lokesh-Tallapaneni/veloce/pull/369))
+
+### Changed
+
+- Batch a streamed or SSE response's chunks when the producer doesn't await between them. ([#369](https://github.com/Lokesh-Tallapaneni/veloce/pull/369))
+### Changed
+
+- Reply to a Streamable HTTP request as JSON unless the call notifies first. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
 
 ## [0.23.0] - 2026-11-27
 

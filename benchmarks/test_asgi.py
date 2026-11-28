@@ -10,7 +10,7 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 from benchmarks.conftest import run_async
-from veloce import TestClient, Veloce
+from veloce import StreamingResponse, TestClient, Veloce
 
 
 class Item(BaseModel):
@@ -44,6 +44,14 @@ def _build_app() -> Veloce:
         # the measured region, so the benchmark would report that as much as
         # the compression it is meant to measure.
         return BIG_PAYLOAD
+
+    @app.get("/stream")
+    async def stream() -> StreamingResponse:
+        async def chunks():
+            for i in range(100):
+                yield f"line {i}\n".encode()
+
+        return StreamingResponse(chunks(), content_type="text/plain")
 
     return app
 
@@ -120,6 +128,20 @@ def test_asgi_post_json_round_trip(benchmark):
     messages = benchmark(
         lambda: _drive(ASGI_APP, _scope("POST", "/items", headers=POST_HEADERS), POST_BODY)
     )
+    assert _status(messages) == 200
+
+
+_drive(ASGI_APP, _scope(path="/stream"))
+
+
+def test_asgi_streaming_round_trip(benchmark):
+    """A 100-chunk `StreamingResponse` - tracks chunk-batching regressions.
+
+    `_drive`'s `send()` just appends to a list, far cheaper than a real
+    server's per-message dispatch, so this undercounts the write-count
+    reduction; it exists to catch a regression, not to size the win.
+    """
+    messages = benchmark(lambda: _drive(ASGI_APP, _scope(path="/stream")))
     assert _status(messages) == 200
 
 

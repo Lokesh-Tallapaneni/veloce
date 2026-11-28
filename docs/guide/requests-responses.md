@@ -572,6 +572,11 @@ they are produced, without buffering the whole body. It accepts an async
 iterator **or** a plain sync generator. `str` chunks are encoded to UTF-8
 automatically.
 
+Chunks the generator produces without an `await` between them are batched
+into fewer writes; a generator that does `await` between `yield`s keeps its
+existing per-chunk delivery timing either way. Pass `coalesce=False` for one
+write per chunk regardless.
+
 ```python title="app.py"
 from veloce import Request, StreamingResponse, Veloce
 

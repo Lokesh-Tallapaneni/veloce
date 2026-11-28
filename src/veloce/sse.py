@@ -16,7 +16,7 @@ from veloce._constants import (
     HEADER_X_ACCEL_BUFFERING,
     MIME_TEXT_EVENT_STREAM,
 )
-from veloce._internal import _write_chunked, dumps_current
+from veloce._internal import _coalesce, _write_chunked, dumps_current
 from veloce.http.response import Response
 from veloce.status import HTTP_200_OK
 
@@ -208,7 +208,7 @@ class EventSourceResponse(Response):
         """
         transport.write(self.encode(keep_alive=keep_alive))
         # `_encode_stream` normalised `_stream` to bytes for the chunk writer.
-        await _write_chunked(transport, self._stream, drain)
+        await _write_chunked(transport, _coalesce(self._stream), drain)
 
     def _encode_stream(
         self,
