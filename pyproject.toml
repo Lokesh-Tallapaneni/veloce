@@ -358,6 +358,10 @@ select = [
     "SIM",  # flake8-simplify
     "ASYNC",
     "TID251",  # banned APIs, named under `flake8-tidy-imports.banned-api`
+    # Not selected, on purpose: `PLR0913` (argument count) flags the public route
+    # and response signatures whose width is the documented API, and `TC` would
+    # move imports under `TYPE_CHECKING` that handler-annotation resolution reads
+    # at runtime. Both would need a blanket suppression rather than a fix.
     "N",       # PEP 8 naming
     "PGH004",  # blanket `noqa` without a rule code
     "RUF100",  # unused `noqa` - keeps every suppression load-bearing
