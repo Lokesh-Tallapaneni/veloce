@@ -10,6 +10,7 @@ from __future__ import annotations
 from benchmarks.conftest import make_request
 from veloce import Markup, escape, jsonable_encoder, secure_filename
 from veloce.http.dates import http_date, parse_date
+from veloce.websocket import _Utf8Validator
 
 # A browser-shaped header set in the raw ASGI `(bytes, bytes)` form the
 # server hands to `Request`, so the latin-1 decode is measured too.
@@ -145,3 +146,29 @@ def test_jsonable_encoder_primitives(benchmark):
     """Encoder floor: a payload that needs no coercion at all."""
     payload = {"id": 1, "name": "x", "ok": True, "score": 1.5, "none": None}
     assert benchmark(jsonable_encoder, payload) == payload
+
+
+# ── WebSocket TEXT frame validation ─────────────────────────
+
+ASCII_4KB = (b"The quick brown fox jumps over the lazy dog. " * 89)[:4096]
+# A 4-byte-wide codepoint repeated exactly 1024 times: 4096 bytes, no partial
+# sequence at the end, every byte on the longest UTF-8 lead/continuation path.
+UNICODE_4KB = "\U0001f600".encode() * 1024
+
+
+def test_utf8_validator_ascii_4kb(benchmark):
+    """A pure-ASCII TEXT frame - the fast path, no decoder call."""
+
+    def feed() -> bool:
+        return _Utf8Validator().feed(ASCII_4KB)
+
+    assert benchmark(feed) is True
+
+
+def test_utf8_validator_non_ascii_4kb(benchmark):
+    """A multi-byte-heavy TEXT frame - every lead byte exercised."""
+
+    def feed() -> bool:
+        return _Utf8Validator().feed(UNICODE_4KB)
+
+    assert benchmark(feed) is True
