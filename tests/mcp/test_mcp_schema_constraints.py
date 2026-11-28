@@ -268,7 +268,8 @@ def test_the_bridge_uses_the_shared_constraint_helper():
     hand-copying, so the same copy with different spacing - or copying `title`
     instead of `description` - walked past it.
     """
-    bridge = tree("plan_bridge.py")
+    # `plan_bridge` is a package: the schema lowering lives in `_schema.py`.
+    bridge = tree("plan_bridge", "_schema.py")
     assert calls(bridge, "_apply_marker_constraints"), (
         "the bridge no longer calls the shared constraint helper"
     )

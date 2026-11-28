@@ -32,6 +32,7 @@ import pytest
 from pydantic import BaseModel, Field
 
 import veloce.contrib.openapi as openapi_module
+import veloce.contrib.openapi._introspection as introspection_module
 from veloce import Cookie, Header, Query, Veloce
 from veloce.testclient import TestClient
 
@@ -358,7 +359,8 @@ def test_a_failed_field_walk_is_reported(monkeypatch, caplog):
         raise RuntimeError("introspection moved")
 
     openapi_module._grouped_model_properties.cache_clear()
-    monkeypatch.setattr(openapi_module, "_grouped_model_properties", explode)
+    # Looked up where `_group_field_schema` lives, not at the package gateway.
+    monkeypatch.setattr(introspection_module, "_grouped_model_properties", explode)
     with caplog.at_level(logging.WARNING, logger="veloce.contrib.openapi"):
         schema = _parameters(_app())["limit"]["schema"]
 

@@ -162,7 +162,6 @@ UNEXPORTED: dict[str, str] = {
     "contrib.mcp.auth.TokenVerifier": "internal to the MCP integration; not part of its published surface",
     "contrib.mcp.authorization.Authenticator": "internal to the MCP integration; not part of its published surface",
     "contrib.mcp.registry.ToolFilter": "internal to the MCP integration; not part of its published surface",
-    "contrib.mcp.server.MethodHandler": "internal to the MCP integration; not part of its published surface",
     "contrib.mcp.subscriptions.Sink": "internal to the MCP integration; not part of its published surface",
     # `exceptions.NotImplemented_` is the back-compat alias described above; it
     # is a `Name` value, so the widened scan now reports it as a definition.
@@ -203,14 +202,10 @@ UNEXPORTED: dict[str, str] = {
     "contrib.mcp.pagination.encode_cursor": "internal to the MCP integration; not part of its published surface",
     "contrib.mcp.pagination.decode_cursor": "internal to the MCP integration; not part of its published surface",
     "contrib.mcp.pagination.paginate": "internal to the MCP integration; not part of its published surface",
-    "contrib.mcp.plan_bridge.build_input_schema": "internal to the MCP integration; not part of its published surface",
-    "contrib.mcp.plan_bridge.build_output_schema": "internal to the MCP integration; not part of its published surface",
-    "contrib.mcp.plan_bridge.bind_arguments": "internal to the MCP integration; not part of its published surface",
     "contrib.mcp.safety.require_mcp_description": "internal to the MCP integration; not part of its published surface",
     "contrib.mcp.safety.TOOL_ANNOTATION_HINTS": "internal to the MCP integration; not part of its published surface",
     "contrib.mcp.safety.validate_tool_annotations": "internal to the MCP integration; not part of its published surface",
     "contrib.mcp.sampling.content_blocks": "internal to the MCP integration; not part of its published surface",
-    "contrib.mcp.server.is_modern_version": "internal to the MCP integration; not part of its published surface",
     "contrib.mcp.subscriptions.resource_updated_notification": "internal to the MCP integration; not part of its published surface",
     "contrib.mcp.subscriptions.resources_list_changed_notification": "internal to the MCP integration; not part of its published surface",
     "contrib.mcp.subscriptions.subscription_acknowledged_notification": "internal to the MCP integration; not part of its published surface",

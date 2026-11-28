@@ -21,6 +21,7 @@ later fails here rather than being papered over again.
 from __future__ import annotations
 
 import inspect
+import pathlib
 import re
 
 import pytest
@@ -99,7 +100,11 @@ def test_a_configured_app_has_the_attribute(field):
 @pytest.mark.parametrize("field", _INFO_FIELDS + _APP_FIELDS)
 def test_the_lowering_does_not_guard_the_field(field):
 
-    source = inspect.getsource(openapi)
+    # `contrib.openapi` is a package: the lowering is spread over its modules.
+    source = chr(10).join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(pathlib.Path(openapi.__file__).parent.glob("*.py"))
+    )
     for obj in ("info", "app", "route_info"):
         assert f'getattr({obj}, "{field}"' not in source, (
             f"openapi.py guards {obj}.{field}, which cannot be missing - if it "

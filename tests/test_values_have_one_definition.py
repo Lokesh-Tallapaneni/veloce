@@ -139,8 +139,8 @@ def test_a_custom_title_reaches_both_doors():
 @pytest.mark.parametrize(
     ("path", "literal"),
     [
-        ("contrib/openapi.py", '"Veloce API"'),
-        ("contrib/openapi.py", 'getattr(app, "title"'),
+        ("contrib/openapi", '"Veloce API"'),
+        ("contrib/openapi", 'getattr(app, "title"'),
         ("contrib/mcp/server.py", 'getattr(app, "title"'),
         ("contrib/mcp/server.py", 'getattr(app, "version"'),
     ],
@@ -151,7 +151,9 @@ def test_no_second_copy_of_the_metadata_default(path, literal):
     Comment lines are stripped first - the removed literal is quoted in the
     comment that records why it went.
     """
-    source = (SRC / path).read_text(encoding="utf-8")
+    target = SRC / path
+    files = sorted(target.rglob("*.py")) if target.is_dir() else [target]
+    source = chr(10).join(f.read_text(encoding="utf-8") for f in files)
     code = chr(10).join(line for line in source.splitlines() if not line.lstrip().startswith("#"))
     assert literal not in code
 
@@ -362,7 +364,10 @@ def test_the_sse_retry_hint_has_one_definition():
 
 
 def test_the_prior_protocol_revision_has_one_definition():
-    source = (SRC / "contrib" / "mcp" / "server.py").read_text(encoding="utf-8")
+    # The dispatcher's constants live in `_protocol.py`; the server modules share one copy.
+    mcp = SRC / "contrib" / "mcp"
+    names = ("server.py", "_protocol.py", "_listing.py", "_handshake.py")
+    source = chr(10).join((mcp / name).read_text(encoding="utf-8") for name in names)
     assert source.count('"2025-06-18"') == 1
 
 
