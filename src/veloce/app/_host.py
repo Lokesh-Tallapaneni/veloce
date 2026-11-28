@@ -235,16 +235,8 @@ class AppHost:
 
         def _ensure_pipeline(self) -> CompiledPipeline: ...
 
-        async def _asgi_app(
-            self,
-            scope: dict[str, Any],
-            receive: Callable[..., Any],
-            send: Callable[..., Any],
-            cp: CompiledPipeline | None = None,
-        ) -> None: ...
-
-        async def _asgi_websocket(
-            self, scope: Any, receive: Any, send: Any, cp: CompiledPipeline
+        async def __call__(
+            self, scope: dict[str, Any], receive: Callable[..., Any], send: Callable[..., Any]
         ) -> None: ...
 
         def _register_feature_state(self, target: list[Any], value: Any) -> None: ...

@@ -2,9 +2,12 @@
 
 Driven against the fake scope/protocol pair in `tests/_rsgi_drive.py` (the
 real objects are implemented in Rust with no public Python constructor).
-`__rsgi__` translates into `_asgi_app`/`_asgi_websocket`, so these tests pin
-that the translation is faithful - not that dispatch itself works, which the
-ASGI test suite already covers.
+`__rsgi__` translates into `__call__`, not `_asgi_app`/`_asgi_websocket`
+directly, so these tests pin that the translation is faithful - not that
+dispatch itself works, which the ASGI test suite already covers. Going
+through `__call__` specifically (rather than its two internal helpers) is
+what applies a registered raw-ASGI middleware wrap and matches an ASGI
+mount for a WebSocket, not just for HTTP.
 """
 
 from __future__ import annotations
@@ -12,6 +15,7 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 from veloce import Request, Response, StreamingResponse, Veloce
+from veloce.app.rsgi import _split_host_port
 from veloce.middleware import Middleware
 
 from ._rsgi_drive import (
@@ -190,6 +194,40 @@ async def test_registered_middleware_runs_under_rsgi():
     assert headers["x-from-middleware"] == "yes"
 
 
+async def test_a_raw_asgi_middleware_wrap_runs_under_rsgi():
+    """Not a `veloce.Middleware` subclass - compiled into `cp.asgi_wrap` and
+    applied only by `__call__`'s own stack-building branch, never by
+    `_asgi_app` alone. Calling `_asgi_app` directly - the bug this pins -
+    would skip it silently."""
+
+    class HeaderMiddleware:
+        def __init__(self, app):
+            self.app = app
+
+        async def __call__(self, scope, receive, send):
+            async def _send(message):
+                if message["type"] == "http.response.start":
+                    headers = list(message.get("headers", []))
+                    headers.append((b"x-asgi-wrap", b"yes"))
+                    message = {**message, "headers": headers}
+                await send(message)
+
+            await self.app(scope, receive, _send)
+
+    app = Veloce(openapi_url=None)
+    app.add_middleware(HeaderMiddleware)
+
+    @app.get("/hello")
+    async def hello() -> dict:
+        return {"ok": True}
+
+    protocol = FakeRsgiHttpProtocol()
+    await _drive_http(app, _http_scope(path="/hello"), protocol)
+
+    headers = {k.lower(): v for k, v in protocol.headers}
+    assert headers["x-asgi-wrap"] == "yes"
+
+
 # ── WebSocket ───────────────────────────────────────────────
 
 
@@ -237,6 +275,30 @@ async def test_an_unmatched_websocket_route_is_refused_without_accepting():
     assert ws_protocol.close_status is not None
 
 
+async def test_a_mounted_asgi_websocket_app_is_reached_under_rsgi():
+    """The ASGI mount match lives in `_asgi_app`'s own `scope["type"] in
+    (http, websocket)` branch, reached only through `__call__`/`_asgi_app` -
+    `_asgi_websocket` alone has no mount-matching of its own, so calling it
+    directly for every `ws` scope (the bug this pins) would never delegate
+    to a mounted sub-app's WebSocket route at all."""
+
+    async def tiny_asgi(scope, receive, send):
+        connect = await receive()
+        assert connect["type"] == "websocket.connect"
+        await send({"type": "websocket.accept"})
+        message = await receive()
+        await send({"type": "websocket.send", "text": f"mounted:{message['text']}"})
+
+    app = Veloce(openapi_url=None)
+    app.mount("/ext", tiny_asgi)
+
+    ws_protocol = FakeRsgiWebsocketProtocol(inbound=[ws_text("hi")])
+    await app.__rsgi__(FakeRsgiScope(proto="ws", path="/ext/ws"), ws_protocol)
+
+    assert ws_protocol.transport is not None
+    assert ws_protocol.transport.sent == [("str", "mounted:hi")]
+
+
 async def test_a_close_reason_does_not_reach_the_rsgi_protocol():
     """RSGI's `close()` takes no reason string; only the code carries over."""
     app = Veloce(openapi_url=None)
@@ -251,3 +313,38 @@ async def test_a_close_reason_does_not_reach_the_rsgi_protocol():
     await app.__rsgi__(FakeRsgiScope(proto="ws", path="/ws"), ws_protocol)
 
     assert ws_protocol.close_status == 4001
+
+
+# ── host:port splitting ──────────────────────────────────────
+
+
+def test_split_host_port_strips_ipv6_brackets():
+    assert _split_host_port("[::1]:8080") == ("::1", 8080)
+
+
+def test_split_host_port_handles_ipv4():
+    assert _split_host_port("127.0.0.1:8000") == ("127.0.0.1", 8000)
+
+
+def test_split_host_port_handles_a_bracketed_full_ipv6_address():
+    assert _split_host_port("[2001:db8::1]:443") == ("2001:db8::1", 443)
+
+
+def test_split_host_port_does_not_guess_on_a_bare_unbracketed_ipv6_host():
+    """No bracket convention is documented for this case - keeping the whole
+    value as the host (port lost) is safer than guessing the wrong split."""
+    assert _split_host_port("2001:db8::1") == ("2001:db8::1", 0)
+
+
+async def test_a_bracketed_ipv6_client_address_reaches_the_request_unbracketed():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/addr")
+    async def addr(request: Request) -> dict:
+        return {"client": list(request.scope["client"])}
+
+    protocol = FakeRsgiHttpProtocol()
+    scope = _http_scope(path="/addr", client="[::1]:51234")
+    await _drive_http(app, scope, protocol)
+
+    assert protocol.body == b'{"client":["::1",51234]}'

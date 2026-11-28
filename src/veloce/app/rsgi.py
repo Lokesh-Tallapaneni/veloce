@@ -43,17 +43,40 @@ async def _maybe_await(value: Any) -> Any:
 
 
 def _rsgi_headers_to_asgi(headers: Any) -> list[tuple[bytes, bytes]]:
-    """Convert RSGI's decoded-string header view to ASGI's raw-bytes list."""
-    return [(k.encode("latin-1"), v.encode("latin-1")) for k, v in headers.items()]
+    """Convert RSGI's decoded-string header view to ASGI's raw-bytes list.
+
+    HTTP header bytes are normatively ASCII/latin-1 (RFC 7230 Sec. 3.2.4), so
+    a conformant request round-trips cleanly through whatever decoding RSGI
+    already applied; `errors="replace"` only matters for a non-conformant
+    header RSGI decoded some other way, where losing that one byte is better
+    than failing the whole connection on it.
+    """
+    return [
+        (k.encode("latin-1", errors="replace"), v.encode("latin-1", errors="replace"))
+        for k, v in headers.items()
+    ]
 
 
 def _split_host_port(value: str) -> tuple[str, int]:
-    """Split an RSGI `host:port` address on its last colon (IPv6-safe)."""
-    host, _, port = value.rpartition(":")
-    try:
-        return host, int(port)
-    except ValueError:
+    """Split an RSGI `host:port` address, handling IPv6 brackets.
+
+    A bracketed address (`[::1]:8080`) has its brackets stripped to match
+    ASGI's own convention; a bare IPv6 host (two or more colons, no bracket)
+    is kept whole rather than guessing which colon is the port separator -
+    RSGI's own spec promises a port is always present, but says nothing
+    about a bracket convention for the unbracketed case.
+    """
+    if value.startswith("["):
+        host, _, rest = value[1:].partition("]")
+        port_str = rest[1:] if rest.startswith(":") else ""
+    elif value.count(":") >= 2:
         return value, 0
+    else:
+        host, _, port_str = value.rpartition(":")
+    try:
+        return host, int(port_str)
+    except ValueError:
+        return host or value, 0
 
 
 class _RsgiHttpReceive:
@@ -179,16 +202,21 @@ class RsgiMixin(AppHost):
         loop.run_until_complete(self._run_lifecycle(LIFECYCLE_SHUTDOWN))
 
     async def __rsgi__(self, scope: Any, protocol: Any) -> None:
-        """Serve one RSGI connection - one HTTP request, or one WebSocket."""
+        """Serve one RSGI connection - one HTTP request, or one WebSocket.
+
+        Routed through `__call__`, not `_asgi_app`/`_asgi_websocket` directly:
+        `__call__` is what applies the compiled ASGI middleware wrap when one
+        is registered, and `_asgi_app`'s own `scope["type"]` branch is what
+        matches an ASGI mount - for both HTTP and WebSocket - before ever
+        reaching `_asgi_websocket`. Calling either helper directly skips both.
+        """
         if scope.proto == "http":
-            await self._asgi_app(
+            await self.__call__(
                 self._rsgi_http_scope(scope), _RsgiHttpReceive(protocol), _RsgiHttpSend(protocol)
             )
             return
         bridge = _RsgiWsBridge(protocol)
-        await self._asgi_websocket(
-            self._rsgi_ws_scope(scope), bridge.receive, bridge.send, self._ensure_pipeline()
-        )
+        await self.__call__(self._rsgi_ws_scope(scope), bridge.receive, bridge.send)
 
     def _rsgi_scope_common(self, scope: Any, scope_type: str) -> dict[str, Any]:
         server_host, server_port = _split_host_port(scope.server)
