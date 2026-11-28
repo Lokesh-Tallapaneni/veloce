@@ -126,8 +126,9 @@ UNEXPORTED: dict[str, str] = {
     # `status.py` — a predicate over the status constants, used by the response
     # encoders to decide whether a body may be emitted.
     "status.status_permits_body": "internal predicate used by the response encoders",
-    # `websocket.py` — handshake internals. `WebSocket` is the public object.
-    "websocket.compute_accept": "RFC 6455 handshake internals",
+    # `websocket/` — handshake internals. `WebSocket` is the public object.
+    "websocket.handshake.compute_accept": "RFC 6455 handshake internals",
+    "websocket.raw.RawTransportMixin": "the raw-transport half of `WebSocket`, composed into it",
     # `workers.py` — the gunicorn worker class, named to gunicorn by dotted
     # string on the command line, never imported.
     "workers.VeloceWorker": "gunicorn worker, referenced by dotted path",
@@ -146,7 +147,6 @@ UNEXPORTED: dict[str, str] = {
     "http.formparsers.DEFAULT_MAX_MULTIPART_PART_SIZE": "tuning default for the multipart parser",
     "http.formparsers.MULTIPART_SPOOL_MAX_SIZE": "tuning default for the multipart parser",
     "http.response.FILE_STREAM_CHUNK": "file-response read size; an implementation constant",
-    "serving.protocol.WRITE_BUFFER_HIGH_WATER": "raw-transport tuning; `app.run()` is the public entry point",
     # Callback aliases whose owning object is itself unexported, so the alias
     # is written as `veloce.health.ReadinessCheck` if it is written at all.
     "health.ReadinessCheck": "callback alias for a health check; used as veloce.health.ReadinessCheck",
@@ -157,7 +157,6 @@ UNEXPORTED: dict[str, str] = {
     "routing.route_info.MCPRouteOptions": "the record behind RouteInfo.mcp; read through its properties",
     "routing.route_info.RouteOptions": "the record add_route and route collect their options into; registration plumbing, not user-facing",
     "routing.route_info.RouteHandler": "router-internal handler alias; RouteInfo/RouteMatch are equally internal",
-    "testclient.StreamBody": "accepted shape of TestClient's `stream=`; callers pass an iterable, not the alias",
     # MCP integration internals, consistent with the other names from these
     # modules above.
     "contrib.mcp.auth.TokenVerifier": "internal to the MCP integration; not part of its published surface",

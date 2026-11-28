@@ -23,7 +23,7 @@ import veloce
 
 _SRC = pathlib.Path(veloce.__file__).parent
 _SERVING = _SRC / "serving"
-_MODULES = sorted(_SERVING.glob("*.py"))
+_MODULES = sorted(_SERVING.rglob("*.py"))
 
 
 def _runtime_app_imports(source: str) -> list[str]:
@@ -45,7 +45,7 @@ def _runtime_app_imports(source: str) -> list[str]:
     return found
 
 
-@pytest.mark.parametrize("path", _MODULES, ids=lambda p: p.name)
+@pytest.mark.parametrize("path", _MODULES, ids=lambda p: str(p.relative_to(_SERVING)))
 def test_a_serving_module_does_not_import_the_app_layer(path: pathlib.Path):
     offenders = _runtime_app_imports(path.read_text(encoding="utf-8"))
     assert not offenders, (
@@ -57,7 +57,7 @@ def test_a_serving_module_does_not_import_the_app_layer(path: pathlib.Path):
 
 def test_the_scan_covers_the_serving_package():
     assert _SERVING.is_dir()
-    assert {p.name for p in _MODULES} >= {"__init__.py", "protocol.py"}
+    assert {p.name for p in _MODULES} >= {"__init__.py", "http.py", "_websocket.py", "reloader.py"}
 
 
 def test_a_module_scope_import_would_be_found():

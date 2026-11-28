@@ -18,8 +18,8 @@ import pytest
 
 from veloce import Veloce
 from veloce.config import Config
-from veloce.serving import protocol as protocol_module
 from veloce.serving.protocol import HttpProtocol
+from veloce.serving.protocol import http as protocol_module
 
 
 class _FakeTask:
