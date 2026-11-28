@@ -25,10 +25,11 @@ import hashlib
 import inspect
 import mimetypes
 import os
+import types
 import weakref
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterable, Mapping
 from http import HTTPStatus
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.routing.router import RouteInfo, Router
@@ -338,6 +339,85 @@ def _encode_response_head(
             else:
                 parts[slot] = line
     return parts
+
+
+@types.coroutine
+def _forward(yielded: Any) -> Any:
+    """Propagate one inner suspend point to the real event loop, verbatim.
+
+    Driving a coroutine by hand with `.send()`/`.throw()` surfaces the same raw
+    object a real `await` would have - typically a `Future` - so re-yielding it
+    here lets the surrounding event loop resume it exactly as it would have
+    resumed the producer directly; whatever comes back, a value or a thrown
+    exception such as cancellation, is what the producer gets next.
+    """
+    return (yield yielded)
+
+
+async def _coalesce(
+    stream: AsyncIterator[bytes | str], flush_at: int = 65536
+) -> AsyncIterator[bytes]:
+    """Batch `stream`'s chunks whenever the producer yields them without awaiting.
+
+    Each `__anext__()` is driven by hand: a chunk that arrives without the
+    producer ever suspending joins the current batch, so a plain loop with no
+    `await` between `yield`s - the common case - is written as one chunk
+    instead of many. The first real suspend flushes what has already been
+    produced, so a producer that does wait between chunks keeps its per-chunk
+    timing exactly as before.
+    """
+    agen = stream.__aiter__()
+    buf = bytearray()
+    while True:
+        # `__anext__()` is typed as a bare `Awaitable` (the `AsyncIterator`
+        # protocol); on a native async generator it is always a coroutine,
+        # which is what manual `.send()`/`.throw()` driving needs.
+        coro = cast("Coroutine[Any, Any, bytes | str]", agen.__anext__())
+        value: Any = None
+        exc: BaseException | None = None
+        suspended = False
+        try:
+            while True:
+                try:
+                    yielded = coro.throw(exc) if exc is not None else coro.send(value)
+                except StopIteration as stop:
+                    chunk = stop.value
+                    break
+                if not suspended:
+                    suspended = True
+                    if buf:
+                        yield bytes(buf)
+                        buf.clear()
+                try:
+                    value = await _forward(yielded)
+                    exc = None
+                except BaseException as caught:  # noqa: BLE001 - handed to the producer below
+                    exc = caught
+                    value = None
+        except StopAsyncIteration:
+            break
+        except GeneratorExit:
+            # Reached mid-suspend: `coro` is still live and would otherwise be
+            # abandoned for the garbage collector to close later, non-
+            # deterministically. `coro.close()` does not reliably drive an
+            # `async_generator_asend`'s own cleanup, so this throws by hand.
+            # Yielding the leftover buffer here is also illegal - an async
+            # generator may not ignore its own GeneratorExit.
+            with contextlib.suppress(StopIteration, GeneratorExit):
+                coro.throw(GeneratorExit)
+            raise
+        except BaseException:
+            if buf:
+                yield bytes(buf)
+            raise
+        if isinstance(chunk, str):
+            chunk = chunk.encode("utf-8")
+        buf += chunk
+        if len(buf) >= flush_at:
+            yield bytes(buf)
+            buf.clear()
+    if buf:
+        yield bytes(buf)
 
 
 async def _write_chunked(

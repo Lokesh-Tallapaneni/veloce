@@ -51,6 +51,7 @@ from veloce._internal import (
     MIME_JSON,
     MIME_OCTET,
     MIME_PLAIN,
+    _coalesce,
     _encode_response_head,
     _etag_matches_strong,
     _file_etag,
@@ -1554,7 +1555,7 @@ class StreamingResponse(Response):
             return StreamingResponse(chunks(), content_type="text/plain")
     """
 
-    __slots__ = ()
+    __slots__ = ("_coalesce",)
 
     def __init__(
         self,
@@ -1562,6 +1563,7 @@ class StreamingResponse(Response):
         status_code: int = HTTP_200_OK,
         content_type: str = MIME_OCTET,
         headers: dict[str, str] | None = None,
+        coalesce: bool = True,
     ) -> None:
         super().__init__(
             status_code=status_code,
@@ -1575,6 +1577,10 @@ class StreamingResponse(Response):
             if hasattr(content, "__aiter__")
             else self._aiter_sync(content)
         )
+        # Batches chunks the producer yields without awaiting between them;
+        # `coalesce=False` keeps one write per chunk for a producer whose
+        # delivery timing matters chunk-by-chunk even within a burst.
+        self._coalesce = coalesce
 
     @staticmethod
     async def _aiter_sync(iterable: Any) -> AsyncIterator[bytes]:
@@ -1619,7 +1625,8 @@ class StreamingResponse(Response):
         transport.write(self.encode(keep_alive=keep_alive))
         # A 304 drops the stream with the body (RFC 9110 Sec. 15.4.5).
         if self._stream is not None:
-            await _write_chunked(transport, self._stream, drain)
+            stream = _coalesce(self._stream) if self._coalesce else self._stream
+            await _write_chunked(transport, stream, drain)
 
 
 # At or below this size `FileResponse.from_path` reads inline; above it, a

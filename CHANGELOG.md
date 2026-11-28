@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `StreamingResponse(..., coalesce=False)` opts a producer out of chunk batching, for one write per chunk. ([#PENDING](https://github.com/Lokesh-Tallapaneni/veloce/pull/PENDING))
+
+### Changed
+
+- A streamed or SSE response batches the chunks a producer yields without awaiting between them into fewer writes; a producer that does await between chunks keeps its existing per-chunk delivery timing. ([#PENDING](https://github.com/Lokesh-Tallapaneni/veloce/pull/PENDING))
+
 ## [0.23.0] - 2026-11-27
 
 ### Added
