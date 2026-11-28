@@ -89,7 +89,12 @@ class EventLoopWatchdog:
         self._stopped = threading.Event()
 
     def start(self) -> None:
-        """Arm the watchdog. Must be called from inside the loop thread."""
+        """Arm the watchdog. Must be called from inside the loop thread.
+
+        Raises:
+            RuntimeError: If already started, or called from outside the thread running its loop.
+
+        """
         if self._thread is not None and self._thread.is_alive():
             raise RuntimeError("EventLoopWatchdog is already started")
         try:

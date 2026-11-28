@@ -43,7 +43,15 @@ class HeaderSet:
         self._items = [x for x in self._items if x.lower() != key]
 
     def remove(self, header: str) -> None:
-        """Remove `header`; raise `KeyError` if absent."""
+        """Remove `header`; raise `KeyError` if absent.
+
+        Args:
+            header: The header name, matched case-insensitively.
+
+        Raises:
+            KeyError: If `header` is not in the set.
+
+        """
         key = header.lower()
         if key not in self._lower:
             raise KeyError(header)

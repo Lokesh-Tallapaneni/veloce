@@ -147,6 +147,14 @@ def register_encoder(type_: type[Any], encoder: Callable[[Any], Any]) -> None:
     Usage::
 
         register_encoder(MyId, lambda v: v.hex)
+
+    Args:
+        type_: The type, with its subclasses, the encoder handles.
+        encoder: Converts one instance to a JSON-able value.
+
+    Raises:
+        TypeError: If `type_` is not a type or `encoder` is not callable.
+
     """
     if not isinstance(type_, type):
         raise TypeError("register_encoder requires a type as its first argument")
@@ -285,6 +293,24 @@ def jsonable_encoder(
     Usage::
 
         data = jsonable_encoder(my_pydantic_model, exclude={"password"})
+
+    Args:
+        obj: The value to convert.
+        include: Key names to keep, applied at every depth.
+        exclude: Key names to drop, applied at every depth.
+        exclude_unset: Drop model fields that were never set.
+        exclude_defaults: Drop model fields equal to their default.
+        exclude_none: Drop `None` values.
+        custom_encoder: Per-type encoders consulted before every built-in rule.
+        _seen: Internal recursion guard; leave unset.
+
+    Returns:
+        A structure of JSON-serialisable values.
+
+    Raises:
+        ValueError: If the object graph refers to itself.
+        TypeError: If a `Secret` reaches the serialiser.
+
     """
     # Checked before `custom_encoder`, so a caller cannot register the guard away.
     if isinstance(obj, Secret):

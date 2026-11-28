@@ -89,6 +89,18 @@ class JSONResponse(Response):
         The caller is responsible for `body` being valid UTF-8 JSON; nothing is
         parsed or validated. `body` must be `bytes` or `bytearray` - a `str`
         raises `TypeError` rather than being encoded under an assumed charset.
+
+        Args:
+            body: The encoded JSON document.
+            status_code: HTTP status code.
+            headers: Extra response headers; a `Content-Type` here wins.
+
+        Returns:
+            The response.
+
+        Raises:
+            TypeError: If `body` is not `bytes` or `bytearray`.
+
         """
         if not isinstance(body, (bytes, bytearray)):
             raise TypeError(
