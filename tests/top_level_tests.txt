@@ -37,6 +37,7 @@ test_mcp_gateway_exports.py
 test_mcp_guide_claims.py
 test_module_import_graph.py
 test_module_naming.py
+test_module_size_budget.py
 test_no_leaked_event_loops.py
 test_openapi_helper_split.py
 test_optional_dependency_hints.py
