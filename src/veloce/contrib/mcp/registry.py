@@ -47,7 +47,8 @@ class MCPTool(MCPDescriptor):
     input_schema: dict[str, Any]
     # Set by a tool that dispatches OTHER tools; a signature cannot show that.
     dispatches_tools: bool = False
-    # Read by `_needs_stream`; `init=False` so no caller can claim streamlessness.
+    # Whether the tool can ever notify before its reply; `init=False` so no
+    # caller can claim streamlessness.
     may_stream: bool = field(default=True, init=False, repr=False, compare=False)
     # Route-level `dependencies=`, run before the handler's own `Depends` graph.
     route_dep_plans: list[Any] = field(default_factory=list)

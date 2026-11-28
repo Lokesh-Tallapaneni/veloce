@@ -172,7 +172,44 @@ def test_connection_lost_releases_parked_writer():
 
 def test_streaming_response_awaits_drain_per_chunk():
     """StreamingResponse.stream_to awaits the supplied drain after every chunk
-    so a fast producer is throttled at the transport buffer."""
+    so a fast producer is throttled at the transport buffer.
+
+    `coalesce=False` pins one write per yielded chunk; the default batches
+    chunks produced without awaiting into one write, so drains once for the
+    one write instead (covered below).
+    """
+
+    loop = asyncio.new_event_loop()
+    try:
+
+        async def _gen():
+            yield b"a"
+            yield b"b"
+            yield b"c"
+
+        drained = 0
+
+        async def _drain() -> None:
+            nonlocal drained
+            drained += 1
+
+        resp = StreamingResponse(_gen(), coalesce=False)
+        transport = _FakeTransport()
+        loop.run_until_complete(resp.stream_to(transport, drain=_drain))
+
+        # One drain per yielded chunk (not for head or terminating zero-chunk).
+        assert drained == 3
+        emitted = b"".join(transport.writes)
+        assert b"1\r\na\r\n" in emitted
+        assert emitted.endswith(b"0\r\n\r\n")
+    finally:
+        loop.close()
+
+
+def test_coalesced_streaming_response_drains_once_per_write():
+    """The default batches chunks produced without awaiting into one write,
+    so backpressure is checked once for that write - the drain still runs
+    right before each actual write, just not once per logical chunk."""
 
     loop = asyncio.new_event_loop()
     try:
@@ -192,10 +229,9 @@ def test_streaming_response_awaits_drain_per_chunk():
         transport = _FakeTransport()
         loop.run_until_complete(resp.stream_to(transport, drain=_drain))
 
-        # One drain per yielded chunk (not for head or terminating zero-chunk).
-        assert drained == 3
+        assert drained == 1
         emitted = b"".join(transport.writes)
-        assert b"1\r\na\r\n" in emitted
+        assert b"3\r\nabc\r\n" in emitted
         assert emitted.endswith(b"0\r\n\r\n")
     finally:
         loop.close()
