@@ -53,8 +53,8 @@ if TYPE_CHECKING:  # pragma: no cover
 
 _logger = logging.getLogger(__name__)
 
-# RFC 8414 well-known path for authorization server metadata.
-AUTHORIZATION_SERVER_METADATA_PATH = "/.well-known/oauth-authorization-server"
+AUTHORIZATION_SERVER_METADATA_PATH: str = "/.well-known/oauth-authorization-server"
+"""RFC 8414 well-known path for authorization server metadata."""
 
 # 256 bits, which is what a token that is the whole credential needs.
 _CREDENTIAL_ENTROPY_BYTES = 32
@@ -85,8 +85,8 @@ class OAuthClient:
 
     client_id: str
     redirect_uris: tuple[str, ...]
-    # `None` for a public client, which proves itself with PKCE alone.
     client_secret_digest: str | None = None
+    """`None` for a public client, which proves itself with PKCE alone."""
     client_name: str | None = None
     scopes: frozenset[str] = frozenset()
     grant_types: tuple[str, ...] = ("authorization_code", "refresh_token")
@@ -121,13 +121,13 @@ class AccessToken:
     resource: str | None
     expires_at: float
     claims: dict[str, Any] = field(default_factory=dict)
-    # Set when refresh was granted; rotation issues a new pair and drops the old.
     refresh_digest: str | None = None
-    # The chain this token descends from, inherited by every rotation. A refresh
-    # token presented twice means a copy leaked, and OAuth 2.1 Sec. 4.14.2 wants
-    # the whole chain revoked - refusing only the replay leaves the thief the
-    # pair they already rotated.
+    """Set when refresh was granted; rotation issues a new pair and drops the old."""
     family_id: str = field(default_factory=lambda: secrets.token_urlsafe(9))
+    """The chain this token descends from, inherited by every rotation. A refresh token presented twice
+    means a copy leaked, and OAuth 2.1 Sec. 4.14.2 wants the whole chain revoked - refusing only the
+    replay leaves the thief the pair they already rotated.
+    """
 
 
 @runtime_checkable
@@ -190,31 +190,39 @@ class InMemoryAuthorizationStore:
         self._spent: dict[str, str] = {}
 
     async def save_client(self, client: OAuthClient) -> None:
+        """Store a registered client under its id."""
         self._clients[client.client_id] = client
 
     async def get_client(self, client_id: str) -> OAuthClient | None:
+        """Return the client registered under `client_id`, or `None`."""
         return self._clients.get(client_id)
 
     async def save_code(self, code_digest: str, code: AuthorizationCode) -> None:
+        """Store an authorization code under its digest."""
         self._codes[code_digest] = code
 
     async def take_code(self, code_digest: str) -> AuthorizationCode | None:
+        """Remove and return the code stored under `code_digest`, or `None`."""
         return self._codes.pop(code_digest, None)
 
     async def save_token(self, token_digest: str, token: AccessToken) -> None:
+        """Store an access token under its digest, indexing its refresh digest."""
         self._tokens[token_digest] = token
         if token.refresh_digest is not None:
             self._refresh[token.refresh_digest] = token_digest
 
     async def get_token(self, token_digest: str) -> AccessToken | None:
+        """Return the access token stored under `token_digest`, or `None`."""
         return self._tokens.get(token_digest)
 
     async def delete_token(self, token_digest: str) -> None:
+        """Remove an access token and the refresh index entry pointing at it."""
         token = self._tokens.pop(token_digest, None)
         if token is not None and token.refresh_digest is not None:
             self._refresh.pop(token.refresh_digest, None)
 
     async def take_refresh(self, refresh_digest: str) -> tuple[str, AccessToken] | None:
+        """Remove a refresh token and return its access token digest and token, or `None`."""
         token_digest = self._refresh.pop(refresh_digest, None)
         if token_digest is None:
             return None
@@ -278,18 +286,18 @@ class MCPAuthorizationServer:
         ))
     """
 
-    # The base every endpoint is advertised under: the https origin clients reach.
     issuer: str
-    # Establishes who is approving access. See `Authenticator`.
+    """The base every endpoint is advertised under: the https origin clients reach."""
     authenticate: Authenticator
-    # Advertised in the metadata; a request outside this set is refused.
+    """Establishes who is approving access. See `Authenticator`."""
     scopes_supported: Iterable[str] = ()
-    # Where clients, codes and tokens live.
+    """Advertised in the metadata; a request outside this set is refused."""
     store: AuthorizationStore = field(default_factory=InMemoryAuthorizationStore)
-    # Lifetime of an issued access token.
+    """Where clients, codes and tokens live."""
     access_token_ttl: float = 3600.0
-    # Whether `POST /register` issues credentials to anyone (RFC 7591).
+    """Lifetime of an issued access token."""
     allow_dynamic_registration: bool = True
+    """Whether `POST /register` issues credentials to anyone (RFC 7591)."""
 
     def __post_init__(self) -> None:
         if isinstance(self.scopes_supported, (str, bytes)):
@@ -629,8 +637,8 @@ async def _authenticate_client(
     return client, None
 
 
-#: A registration naming anything else is refused, not silently narrowed.
-SUPPORTED_GRANT_TYPES = ("authorization_code", "refresh_token")
+SUPPORTED_GRANT_TYPES: tuple[str, ...] = ("authorization_code", "refresh_token")
+"""Grant types the server accepts; a registration naming anything else is refused, not silently narrowed."""
 
 
 def _refuse_unregistered_grant(client: OAuthClient, grant_type: str) -> Response | None:

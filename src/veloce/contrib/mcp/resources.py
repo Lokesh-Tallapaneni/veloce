@@ -46,15 +46,15 @@ class MCPResource(MCPDescriptor):
 
     uri: str
     tool: MCPTool
-    # A template is advertised through ``resources/templates/list`` instead.
     is_template: bool
-    # Recovers the path parameter values from a concrete ``resources/read`` URI.
+    """A template is advertised through ``resources/templates/list`` instead."""
     pattern: Pattern[str] | None
+    """Recovers the path parameter values from a concrete ``resources/read`` URI."""
     uri_param_names: tuple[str, ...]
-    # Literal-text length: a catch-all also matches what a longer template meant.
     specificity: int = 0
-    # Declared rather than measured: a listing must not read every resource.
+    """Literal-text length: a catch-all also matches what a longer template meant."""
     size: int | None = None
+    """Declared rather than measured: a listing must not read every resource."""
     annotations: dict[str, Any] | None = None
 
 

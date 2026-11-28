@@ -117,15 +117,18 @@ class UpstreamTokenSet:
     refresh_token: str | None
     expires_at: float
     claims: dict[str, Any] = field(default_factory=dict)
-    #: Taken from the upstream's `id_token`, where OIDC providers carry it -
-    #: not from `claims`, which a refresh response can overwrite or omit.
     subject: str | None = None
-    #: RFC 8707 resource this was requested for, carried into every JWT
-    #: minted from it - including across a refresh, unlike `claims`.
+    """Taken from the upstream's `id_token`, where OIDC providers carry it - not from `claims`, which a
+    refresh response can overwrite or omit.
+    """
     resource: str | None = None
-    #: Stamped fresh on every save (initial exchange or refresh) - how the
-    #: store tells an active session from one nobody ever came back to.
+    """RFC 8707 resource this was requested for, carried into every JWT minted from it - including
+    across a refresh, unlike `claims`.
+    """
     last_active_at: float = field(default_factory=_now)
+    """Stamped fresh on every save (initial exchange or refresh) - how the store tells an active
+    session from one nobody ever came back to.
+    """
 
 
 @dataclass(slots=True)
@@ -188,6 +191,7 @@ class InMemoryUpstreamOAuthProxyStore:
         self._refresh: dict[str, str] = {}
 
     async def save_pending(self, state: str, pending: PendingAuthorization) -> None:
+        """Store a pending authorization under its `state` value."""
         # Opportunistic sweep: an abandoned flow that never reaches the
         # callback would otherwise sit here forever.
         now = _now()
@@ -197,9 +201,11 @@ class InMemoryUpstreamOAuthProxyStore:
         self._pending[state] = pending
 
     async def take_pending(self, state: str) -> PendingAuthorization | None:
+        """Remove and return the pending authorization for `state`, or `None`."""
         return self._pending.pop(state, None)
 
     async def save_code(self, code_digest: str, code: ProxyAuthorizationCode) -> None:
+        """Store a proxy authorization code under its digest."""
         # Opportunistic sweep: a code the client never redeems would
         # otherwise sit here forever, same reasoning as `save_pending`.
         now = _now()
@@ -209,9 +215,11 @@ class InMemoryUpstreamOAuthProxyStore:
         self._codes[code_digest] = code
 
     async def take_code(self, code_digest: str) -> ProxyAuthorizationCode | None:
+        """Remove and return the proxy code stored under `code_digest`, or `None`."""
         return self._codes.pop(code_digest, None)
 
     async def save_upstream_tokens(self, jti: str, tokens: UpstreamTokenSet) -> None:
+        """Store the upstream token set issued for the proxy token `jti`."""
         # Opportunistic sweep: a session nobody has redeemed or refreshed in
         # `_UPSTREAM_TOKEN_SET_MAX_IDLE_SECONDS` is treated as abandoned -
         # `delete_upstream_tokens` exists but nothing else ever calls it.
@@ -226,18 +234,23 @@ class InMemoryUpstreamOAuthProxyStore:
         self._tokens[jti] = tokens
 
     async def get_upstream_tokens(self, jti: str) -> UpstreamTokenSet | None:
+        """Return the upstream token set for `jti`, or `None`."""
         return self._tokens.get(jti)
 
     async def delete_upstream_tokens(self, jti: str) -> None:
+        """Remove the upstream token set for `jti`."""
         self._tokens.pop(jti, None)
 
     async def save_refresh(self, refresh_digest: str, jti: str) -> None:
+        """Index a refresh token digest to the proxy token `jti` it renews."""
         self._refresh[refresh_digest] = jti
 
     async def get_refresh(self, refresh_digest: str) -> str | None:
+        """Return the `jti` a refresh digest renews, or `None`."""
         return self._refresh.get(refresh_digest)
 
     async def take_refresh(self, refresh_digest: str) -> str | None:
+        """Remove a refresh digest and return the `jti` it renewed, or `None`."""
         return self._refresh.pop(refresh_digest, None)
 
 
@@ -281,26 +294,28 @@ class UpstreamOAuthProxy:
     MCP client will use must be listed explicitly.
     """
 
-    #: Veloce's own issuer identity, presented to MCP clients.
     issuer: str
+    """Veloce's own issuer identity, presented to MCP clients."""
     upstream_authorization_endpoint: str
     upstream_token_endpoint: str
     upstream_client_id: str
     upstream_client_secret: str
-    #: HMAC key for the proxy's own locally-minted JWTs.
     signing_key: str | bytes
-    #: This proxy's own fixed callback, registered upstream once.
+    """HMAC key for the proxy's own locally-minted JWTs."""
     redirect_path: str = "/oauth/callback"
-    #: Exact client redirect_uris this proxy will ever redirect a browser
-    #: to or redirect an error to. Empty means none - fail closed, since
-    #: there is no per-client registry to check membership against instead.
+    """This proxy's own fixed callback, registered upstream once."""
     allowed_redirect_uris: Iterable[str] = ()
-    #: Scopes the minted JWT carries and advertises to MCP clients.
+    """Exact client redirect_uris this proxy will ever redirect a browser to or redirect an error to.
+    Empty means none - fail closed, since there is no per-client registry to check membership
+    against instead.
+    """
     scopes_supported: Iterable[str] = ()
-    #: Scopes requested from the upstream at `/authorize` - a provider's own
-    #: vocabulary (e.g. `openid email profile`), not `scopes_supported`,
-    #: which the upstream has never heard of and may refuse as unknown.
+    """Scopes the minted JWT carries and advertises to MCP clients."""
     upstream_scopes: Iterable[str] = ()
+    """Scopes requested from the upstream at `/authorize` - a provider's own vocabulary (e.g. `openid
+    email profile`), not `scopes_supported`, which the upstream has never heard of and may refuse as
+    unknown.
+    """
     access_token_ttl: float = 3600.0
     allow_dynamic_registration: bool = True
     store: UpstreamOAuthProxyStore = field(default_factory=InMemoryUpstreamOAuthProxyStore)

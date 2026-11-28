@@ -121,6 +121,11 @@ def instrument_with_prometheus(
 
     Raise :class:`ImportError` with an install hint when ``prometheus_client``
     is not installed. Return the registered hook.
+
+    Raises:
+        ImportError: If `prometheus_client` is not installed (the `metrics` extra).
+        ValueError: If the metric names already exist in `registry`.
+
     """
     if _PROM_IMPORT_ERROR is not None:
         raise ImportError(_INSTALL_HINT) from _PROM_IMPORT_ERROR

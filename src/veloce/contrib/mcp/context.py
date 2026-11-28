@@ -73,9 +73,8 @@ _session_var: ContextVar[MCPSession | None] = ContextVar("_mcp_session", default
 
 # ── Logging levels ──────────────────────────────────────────
 
-# Suppresses every `notifications/message`: the spec requires a server to send
-# none for a request that named no level, which no RFC 5424 level can express.
-LOG_LEVEL_OFF = "off"
+LOG_LEVEL_OFF: str = "off"
+"""Suppresses every `notifications/message`: the spec requires a server to send none for a request that named no level, which no RFC 5424 level can express."""
 
 # RFC 5424 severity order, the scale MCP uses for ``logging/setLevel``.
 _LOG_RANKS = {
@@ -302,19 +301,43 @@ class MCPContext:
     # ── Logging ───────────────────────────────────────────────
 
     async def debug(self, message: Any, logger: str | None = None) -> None:
-        """Send a debug-level log message to the client."""
+        """Send a debug-level log message to the client.
+
+        Args:
+            message: The payload sent as the record's `data`; any JSON-serialisable value.
+            logger: Optional logger name the client can filter on.
+
+        """
         await self.log("debug", message, logger)
 
     async def info(self, message: Any, logger: str | None = None) -> None:
-        """Send an info-level log message to the client."""
+        """Send an info-level log message to the client.
+
+        Args:
+            message: The payload sent as the record's `data`; any JSON-serialisable value.
+            logger: Optional logger name the client can filter on.
+
+        """
         await self.log("info", message, logger)
 
     async def warning(self, message: Any, logger: str | None = None) -> None:
-        """Send a warning-level log message to the client."""
+        """Send a warning-level log message to the client.
+
+        Args:
+            message: The payload sent as the record's `data`; any JSON-serialisable value.
+            logger: Optional logger name the client can filter on.
+
+        """
         await self.log("warning", message, logger)
 
     async def error(self, message: Any, logger: str | None = None) -> None:
-        """Send an error-level log message to the client."""
+        """Send an error-level log message to the client.
+
+        Args:
+            message: The payload sent as the record's `data`; any JSON-serialisable value.
+            logger: Optional logger name the client can filter on.
+
+        """
         await self.log("error", message, logger)
 
     async def log(self, level: str, message: Any, logger: str | None = None) -> None:
@@ -322,6 +345,12 @@ class MCPContext:
 
         Dropped when no notification channel is wired, or when `level` is below the
         client's `logging/setLevel` minimum.
+
+        Args:
+            level: An MCP log level such as `debug`, `info`, `warning` or `error`.
+            message: The payload sent as the record's `data`; any JSON-serialisable value.
+            logger: Optional logger name the client can filter on.
+
         """
         if self._notifier is None or self._log_level == LOG_LEVEL_OFF:
             return
@@ -343,6 +372,12 @@ class MCPContext:
 
         Dropped when no notification channel is wired, or when the client did not
         send a `progressToken` with the call (progress is only reported on request).
+
+        Args:
+            progress: Work completed so far; it should increase with each report.
+            total: Total work expected, when known.
+            message: Optional human-readable status for the client to show.
+
         """
         if self._notifier is None or self._progress_token is None:
             return
@@ -385,6 +420,15 @@ class MCPContext:
 
         Goes through the same handler `prompts/get` serves, including its scope
         check, for the same reason `read_resource` does.
+
+        Args:
+            name: Registered prompt name.
+            arguments: Prompt arguments, passed through to the prompt handler.
+
+        Raises:
+            RuntimeError: If this context has no serving `MCPServer`, as with a bare
+                `MCPContext`.
+
         """
         server = self._require_server("get_prompt")
         params: dict[str, Any] = {"name": name}
@@ -418,6 +462,11 @@ class MCPContext:
 
         Inert when no notification channel is wired, matching `log` and
         `report_progress`.
+
+        Args:
+            method: JSON-RPC method name of the notification.
+            params: Optional notification parameters.
+
         """
         if self._notifier is None:
             return
@@ -451,6 +500,25 @@ class MCPContext:
         `include_context` asks the client to attach context from MCP servers to the
         prompt - ``"none"``, ``"thisServer"``, or ``"allServers"``. The client MAY
         ignore the request, so it is a hint rather than a guarantee.
+
+        Args:
+            messages: Conversation so far, as MCP sampling messages.
+            max_tokens: Upper bound on the completion length, in tokens.
+            model_preferences: Optional hints for the client's model choice.
+            system_prompt: Optional system prompt the client may apply.
+            temperature: Optional sampling temperature.
+            stop_sequences: Optional sequences that end the completion.
+            tools: Tool definitions the model may call; needs `sampling.tools` on the client.
+            tool_choice: How the model may use `tools`; needs `sampling.tools` on the client.
+            metadata: Optional provider-specific metadata, passed through.
+            include_context: `none`, `thisServer` or `allServers`.
+
+        Raises:
+            ValueError: If `include_context` is not one of the accepted modes.
+            RuntimeError: If the transport cannot carry server-initiated requests.
+            MCPCapabilityError: If the client did not advertise `sampling`, or `sampling.tools`
+                when tools are given.
+
         """
         if include_context is not None and include_context not in _SAMPLING_CONTEXT_MODES:
             raise ValueError(
@@ -504,6 +572,25 @@ class MCPContext:
         after the cap the model is asked to answer without tools.
 
         Requires a client that advertised ``sampling.tools``.
+
+        Args:
+            messages: Conversation so far, as MCP sampling messages.
+            tools: Names of this server's tools the model may drive.
+            max_tokens: Upper bound on each completion's length, in tokens.
+            max_tool_rounds: How many times tools may run before the model must answer.
+            model_preferences: Optional hints for the client's model choice.
+            system_prompt: Optional system prompt the client may apply.
+            temperature: Optional sampling temperature.
+            stop_sequences: Optional sequences that end a completion.
+            tool_choice: How the model may use the tools on the first rounds.
+            metadata: Optional provider-specific metadata, passed through.
+
+        Raises:
+            RuntimeError: If this context has no serving `MCPServer`, or the transport cannot
+                carry server-initiated requests.
+            ValueError: If `tools` names a tool this server does not register.
+            MCPCapabilityError: If the client did not advertise `sampling.tools`.
+
         """
         server = self._require_server("sample_with_tools")
         declared = self._declare_tools(server, tools)
@@ -628,6 +715,19 @@ class MCPContext:
         URL mode also carries the `elicitationId` the spec requires, which names
         the interaction in a later `notifications/elicitation/complete`. One is
         minted per call; pass `elicitation_id` to reuse the URL flow's own.
+
+        Args:
+            message: Prompt shown to the user.
+            requested_schema: JSON Schema of the fields to collect (form mode).
+            url: URL the client opens instead of showing a form (URL mode).
+            elicitation_id: Identifier for the URL flow; one is generated when omitted.
+
+        Raises:
+            ValueError: If both `requested_schema` and `url` are given.
+            RuntimeError: If the transport cannot carry server-initiated requests.
+            MCPCapabilityError: If the client did not advertise `elicitation` (or its `url`
+                mode, for URL elicitation).
+
         """
         if requested_schema is not None and url is not None:
             raise ValueError("elicit takes either requested_schema (form) or url, not both")

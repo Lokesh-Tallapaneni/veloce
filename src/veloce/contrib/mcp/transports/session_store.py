@@ -90,7 +90,14 @@ class SessionBackend(Protocol):
         ...
 
     async def write(self, session_id: str, record: SessionRecord, ttl: float) -> None:
-        """Store `record` under `session_id`, expiring it after `ttl` idle seconds."""
+        """Store `record` under `session_id`, expiring it after `ttl` idle seconds.
+
+        Args:
+            session_id: Session identifier.
+            record: Session state to store.
+            ttl: Idle seconds before the record expires.
+
+        """
         ...
 
     async def delete(self, session_id: str) -> None:
@@ -188,6 +195,11 @@ class HttpSessionStore:
 
         Called after each message, so a later request on another worker sees the
         handshake this one completed. Without a backend it returns immediately.
+
+        Args:
+            session_id: Session identifier.
+            session: Session whose state is published.
+
         """
         if self._backend is None:
             return

@@ -195,6 +195,14 @@ def run(app: Veloce, *, routes_final: bool = False) -> list[Finding]:
 
     Pass `routes_final=True` once the route table cannot change again. Left
     False, a middleware declaring `audit_needs_routes` is skipped.
+
+    Args:
+        app: Application to audit.
+        routes_final: Set once the route table can no longer change.
+
+    Returns:
+        Every finding, in the order the checks ran.
+
     """
     ctx = AuditContext(app=app, routes_final=routes_final)
     findings = _app_findings(app)
