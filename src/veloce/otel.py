@@ -362,6 +362,16 @@ def instrument_with_otel(
     except that an excluded route still gets a context-carrying span and only
     its enrichment is skipped.
 
+    Args:
+        app: Application whose instrumentation is bridged into spans.
+        tracer_provider: Provider the tracer comes from; the global one when omitted.
+        live: Open a real server span at request start instead of backdating one.
+        on_span: Called as `on_span(span, metrics)` to enrich each emitted span.
+        exclude_routes: Route templates whose spans are suppressed.
+
+    Returns:
+        The registered hook, so a caller can hold a reference to it.
+
     Raises:
         ImportError: If OpenTelemetry is not installed (the `otel` extra).
 

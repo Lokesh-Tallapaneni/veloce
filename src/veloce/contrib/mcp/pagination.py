@@ -32,6 +32,9 @@ def encode_cursor(index: int, key: str) -> str:
         index: Position of the last item emitted.
         key: Stable key of that item.
 
+    Returns:
+        The cursor string, safe to hand to a client.
+
     """
     raw = f"{index}{_CURSOR_SEPARATOR}{key}".encode()
     # Padded on purpose - NOT `_internal._b64encode`, which strips `=` for the
@@ -44,6 +47,9 @@ def decode_cursor(cursor: str) -> tuple[int, str]:
 
     Args:
         cursor: Cursor produced by `encode_cursor`.
+
+    Returns:
+        The recorded position and item key.
 
     Raises:
         InvalidParamsError: If the cursor is malformed.
@@ -91,6 +97,9 @@ def paginate(
         key_of: Returns the stable key of an item.
         cursor: Cursor from the previous page, or `None` for the first.
         size: Page size, or `None` when the server does not paginate.
+
+    Returns:
+        The page's items and the next cursor, or `None` on the last page.
 
     Raises:
         InvalidParamsError: If a cursor is given while the server does not paginate, or the

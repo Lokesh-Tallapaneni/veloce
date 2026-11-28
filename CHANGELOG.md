@@ -6,6 +6,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Settings` and `app.settings` expose the configuration keys Veloce reads as a typed, read-only view. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
+- `CacheBackend`, `SessionStoreBackend`, `RateLimitStoreBackend` and `JSONProviderBackend` protocols describe each pluggable backend. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
+- `WebSocketError` is the common base of the WebSocket exceptions and derives from `VeloceError`. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
+- `MCPTransport` and `SameSite` name closed sets of values; plain strings are still accepted. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
+- Each guide, how-to and deployment page ends with a `Source and tests` line linking its code and tests. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
+
+### Changed
+
+- `import veloce` resolves public names on first use, loading 2 modules instead of 99. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
+- Route options after `methods` in `add_route` and `route` are keyword-only. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
+- Boolean parameters of public functions are keyword-only; pass them by name. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
+- `MCPError`, `MCPRequestError` and `ScaffoldError` derive from `VeloceError`. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
+- `Veloce.add_route` is inherited from `Router`; registration checks run in `_add_route_options`. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
+- `Signal.connect` takes `weak` and `sender` by keyword; pass `sender=` explicitly. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
+- Public functions and classes carry `Args`, `Returns` and `Raises` documentation. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
+- Modules over 1,000 lines became packages with unchanged import paths. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
+
 ## [0.23.0] - 2026-11-27
 
 ### Added

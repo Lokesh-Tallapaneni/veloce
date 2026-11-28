@@ -435,6 +435,28 @@ class ParamBase:
     ) -> None:
         """Declare the parameter; every argument is documented through its `Doc`.
 
+        Args:
+            default: Static fallback; `...` marks the parameter required.
+            default_factory: Builds a fresh default per request.
+            alias: External name to read the value under.
+            title: Title emitted into the OpenAPI schema.
+            description: Description emitted into the OpenAPI schema.
+            ge: Inclusive lower bound.
+            le: Inclusive upper bound.
+            gt: Exclusive lower bound.
+            lt: Exclusive upper bound.
+            min_length: Minimum length.
+            max_length: Maximum length.
+            multiple_of: The value must be a positive multiple of this.
+            regex: Pattern the value must match.
+            pattern: Pattern the value must match; takes precedence over `regex`.
+            deprecated: Mark the parameter deprecated in the schema.
+            examples: Example values for the schema.
+            embed: For `Body` markers, nest the value under the parameter name.
+            convert_underscores: For `Header` markers, read `x_token` as `x-token`.
+            group: Read a model annotation's fields from this source.
+            include_in_schema: Omit the parameter from the OpenAPI document when false.
+
         Raises:
             ValueError: If both `default` and `default_factory` are given, or
                 `multiple_of` is not positive.

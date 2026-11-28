@@ -121,6 +121,9 @@ class MCPAuth:
                 reject it.
             required_scopes: Scopes the verified principal must hold.
 
+        Returns:
+            Auth configuration that accepts the one pre-shared token.
+
         """
         return cls(verify=verify, required_scopes=required_scopes, bearer_only=True)
 

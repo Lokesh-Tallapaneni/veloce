@@ -286,6 +286,9 @@ def http_upstream(
         client: Caller-owned `httpx2.AsyncClient`; one is created and owned when omitted.
         headers: Headers merged onto every request.
 
+    Returns:
+        The `request(method, params)` callable, which also exposes `aclose()`.
+
     Raises:
         RuntimeError: If `httpx2` is not installed (the `mcp-proxy` extra) or the interpreter
             cannot run it.

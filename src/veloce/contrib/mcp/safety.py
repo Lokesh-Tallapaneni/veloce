@@ -22,6 +22,9 @@ def require_mcp_description(tool_name: str, description: str | None) -> str:
         tool_name: Name used in the error message.
         description: Candidate description.
 
+    Returns:
+        The description, unchanged.
+
     Raises:
         ValueError: If the description is missing or empty.
 
@@ -47,6 +50,9 @@ def validate_tool_annotations(annotations: dict[str, Any] | None) -> dict[str, A
 
     Args:
         annotations: Declared hints, or `None`.
+
+    Returns:
+        A copy of the hints, or `None` when none were declared.
 
     Raises:
         ValueError: If a hint is not one the specification defines.

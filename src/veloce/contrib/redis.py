@@ -95,6 +95,9 @@ class RedisSessionStore(SessionStore):
             prefix: Prefix prepended to every key.
             **kwargs: Passed to `redis.asyncio.Redis.from_url`.
 
+        Returns:
+            The store, bound to a client created from the URL.
+
         Raises:
             RuntimeError: If the `redis` package is not installed (the `redis` extra).
 
@@ -208,6 +211,9 @@ class RedisRateLimitBackend(RateLimitBackend):
             url: Redis connection URL.
             prefix: Prefix prepended to every key.
             **kwargs: Passed to `redis.asyncio.Redis.from_url`.
+
+        Returns:
+            The backend, bound to a client created from the URL.
 
         Raises:
             RuntimeError: If the `redis` package is not installed (the `redis` extra).
@@ -333,6 +339,9 @@ class RedisCache(Cache):
             url: Redis connection URL.
             prefix: Prefix prepended to every key.
             **kwargs: Passed to `redis.asyncio.Redis.from_url`.
+
+        Returns:
+            The cache, bound to a client created from the URL.
 
         Raises:
             RuntimeError: If the `redis` package is not installed (the `redis` extra).

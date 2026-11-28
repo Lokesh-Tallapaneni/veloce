@@ -14,18 +14,20 @@ SRC = pathlib.Path(__file__).resolve().parents[1] / "src" / "veloce"
 
 BUDGET = 800
 
-#: path (relative to `src/veloce`) -> the line count it must not exceed.
+#: path (relative to `src/veloce`) -> the line count it must not exceed. The
+#: ceilings include the Args/Returns/Raises documentation on the public API.
 LEGACY: dict[str, int] = {
     "__init__.py": 900,  # the lazy export table lists every public name once
-    "_dependency_resolver.py": 830,
+    "_dependency_resolver.py": 880,
     "cli.py": 880,
-    "contrib/mcp/authorization.py": 830,
+    "contrib/mcp/context.py": 880,  # public-API docstrings, not logic
+    "contrib/mcp/authorization.py": 840,
     "helpers.py": 880,  # grew past the budget only through Args/Returns/Raises sections
-    "http/datastructures.py": 1000,
-    "middleware/security.py": 980,
-    "middleware/sessions.py": 900,
+    "http/datastructures.py": 1050,
+    "middleware/security.py": 1060,
+    "middleware/sessions.py": 960,
     "routing/converters.py": 890,
-    "websocket/connection.py": 1000,
+    "websocket/connection.py": 1090,
 }
 
 

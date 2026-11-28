@@ -70,6 +70,9 @@ async def add_mcp_proxy(
         scopes: Scopes required of a caller to list or invoke these tools.
         tags: Labels for `mount_mcp(tool_filter=...)` policies.
 
+    Returns:
+        The local tool names registered, in the order the upstream listed them.
+
     """
     required = frozenset(scopes) if scopes else frozenset()
     labels = frozenset(tags) if tags else frozenset()

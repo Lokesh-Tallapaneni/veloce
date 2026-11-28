@@ -122,6 +122,17 @@ def instrument_with_prometheus(
     Raise :class:`ImportError` with an install hint when ``prometheus_client``
     is not installed. Return the registered hook.
 
+    Args:
+        app: Application whose instrumentation the metrics are taken from.
+        registry: Registry to bind the metrics to; the client library's default when omitted.
+        prefix: Prefix of the metric names.
+        buckets: Histogram bucket bounds, in seconds.
+        group_status: Collapse the status code into its class (`2xx`) for the `status` label.
+        exclude_routes: Route templates whose series are suppressed.
+
+    Returns:
+        The registered instrumentation hook.
+
     Raises:
         ImportError: If `prometheus_client` is not installed (the `metrics` extra).
         ValueError: If the metric names already exist in `registry`.

@@ -70,6 +70,9 @@ def internal_error(msg_id: Any, message: str) -> dict[str, Any]:
         msg_id: Id of the request being answered.
         message: Human-readable failure description.
 
+    Returns:
+        The JSON-RPC error response, ready to send.
+
     """
     return _error(msg_id, _JSONRPC_INTERNAL_ERROR, message)
 

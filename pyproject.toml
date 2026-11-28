@@ -217,6 +217,10 @@ dev = [
     "tomli>=2.0; python_version < '3.11'",
     "ruff>=0.16.5",
     "mypy>=1.10",
+    # Checks that each public docstring's Args/Returns match the signature.
+    "pydoclint>=0.8",
+    # Runs the suite across every core: `pytest -n auto`.
+    "pytest-xdist>=3.5",
     # uvicorn is now an optional extra, but the test suite still exercises the
     # `veloce run` / serving paths, so the dev environment installs it.
     "uvicorn[standard]>=0.23",
@@ -374,13 +378,12 @@ ignore = [
     "E501",  # line length handled by formatter
     "B008",  # function calls in default args (Depends/Query/etc. legitimately need this)
     # ── PEP 257 rules deliberately not enforced ──────────────────────
-    # The style guide explicitly says to skip docstrings on dunders, `__init__`,
-    # HTTP-method shortcuts and delegation methods under five lines, so these
-    # three would flag exactly what it tells authors not to write.
+    # The style guide says to skip docstrings on dunders and `__init__` (the class
+    # docstring and the signature document construction), so these two would flag
+    # exactly what it tells authors not to write. Public classes and methods are
+    # documented and held there by D101/D102/D103.
     "D105",  # undocumented magic method
     "D107",  # undocumented `__init__`
-    "D102",  # undocumented public method
-    "D101",  # undocumented public class - same skip list (HTTP exception subclasses)
     # A predicate reads better as a noun phrase ("True when the port is the
     # default for the scheme") than as "Return True when ...", and the codebase
     # uses that form consistently for properties and predicates. Enforcing
@@ -458,6 +461,22 @@ mccabe.max-complexity = 37
 "src/veloce/_json.py" = ["TID251"]  # owns the backend choice
 "src/veloce/_model_backend.py" = ["TID251"]  # msgspec for model validation, not encoding
 "src/veloce/http/response/json_response.py" = ["TID251"]  # `UJSONResponse` is an explicit opt-out
+
+[tool.pydoclint]
+style = "google"
+# Types live in the signature; the docstring describes meaning.
+arg-type-hints-in-docstring = false
+arg-type-hints-in-signature = true
+# One-line summaries need no sections; a `Args:` block is required once the
+# docstring is longer than that and the signature has parameters.
+skip-checking-short-docstrings = true
+allow-init-docstring = true
+check-return-types = false
+check-class-attributes = false
+# A function that documents the exceptions its callee raises would be reported
+# as a mismatch, since the checker reads only the function's own `raise`s.
+skip-checking-raises = true
+exclude = "/(tests|benchmarks|bench|docs|examples)/|example_app.py|mkdocs_hooks.py"
 
 [tool.pyright]
 include = ["src/veloce"]

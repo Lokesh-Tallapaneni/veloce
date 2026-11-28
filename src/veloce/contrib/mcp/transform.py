@@ -163,6 +163,9 @@ def derive_tool(
         description: Published description; defaults to the original's.
         arguments: `ArgTransform` per argument, keyed by the original argument name.
 
+    Returns:
+        The derived tool; the original is left untouched.
+
     Raises:
         ValueError: If `tool` is already derived, or `arguments` names an argument it lacks.
 

@@ -425,6 +425,9 @@ class MCPContext:
             name: Registered prompt name.
             arguments: Prompt arguments, passed through to the prompt handler.
 
+        Returns:
+            The `prompts/get` result: the rendered messages and the prompt's description.
+
         Raises:
             RuntimeError: If this context has no serving `MCPServer`, as with a bare
                 `MCPContext`.
@@ -513,6 +516,9 @@ class MCPContext:
             metadata: Optional provider-specific metadata, passed through.
             include_context: `none`, `thisServer` or `allServers`.
 
+        Returns:
+            The client's sampling result: its chosen model, the role and the content.
+
         Raises:
             ValueError: If `include_context` is not one of the accepted modes.
             RuntimeError: If the transport cannot carry server-initiated requests.
@@ -584,6 +590,9 @@ class MCPContext:
             stop_sequences: Optional sequences that end a completion.
             tool_choice: How the model may use the tools on the first rounds.
             metadata: Optional provider-specific metadata, passed through.
+
+        Returns:
+            The `SamplingRun`: the final answer, the transcript and every tool call made.
 
         Raises:
             RuntimeError: If this context has no serving `MCPServer`, or the transport cannot
@@ -721,6 +730,9 @@ class MCPContext:
             requested_schema: JSON Schema of the fields to collect (form mode).
             url: URL the client opens instead of showing a form (URL mode).
             elicitation_id: Identifier for the URL flow; one is generated when omitted.
+
+        Returns:
+            The client's response: the action taken and any collected content.
 
         Raises:
             ValueError: If both `requested_schema` and `url` are given.
