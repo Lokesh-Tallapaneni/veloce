@@ -50,6 +50,7 @@ from veloce.app.middleware import MiddlewareMixin
 from veloce.app.mounting import MountingMixin
 from veloce.app.openapi import OpenAPIMixin
 from veloce.app.plugins import PluginsMixin
+from veloce.app.rsgi import RsgiMixin
 from veloce.app.serving import ServingMixin
 from veloce.app.templating import TemplatingMixin
 from veloce.app.testing import TestingMixin
@@ -117,6 +118,7 @@ class Veloce(
     MountingMixin,
     OpenAPIMixin,
     PluginsMixin,
+    RsgiMixin,
     ServingMixin,
     TestingMixin,
     BackgroundTasksMixin,
