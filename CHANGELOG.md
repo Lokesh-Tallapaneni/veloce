@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- A streamed or SSE response batches the chunks a producer yields without awaiting between them into fewer writes; a producer that does await between chunks keeps its existing per-chunk delivery timing. ([#369](https://github.com/Lokesh-Tallapaneni/veloce/pull/369))
+- Batch a streamed or SSE response's chunks when the producer doesn't await between them. ([#369](https://github.com/Lokesh-Tallapaneni/veloce/pull/369))
 
 ## [0.23.0] - 2026-11-27
 
