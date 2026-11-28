@@ -176,6 +176,14 @@ def is_immutable(value: Any, depth: int = 0) -> bool:
     attributes - and neither is `isinstance`, so an atomic type matches exactly.
     Every uncertain answer is `False`, which costs a per-request copy and stays
     correct. The one widening is the `Enum` member a deep copy hands back.
+
+    Args:
+        value: The value to inspect.
+        depth: Current recursion depth; leave at the default.
+
+    Returns:
+        True when the value is provably immutable.
+
     """
     kind = type(value)
     if kind in _ATOMIC_TYPES:
@@ -425,6 +433,13 @@ class ParamBase:
             ),
         ] = True,
     ) -> None:
+        """Declare the parameter; every argument is documented through its `Doc`.
+
+        Raises:
+            ValueError: If both `default` and `default_factory` are given, or
+                `multiple_of` is not positive.
+
+        """
         # Mutually exclusive: the factory exists to build a fresh value.
         if default is not ... and default_factory is not None:
             raise ValueError("default and default_factory are mutually exclusive")
@@ -467,6 +482,17 @@ class ParamBase:
         slot, the OpenAPI document and the MCP tool schema all read the marker
         and none of them knows about `FieldInfo`. `default` is the parameter's
         own, adopted only when the `Field` declares none.
+
+        Args:
+            field_info: The `Field` found in the parameter's `Annotated` metadata.
+            default: The parameter's own default.
+
+        Returns:
+            A marker carrying the `Field`'s constraints, default and documentation.
+
+        Raises:
+            TypeError: If the `Field`'s `default_factory` takes an argument.
+
         """
         constraints: dict[str, Any] = {}
         for meta in field_info.metadata:
@@ -532,7 +558,20 @@ class ParamBase:
         return self.default
 
     def validate(self, value: Any, name: str) -> Any:
-        """Validate value against constraints."""
+        """Validate value against constraints.
+
+        Args:
+            value: The value to check; `None` yields the default when one exists.
+            name: The parameter name, used in the error message.
+
+        Returns:
+            The value, or the default when `value` is `None` and one is declared.
+
+        Raises:
+            ValueError: If a numeric bound, `multiple_of`, a length bound or the
+                pattern is violated.
+
+        """
         if value is None and self.has_default:
             return self.resolve_default()
 

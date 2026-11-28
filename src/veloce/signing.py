@@ -77,6 +77,16 @@ class Signer:
         secret: str | bytes,
         salt: str | bytes = "veloce.signing",
     ) -> None:
+        """Derive the signing key.
+
+        Args:
+            secret: The shared secret; must be non-empty.
+            salt: Namespaces tokens, so one purpose's tokens never verify as another's.
+
+        Raises:
+            ValueError: If `secret` is empty.
+
+        """
         secret = _coerce_secret_bytes(secret)
         salt = _coerce_secret_bytes(salt)
         if not secret:
@@ -93,6 +103,14 @@ class Signer:
         """Add an additional secret accepted for verification (not signing).
 
         Tokens signed with the fallback still verify; new tokens use the primary.
+
+        Args:
+            secret: The retired secret; must be non-empty.
+            salt: The salt the old tokens were signed with.
+
+        Raises:
+            ValueError: If `secret` is empty.
+
         """
         secret = _coerce_secret_bytes(secret)
         salt = _coerce_secret_bytes(salt)
@@ -117,8 +135,19 @@ class Signer:
     def loads(self, token: str, max_age: int | None = None) -> Any:
         """Verify `token` and return the original data.
 
-        Raises `BadSignature` on tamper / unknown secret, `BadTimeSignature`
-        when `max_age` is set and the token's timestamp is older than that.
+        Args:
+            token: A token from `dumps`.
+            max_age: Reject tokens older than this many seconds; `None` skips the check.
+
+        Returns:
+            The value passed to `dumps`.
+
+        Raises:
+            BadSignature: On a tampered token or an unknown secret.
+            BadTimeSignature: When `max_age` is set and the token is older than that,
+                or its timestamp is in the future.
+            BadData: When the token is malformed or its payload does not decode.
+
         """
         if not isinstance(token, str):
             raise BadData(f"malformed token: {token!r}")

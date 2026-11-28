@@ -72,6 +72,19 @@ def hash_password(
     URL-safe base64 without padding, to pass verbatim to `verify_password`.
     `method` is `"scrypt"` (RFC 7914, memory-hard) or `"pbkdf2:sha256"`
     (NIST SP 800-132, CPU-only). 16 salt bytes is the OWASP minimum.
+
+    Args:
+        password: The plaintext; a `str` is UTF-8 encoded, a `Secret` is unwrapped.
+        method: The key-derivation function, `"scrypt"` or `"pbkdf2:sha256"`.
+        salt_length: Random salt size in bytes; at least 8.
+
+    Returns:
+        The self-describing verifier string.
+
+    Raises:
+        ValueError: If `password` is empty, `salt_length` is under 8, or `method`
+            is not a known algorithm.
+
     """
     password = _coerce_secret_bytes(password)
     if not password:
@@ -137,6 +150,14 @@ def verify_password(stored: str, candidate: str | bytes) -> bool:
     Returns False (never raises) for any malformed `stored`, unknown method or
     mismatch. The final byte comparison goes through `hmac.compare_digest`, so
     timing cannot leak a partial match.
+
+    Args:
+        stored: A verifier produced by `hash_password`.
+        candidate: The plaintext to check.
+
+    Returns:
+        True when `candidate` derives to the stored hash.
+
     """
     candidate = _coerce_secret_bytes(candidate)
     if not stored or not candidate:
@@ -237,6 +258,13 @@ def verify_and_needs_update(stored: str, candidate: str | bytes) -> tuple[bool, 
     verifier is weaker than the current defaults - never on a failed verify,
     where there is nothing to upgrade.
 
+    Args:
+        stored: A verifier produced by `hash_password`.
+        candidate: The plaintext to check.
+
+    Returns:
+        `(verified, needs_update)`.
+
     Usage::
 
         ok, upgrade = verify_and_needs_update(user.pw_hash, form_password)
@@ -245,6 +273,7 @@ def verify_and_needs_update(stored: str, candidate: str | bytes) -> tuple[bool, 
         if upgrade:
             user.pw_hash = hash_password(form_password)
             db.save(user)
+
     """
     ok = verify_password(stored, candidate)
     if not ok:
@@ -262,6 +291,18 @@ async def hash_password_async(
     The KDF is deliberately slow (~100 ms), so calling it inline would block
     the event loop. Use this from `async def` handlers and the sync
     `hash_password` from scripts and CLI tools.
+
+    Args:
+        password: The plaintext to hash.
+        method: The key-derivation function, as for `hash_password`.
+        salt_length: Random salt size in bytes.
+
+    Returns:
+        The verifier string.
+
+    Raises:
+        ValueError: As `hash_password`.
+
     """
     return await asyncio.to_thread(hash_password, password, method, salt_length)
 
@@ -286,6 +327,14 @@ def is_strong_password(password: str, *, min_length: int = 8) -> bool:
     True only for at least `min_length` characters with at least one digit and
     one alphabetic character. NIST SP 800-63B-style policy - blocking
     known-leaked passwords, dropping max-length caps - layers on top.
+
+    Args:
+        password: The candidate password.
+        min_length: Minimum number of characters.
+
+    Returns:
+        True when the policy is met.
+
     """
     if len(password) < min_length:
         return False

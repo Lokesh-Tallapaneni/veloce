@@ -86,7 +86,16 @@ class Session(dict[str, Any]):
         return result
 
     def setdefault(self, key: Any, default: Any = None) -> Any:
-        """Insert `default` under `key` when absent, marking the session modified on insert."""
+        """Insert `default` under `key` when absent, marking the session modified on insert.
+
+        Args:
+            key: The session key.
+            default: The value stored when `key` is absent.
+
+        Returns:
+            The value now held under `key`.
+
+        """
         existed = key in self
         result = super().setdefault(key, default)
         if not existed:
@@ -145,15 +154,43 @@ class SessionStore:
         """Return the stored payload for `session_id`, or `None`.
 
         `None` when the session is absent, expired, or has been revoked.
+
+        Args:
+            session_id: The opaque id from the session cookie.
+
+        Returns:
+            The payload, or `None`.
+
+        Raises:
+            NotImplementedError: Subclasses must implement it.
+
         """
         raise NotImplementedError
 
     async def write(self, session_id: str, data: dict[str, Any], max_age: int) -> None:
-        """Persist `data` under `session_id`, to expire after `max_age` seconds."""
+        """Persist `data` under `session_id`, to expire after `max_age` seconds.
+
+        Args:
+            session_id: The opaque id from the session cookie.
+            data: The payload to store.
+            max_age: Seconds until the entry expires.
+
+        Raises:
+            NotImplementedError: Subclasses must implement it.
+
+        """
         raise NotImplementedError
 
     async def delete(self, session_id: str) -> None:
-        """Revoke `session_id` - a later `read` of it must return `None`."""
+        """Revoke `session_id` - a later `read` of it must return `None`.
+
+        Args:
+            session_id: The id to revoke.
+
+        Raises:
+            NotImplementedError: Subclasses must implement it.
+
+        """
         raise NotImplementedError
 
     async def replace(self, session_id: str, data: dict[str, Any], max_age: int) -> bool:
@@ -163,6 +200,15 @@ class SessionStore:
         write, so a request in flight cannot resurrect a session a concurrent
         `delete` removed. The default is a non-atomic read-then-write; a store
         with an atomic conditional write should override it.
+
+        Args:
+            session_id: The id that must still exist.
+            data: The payload to store.
+            max_age: Seconds until the entry expires.
+
+        Returns:
+            True when written; False when `session_id` was absent.
+
         """
         if await self.read(session_id) is None:
             return False
@@ -175,6 +221,14 @@ class SessionStore:
         `False` when the id was absent (revoked or expired). The default reads
         then rewrites the payload; a store with a native TTL-refresh primitive
         should override it.
+
+        Args:
+            session_id: The id whose expiry is extended.
+            max_age: Seconds until the refreshed entry expires.
+
+        Returns:
+            True when refreshed; False when `session_id` was absent.
+
         """
         data = await self.read(session_id)
         if data is None:
@@ -200,6 +254,14 @@ class InMemorySessionStore(SessionStore):
         sweep_threshold: int = _SWEEP_THRESHOLD,
         sweep_probability: float = _SWEEP_PROBABILITY,
     ) -> None:
+        """Configure expired-entry eviction.
+
+        Args:
+            sweep_threshold: Entry count at which a write may trigger a full sweep.
+            sweep_probability: Chance that such a write sweeps; the cost is spread
+                across writes rather than paid by one.
+
+        """
         # session_id -> (payload, unix-timestamp when it expires)
         self._entries: dict[str, tuple[dict[str, Any], float]] = {}
         self._sweep_threshold = sweep_threshold
