@@ -1779,6 +1779,11 @@ class FileResponse(Response):
 
     __slots__ = ()
 
+    # `_stream_file` already awaits once per chunk, so every chunk flushes on
+    # its own either way; coalescing only adds a buffering layer with nothing
+    # to batch.
+    _coalesce = False
+
     def __init__(
         self,
         path: str,
