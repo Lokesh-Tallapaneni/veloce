@@ -549,6 +549,15 @@ def register_converter(name: str, converter_cls: type[Converter]) -> None:
     After `register_converter("slug", SlugConverter)`, routes may use
     `{post:slug}` and the radix tree coerces the segment through
     `SlugConverter().match(...)`. Shadowing a built-in name raises `ValueError`.
+
+    Args:
+        name: The converter name used in `{param:name}`.
+        converter_cls: A `Converter` subclass.
+
+    Raises:
+        ValueError: If `name` is a built-in converter.
+        TypeError: If `converter_cls` is not a `Converter` subclass.
+
     """
     if name in _BUILTIN:
         raise ValueError(f"cannot override built-in converter {name!r}")

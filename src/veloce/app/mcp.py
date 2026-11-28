@@ -212,6 +212,18 @@ class MCPMixin(AppHost):
             @app.mcp_prompt(description="Summarise a topic in three bullets")
             async def summarise(topic: str) -> str:
                 return f"Summarise {topic} in three bullet points."
+
+        Args:
+            description: LLM-facing text describing what the prompt is for.
+            name: Prompt name; defaults to the callable's name.
+            namespace: Prefix for the prompt name (`<namespace>_<name>`).
+            scopes: Scopes a caller needs to see and fetch the prompt.
+            icons: `Icon` objects a client may render next to the prompt.
+            meta: Extension metadata returned with the prompt.
+
+        Returns:
+            A decorator that registers the callable and returns it unchanged.
+
         """
         # Deferred: `contrib/` is optional.
         from veloce.contrib.mcp.safety import require_mcp_description
@@ -300,6 +312,18 @@ class MCPMixin(AppHost):
             @app.mcp_completer(prompt="greet", argument="name")
             async def complete_name(value: str, context: dict[str, str]) -> list[str]:
                 return [n for n in KNOWN_NAMES if n.startswith(value)]
+
+        Args:
+            argument: Name of the prompt or resource argument being completed.
+            prompt: Name of the prompt the completer serves.
+            resource: URI template of the resource the completer serves.
+
+        Returns:
+            A decorator that registers the callable and returns it unchanged.
+
+        Raises:
+            ValueError: If both or neither of `prompt` and `resource` are given.
+
         """
         if prompt is not None and resource is None:
             kind, key = "prompt", prompt

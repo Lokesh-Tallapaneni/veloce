@@ -145,6 +145,16 @@ class DispatchMixin(
 
         `cp` is the compiled pipeline, threaded in by `__call__` so the
         generation check runs once per request; a direct caller passes `None`.
+
+        Args:
+            request: The request to answer.
+            cp: The compiled pipeline; resolved from the app when `None`.
+            match: The route match `__call__` already computed, to avoid walking
+                the router twice.
+
+        Returns:
+            The response to send.
+
         """
         if cp is None:
             cp = self._ensure_pipeline()

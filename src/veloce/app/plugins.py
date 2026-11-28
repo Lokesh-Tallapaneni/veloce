@@ -29,7 +29,8 @@ class Plugin(Protocol):
         app.install(TimingPlugin())
     """
 
-    def install(self, app: Veloce) -> None: ...
+    def install(self, app: Veloce) -> None:
+        """Attach this plugin's routes, hooks or state to `app`."""
 
 
 class PluginsMixin(AppHost):

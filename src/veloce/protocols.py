@@ -27,42 +27,60 @@ if TYPE_CHECKING:  # pragma: no cover
 class CacheBackend(Protocol):
     """What `cached` needs from a result-cache store: bytes in, bytes out, TTL in seconds."""
 
-    async def get(self, key: str) -> bytes | None: ...
+    async def get(self, key: str) -> bytes | None:
+        """Return the cached bytes for `key`, or `None` when absent or expired."""
+        ...
 
-    async def set(self, key: str, value: bytes, ttl: int) -> None: ...
+    async def set(self, key: str, value: bytes, ttl: int) -> None:
+        """Store `value` under `key` for `ttl` seconds."""
+        ...
 
-    async def delete(self, key: str) -> None: ...
+    async def delete(self, key: str) -> None:
+        """Remove `key`; a missing key is not an error."""
+        ...
 
 
 @runtime_checkable
 class SessionStoreBackend(Protocol):
     """What `ServerSessionMiddleware` needs from a server-side session store."""
 
-    async def read(self, session_id: str) -> dict[str, Any] | None: ...
+    async def read(self, session_id: str) -> dict[str, Any] | None:
+        """Return the stored session data, or `None` when unknown or expired."""
+        ...
 
-    async def write(self, session_id: str, data: dict[str, Any], max_age: int) -> None: ...
+    async def write(self, session_id: str, data: dict[str, Any], max_age: int) -> None:
+        """Persist `data` for `max_age` seconds."""
+        ...
 
-    async def delete(self, session_id: str) -> None: ...
+    async def delete(self, session_id: str) -> None:
+        """Remove the session; an unknown id is not an error."""
+        ...
 
 
 @runtime_checkable
 class RateLimitStoreBackend(Protocol):
     """What the rate-limit middleware needs from a state store: one atomic evaluate."""
 
-    async def evaluate(
-        self, key: str, strategy: RateLimitStrategy, now: float
-    ) -> RateLimitResult: ...
+    async def evaluate(self, key: str, strategy: RateLimitStrategy, now: float) -> RateLimitResult:
+        """Apply `strategy` to the state held for `key` at time `now`, atomically."""
+        ...
 
 
 @runtime_checkable
 class JSONProviderBackend(Protocol):
     """What the application needs from a JSON provider: bytes out, any JSON in."""
 
-    def dumps(self, obj: Any, **kwargs: Any) -> bytes: ...
+    def dumps(self, obj: Any, **kwargs: Any) -> bytes:
+        """Serialise `obj` to JSON bytes."""
+        ...
 
-    def loads(self, data: bytes | str) -> Any: ...
+    def loads(self, data: bytes | str) -> Any:
+        """Parse JSON text or bytes into Python values."""
+        ...
 
-    def response(self, value: Any, **kwargs: Any) -> Response: ...
+    def response(self, value: Any, **kwargs: Any) -> Response:
+        """Wrap `value` in a JSON response."""
+        ...
 
 
 # Protocols that live beside the code that drives them.

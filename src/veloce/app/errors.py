@@ -48,6 +48,14 @@ class ErrorsMixin(AppHost):
         The key is an `int` status code or an exception class. Anything else is
         refused: `_exception_handlers` is matched by walking a raised exception's
         MRO, so a non-class key could never be found and would register silently.
+
+        Args:
+            code_or_exception: An `int` status code or an exception class.
+            func: The handler to call for it.
+
+        Raises:
+            TypeError: If the key is neither a status code nor an exception class.
+
         """
         self._assert_mutable()
         if isinstance(code_or_exception, int):
@@ -84,6 +92,14 @@ class ErrorsMixin(AppHost):
         The non-decorator form of `@app.exception_handler(...)`.
         Accepts an exception class (matched by MRO at dispatch time) or
         an int HTTP status code.
+
+        Args:
+            exc_class_or_status: The exception class or HTTP status code to handle.
+            handler: The handler to call for it.
+
+        Raises:
+            TypeError: If the key is neither a status code nor an exception class.
+
         """
         self.register_error_handler(exc_class_or_status, handler)
 
@@ -93,6 +109,11 @@ class ErrorsMixin(AppHost):
         Routes the exception through the app's own logger at ERROR level, so an
         operator silences it with ordinary logging configuration. Pass `request`
         to name the request that failed; a background task or CLI hook omits it.
+
+        Args:
+            exc: The exception to log, with its traceback.
+            request: The failing request, when there is one.
+
         """
         if request is not None:
             self.logger.error("Exception on %s [%s]", request.path, request.method, exc_info=exc)
@@ -108,6 +129,14 @@ class ErrorsMixin(AppHost):
         every method registered for `path`, augmented with `HEAD` (whenever
         `GET` is supported) and `OPTIONS` itself per RFC 9110 Sec. 9.3.7. Pass
         `allowed_methods` when the registered set is already known.
+
+        Args:
+            path: The request path the `Allow` header describes.
+            allowed_methods: The methods registered for `path`, when already known.
+
+        Returns:
+            The 200 response with its `Allow` header.
+
         """
         allowed = allowed_methods if allowed_methods is not None else self.get_allowed_methods(path)
         advertised = list(allowed)
@@ -135,6 +164,14 @@ class ErrorsMixin(AppHost):
 
         Pass `request=` from inside a request scope so the registered handler
         receives the real failing request instead of a synthetic `GET /`.
+
+        Args:
+            exc: The exception to answer.
+            request: The failing request, when called from inside a request scope.
+
+        Returns:
+            The handler's response, or the default JSON error body.
+
         """
         handler = self._find_scoped_status_handler(
             exc.status_code, request
@@ -158,6 +195,14 @@ class ErrorsMixin(AppHost):
         the real failing request to the registered handler; omit to
         get a synthetic `GET /` for out-of-band callers (background
         tasks, CLI hooks).
+
+        Args:
+            exc: The exception to answer.
+            request: The failing request, when called from inside a request scope.
+
+        Returns:
+            The handler's response, or a 500 JSON body when nothing matched.
+
         """
         if isinstance(exc, HTTPException):
             return await self.handle_http_exception(exc, request=request)

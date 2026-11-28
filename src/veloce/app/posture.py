@@ -60,6 +60,15 @@ class PostureMixin(AppHost):
 
         With no hook registered the request path carries no instrumentation
         cost - not even a clock read.
+
+        Args:
+            hook: Callable invoked with a `RequestMetrics` record per finished
+                request; omit it to use the keyword-argument decorator form.
+            exclude_routes: Route templates the hook must not see.
+
+        Returns:
+            `hook` unchanged, or a decorator when `hook` is omitted.
+
         """
         self._assert_mutable()
 

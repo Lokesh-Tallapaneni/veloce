@@ -159,7 +159,13 @@ class MergingMixin(UrlsMixin):
             self._walk_tree(node.wildcard_child, path_parts + ["{path}"], out, include_hidden)
 
     def include_router(self, router: Router, prefix: str = "") -> None:
-        """Include another router (a sub-router with its own prefix, tags, and hooks)."""
+        """Include another router (a sub-router with its own prefix, tags, and hooks).
+
+        Args:
+            router: The router whose routes are merged in.
+            prefix: Path prefix prepended to each included route.
+
+        """
         extra_prefix = prefix.rstrip("/")
         self._merge_node(router._root, extra_prefix, [])
         # The child's regex fallback routes live outside the radix structure the

@@ -59,6 +59,17 @@ class TestingMixin:
 
         A strict subset of what `handle_request` does: no middleware, no DI,
         no handler.
+
+        Args:
+            path: Request path.
+            method: HTTP method.
+            headers: Request headers.
+            query_string: Raw query string, without the leading `?`.
+            body: Request body bytes.
+
+        Returns:
+            A context manager that makes the synthetic request current.
+
         """
         from veloce.app.contexts import _TestRequestContext
 

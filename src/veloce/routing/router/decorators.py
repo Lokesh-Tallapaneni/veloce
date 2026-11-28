@@ -366,6 +366,17 @@ class DecoratorsMixin(RegistrationMixin):
                 return data
 
         For full control over the handshake and loop use `@app.websocket`.
+
+        Args:
+            path: URL path template of the WebSocket route.
+            receive: Codec for incoming messages: `"json"`, `"text"` or `"bytes"`.
+            send: Codec for returned values: `"json"`, `"text"` or `"bytes"`.
+            on_connect: Hook called with the socket after accept.
+            on_disconnect: Hook called with the socket when the loop ends.
+
+        Returns:
+            A decorator that registers the callback and returns it unchanged.
+
         """
 
         def decorator(func: RouteHandler | Callable[..., Any]) -> RouteHandler | Callable[..., Any]:
@@ -407,6 +418,12 @@ class DecoratorsMixin(RegistrationMixin):
         The non-decorator form of `@app.websocket(path)`. `name`, when given,
         registers the route for reverse lookup so `app.url_for(name)` resolves
         to its path.
+
+        Args:
+            path: URL path template of the WebSocket route.
+            endpoint: The WebSocket handler.
+            name: Endpoint name for `url_for`; defaults to the handler's name.
+
         """
         self.add_route(path=path, handler=endpoint, methods=[ROUTE_METHOD_WEBSOCKET], name=name)
 
@@ -425,6 +442,13 @@ class DecoratorsMixin(RegistrationMixin):
         route kwargs - `response_model`, `tags`, `dependencies`,
         `status_code`, `openapi_extra`, ... - pass straight through.
         Defaults to `["GET"]` when `methods` is omitted.
+
+        Args:
+            path: URL path template, including `{param}` placeholders.
+            endpoint: The handler to register.
+            methods: HTTP methods the route serves; `["GET"]` when omitted.
+            **kwargs: Route options, as accepted by `add_route`.
+
         """
         self.add_route(
             path=path,

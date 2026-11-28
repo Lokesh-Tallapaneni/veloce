@@ -42,8 +42,8 @@ from veloce._internal import T_route
 
 _logger = logging.getLogger(__name__)
 
-# Sentinel for "connect to all senders", compared by identity only.
 ANY_SENDER: Any = object()
+"""Sentinel for "connect to all senders", compared by identity only."""
 
 # `(receiver, value)` per entry; for the `_robust` variants `value` may be the
 # `Exception` the receiver raised.
@@ -133,6 +133,16 @@ class Signal:
         `sender=ANY_SENDER` (the default) subscribes to every send; a specific
         sender filters to it. Returns the receiver unchanged, so it can be used
         as a decorator.
+
+        Args:
+            receiver: Callable invoked as `receiver(sender, **kwargs)`; may be a
+                coroutine function.
+            weak: Hold the receiver by weak reference so it can be collected.
+            sender: Fire only for sends from this sender; any sender by default.
+
+        Returns:
+            `receiver`, unchanged.
+
         """
         is_async = inspect.iscoroutinefunction(receiver)
         if weak:
@@ -155,6 +165,11 @@ class Signal:
         through `_matches`, which is the `send`-time rule under which a stored
         `ANY_SENDER` matches every send - reusing it here would delete an
         `ANY_SENDER` subscription whenever the caller targeted one sender.
+
+        Args:
+            receiver: The callable passed to `connect`.
+            sender: Remove only the subscription bound to this sender.
+
         """
         for i, (sub_sender, ref, is_weak, _is_async) in enumerate(self._subs):
             target = ref() if is_weak else ref
@@ -391,6 +406,14 @@ class Namespace:
 
         Repeated calls return the identical instance and keep the first call's
         `doc`, which is recorded as `Signal.doc` rather than discarded.
+
+        Args:
+            name: The signal's name within this namespace.
+            doc: Description recorded on a newly created signal.
+
+        Returns:
+            The signal registered under `name`.
+
         """
         existing = self._signals.get(name)
         if existing is not None:
