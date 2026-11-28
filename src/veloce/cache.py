@@ -164,6 +164,20 @@ def cached(
     the JSON-decoded value**, so cache results you will re-serialise (handler
     returns, API payloads) rather than rich objects you need back by type. Only
     async functions are supported.
+
+    Args:
+        cache: The store holding cached results.
+        ttl: Seconds an entry lives; at least 1.
+        key: Builds the cache key from the wrapped function's arguments.
+
+    Returns:
+        A decorator that wraps an async function with the cache.
+
+    Raises:
+        ValueError: If `ttl` is less than 1.
+        TypeError: When decorating a non-async function, or when a result is
+            not JSON-serialisable (raised by the wrapped call).
+
     """
     if ttl < 1:
         raise ValueError("cached ttl must be >= 1 second")

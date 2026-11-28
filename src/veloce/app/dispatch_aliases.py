@@ -58,6 +58,14 @@ class AliasDispatchMixin(AppHost):
         Hooks fire in **reverse** registration order; each may return a
         replacement `Response`, and any other return keeps the existing one.
         This is the dispatch path itself, not a re-implementation.
+
+        Args:
+            request: The request the response answers.
+            response: The response to pass through the hooks.
+
+        Returns:
+            The response after every hook has run.
+
         """
         return await self._run_after_hooks(request, response, _endpoint_blueprint(request.endpoint))
 

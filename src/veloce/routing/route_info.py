@@ -117,7 +117,16 @@ class RouteOptions:
 
     @classmethod
     def from_info(cls, info: RouteInfo, *, name: str | None = None) -> RouteOptions:
-        """Read the options a registered route was built from back off `info`."""
+        """Read the options a registered route was built from back off `info`.
+
+        Args:
+            info: The registered route to read from.
+            name: Endpoint name to record instead of `info.name`.
+
+        Returns:
+            The options, ready to register the same route again.
+
+        """
         excluded = info.excluded_middleware
         return cls(
             dependencies=info.dependencies,
@@ -350,50 +359,62 @@ class RouteInfo:
 
     @property
     def expose_as_mcp_tool(self) -> bool:
+        """True when the route is exposed as an MCP tool."""
         return False if self.mcp is None else self.mcp.expose_as_mcp_tool
 
     @property
     def mcp_description(self) -> str | None:
+        """The LLM-facing description of the route's MCP tool."""
         return None if self.mcp is None else self.mcp.mcp_description
 
     @property
     def expose_as_mcp_resource(self) -> bool:
+        """True when the route is exposed as an MCP resource."""
         return False if self.mcp is None else self.mcp.expose_as_mcp_resource
 
     @property
     def mcp_resource_uri(self) -> str | None:
+        """The URI the route's MCP resource is served under."""
         return None if self.mcp is None else self.mcp.mcp_resource_uri
 
     @property
     def mcp_resource_mime_type(self) -> str | None:
+        """The MIME type declared for the route's MCP resource."""
         return None if self.mcp is None else self.mcp.mcp_resource_mime_type
 
     @property
     def mcp_meta(self) -> dict[str, Any] | None:
+        """The extension metadata attached to the route's MCP entry."""
         return None if self.mcp is None else self.mcp.mcp_meta
 
     @property
     def mcp_resource_size(self) -> int | None:
+        """The declared byte size of the route's MCP resource."""
         return None if self.mcp is None else self.mcp.mcp_resource_size
 
     @property
     def mcp_resource_annotations(self) -> dict[str, Any] | None:
+        """The annotations attached to the route's MCP resource."""
         return None if self.mcp is None else self.mcp.mcp_resource_annotations
 
     @property
     def mcp_scopes(self) -> frozenset[str] | None:
+        """The scopes a caller needs to see or call the route over MCP."""
         return None if self.mcp is None else self.mcp.mcp_scopes
 
     @property
     def mcp_icons(self) -> tuple[Any, ...] | None:
+        """The icons a client may render next to the route's MCP entry."""
         return None if self.mcp is None else self.mcp.mcp_icons
 
     @property
     def mcp_task_support(self) -> bool:
+        """True when the route's MCP tool may run as a task."""
         return False if self.mcp is None else self.mcp.mcp_task_support
 
     @property
     def mcp_annotations(self) -> dict[str, Any] | None:
+        """The annotations attached to the route's MCP tool."""
         return None if self.mcp is None else self.mcp.mcp_annotations
 
 

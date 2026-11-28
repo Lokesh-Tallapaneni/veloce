@@ -319,6 +319,14 @@ class LifecycleMixin(AppHost):
 
         Deprecated: call `app.on_startup(fn)` / `app.on_shutdown(fn)`
         directly instead. Scheduled for removal in v1.0.0.
+
+        Args:
+            event: `"startup"` or `"shutdown"`.
+            func: The handler to run for that event.
+
+        Raises:
+            ValueError: If `event` is not a known event name.
+
         """
         warnings.warn(
             "Veloce.add_event_handler() is deprecated and will be removed "

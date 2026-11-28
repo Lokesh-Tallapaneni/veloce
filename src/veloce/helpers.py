@@ -252,6 +252,18 @@ class Aborter:
         detail: str = "",
         headers: dict[str, str] | None = None,
     ) -> NoReturn:
+        """Raise the exception registered for `code`.
+
+        Args:
+            code: HTTP status code to abort with.
+            detail: Message for the error body; defaults to the status phrase.
+            headers: Extra headers to send with the error response.
+
+        Raises:
+            HTTPException: Always - the class registered for `code` on this
+                aborter, then on `mapping`, then the stock class for the status.
+
+        """
         if not detail:
             detail = _default_detail(code)
         cls = self._mapping.get(code) or self.mapping.get(code) or exception_for_status(code)
@@ -301,6 +313,15 @@ def abort(status_code: int, detail: str = "", headers: dict[str, str] | None = N
 
         abort(404)              # -> raises NotFound
         abort(403, "Forbidden") # -> raises Forbidden
+
+    Args:
+        status_code: HTTP status code to abort with.
+        detail: Message for the error body; defaults to the status phrase.
+        headers: Extra headers to send with the error response.
+
+    Raises:
+        HTTPException: Always - the typed subclass for `status_code`.
+
     """
     app = _current_app_var.get()
     aborter: Aborter = _default_aborter if app is None else app.aborter
@@ -402,18 +423,23 @@ def send_file(
     """Serve a file from a filesystem path.
 
     Accepts a `str` or `PathLike` and returns a `FileResponse` with the
-    conditional-GET headers (`Last-Modified` and `ETag`) already set. Optional
-    knobs:
+    conditional-GET headers (`Last-Modified` and `ETag`) already set.
 
-    - `mimetype=` overrides the auto-guessed content type.
-    - `as_attachment=True` sets `Content-Disposition: attachment;
-      filename=<download_name or basename>`.
-    - `download_name=` overrides the filename in `Content-Disposition`.
-    - `last_modified=` overrides the file's mtime (datetime, unix ts,
-      or pre-formatted IMF-fixdate string).
-    - `etag=False` suppresses the auto-generated ETag; `etag="<value>"`
-      uses the caller-provided one verbatim (already-quoted).
-    - `max_age=` adds `Cache-Control: public, max-age=<n>`.
+    Args:
+        path_or_file: Filesystem path of the file to serve.
+        mimetype: Overrides the auto-guessed content type.
+        as_attachment: Send `Content-Disposition: attachment` with the
+            `download_name` or the file's basename as the filename.
+        download_name: Overrides the filename in `Content-Disposition`.
+        last_modified: Overrides the file's mtime (datetime, unix timestamp,
+            or a pre-formatted IMF-fixdate string).
+        etag: `False` suppresses the generated ETag; a string is used verbatim
+            and must already be quoted.
+        max_age: Adds `Cache-Control: public, max-age=<n>` when set.
+
+    Returns:
+        A `FileResponse` for the file.
+
     """
     path, attachment_name, headers, strip_etag = _build_send_file_args(
         path_or_file, as_attachment, download_name, last_modified, etag, max_age
@@ -444,6 +470,21 @@ async def async_send_file(
 
     Reads the file in an executor, so it never blocks the event loop. Prefer it
     from async handlers; the sync `send_file` warns when called on a running loop.
+
+    Args:
+        path_or_file: Filesystem path of the file to serve.
+        mimetype: Overrides the auto-guessed content type.
+        as_attachment: Send `Content-Disposition: attachment`.
+        download_name: Overrides the filename in `Content-Disposition`.
+        last_modified: Overrides the file's mtime (datetime, unix timestamp,
+            or a pre-formatted IMF-fixdate string).
+        etag: `False` suppresses the generated ETag; a string is used verbatim
+            and must already be quoted.
+        max_age: Adds `Cache-Control: public, max-age=<n>` when set.
+
+    Returns:
+        A `FileResponse` for the file.
+
     """
     path, attachment_name, headers, strip_etag = _build_send_file_args(
         path_or_file, as_attachment, download_name, last_modified, etag, max_age
@@ -471,6 +512,15 @@ def redirect(
     RFC 9110 Sec. 15.4 catalogue: 301 (permanent, method may change), 302
     (found, method may change), 303 (see other, method becomes GET), 307
     (temporary, method preserved), 308 (permanent, method preserved).
+
+    Args:
+        location: Target URL, sent in the `Location` header.
+        code: Redirect status code.
+        headers: Extra headers to send with the response.
+
+    Returns:
+        A `RedirectResponse` to `location`.
+
     """
     return RedirectResponse(location, status_code=code, headers=headers)
 
@@ -561,6 +611,19 @@ def make_response(
         resp = make_response({"data": True}, 201)
         resp = make_response((b"raw", 201))
         resp = make_response(jsonify({"error": "forbidden"}), 403)
+
+    Args:
+        body: The value to wrap: a `Response`, a `dict`/`list` (JSON), text or
+            bytes, or a tuple in one of the handler return shapes.
+        status_code: Status for the response; `None` keeps an existing
+            `Response`'s own status and means 200 otherwise.
+        headers: Headers to set on the response.
+        content_type: Content type for text or bytes bodies; `text/html` when
+            omitted.
+
+    Returns:
+        The response.
+
     """
     if isinstance(body, tuple):
         unpacked = _unpack_response_tuple(body)
@@ -614,6 +677,20 @@ def send_from_directory(
     Traversal-safe via `safe_join`. Returns 403 on any escape attempt.
 
     For async, use send_from_directory_async() instead.
+
+    Args:
+        directory: Root directory the file must live under.
+        filename: Requested path, relative to `directory`.
+        mimetype: Overrides the auto-guessed content type.
+        as_attachment: Send `Content-Disposition: attachment`.
+        download_name: Overrides the filename in `Content-Disposition`.
+
+    Returns:
+        A `FileResponse` for the file.
+
+    Raises:
+        Forbidden: If `filename` resolves outside `directory`.
+
     """
     resolved = safe_join(directory, filename)
     if resolved is None:
@@ -639,6 +716,20 @@ async def send_from_directory_async(
     """Send a file from a directory - async version, reads file in executor.
 
     Traversal-safe via `safe_join`.
+
+    Args:
+        directory: Root directory the file must live under.
+        filename: Requested path, relative to `directory`.
+        mimetype: Overrides the auto-guessed content type.
+        as_attachment: Send `Content-Disposition: attachment`.
+        download_name: Overrides the filename in `Content-Disposition`.
+
+    Returns:
+        A `FileResponse` for the file.
+
+    Raises:
+        Forbidden: If `filename` resolves outside `directory`.
+
     """
     # `safe_join` is pure string arithmetic; the file read happens below.
     resolved = safe_join(directory, filename)
@@ -680,6 +771,15 @@ def flash(message: str, category: str = "message") -> None:
 
         flash("Item created successfully")
         flash("Invalid input", "error")
+
+    Args:
+        message: The text to show on the next request.
+        category: A label such as `"error"` or `"info"` to filter on.
+
+    Raises:
+        RuntimeError: Outside a request, or when no session middleware is
+            installed.
+
     """
     store = _flash_store()
     flashes = store.setdefault("_flashes", [])
@@ -700,6 +800,15 @@ def get_flashed_messages(
 
         messages = get_flashed_messages()
         messages = get_flashed_messages(with_categories=True)
+
+    Args:
+        with_categories: Return `(category, message)` pairs instead of bare
+            messages.
+        category_filter: Keep only messages in these categories.
+
+    Returns:
+        The queued messages, which are consumed; empty outside a request.
+
     """
     req = _current_request_var.get()
     # Empty rather than raising, so a template render outside a request works.

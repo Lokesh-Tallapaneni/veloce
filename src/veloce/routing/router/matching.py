@@ -137,6 +137,14 @@ class MatchingMixin(RouterState):
         k = path depth. The regex fallback runs only when the tree misses
         **and** regex routes are registered; the tree always wins over regex
         when both could match.
+
+        Args:
+            method: HTTP method of the request.
+            path: Request path.
+
+        Returns:
+            The matched route with its path parameters, or `None`.
+
         """
         smap = self._static_routes
         if smap is None:

@@ -330,6 +330,14 @@ class Blueprint(Router):
 
         Hooks and error handlers from `child` are merged into this blueprint's
         tables, not the app's - the app gets them when *this* one is registered.
+
+        Args:
+            child: The blueprint to nest.
+            url_prefix: Prefix for `child`'s routes; its own `url_prefix` when omitted.
+
+        Raises:
+            ValueError: If `child` is this blueprint.
+
         """
         if child is self:
             raise ValueError(f"Cannot register blueprint {self.name!r} as a child of itself.")

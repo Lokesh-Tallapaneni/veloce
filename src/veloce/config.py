@@ -19,12 +19,11 @@ import veloce._json as _json
 
 _logger = logging.getLogger(__name__)
 
-# Without a cap, a DDoS can open sockets faster than dispatch drains them.
-DEFAULT_MAX_CONCURRENT_CONNECTIONS = 1000
+DEFAULT_MAX_CONCURRENT_CONNECTIONS: int = 1000
+"""Open-socket cap; without it a flood opens sockets faster than dispatch drains them."""
 
-# Write-side high watermark (bytes): a producer outrunning a slow client would
-# otherwise grow the transport write buffer into a memory-exhaustion vector.
-DEFAULT_WRITE_BUFFER_HIGH_WATER = 256 * 1024
+DEFAULT_WRITE_BUFFER_HIGH_WATER: int = 256 * 1024
+"""Write-side high watermark in bytes; a producer outrunning a slow client would otherwise grow the transport buffer into a memory-exhaustion vector."""
 
 
 def _json_load(fp: IO[str] | IO[bytes]) -> Mapping[str, Any]:
@@ -292,6 +291,17 @@ class Config(dict[str, Any]):
 
         Returns True on success, or False when `silent=True` and the file is
         missing.
+
+        Args:
+            filename: Path of the Python file to execute.
+            silent: Return `False` instead of raising when the file cannot be opened.
+
+        Returns:
+            `True` once the file is loaded, `False` for a silent miss.
+
+        Raises:
+            OSError: If the file cannot be opened and `silent` is false.
+
         """
         module = types.ModuleType("veloce_config")
         module.__file__ = filename
@@ -326,6 +336,18 @@ class Config(dict[str, Any]):
         prefix: a file setting `MYAPP_TIMEOUT` becomes the config key
         `MYAPP_TIMEOUT` here and `TIMEOUT` there. Pick one of the two and use it
         on every path.
+
+        Args:
+            filename: Path of the dotenv file.
+            silent: Return `False` instead of raising when the file cannot be opened.
+
+        Returns:
+            `True` once the file is loaded, `False` for a silent miss.
+
+        Raises:
+            OSError: If the file cannot be opened and `silent` is false.
+            ValueError: If a value for a typed key cannot be converted.
+
         """
         lines = _read_config_file(
             filename, "r", lambda handle: handle.readlines(), silent=silent, encoding="utf-8"
@@ -343,7 +365,20 @@ class Config(dict[str, Any]):
     # ── from_envvar ───────────────────────────────────────
 
     def from_envvar(self, varname: str, *, silent: bool = False) -> bool:
-        """Read a filename from `os.environ[varname]` and `from_pyfile` it."""
+        """Read a filename from `os.environ[varname]` and `from_pyfile` it.
+
+        Args:
+            varname: Name of the environment variable holding the file path.
+            silent: Return `False` instead of raising when the variable is unset
+                or the file is missing.
+
+        Returns:
+            `True` once the file is loaded, `False` for a silent miss.
+
+        Raises:
+            RuntimeError: If the variable is unset and `silent` is false.
+
+        """
         path = os.environ.get(varname)
         if not path:
             if silent:
@@ -368,6 +403,14 @@ class Config(dict[str, Any]):
         verbatim, so the two name the same setting differently - see its note. A
         value that is not valid JSON is given the type its key is read as, or
         raises by name; a nested key has no declared type and is stored as read.
+
+        Args:
+            prefix: Variable-name prefix, without the trailing underscore.
+            loads: Decoder applied to each value before the string fallback.
+
+        Returns:
+            Always `True`.
+
         """
         sep = f"{prefix}_"
         for name, raw in os.environ.items():
@@ -411,6 +454,20 @@ class Config(dict[str, Any]):
 
         Opens in text or binary mode per `text=`, hands the file object to
         `load`, and applies the mapping it returns through `from_mapping`.
+
+        Args:
+            filename: Path of the file to load.
+            load: Callable that reads the open file object into a mapping.
+            silent: Return `False` instead of raising when the file cannot be opened.
+            text: Open in text mode rather than binary.
+
+        Returns:
+            `True` once the file is loaded, `False` for a silent miss.
+
+        Raises:
+            OSError: If the file cannot be opened and `silent` is false.
+            TypeError: If `load` returns something other than a mapping.
+
         """
         mode = "r" if text else "rb"
         data = _read_config_file(filename, mode, load, silent=silent)
@@ -431,6 +488,15 @@ class Config(dict[str, Any]):
 
         With `lowercase=True` (default) trimmed keys are lower-cased, matching
         the attribute names extension code conventionally uses.
+
+        Args:
+            namespace: Key prefix to select, such as `"MAIL_"`.
+            lowercase: Lower-case the returned keys.
+            trim_namespace: Strip `namespace` from the returned keys.
+
+        Returns:
+            The matching entries as a new dict.
+
         """
         result: dict[str, Any] = {}
         for key, value in self.items():
