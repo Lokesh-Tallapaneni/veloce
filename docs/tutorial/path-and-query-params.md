@@ -117,3 +117,5 @@ constraints show up in the OpenAPI schema. See the
 
 Reading the URL is enough for lookups, but creating a task needs a request
 **body**. Next: **[Request bodies](request-body.md)**.
+
+**Source and tests:** [`src/veloce/routing/converters.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/routing/converters.py), [`src/veloce/_params.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/_params.py), [`tests/params/test_annotated_field_path_params.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/params/test_annotated_field_path_params.py), [`tests/routing/test_converter_specificity.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/routing/test_converter_specificity.py), [`tests/params/test_query_params.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/params/test_query_params.py)

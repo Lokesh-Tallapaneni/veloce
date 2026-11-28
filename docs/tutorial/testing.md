@@ -160,3 +160,5 @@ You have built and tested a complete Veloce service. From here:
     app under a production ASGI server.
 
 </div>
+
+**Source and tests:** [`src/veloce/testclient/client.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/testclient/client.py), [`src/veloce/testclient/async_client.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/testclient/async_client.py), [`tests/testclient/test_testclient_asgi.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/testclient/test_testclient_asgi.py), [`tests/testclient/test_test_client_parity.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/testclient/test_test_client_parity.py)

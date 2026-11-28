@@ -168,9 +168,14 @@ def test_start_heartbeat_idempotent() -> None:
 
 def test_pong_with_wrong_token_does_not_clear() -> None:
     async def go() -> None:
-        ws, transport = _make_ws(heartbeat=0.02)
+        # A long interval, and a wait for the probe rather than a fixed sleep: a
+        # loaded machine can otherwise let the probe time out before the assert.
+        ws, transport = _make_ws(heartbeat=0.5)
         ws.start_heartbeat()
-        await asyncio.sleep(0.03)
+        for _ in range(500):
+            if ws._hb_token is not None:
+                break
+            await asyncio.sleep(0.01)
         assert ws._hb_token is not None
         # A PONG whose body does not echo the outstanding token does not
         # confirm the probe (though any inbound frame still defers death via

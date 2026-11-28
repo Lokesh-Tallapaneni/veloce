@@ -86,3 +86,5 @@ Restart the server and visit
 
 So far the routes are static. Next we read values out of the URL:
 **[Path & query parameters](path-and-query-params.md)**.
+
+**Source and tests:** [`src/veloce/app/core.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/app/core.py), [`src/veloce/routing/router/decorators.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/routing/router/decorators.py), [`tests/app/test_builtin_error_format.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/app/test_builtin_error_format.py), [`tests/testclient/test_testclient_asgi.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/testclient/test_testclient_asgi.py)

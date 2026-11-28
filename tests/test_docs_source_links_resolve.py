@@ -1,6 +1,6 @@
 """Every guide page names the source and tests behind it, and the links are real.
 
-Each page under `docs/guide/`, `docs/how-to/` and `docs/deployment/` ends with a
+Each page under `docs/guide/`, `docs/how-to/`, `docs/deployment/` and `docs/tutorial/` ends with a
 `**Source and tests:**` line linking the modules that implement what it
 describes and the tests that check it. A link to a file that has since moved or
 been renamed sends a contributor nowhere, so every linked path must exist.
@@ -15,7 +15,7 @@ import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DOCS = ROOT / "docs"
-SECTIONS = ("guide", "how-to", "deployment")
+SECTIONS = ("guide", "how-to", "deployment", "tutorial")
 PREFIX = "https://github.com/Lokesh-Tallapaneni/veloce/blob/main/"
 LINE = re.compile(r"^\*\*Source and tests:\*\* (.+)$", re.M)
 LINK = re.compile(r"\]\((" + re.escape(PREFIX) + r"[^)]+)\)")
