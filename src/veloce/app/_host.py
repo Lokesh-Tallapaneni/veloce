@@ -30,6 +30,7 @@ if TYPE_CHECKING:  # pragma: no cover
         MCPPromptRegistration,
         MCPToolRegistration,
     )
+    from veloce.app.urls import URLMap
     from veloce.config import Config
     from veloce.contrib.staticfiles import StaticFiles
     from veloce.contrib.templating import Jinja2Templates
@@ -49,6 +50,17 @@ class AppHost:
 
     if TYPE_CHECKING:  # pragma: no cover
         # ── Public application state ──
+        title: str
+        import_name: str
+        static_folder: str
+        json_provider_class: Any
+        _instance_path: str | None
+        _auditables: list[Any]
+        _json_provider: Any
+        _aborter: Any
+        _cli_group: Any
+        _cached_routes: list[dict[str, Any]] | None
+        _cached_url_map: URLMap | None
         config: Config
         extensions: dict[str, Any]
         logger: logging.Logger
@@ -171,6 +183,8 @@ class AppHost:
         ) -> None: ...
 
         # ── Provided by sibling mixins ──
+        def _init_mcp_state(self) -> None: ...
+
         async def _call_handler(
             self,
             handler: Callable[..., Any],
