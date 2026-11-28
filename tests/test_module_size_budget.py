@@ -18,7 +18,6 @@ BUDGET = 800
 #: ceilings include the Args/Returns/Raises documentation on the public API.
 LEGACY: dict[str, int] = {
     "__init__.py": 900,  # the lazy export table lists every public name once
-    "helpers.py": 880,  # grew past the budget only through Args/Returns/Raises sections
 }
 
 
