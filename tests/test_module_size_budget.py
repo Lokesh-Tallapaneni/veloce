@@ -16,9 +16,7 @@ BUDGET = 800
 
 #: path (relative to `src/veloce`) -> the line count it must not exceed. The
 #: ceilings include the Args/Returns/Raises documentation on the public API.
-LEGACY: dict[str, int] = {
-    "__init__.py": 900,  # the lazy export table lists every public name once
-}
+LEGACY: dict[str, int] = {}
 
 
 def _lines(path: pathlib.Path) -> int:
