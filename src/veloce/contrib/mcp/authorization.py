@@ -190,31 +190,39 @@ class InMemoryAuthorizationStore:
         self._spent: dict[str, str] = {}
 
     async def save_client(self, client: OAuthClient) -> None:
+        """Store a registered client under its id."""
         self._clients[client.client_id] = client
 
     async def get_client(self, client_id: str) -> OAuthClient | None:
+        """Return the client registered under `client_id`, or `None`."""
         return self._clients.get(client_id)
 
     async def save_code(self, code_digest: str, code: AuthorizationCode) -> None:
+        """Store an authorization code under its digest."""
         self._codes[code_digest] = code
 
     async def take_code(self, code_digest: str) -> AuthorizationCode | None:
+        """Remove and return the code stored under `code_digest`, or `None`."""
         return self._codes.pop(code_digest, None)
 
     async def save_token(self, token_digest: str, token: AccessToken) -> None:
+        """Store an access token under its digest, indexing its refresh digest."""
         self._tokens[token_digest] = token
         if token.refresh_digest is not None:
             self._refresh[token.refresh_digest] = token_digest
 
     async def get_token(self, token_digest: str) -> AccessToken | None:
+        """Return the access token stored under `token_digest`, or `None`."""
         return self._tokens.get(token_digest)
 
     async def delete_token(self, token_digest: str) -> None:
+        """Remove an access token and the refresh index entry pointing at it."""
         token = self._tokens.pop(token_digest, None)
         if token is not None and token.refresh_digest is not None:
             self._refresh.pop(token.refresh_digest, None)
 
     async def take_refresh(self, refresh_digest: str) -> tuple[str, AccessToken] | None:
+        """Remove a refresh token and return its access token digest and token, or `None`."""
         token_digest = self._refresh.pop(refresh_digest, None)
         if token_digest is None:
             return None

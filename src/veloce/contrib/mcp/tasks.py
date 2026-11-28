@@ -292,6 +292,7 @@ class TasksCapability(_ServerCapability):
     handshake_only_methods = frozenset({"tasks/list", "tasks/result"})
 
     def advertise(self, *, modern: bool = False) -> dict[str, Any] | None:
+        """Advertise the tasks capability, or `None` when no tool supports tasks."""
         if not any(tool.task_support for tool in self._server.registry.tools.values()):
             return None
         # The modern revision retired `tasks/list`; advertising it would
@@ -308,6 +309,7 @@ class TasksCapability(_ServerCapability):
         return {TASKS_EXTENSION: {}}
 
     def handlers(self) -> dict[str, MethodHandler]:
+        """Map the `tasks/*` methods to their handlers."""
         return {
             "tasks/get": self._get,
             "tasks/result": self._result,

@@ -168,11 +168,13 @@ class CompletionsCapability(_ServerCapability):
     __slots__ = ()
 
     def advertise(self, *, modern: bool = False) -> dict[str, Any] | None:
+        """Advertise the completions capability, or `None` when no completer is registered."""
         if not self._has_completers():
             return None
         return {"completions": {}}
 
     def handlers(self) -> dict[str, MethodHandler]:
+        """Map `completion/complete` to its handler."""
         return {"completion/complete": self._complete}
 
     def _has_completers(self) -> bool:

@@ -70,6 +70,7 @@ class HttpUpstreamRequest:
         self._next_id = itertools.count(1)
 
     async def __call__(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Send one JSON-RPC request to the upstream, initialising the session on first use."""
         if not self._initialized:
             async with self._init_lock:
                 if not self._initialized:
@@ -188,6 +189,7 @@ class HttpUpstreamRequest:
         self._initialized = True
 
     async def aclose(self) -> None:
+        """Terminate the upstream session and close the client, when this object owns it."""
         if self._owns_client:
             if self._session_id is not None:
                 with contextlib.suppress(Exception):

@@ -95,18 +95,22 @@ class RedisSessionStore(SessionStore):
         return self._prefix + session_id
 
     async def read(self, session_id: str) -> dict[str, Any] | None:
+        """Return the stored session payload, or `None` when it is absent."""
         raw = await self._redis.get(self._key(session_id))
         if raw is None:
             return None
         return _json.loads(raw)
 
     async def write(self, session_id: str, data: dict[str, Any], max_age: int) -> None:
+        """Store the session payload with a time-to-live of `max_age` seconds."""
         await self._redis.set(self._key(session_id), _json.dumps(data), ex=max_age)
 
     async def delete(self, session_id: str) -> None:
+        """Remove the session payload."""
         await self._redis.delete(self._key(session_id))
 
     async def replace(self, session_id: str, data: dict[str, Any], max_age: int) -> bool:
+        """Overwrite an existing session payload; return `False` when it no longer exists."""
         # `SET ... XX` writes only if the key still exists, so a session a concurrent
         # `delete` removed is never resurrected - atomically, unlike a read-then-write.
         result = await self._redis.set(
@@ -115,6 +119,7 @@ class RedisSessionStore(SessionStore):
         return bool(result)
 
     async def touch(self, session_id: str, max_age: int) -> bool:
+        """Refresh the session's time-to-live; return `False` when it no longer exists."""
         # `EXPIRE` refreshes the TTL without moving the payload and returns
         # whether the key existed - exactly the sliding-expiry primitive.
         return bool(await self._redis.expire(self._key(session_id), max_age))
@@ -191,6 +196,7 @@ class RedisRateLimitBackend(RateLimitBackend):
         return cls(_load_redis_from_url(url, **kwargs), prefix=prefix)
 
     async def evaluate(self, key: str, strategy: RateLimitStrategy, now: float) -> RateLimitResult:
+        """Evaluate `strategy` for `key` at `now`, using a Lua script where the server supports one."""
         redis_key = self._prefix + key
         script = strategy.lua_script
         if script is not None and not self._no_scripting:
@@ -305,12 +311,15 @@ class RedisCache(Cache):
         return cls(_load_redis_from_url(url, **kwargs), prefix=prefix)
 
     async def get(self, key: str) -> bytes | None:
+        """Return the cached bytes for `key`, or `None` on a miss."""
         # The redis stub widens get() to `bytes | str | None` (a client may set
         # decode_responses=True); this cache stores and reads bytes.
         return await self._redis.get(self._prefix + key)  # type: ignore[return-value]  # the client returns bytes with decode_responses off
 
     async def set(self, key: str, value: bytes, ttl: int) -> None:
+        """Cache `value` under `key` for `ttl` seconds."""
         await self._redis.set(self._prefix + key, value, ex=ttl)
 
     async def delete(self, key: str) -> None:
+        """Remove `key` from the cache."""
         await self._redis.delete(self._prefix + key)

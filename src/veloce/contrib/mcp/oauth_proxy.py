@@ -188,6 +188,7 @@ class InMemoryUpstreamOAuthProxyStore:
         self._refresh: dict[str, str] = {}
 
     async def save_pending(self, state: str, pending: PendingAuthorization) -> None:
+        """Store a pending authorization under its `state` value."""
         # Opportunistic sweep: an abandoned flow that never reaches the
         # callback would otherwise sit here forever.
         now = _now()
@@ -197,9 +198,11 @@ class InMemoryUpstreamOAuthProxyStore:
         self._pending[state] = pending
 
     async def take_pending(self, state: str) -> PendingAuthorization | None:
+        """Remove and return the pending authorization for `state`, or `None`."""
         return self._pending.pop(state, None)
 
     async def save_code(self, code_digest: str, code: ProxyAuthorizationCode) -> None:
+        """Store a proxy authorization code under its digest."""
         # Opportunistic sweep: a code the client never redeems would
         # otherwise sit here forever, same reasoning as `save_pending`.
         now = _now()
@@ -209,9 +212,11 @@ class InMemoryUpstreamOAuthProxyStore:
         self._codes[code_digest] = code
 
     async def take_code(self, code_digest: str) -> ProxyAuthorizationCode | None:
+        """Remove and return the proxy code stored under `code_digest`, or `None`."""
         return self._codes.pop(code_digest, None)
 
     async def save_upstream_tokens(self, jti: str, tokens: UpstreamTokenSet) -> None:
+        """Store the upstream token set issued for the proxy token `jti`."""
         # Opportunistic sweep: a session nobody has redeemed or refreshed in
         # `_UPSTREAM_TOKEN_SET_MAX_IDLE_SECONDS` is treated as abandoned -
         # `delete_upstream_tokens` exists but nothing else ever calls it.
@@ -226,18 +231,23 @@ class InMemoryUpstreamOAuthProxyStore:
         self._tokens[jti] = tokens
 
     async def get_upstream_tokens(self, jti: str) -> UpstreamTokenSet | None:
+        """Return the upstream token set for `jti`, or `None`."""
         return self._tokens.get(jti)
 
     async def delete_upstream_tokens(self, jti: str) -> None:
+        """Remove the upstream token set for `jti`."""
         self._tokens.pop(jti, None)
 
     async def save_refresh(self, refresh_digest: str, jti: str) -> None:
+        """Index a refresh token digest to the proxy token `jti` it renews."""
         self._refresh[refresh_digest] = jti
 
     async def get_refresh(self, refresh_digest: str) -> str | None:
+        """Return the `jti` a refresh digest renews, or `None`."""
         return self._refresh.get(refresh_digest)
 
     async def take_refresh(self, refresh_digest: str) -> str | None:
+        """Remove a refresh digest and return the `jti` it renewed, or `None`."""
         return self._refresh.pop(refresh_digest, None)
 
 

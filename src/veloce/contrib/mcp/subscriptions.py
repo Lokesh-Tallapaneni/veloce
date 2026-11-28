@@ -236,9 +236,11 @@ class SubscriptionsCapability(_ServerCapability):
     __slots__ = ()
 
     def advertise(self, *, modern: bool = False) -> dict[str, Any] | None:
+        """Advertise nothing; `ResourcesCapability` carries the subscribe flag."""
         return None
 
     def handlers(self) -> dict[str, MethodHandler]:
+        """Map the resource subscription methods to their handlers."""
         return {
             "resources/subscribe": self._subscribe,
             "resources/unsubscribe": self._unsubscribe,
