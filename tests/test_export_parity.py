@@ -181,6 +181,7 @@ UNEXPORTED: dict[str, str] = {
     "app.mounting.MountingMixin": "composition unit of Veloce; not constructed by application code",
     "app.openapi.OpenAPIMixin": "composition unit of Veloce; not constructed by application code",
     "app.plugins.PluginsMixin": "composition unit of Veloce; not constructed by application code",
+    "app.rsgi.RsgiMixin": "composition unit of Veloce; not constructed by application code",
     "app.serving.ServingMixin": "composition unit of Veloce; not constructed by application code",
     "app.templating.TemplatingMixin": "composition unit of Veloce; not constructed by application code",
     "app.testing.TestingMixin": "composition unit of Veloce; not constructed by application code",

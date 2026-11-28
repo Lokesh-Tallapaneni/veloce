@@ -25,6 +25,23 @@ WebSocket handling, worker management, graceful reloads, and TLS. The
 built-in server covers the development inner loop; production should not
 depend on it.
 
+### Running under Granian's RSGI interface
+
+Veloce also implements `__rsgi__`/`__rsgi_init__`/`__rsgi_del__` directly,
+so Granian can serve it over RSGI instead of ASGI, skipping the ASGI
+message-dict layer:
+
+```bash
+granian --interface rsgi your_module:app --host 0.0.0.0 --port 8000
+```
+
+Everything that works under ASGI - mounted apps, registered middleware,
+`MAX_CONTENT_LENGTH`, `stream=True` request bodies, and WebSockets - works
+the same way here; the RSGI entry point translates into the same dispatch
+path underneath. RSGI's own `close()` carries no reason string, so a
+`WebSocket.close(reason=...)` call reaches an RSGI-served client with its
+code but not its reason text.
+
 ### What the built-in server does and doesn't do
 
 The development server **does** apply a slowloris guard — once a

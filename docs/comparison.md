@@ -30,7 +30,7 @@ than re-exporting upstream code.
 | Flask-style helpers (`g`, `flash`, blueprints) | `g`, `flash`, `get_flashed_messages`, `Blueprint` | None | Built in | None | Different idiom (apps / views) |
 | Test client | In-memory `TestClient` driving the real ASGI surface | `TestClient` (Starlette, wraps `httpx`) | `Werkzeug` test client | `TestClient` (wraps `httpx`) | `django.test.Client` (WSGI) |
 | Custom routing | Radix tree with typed converters (`int`, `float`, `uuid`, `path`, custom) | Starlette router (sorted list of routes) | Werkzeug routing (map of `Rule` objects) | Sorted list of routes | URLconf list of `path` / `re_path` |
-| ASGI / WSGI | ASGI-native | ASGI-native (Starlette) | WSGI-native, ASGI via `asgiref` | ASGI-native | WSGI-native, ASGI optional |
+| ASGI / WSGI | ASGI-native, plus a direct RSGI entry point | ASGI-native (Starlette) | WSGI-native, ASGI via `asgiref` | ASGI-native | WSGI-native, ASGI optional |
 | Python version | 3.10+ | 3.8+ | 3.9+ | 3.9+ | 3.10+ (5.0), 3.12+ (5.2) |
 
 Read each cell as "what ships in the core distribution with no third-party packages installed". Extensions exist for almost every gap, but the cell tracks core surface.
