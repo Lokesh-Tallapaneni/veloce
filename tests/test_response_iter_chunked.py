@@ -52,7 +52,11 @@ def test_streaming_response_returns_underlying_stream():
 
 
 async def test_stream_to_skips_empty_chunks():
-    """An empty yield must not emit the `0\\r\\n\\r\\n` last-chunk terminator mid-stream."""
+    """An empty yield must not emit the `0\\r\\n\\r\\n` last-chunk terminator mid-stream.
+
+    `coalesce=False` pins one write per chunk, so the empty yield's own write
+    is what is under test here rather than batching.
+    """
 
     class _RecordingTransport:
         def __init__(self) -> None:
@@ -66,7 +70,7 @@ async def test_stream_to_skips_empty_chunks():
         yield b""
         yield b"world"
 
-    sr = StreamingResponse(content=gen())
+    sr = StreamingResponse(content=gen(), coalesce=False)
     transport = _RecordingTransport()
     await sr.stream_to(transport)
 
