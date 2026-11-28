@@ -30,18 +30,17 @@ if TYPE_CHECKING:  # pragma: no cover
 
 _logger = logging.getLogger(__name__)
 
-# Names the `subscriptions/listen` request a message belongs to. On stdio all
-# streams share one channel, so this is how a client demultiplexes them.
-META_SUBSCRIPTION_ID = "io.modelcontextprotocol/subscriptionId"
+META_SUBSCRIPTION_ID: str = "io.modelcontextprotocol/subscriptionId"
+"""`_meta` key naming the `subscriptions/listen` request a message belongs to. On stdio all streams share one channel, so this is how a client demultiplexes them."""
 
-# The boolean topics a `subscriptions/listen` filter may ask for;
-# `resourceSubscriptions` is a URI list and is handled separately.
-LISTEN_TOPICS = {
+LISTEN_TOPICS: dict[str, str] = {
     "toolsListChanged": "notifications/tools/list_changed",
     "promptsListChanged": "notifications/prompts/list_changed",
     "resourcesListChanged": "notifications/resources/list_changed",
 }
-RESOURCE_SUBSCRIPTIONS = "resourceSubscriptions"
+"""Boolean topics a `subscriptions/listen` filter may ask for, mapped to their notification method. `resourceSubscriptions` is a URI list and is handled separately."""
+RESOURCE_SUBSCRIPTIONS: str = "resourceSubscriptions"
+"""Filter key carrying the list of resource URIs a stream subscribes to."""
 
 # The connection's `Transport.send`: one-way delivery to that one client.
 Sink = Callable[[dict[str, Any]], Awaitable[None]]
@@ -83,6 +82,14 @@ def subscription_acknowledged_notification(
 
     `agreed` reflects the subset of the requested filter the server will honour;
     unsupported types are omitted rather than echoed back.
+
+    Args:
+        subscription_id: Id of the stream's originating request.
+        agreed: The subset of the requested filter the server honours.
+
+    Returns:
+        The notification to send first on the stream.
+
     """
     return {
         "jsonrpc": "2.0",
@@ -178,6 +185,12 @@ class ConnectionRegistry:
         so a stream receives this only if its filter names `topic`.
         `broadcast_unlistened` is the handshake-era resource notification, which
         goes to every open connection.
+
+        Args:
+            topic: List-changed topic being announced.
+            broadcast_unlistened: Also send to every open connection, as the handshake-era
+                resource notification does.
+
         """
         method = LISTEN_TOPICS.get(topic)
         if method is None:  # pragma: no cover - guarded by the caller

@@ -280,6 +280,16 @@ def http_upstream(
         request = http_upstream("http://localhost:9000/mcp")
         await add_mcp_proxy(app, "upstream", request)
         app.mount_mcp(transport="http")
+
+    Args:
+        url: Upstream Streamable HTTP endpoint.
+        client: Caller-owned `httpx2.AsyncClient`; one is created and owned when omitted.
+        headers: Headers merged onto every request.
+
+    Raises:
+        RuntimeError: If `httpx2` is not installed (the `mcp-proxy` extra) or the interpreter
+            cannot run it.
+
     """
     try:
         import httpx2

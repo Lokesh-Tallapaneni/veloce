@@ -330,6 +330,15 @@ class MCPServer(CallsMixin, ListingMixin, HandshakeMixin, TasksMixin, Invocation
         to drop exactly this stream, so concurrent streams on one session are
         tracked independently. A no-op returning `None` when subscriptions are
         disabled, so a transport may call this unconditionally.
+
+        Args:
+            session: Session the connection belongs to.
+            sink: Coroutine function delivering one JSON-RPC message to the client.
+
+        Returns:
+            An opaque token for `unregister_connection`, or `None` when subscriptions are
+                disabled.
+
         """
         if self._connections is not None:
             return self._connections.add(session, sink)
@@ -415,6 +424,14 @@ class MCPServer(CallsMixin, ListingMixin, HandshakeMixin, TasksMixin, Invocation
         A stateful transport passes its `session` so the server records the client's
         advertised capabilities and enforces the lifecycle ordering; the stateless
         HTTP transport passes none, leaving its fast path unaffected.
+
+        Args:
+            message: Decoded JSON-RPC message.
+            session: Session of a stateful transport; `None` for a stateless one.
+
+        Returns:
+            The response object, or `None` for a notification.
+
         """
         # ── 1. Envelope: is this a well-formed JSON-RPC 2.0 request at all ──
         msg_id = message.get("id")
@@ -599,6 +616,11 @@ class MCPServer(CallsMixin, ListingMixin, HandshakeMixin, TasksMixin, Invocation
 
         The response is what tells the client the subscription ended cleanly, as
         opposed to a transport that simply dropped.
+
+        Args:
+            session: Session the stream belongs to.
+            subscription_id: Id of the stream's originating request.
+
         """
         if session.listen_streams.pop(subscription_id, None) is None:
             return

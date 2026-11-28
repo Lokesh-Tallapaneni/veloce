@@ -26,7 +26,13 @@ _CURSOR_SEPARATOR = ":"
 
 
 def encode_cursor(index: int, key: str) -> str:
-    """Return the opaque cursor naming the last item emitted."""
+    """Return the opaque cursor naming the last item emitted.
+
+    Args:
+        index: Position of the last item emitted.
+        key: Stable key of that item.
+
+    """
     raw = f"{index}{_CURSOR_SEPARATOR}{key}".encode()
     # Padded on purpose - NOT `_internal._b64encode`, which strips `=` for the
     # RFC 7515 / RFC 7636 unpadded form; cursors must keep decoding after a restart.
@@ -34,7 +40,15 @@ def encode_cursor(index: int, key: str) -> str:
 
 
 def decode_cursor(cursor: str) -> tuple[int, str]:
-    """Return the `(index, key)` a cursor records, rejecting a malformed one."""
+    """Return the `(index, key)` a cursor records, rejecting a malformed one.
+
+    Args:
+        cursor: Cursor produced by `encode_cursor`.
+
+    Raises:
+        InvalidParamsError: If the cursor is malformed.
+
+    """
     try:
         raw = base64.urlsafe_b64decode(cursor.encode("ascii")).decode()
         index_text, key = raw.split(_CURSOR_SEPARATOR, 1)
@@ -71,6 +85,17 @@ def paginate(
 
     With no page size the items are returned untouched - no copy, no slice - so a
     server that has not opted in pays one comparison.
+
+    Args:
+        items: All items, in listing order.
+        key_of: Returns the stable key of an item.
+        cursor: Cursor from the previous page, or `None` for the first.
+        size: Page size, or `None` when the server does not paginate.
+
+    Raises:
+        InvalidParamsError: If a cursor is given while the server does not paginate, or the
+            cursor is malformed.
+
     """
     if size is None:
         if cursor is not None:

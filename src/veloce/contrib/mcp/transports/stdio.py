@@ -385,6 +385,13 @@ async def serve_stdio(server: MCPServer) -> None:
     handler that prints, logs to stdout or spawns a child cannot corrupt the
     JSON-RPC stream. Blocking stdin reads are offloaded to the default thread
     executor; stdout writes are flushed per line.
+
+    Args:
+        server: Server whose messages are served.
+
+    Raises:
+        RuntimeError: If a stdio MCP server is already serving this process.
+
     """
     global _wire_claimed
     if _wire_claimed:

@@ -16,7 +16,16 @@ from typing import Any
 
 
 def require_mcp_description(tool_name: str, description: str | None) -> str:
-    """Return a validated non-empty `mcp_description`, or raise."""
+    """Return a validated non-empty `mcp_description`, or raise.
+
+    Args:
+        tool_name: Name used in the error message.
+        description: Candidate description.
+
+    Raises:
+        ValueError: If the description is missing or empty.
+
+    """
     if description is None or not description.strip():
         raise ValueError(
             f"MCP tool {tool_name!r} is missing a description. "
@@ -27,15 +36,22 @@ def require_mcp_description(tool_name: str, description: str | None) -> str:
     return description
 
 
-# The behaviour hints the spec defines on a tool. A name outside this set would
-# be silently ignored by every client, so it is refused at registration.
-TOOL_ANNOTATION_HINTS = frozenset(
+TOOL_ANNOTATION_HINTS: frozenset[str] = frozenset(
     {"readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint", "title"}
 )
+"""Behaviour hints the spec defines on a tool. A name outside this set would be silently ignored by every client, so it is refused at registration."""
 
 
 def validate_tool_annotations(annotations: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Return the declared tool annotations, refusing a hint no client would read."""
+    """Return the declared tool annotations, refusing a hint no client would read.
+
+    Args:
+        annotations: Declared hints, or `None`.
+
+    Raises:
+        ValueError: If a hint is not one the specification defines.
+
+    """
     if not annotations:
         return None
     unknown = sorted(set(annotations) - TOOL_ANNOTATION_HINTS)

@@ -321,6 +321,18 @@ class Jinja2Templates:
         """Render a template and return a response.
 
         The content type may be overridden and a background task attached.
+
+        Args:
+            name: Template name, or a sequence tried in order.
+            context: Variables available to the template.
+            status_code: Response status code.
+            headers: Extra response headers.
+            media_type: Content type; HTML by default.
+            background: Background task run after the response is sent.
+
+        Returns:
+            The rendered response.
+
         """
         self._prepare_env(self.env)
         template = self._resolve_template(self.env, name)
@@ -346,6 +358,14 @@ class Jinja2Templates:
         Mirrors `TemplateResponse` but stops at the string stage so the
         `render_template(name, **ctx)` helper can plug in
         without building an HTMLResponse around the result.
+
+        Args:
+            name: Template name, or a sequence tried in order.
+            context: Variables available to the template.
+
+        Returns:
+            The rendered text.
+
         """
         self._prepare_env(self.env)
         template = self._resolve_template(self.env, name)
@@ -367,6 +387,14 @@ class Jinja2Templates:
         template that reads them or calls `url_for` resolves correctly during
         emission instead of raising "working outside of application context".
         The returned iterator is still synchronous, preserving the contract.
+
+        Args:
+            name: Template name, or a sequence tried in order.
+            context: Variables available to the template.
+
+        Returns:
+            An iterator of rendered text chunks.
+
         """
         self._prepare_env(self.env)
         template = self._resolve_template(self.env, name)
@@ -374,7 +402,16 @@ class Jinja2Templates:
         return _context_preserving_iter(template.generate(merged))
 
     def render_string(self, source: str, context: dict[str, Any]) -> str:
-        """Render a template from string."""
+        """Render a template from string.
+
+        Args:
+            source: Template source text.
+            context: Variables available to the template.
+
+        Returns:
+            The rendered text.
+
+        """
         self._prepare_env(self.env)
         template = self.env.from_string(source)
         merged = _gather_context_processors(context)
@@ -389,6 +426,14 @@ class Jinja2Templates:
         `{% include %}`d templates with async I/O resolve without
         blocking the loop. Filters/globals registered on `app` are
         synced onto the async env too.
+
+        Args:
+            name: Template name, or a sequence tried in order.
+            context: Variables available to the template.
+
+        Returns:
+            The rendered text.
+
         """
         if self._async_env is None:
             from jinja2 import Environment, FileSystemLoader

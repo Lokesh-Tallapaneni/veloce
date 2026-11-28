@@ -31,6 +31,14 @@ def renamed(item: T, namespace: str) -> T:
 
     The memoised listing entry is `init=False`, so the copy rebuilds it under the
     new name rather than advertising the name the primitive had in the sub-app.
+
+    Args:
+        item: Primitive to copy.
+        namespace: Prefix joined to the name with an underscore; empty returns `item` unchanged.
+
+    Returns:
+        The renamed copy, or `item` itself when `namespace` is empty.
+
     """
     if not namespace:
         return item

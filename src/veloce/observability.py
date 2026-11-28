@@ -92,7 +92,18 @@ def log_requests_as_json(
     level: int = logging.INFO,
     include_path: bool = False,
 ) -> Callable[[RequestMetrics], None]:
-    """Register a hook emitting one JSON access-log record per request."""
+    """Register a hook emitting one JSON access-log record per request.
+
+    Args:
+        app: Application to instrument.
+        logger: Logger to write to; a default access logger when omitted.
+        level: Level of each record.
+        include_path: Include the concrete request path, which is high-cardinality.
+
+    Returns:
+        The registered hook.
+
+    """
     resolved = logger if logger is not None else logging.getLogger("veloce.access")
     dumps = app.json.dumps
 
@@ -112,7 +123,18 @@ def instrument_access_log(
     json: bool = False,
     include_streamed: bool = True,
 ) -> Callable[[RequestMetrics], None]:
-    """Register the unified access-log hook (text or JSON), route-keyed."""
+    """Register the unified access-log hook (text or JSON), route-keyed.
+
+    Args:
+        app: Application to instrument.
+        logger: Logger to write to; a default access logger when omitted.
+        json: Emit JSON records instead of text lines.
+        include_streamed: Log streamed responses too.
+
+    Returns:
+        The registered hook.
+
+    """
     resolved = logger if logger is not None else _default_access_logger()
 
     def _emit(metrics: RequestMetrics) -> None:

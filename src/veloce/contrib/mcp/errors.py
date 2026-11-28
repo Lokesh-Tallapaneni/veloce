@@ -65,6 +65,11 @@ def internal_error(msg_id: Any, message: str) -> dict[str, Any]:
 
     A transport that cannot put its reply on the wire still answers with this,
     rather than leaving the client waiting on a dropped reply.
+
+    Args:
+        msg_id: Id of the request being answered.
+        message: Human-readable failure description.
+
     """
     return _error(msg_id, _JSONRPC_INTERNAL_ERROR, message)
 

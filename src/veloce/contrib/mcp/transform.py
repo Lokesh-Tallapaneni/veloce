@@ -156,6 +156,16 @@ def derive_tool(
     `arguments` maps an argument of the original to how it should appear. An
     argument not mentioned is published unchanged. Naming one the original does
     not have is refused, since it would silently do nothing.
+
+    Args:
+        tool: Tool whose handler is reused.
+        name: Published name; defaults to the original's.
+        description: Published description; defaults to the original's.
+        arguments: `ArgTransform` per argument, keyed by the original argument name.
+
+    Raises:
+        ValueError: If `tool` is already derived, or `arguments` names an argument it lacks.
+
     """
     if tool.derived_from is not None:
         raise ValueError(

@@ -53,8 +53,8 @@ if TYPE_CHECKING:  # pragma: no cover
 
 _logger = logging.getLogger(__name__)
 
-# RFC 8414 well-known path for authorization server metadata.
-AUTHORIZATION_SERVER_METADATA_PATH = "/.well-known/oauth-authorization-server"
+AUTHORIZATION_SERVER_METADATA_PATH: str = "/.well-known/oauth-authorization-server"
+"""RFC 8414 well-known path for authorization server metadata."""
 
 # 256 bits, which is what a token that is the whole credential needs.
 _CREDENTIAL_ENTROPY_BYTES = 32
@@ -85,8 +85,8 @@ class OAuthClient:
 
     client_id: str
     redirect_uris: tuple[str, ...]
-    # `None` for a public client, which proves itself with PKCE alone.
     client_secret_digest: str | None = None
+    """`None` for a public client, which proves itself with PKCE alone."""
     client_name: str | None = None
     scopes: frozenset[str] = frozenset()
     grant_types: tuple[str, ...] = ("authorization_code", "refresh_token")
@@ -121,13 +121,13 @@ class AccessToken:
     resource: str | None
     expires_at: float
     claims: dict[str, Any] = field(default_factory=dict)
-    # Set when refresh was granted; rotation issues a new pair and drops the old.
     refresh_digest: str | None = None
-    # The chain this token descends from, inherited by every rotation. A refresh
-    # token presented twice means a copy leaked, and OAuth 2.1 Sec. 4.14.2 wants
-    # the whole chain revoked - refusing only the replay leaves the thief the
-    # pair they already rotated.
+    """Set when refresh was granted; rotation issues a new pair and drops the old."""
     family_id: str = field(default_factory=lambda: secrets.token_urlsafe(9))
+    """The chain this token descends from, inherited by every rotation. A refresh token presented twice
+    means a copy leaked, and OAuth 2.1 Sec. 4.14.2 wants the whole chain revoked - refusing only the
+    replay leaves the thief the pair they already rotated.
+    """
 
 
 @runtime_checkable
@@ -286,18 +286,18 @@ class MCPAuthorizationServer:
         ))
     """
 
-    # The base every endpoint is advertised under: the https origin clients reach.
     issuer: str
-    # Establishes who is approving access. See `Authenticator`.
+    """The base every endpoint is advertised under: the https origin clients reach."""
     authenticate: Authenticator
-    # Advertised in the metadata; a request outside this set is refused.
+    """Establishes who is approving access. See `Authenticator`."""
     scopes_supported: Iterable[str] = ()
-    # Where clients, codes and tokens live.
+    """Advertised in the metadata; a request outside this set is refused."""
     store: AuthorizationStore = field(default_factory=InMemoryAuthorizationStore)
-    # Lifetime of an issued access token.
+    """Where clients, codes and tokens live."""
     access_token_ttl: float = 3600.0
-    # Whether `POST /register` issues credentials to anyone (RFC 7591).
+    """Lifetime of an issued access token."""
     allow_dynamic_registration: bool = True
+    """Whether `POST /register` issues credentials to anyone (RFC 7591)."""
 
     def __post_init__(self) -> None:
         if isinstance(self.scopes_supported, (str, bytes)):
@@ -637,8 +637,8 @@ async def _authenticate_client(
     return client, None
 
 
-#: A registration naming anything else is refused, not silently narrowed.
-SUPPORTED_GRANT_TYPES = ("authorization_code", "refresh_token")
+SUPPORTED_GRANT_TYPES: tuple[str, ...] = ("authorization_code", "refresh_token")
+"""Grant types the server accepts; a registration naming anything else is refused, not silently narrowed."""
 
 
 def _refuse_unregistered_grant(client: OAuthClient, grant_type: str) -> Response | None:

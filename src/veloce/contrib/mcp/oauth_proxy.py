@@ -117,15 +117,18 @@ class UpstreamTokenSet:
     refresh_token: str | None
     expires_at: float
     claims: dict[str, Any] = field(default_factory=dict)
-    #: Taken from the upstream's `id_token`, where OIDC providers carry it -
-    #: not from `claims`, which a refresh response can overwrite or omit.
     subject: str | None = None
-    #: RFC 8707 resource this was requested for, carried into every JWT
-    #: minted from it - including across a refresh, unlike `claims`.
+    """Taken from the upstream's `id_token`, where OIDC providers carry it - not from `claims`, which a
+    refresh response can overwrite or omit.
+    """
     resource: str | None = None
-    #: Stamped fresh on every save (initial exchange or refresh) - how the
-    #: store tells an active session from one nobody ever came back to.
+    """RFC 8707 resource this was requested for, carried into every JWT minted from it - including
+    across a refresh, unlike `claims`.
+    """
     last_active_at: float = field(default_factory=_now)
+    """Stamped fresh on every save (initial exchange or refresh) - how the store tells an active
+    session from one nobody ever came back to.
+    """
 
 
 @dataclass(slots=True)
@@ -291,26 +294,28 @@ class UpstreamOAuthProxy:
     MCP client will use must be listed explicitly.
     """
 
-    #: Veloce's own issuer identity, presented to MCP clients.
     issuer: str
+    """Veloce's own issuer identity, presented to MCP clients."""
     upstream_authorization_endpoint: str
     upstream_token_endpoint: str
     upstream_client_id: str
     upstream_client_secret: str
-    #: HMAC key for the proxy's own locally-minted JWTs.
     signing_key: str | bytes
-    #: This proxy's own fixed callback, registered upstream once.
+    """HMAC key for the proxy's own locally-minted JWTs."""
     redirect_path: str = "/oauth/callback"
-    #: Exact client redirect_uris this proxy will ever redirect a browser
-    #: to or redirect an error to. Empty means none - fail closed, since
-    #: there is no per-client registry to check membership against instead.
+    """This proxy's own fixed callback, registered upstream once."""
     allowed_redirect_uris: Iterable[str] = ()
-    #: Scopes the minted JWT carries and advertises to MCP clients.
+    """Exact client redirect_uris this proxy will ever redirect a browser to or redirect an error to.
+    Empty means none - fail closed, since there is no per-client registry to check membership
+    against instead.
+    """
     scopes_supported: Iterable[str] = ()
-    #: Scopes requested from the upstream at `/authorize` - a provider's own
-    #: vocabulary (e.g. `openid email profile`), not `scopes_supported`,
-    #: which the upstream has never heard of and may refuse as unknown.
+    """Scopes the minted JWT carries and advertises to MCP clients."""
     upstream_scopes: Iterable[str] = ()
+    """Scopes requested from the upstream at `/authorize` - a provider's own vocabulary (e.g. `openid
+    email profile`), not `scopes_supported`, which the upstream has never heard of and may refuse as
+    unknown.
+    """
     access_token_ttl: float = 3600.0
     allow_dynamic_registration: bool = True
     store: UpstreamOAuthProxyStore = field(default_factory=InMemoryUpstreamOAuthProxyStore)

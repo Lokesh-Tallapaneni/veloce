@@ -361,6 +361,10 @@ def instrument_with_otel(
     carries the same idempotency, ``on_span`` and ``exclude_routes`` semantics,
     except that an excluded route still gets a context-carrying span and only
     its enrichment is skipped.
+
+    Raises:
+        ImportError: If OpenTelemetry is not installed (the `otel` extra).
+
     """
     if _OTEL_IMPORT_ERROR is not None:
         raise ImportError(_INSTALL_HINT) from _OTEL_IMPORT_ERROR

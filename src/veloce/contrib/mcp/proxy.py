@@ -61,6 +61,15 @@ async def add_mcp_proxy(
     asking. `tags` labels them for a `mount_mcp(tool_filter=...)` policy.
 
     Call this before `mount_mcp`, which builds the registry.
+
+    Args:
+        app: Application the discovered tools are registered on.
+        namespace: Prefix applied to every discovered tool name.
+        request: Callable sending one JSON-RPC request upstream, such as the one `http_upstream`
+            returns.
+        scopes: Scopes required of a caller to list or invoke these tools.
+        tags: Labels for `mount_mcp(tool_filter=...)` policies.
+
     """
     required = frozenset(scopes) if scopes else frozenset()
     labels = frozenset(tags) if tags else frozenset()

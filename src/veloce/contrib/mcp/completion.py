@@ -111,6 +111,16 @@ def attach_completers(app: Any, prompts: PromptRegistry, resources: ResourceRegi
     mapping. An unknown target, an unknown argument, or a duplicate completer for
     the same argument raises at mount time so the misconfiguration surfaces before
     a client connects.
+
+    Args:
+        app: Application holding the `@app.mcp_completer` registrations.
+        prompts: Registry searched for prompt targets.
+        resources: Registry searched for resource targets.
+
+    Raises:
+        ValueError: If a registration names an unknown prompt or resource, an unknown argument,
+            or duplicates another completer.
+
     """
     for registration in getattr(app, "_mcp_completers", ()):
         kind, key = registration.kind, registration.key

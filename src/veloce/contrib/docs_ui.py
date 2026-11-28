@@ -42,7 +42,7 @@ def _html_safe_json(value: Any) -> str:
     return raw.decode()
 
 
-SWAGGER_HTML = (
+SWAGGER_HTML: str = (
     """<!DOCTYPE html>
 <html>
 <head>
@@ -78,9 +78,10 @@ SWAGGER_HTML = (
     .replace("__SUC__", _SWAGGER_UI_CSS_INTEGRITY)
     .replace("__SUJ__", _SWAGGER_UI_JS_INTEGRITY)
 )
+"""Swagger UI page template, filled with `str.format` when the route is registered."""
 
 
-REDOC_HTML = """<!DOCTYPE html>
+REDOC_HTML: str = """<!DOCTYPE html>
 <html>
 <head>
     <title>{title} - ReDoc</title>
@@ -98,6 +99,7 @@ REDOC_HTML = """<!DOCTYPE html>
       referrerpolicy="no-referrer"{nonce}></script>
 </body>
 </html>""".replace("__RDV__", _REDOC_VERSION).replace("__RDJ__", _REDOC_JS_INTEGRITY)
+"""ReDoc page template, filled with `str.format` when the route is registered."""
 
 
 def _nonce_attr(request: Any) -> str:
@@ -121,6 +123,13 @@ def setup_openapi_routes(
     `docs_url` / `redoc_url` of `None` disable the Swagger UI / ReDoc UI
     respectively - the JSON schema route is still registered, so tooling
     can consume the schema without a public interactive explorer.
+
+    Args:
+        app: Application to register the routes on.
+        openapi_url: Path serving the OpenAPI schema.
+        docs_url: Path serving Swagger UI, or `None` to disable it.
+        redoc_url: Path serving ReDoc, or `None` to disable it.
+
     """
     # `app.get` prepends the router's `prefix`, so the templates must interpolate
     # the prefixed path. `root_path` is per-request: it is a property of the mount.

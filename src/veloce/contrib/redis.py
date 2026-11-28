@@ -88,7 +88,17 @@ class RedisSessionStore(SessionStore):
     def from_url(
         cls, url: str, *, prefix: str = "veloce:session:", **kwargs: Any
     ) -> RedisSessionStore:
-        """Build a store from a Redis URL, creating the client for you."""
+        """Build a store from a Redis URL, creating the client for you.
+
+        Args:
+            url: Redis connection URL.
+            prefix: Prefix prepended to every key.
+            **kwargs: Passed to `redis.asyncio.Redis.from_url`.
+
+        Raises:
+            RuntimeError: If the `redis` package is not installed (the `redis` extra).
+
+        """
         return cls(_load_redis_from_url(url, **kwargs), prefix=prefix)
 
     def _key(self, session_id: str) -> str:
@@ -192,7 +202,17 @@ class RedisRateLimitBackend(RateLimitBackend):
     def from_url(
         cls, url: str, *, prefix: str = "veloce:ratelimit:", **kwargs: Any
     ) -> RedisRateLimitBackend:
-        """Build the backend from a Redis URL, creating the client for you."""
+        """Build the backend from a Redis URL, creating the client for you.
+
+        Args:
+            url: Redis connection URL.
+            prefix: Prefix prepended to every key.
+            **kwargs: Passed to `redis.asyncio.Redis.from_url`.
+
+        Raises:
+            RuntimeError: If the `redis` package is not installed (the `redis` extra).
+
+        """
         return cls(_load_redis_from_url(url, **kwargs), prefix=prefix)
 
     async def evaluate(self, key: str, strategy: RateLimitStrategy, now: float) -> RateLimitResult:
@@ -307,7 +327,17 @@ class RedisCache(Cache):
 
     @classmethod
     def from_url(cls, url: str, *, prefix: str = "veloce:cache:", **kwargs: Any) -> RedisCache:
-        """Build a cache from a Redis URL, creating the client for you."""
+        """Build a cache from a Redis URL, creating the client for you.
+
+        Args:
+            url: Redis connection URL.
+            prefix: Prefix prepended to every key.
+            **kwargs: Passed to `redis.asyncio.Redis.from_url`.
+
+        Raises:
+            RuntimeError: If the `redis` package is not installed (the `redis` extra).
+
+        """
         return cls(_load_redis_from_url(url, **kwargs), prefix=prefix)
 
     async def get(self, key: str) -> bytes | None:

@@ -41,20 +41,23 @@ from veloce.contrib.mcp.errors import InvalidParamsError, ResourceNotFoundError
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.server import MethodHandler
 
-# The extension the modern revision moves tasks into; a task is never returned
-# to a client that did not declare it.
-TASKS_EXTENSION = "io.modelcontextprotocol/tasks"
+TASKS_EXTENSION: str = "io.modelcontextprotocol/tasks"
+"""Extension the modern revision moves tasks into; a task is never returned to a client that did not declare it."""
 
-# `working` is the only non-terminal state the framework enters on its own.
-STATUS_WORKING = "working"
-STATUS_INPUT_REQUIRED = "input_required"
-STATUS_COMPLETED = "completed"
-STATUS_FAILED = "failed"
-STATUS_CANCELLED = "cancelled"
+STATUS_WORKING: str = "working"
+"""Non-terminal status; the only one the framework enters on its own."""
+STATUS_INPUT_REQUIRED: str = "input_required"
+"""Non-terminal status of a task waiting on the client."""
+STATUS_COMPLETED: str = "completed"
+"""Terminal status of a task that returned a result."""
+STATUS_FAILED: str = "failed"
+"""Terminal status of a task that raised."""
+STATUS_CANCELLED: str = "cancelled"
+"""Terminal status of a task the client cancelled."""
 
 # Terminal is the complement of this, so the lifecycle set lives in one place.
 _NON_TERMINAL_STATUSES = frozenset({STATUS_WORKING, STATUS_INPUT_REQUIRED})
-TASK_STATUSES = frozenset(
+TASK_STATUSES: frozenset[str] = frozenset(
     {
         STATUS_WORKING,
         STATUS_INPUT_REQUIRED,
@@ -63,6 +66,7 @@ TASK_STATUSES = frozenset(
         STATUS_CANCELLED,
     }
 )
+"""Every status in the task lifecycle; terminal is the complement of the non-terminal set, so the lifecycle lives in one place."""
 _TERMINAL_STATUSES = TASK_STATUSES - _NON_TERMINAL_STATUSES
 
 # Retention (seconds) when the client requests no `ttl` of its own.
@@ -75,8 +79,8 @@ _MAX_TASK_TTL_SECONDS = 3600
 # Reported on a working task so a client paces `tasks/get` polling.
 _POLL_INTERVAL_MS = 500
 
-# Set on every `notifications/tasks/status` so a client can route it.
-META_RELATED_TASK = "io.modelcontextprotocol/related-task"
+META_RELATED_TASK: str = "io.modelcontextprotocol/related-task"
+"""`_meta` key set on every `notifications/tasks/status` so a client can route it."""
 
 # Advisory `_meta` hint that no immediate model turn is expected.
 _META_MODEL_IMMEDIATE_RESPONSE = "io.modelcontextprotocol/model-immediate-response"
@@ -104,15 +108,16 @@ class MCPTask(MCPDescriptor):
     last_updated_at: str = field(default_factory=_now_iso)
     ttl_ms: int = _DEFAULT_TASK_TTL_SECONDS * 1000
     expires_at: float = 0.0
-    # The creating connection's id, never recycled, so one client cannot read,
-    # cancel or enumerate another's tasks.
     owner_key: int | None = None
-    # Set when the task reaches a terminal status; `None` while working.
+    """The creating connection's id, never recycled, so one client cannot read, cancel or enumerate
+    another's tasks.
+    """
     result: dict[str, Any] | None = None
-    # Kept so `tasks/cancel` can unwind it. Typed loosely: no asyncio import.
+    """Set when the task reaches a terminal status; `None` while working."""
     runner: Any = None
-    # Written by `tasks/update`, keyed as the input requests were.
+    """Kept so `tasks/cancel` can unwind it. Typed loosely: no asyncio import."""
     input_responses: dict[str, Any] = field(default_factory=dict)
+    """Written by `tasks/update`, keyed as the input requests were."""
 
     def describe(self) -> dict[str, Any]:
         """Shape this task into the MCP Task object the task methods return.
@@ -159,6 +164,12 @@ class MCPTask(MCPDescriptor):
         `tasks/cancel` and the natural completion of `_run_task` both settling the
         same task, so the first terminal status (e.g. `cancelled`) is never
         overwritten by the second.
+
+        Args:
+            status: Terminal status to move to.
+            result: Final result payload.
+            message: Optional status message.
+
         """
         if self.is_terminal():
             return
@@ -240,6 +251,15 @@ def new_task(tool_name: str, ttl_ms: int, owner_key: int | None = None) -> MCPTa
 
     `owner_key` is the creating connection's identity; the task methods reject a
     caller whose connection does not match it, so a task is private to its creator.
+
+    Args:
+        tool_name: Tool the task runs.
+        ttl_ms: Time-to-live of the task, in milliseconds.
+        owner_key: Identity of the creating connection, or `None` for none.
+
+    Returns:
+        The new task, in the `working` status.
+
     """
     task = MCPTask(name=uuid.uuid4().hex, description="", tool_name=tool_name)
     task.ttl_ms = ttl_ms
