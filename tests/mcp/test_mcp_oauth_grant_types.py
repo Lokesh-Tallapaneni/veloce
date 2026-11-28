@@ -362,5 +362,5 @@ def test_an_unknown_grant_type_at_the_token_endpoint_is_unchanged():
 
 def test_the_supported_set_matches_what_the_endpoint_implements():
     """A grant accepted at registration that `/token` cannot serve is a dead end."""
-    dispatched = compared_constants(tree("authorization.py"), "grant_type")
+    dispatched = compared_constants(tree("authorization", "_endpoints.py"), "grant_type")
     assert dispatched == set(SUPPORTED_GRANT_TYPES)

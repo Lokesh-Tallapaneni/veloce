@@ -162,7 +162,6 @@ UNEXPORTED: dict[str, str] = {
     # MCP integration internals, consistent with the other names from these
     # modules above.
     "contrib.mcp.auth.TokenVerifier": "internal to the MCP integration; not part of its published surface",
-    "contrib.mcp.authorization.Authenticator": "internal to the MCP integration; not part of its published surface",
     "contrib.mcp.registry.ToolFilter": "internal to the MCP integration; not part of its published surface",
     "contrib.mcp.subscriptions.Sink": "internal to the MCP integration; not part of its published surface",
     # `exceptions.NotImplemented_` is the back-compat alias described above; it
