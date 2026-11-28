@@ -1,19 +1,23 @@
 """`dump_json_matches_model_dump` — gating the `list[Model]` fast path.
 
-pydantic-core's native `TypeAdapter.dump_json` formats a UTC `datetime` with a
-`Z` suffix and a `Decimal` as a JSON string, diverging from `model_dump()` run
-through the app's own JSON encoder (an explicit UTC offset, a bare number). A
-model with either type anywhere in its field tree - directly, nested, or
-through `list`/`dict`/`X | None` - must not take the fast path.
+pydantic-core's native `TypeAdapter.dump_json` diverges from `model_dump()`
+run through the app's own JSON encoder on several types: a UTC `datetime`
+(`Z` suffix vs `+00:00`), a `Decimal` or `timedelta` (a string vs a number),
+`bytes` (the raw string vs base64), and a `set`/`frozenset` (its own hash
+order vs sorted). A field typed `Any`, or a model accepting `extra="allow"`
+fields, can hold any of these at runtime with no declared type to check. Any
+of this anywhere in a model's field tree - directly, nested, or through
+`list`/`dict`/`X | None` - must not take the fast path.
 """
 
 from __future__ import annotations
 
 import datetime
 import decimal
+import typing
 import uuid
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from veloce._model_backend import dump_json_matches_model_dump
 
@@ -50,6 +54,64 @@ class WithDecimal(BaseModel):
 
 def test_a_decimal_field_is_unsafe():
     assert dump_json_matches_model_dump(WithDecimal) is False
+
+
+class WithTimedelta(BaseModel):
+    dur: datetime.timedelta
+
+
+def test_a_timedelta_field_is_unsafe():
+    assert dump_json_matches_model_dump(WithTimedelta) is False
+
+
+class WithBytes(BaseModel):
+    data: bytes
+
+
+def test_a_bytes_field_is_unsafe():
+    assert dump_json_matches_model_dump(WithBytes) is False
+
+
+class WithBareSet(BaseModel):
+    tags: set
+
+
+def test_a_bare_set_field_is_unsafe():
+    assert dump_json_matches_model_dump(WithBareSet) is False
+
+
+class WithParameterizedSet(BaseModel):
+    tags: set[str]
+
+
+def test_a_parameterized_set_field_is_unsafe():
+    assert dump_json_matches_model_dump(WithParameterizedSet) is False
+
+
+class WithFrozenset(BaseModel):
+    tags: frozenset[str]
+
+
+def test_a_frozenset_field_is_unsafe():
+    assert dump_json_matches_model_dump(WithFrozenset) is False
+
+
+class WithAny(BaseModel):
+    value: typing.Any
+
+
+def test_an_any_typed_field_is_unsafe():
+    assert dump_json_matches_model_dump(WithAny) is False
+
+
+class WithExtraAllowed(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    x: int
+
+
+def test_a_model_accepting_extra_fields_is_unsafe():
+    assert dump_json_matches_model_dump(WithExtraAllowed) is False
 
 
 class Nested(BaseModel):

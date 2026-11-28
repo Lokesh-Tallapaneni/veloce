@@ -208,7 +208,23 @@ def adapter_for(tp: Any) -> TypeAdapter[Any]:
 
 # `datetime.datetime`/`datetime.time` are checked via `datetime.date`, their
 # common base in the `date`/`time` pairing pydantic-core treats alike here.
-_DUMP_JSON_UNSAFE_TYPES = (_datetime.date, _datetime.time, _decimal.Decimal)
+# `bytes` dumps as a raw (possibly invalid-UTF-8) string rather than base64;
+# `timedelta` as an ISO 8601 duration string rather than a number of seconds.
+_DUMP_JSON_UNSAFE_TYPES = (
+    _datetime.date,
+    _datetime.time,
+    _datetime.timedelta,
+    _decimal.Decimal,
+    bytes,
+    bytearray,
+    set,
+    frozenset,
+)
+
+# Checked by origin, not element type: pydantic-core dumps a set/frozenset in
+# its own hash order, the app's encoder in `sorted(obj, key=str)` order - the
+# container itself is unsafe regardless of what it holds.
+_DUMP_JSON_UNSAFE_ORIGINS = (set, frozenset)
 
 # Keyed by model class, not by instance - the question is about the schema.
 _dump_json_matches_cache: weakref.WeakKeyDictionary[type[_PydanticModel], bool] = (
@@ -219,14 +235,18 @@ _dump_json_matches_cache: weakref.WeakKeyDictionary[type[_PydanticModel], bool] 
 def dump_json_matches_model_dump(model: type[_PydanticModel]) -> bool:
     """Whether `model`'s fields all serialize the same through both paths.
 
-    pydantic-core's native JSON writer formats a UTC `datetime` with a `Z`
-    suffix rather than `+00:00`, and a `Decimal` as a JSON string rather than a
-    number - diverging from what the app's own JSON encoder writes for the
-    per-item path. A model with neither type
-    anywhere in its field tree - including through a nested model, `list`,
-    `dict`, or `X | None` - is unaffected either way. Checked once per model
-    class and cached; a self-referential model is judged safe at the cycle
-    rather than walked forever.
+    pydantic-core's native JSON writer diverges from what the app's own JSON
+    encoder writes for the per-item path on several types: a UTC `datetime`
+    (`Z` suffix vs `+00:00`), a `Decimal` or `timedelta` (a string vs a
+    number), `bytes` (the raw, possibly invalid-UTF-8 string vs base64), and a
+    `set`/`frozenset` (its own hash order vs `sorted(obj, key=str)`). A field
+    typed `Any`, or a model accepting `extra="allow"` fields, can hold any of
+    these at runtime with no declared type to check, so both are treated as
+    unsafe outright. A model with none of this anywhere in its field tree -
+    including through a nested model, `list`, `dict`, or `X | None` - is
+    unaffected either way. Checked once per model class and cached; a
+    self-referential model is judged safe at the cycle rather than walked
+    forever.
     """
     cached = _dump_json_matches_cache.get(model)
     if cached is not None:
@@ -243,6 +263,11 @@ def _fields_are_dump_json_safe(
     if model in seen:
         return True
     seen.add(model)
+    # An extra field under `extra="allow"` has no declared type to check and
+    # can hold anything at runtime - not in `model_fields`, so the walk below
+    # would never see it.
+    if model.model_config.get("extra") == "allow":
+        return False
     return all(
         _type_is_dump_json_safe(field.annotation, seen) for field in model.model_fields.values()
     )
@@ -251,9 +276,16 @@ def _fields_are_dump_json_safe(
 def _type_is_dump_json_safe(tp: Any, seen: set[type[_PydanticModel]]) -> bool:
     if tp is None:
         return True
-    args = get_args(tp)
-    if args:
-        return all(_type_is_dump_json_safe(arg, seen) for arg in args)
+    # An untyped field can hold anything at runtime, unsafe types included;
+    # `isinstance(Any, type)` is True (3.11+), so this must come before the
+    # `isinstance` branch below or it is wrongly treated as a safe plain type.
+    if tp is typing.Any:
+        return False
+    origin = get_origin(tp)
+    if origin is not None:
+        if origin in _DUMP_JSON_UNSAFE_ORIGINS:
+            return False
+        return all(_type_is_dump_json_safe(arg, seen) for arg in get_args(tp))
     if isinstance(tp, type):
         if issubclass(tp, _DUMP_JSON_UNSAFE_TYPES):
             return False
