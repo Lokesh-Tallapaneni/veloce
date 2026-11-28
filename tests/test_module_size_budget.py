@@ -18,7 +18,6 @@ BUDGET = 800
 #: ceilings include the Args/Returns/Raises documentation on the public API.
 LEGACY: dict[str, int] = {
     "__init__.py": 900,  # the lazy export table lists every public name once
-    "_dependency_resolver.py": 880,
     "cli.py": 880,
     "contrib/mcp/context.py": 880,  # public-API docstrings, not logic
     "contrib/mcp/authorization.py": 840,
