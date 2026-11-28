@@ -105,6 +105,12 @@ class StreamingResponse(Response):
         outrunning a slow client is throttled instead of growing the transport
         write buffer without bound. `drain` is a no-op until the buffer crosses
         the high-water mark, so the fast path pays one already-set check.
+
+        Args:
+            transport: The raw transport to write to.
+            drain: Awaited after each chunk to apply flow control; `None` skips it.
+            keep_alive: Whether to advertise a persistent connection.
+
         """
         transport.write(self.encode(keep_alive=keep_alive))
         # A 304 drops the stream with the body (RFC 9110 Sec. 15.4.5).

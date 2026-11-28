@@ -88,8 +88,8 @@ def _open_file_binary(path: str, start: int = 0) -> BinaryIO:
     return handle
 
 
-#: Bytes per chunk off disk: amortises the executor hop, bounds the download.
-FILE_STREAM_CHUNK = 64 * 1024
+FILE_STREAM_CHUNK: int = 64 * 1024
+"""Bytes per chunk read off disk: amortises the executor hop and bounds the download."""
 
 
 def _read_file_chunk(handle: BinaryIO) -> bytes:
@@ -326,6 +326,12 @@ class FileResponse(Response):
         streamed body), and with no declared length there is nothing to delimit
         the body, so it is chunk-framed instead. `drain` throttles a producer
         outrunning a slow client in both cases.
+
+        Args:
+            transport: The raw transport to write to.
+            drain: Awaited after each write to apply flow control; `None` skips it.
+            keep_alive: Whether to advertise a persistent connection.
+
         """
         if header_get(self.headers, HEADER_CONTENT_LENGTH) is None:
             # `encode()` would emit `Content-Length: 0` beside the chunked framing.
@@ -363,6 +369,21 @@ class FileResponse(Response):
         thread-pool hop that would dominate serving a small static asset; a
         larger one is read in the executor so a big read never stalls the loop.
         Honours `Range:` on the same terms as the sync constructor.
+
+        Args:
+            path: File to serve.
+            filename: Download name; adds a `Content-Disposition` header when set.
+            content_type: Overrides the type guessed from the file name.
+            headers: Extra response headers.
+            content_disposition_type: `attachment` or `inline`.
+            request: The request, used to honour `Range:` and conditional headers.
+
+        Returns:
+            The response; a 416 when the requested range cannot be satisfied.
+
+        Raises:
+            FileNotFoundError: If `path` is missing or not a regular file.
+
         """
         loop = asyncio.get_running_loop()
 

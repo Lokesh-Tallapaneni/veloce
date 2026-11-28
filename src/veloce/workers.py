@@ -75,6 +75,14 @@ def build_protocol_factory(app: Veloce, loop: asyncio.AbstractEventLoop) -> func
 
     `create_server` calls it once per accepted connection, so binding the app and
     loop up front keeps the per-connection path allocation-light.
+
+    Args:
+        app: The application each connection serves.
+        loop: The event loop the connections run on.
+
+    Returns:
+        The factory.
+
     """
     # Deferred for import cost, not a cycle; same for the three sites below.
     from veloce.serving.protocol import HttpProtocol
@@ -159,6 +167,16 @@ def build_ssl_context(ssl_options: dict[str, Any]) -> ssl.SSLContext:
     A `certfile` is required: `cfg.is_ssl` is true when *either* a cert or key is
     set, but a usable server context needs the chain, so a missing one raises
     `RuntimeError` rather than silently serving cleartext.
+
+    Args:
+        ssl_options: Gunicorn's `cfg.ssl_options` mapping.
+
+    Returns:
+        The configured server context.
+
+    Raises:
+        RuntimeError: If no `certfile` is configured or the certificate chain cannot be loaded.
+
     """
     certfile = ssl_options.get("certfile")
     keyfile = ssl_options.get("keyfile")
@@ -262,11 +280,13 @@ class VeloceWorker(_GunicornWorker):
         return self.alive
 
     def handle_exit(self, sig: Any, frame: Any) -> None:
+        """Stop serving on gunicorn's graceful-exit signal, waking the loop."""
         # gunicorn clears self.alive; waking the loop stops us within a tick.
         self._request_stop()
         super().handle_exit(sig, frame)
 
     def handle_quit(self, sig: Any, frame: Any) -> None:
+        """Stop serving on gunicorn's quit signal, waking the loop."""
         self._request_stop()
         super().handle_quit(sig, frame)
 

@@ -105,7 +105,13 @@ class TestClient:
         return _TestClientCookies(self)
 
     def set_cookie(self, key: str, value: str) -> None:
-        """Add or update a cookie sent on every subsequent request."""
+        """Add or update a cookie sent on every subsequent request.
+
+        Args:
+            key: Cookie name.
+            value: Cookie value.
+
+        """
         self._cookies[key] = value
 
     def delete_cookie(self, key: str) -> None:
@@ -408,6 +414,22 @@ class TestClient:
         The verb-agnostic form of `client.get` / `client.post` / .... Bodies and
         `params` are handled exactly as the per-verb methods do, and `stream`
         excludes the buffered body forms.
+
+        Args:
+            method: HTTP verb, case-insensitive.
+            path: Request path.
+            json: Body serialised as JSON.
+            data: Body sent as a urlencoded form.
+            headers: Extra request headers.
+            content: Raw request body bytes.
+            files: Files to upload as a multipart form.
+            params: Query parameters appended to the path.
+            follow_redirects: Follow redirects; `None` uses the client default.
+            stream: Body fed as chunks; excludes `json`, `data`, `content` and `files`.
+
+        Returns:
+            The response.
+
         """
         verb = method.upper()
         if (
@@ -449,6 +471,15 @@ class TestClient:
 
         Synthesises the scope, sends `websocket.connect`, routes to the handler,
         then forwards calls to it through a pair of asyncio queues.
+
+        Args:
+            path: The websocket path.
+            subprotocols: Subprotocols offered to the app.
+            headers: Extra handshake headers.
+
+        Returns:
+            A context manager yielding the session.
+
         """
         return _WebSocketSession(self, path, subprotocols, headers)
 

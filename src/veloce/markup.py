@@ -31,6 +31,7 @@ class Markup(str):
     __slots__ = ()
 
     def __new__(cls, value: Any = "") -> Markup:
+        """Wrap `value` as safe markup, taking its `__html__()` output when it has one."""
         if hasattr(value, "__html__"):
             value = value.__html__()
         return super().__new__(cls, value)

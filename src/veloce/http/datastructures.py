@@ -142,6 +142,11 @@ class UploadFile:
 
         This opens and writes on the calling thread; in an async handler use
         `save_async`, which is the same work hopped to a thread.
+
+        Args:
+            destination: A filesystem path to create, or an open binary file.
+            buffer_size: Bytes read per iteration while streaming.
+
         """
         pos = self.file.tell()
         try:
@@ -162,6 +167,11 @@ class UploadFile:
         """Stream this upload into `destination` without blocking the event loop.
 
         The async counterpart of `save`, with identical behaviour.
+
+        Args:
+            destination: A filesystem path to create, or an open binary file.
+            buffer_size: Bytes read per iteration while streaming.
+
         """
         await asyncio.to_thread(self.save, destination, buffer_size)
 
@@ -363,6 +373,18 @@ class URL:
         `forwarded_port` is the public port a trusted reverse proxy supplied. A
         port embedded in the Host header always wins, so `forwarded_port` only
         fills one in when the Host header carries none.
+
+        Args:
+            headers: Request headers; `Host` and `X-Forwarded-Proto` are read.
+            path: The request path.
+            query_string: The raw query string, without the leading `?`.
+            scope_scheme: The ASGI scope's scheme, which takes precedence when set.
+            forwarded_port: Public port supplied by a trusted reverse proxy.
+            trust_forwarded_proto: Whether `X-Forwarded-Proto` may set the scheme.
+
+        Returns:
+            The reconstructed URL.
+
         """
         host_header = headers.get(HEADER_HOST, "localhost")
         # Precedence: the ASGI scope's `scheme`, then a trusted
@@ -533,6 +555,12 @@ class Headers(_GetListMixin, CIMultiDict[str]):
         emits `attachment; filename="x.txt"`. Parameter values
         containing whitespace or punctuation are double-quoted.
         Underscores in parameter names map to hyphens.
+
+        Args:
+            key: Header name.
+            value: Header value.
+            **params: Parameters appended as `; name=value`.
+
         """
         if params:
             parts = [value]
@@ -678,6 +706,14 @@ class AcceptHeader:
         Sec. 12.4.2). An entry with `q=0` is kept, because `best_match` treats
         it as an explicit rejection. For MIME headers the media-type parameters
         are retained and participate in matching (RFC 9110 Sec. 12.5.1).
+
+        Args:
+            raw: The header value; an empty string yields an empty header.
+            mime: Treat entries as media types, keeping their parameters for matching.
+
+        Returns:
+            The parsed header.
+
         """
         if not raw:
             return cls([], mime=mime)
@@ -799,6 +835,14 @@ class AcceptHeader:
         match beats a bare wildcard (RFC 9110 Sec. 12.5.1); ties go to the order
         in `options`. Returns `default` when no option has q>0, and `options[0]`
         for an empty header, since a missing Accept means "accept anything".
+
+        Args:
+            options: Candidates, in server preference order.
+            default: Returned when the client accepts none of them.
+
+        Returns:
+            The winning option, or `default`.
+
         """
         if not self._options:
             return options[0] if options else default
@@ -981,6 +1025,16 @@ class QueryParams(_GetListMixin, MultiDict[str]):
 
         Keeps blank values (``a=``) and decodes percent-escapes; repeated keys
         stay in the order the URL carried them.
+
+        Args:
+            query_string: The raw query string, without the leading `?`.
+
+        Returns:
+            The parsed parameters.
+
+        Raises:
+            RequestURITooLong: If the string holds more fields than the configured cap.
+
         """
         if not query_string:
             return cls()

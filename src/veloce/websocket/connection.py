@@ -260,6 +260,17 @@ class WebSocket(RawTransportMixin):
         waits before a clean `1001 Going Away` close; see the class docstring.
         `heartbeat` is accepted for signature symmetry but inert here, because the
         ASGI server owns ping/pong.
+
+        Args:
+            scope: The ASGI websocket scope.
+            receive: The ASGI receive callable.
+            send: The ASGI send callable.
+            idle_timeout: Seconds a blocking receive waits before a `1001` close; `None` disables it.
+            heartbeat: Accepted for symmetry with the raw transport and ignored here.
+
+        Returns:
+            The connection, not yet accepted.
+
         """
         _validate_idle_timeout(idle_timeout)
         _validate_heartbeat(heartbeat)
@@ -300,6 +311,18 @@ class WebSocket(RawTransportMixin):
 
         `headers` are the lowercased handshake headers. `scope` mirrors the ASGI
         websocket shape, so the same accessors work unchanged.
+
+        Args:
+            transport: The connection's transport; the 101 response was already written to it.
+            headers: Lowercased handshake headers.
+            scope: ASGI-shaped websocket scope for the accessors.
+            path_params: Values matched from the route path.
+            idle_timeout: Seconds a blocking receive waits before a `1001` close; `None` disables it.
+            recv_queue_maxsize: Bound on queued inbound frames; `None` uses the class default.
+
+        Returns:
+            The connection, with the handshake marked as sent.
+
         """
         ws = cls(
             transport, headers, recv_queue_maxsize=recv_queue_maxsize, idle_timeout=idle_timeout
@@ -530,6 +553,15 @@ class WebSocket(RawTransportMixin):
         closed, and when a `subprotocol` or `headers` argument is passed on the
         native (`Veloce.run`) upgrade path, where the 101 response has already
         been sent and cannot be renegotiated.
+
+        Args:
+            subprotocol: Subprotocol to select from those the client offered.
+            headers: Extra handshake response headers.
+
+        Raises:
+            RuntimeError: If the connection is already accepted or closed, or a
+                `subprotocol` or `headers` is passed on the native upgrade path.
+
         """
         # Accepting twice, or after a close, is a programming error.
         if self._accepted:
@@ -596,7 +628,16 @@ class WebSocket(RawTransportMixin):
     # ── Sending ───────────────────────────────────────────────
 
     async def send_text(self, data: str) -> None:
-        """Send a text frame."""
+        """Send a text frame.
+
+        Args:
+            data: The text to send.
+
+        Raises:
+            RuntimeError: If `accept()` has not been called.
+            WebSocketDisconnect: If the connection is closed.
+
+        """
         if not self._accepted:
             raise RuntimeError("WebSocket.send_text(): call accept() before sending")
         if self._closed:
@@ -615,6 +656,16 @@ class WebSocket(RawTransportMixin):
 
         `mode="text"` (default) wraps the JSON in a text frame (opcode 0x1).
         `mode="binary"` sends the raw JSON bytes as a binary frame (0x2).
+
+        Args:
+            data: The value to serialise.
+            mode: `"text"` or `"binary"`.
+
+        Raises:
+            ValueError: If `mode` is neither.
+            RuntimeError: If `accept()` has not been called.
+            WebSocketDisconnect: If the connection is closed.
+
         """
         if mode not in ("text", "binary"):
             raise ValueError(f"mode must be 'text' or 'binary', got {mode!r}")
@@ -635,7 +686,16 @@ class WebSocket(RawTransportMixin):
         await self._raw_send(payload, opcode=0x1)  # _OP_TEXT
 
     async def send_bytes(self, data: bytes) -> None:
-        """Send a binary frame."""
+        """Send a binary frame.
+
+        Args:
+            data: The bytes to send.
+
+        Raises:
+            RuntimeError: If `accept()` has not been called.
+            WebSocketDisconnect: If the connection is closed.
+
+        """
         if not self._accepted:
             raise RuntimeError("WebSocket.send_bytes(): call accept() before sending")
         if self._closed:
@@ -702,6 +762,14 @@ class WebSocket(RawTransportMixin):
 
         The handshake state machine still applies: receiving before `accept()` would
         consume the `websocket.connect` envelope and corrupt it.
+
+        Returns:
+            The ASGI message.
+
+        Raises:
+            RuntimeError: If called before `accept()`, or on a raw-transport connection.
+            WebSocketDisconnect: If the peer disconnected.
+
         """
         self._check_can_receive("receive")
         if not self._is_asgi:
@@ -722,6 +790,14 @@ class WebSocket(RawTransportMixin):
 
         `message` is forwarded straight to the ASGI `send` callable,
         e.g. `{"type": "websocket.send", "text": "..."}`.
+
+        Args:
+            message: The ASGI message to send.
+
+        Raises:
+            RuntimeError: If `accept()` has not been called, or on a raw-transport connection.
+            WebSocketDisconnect: If the connection is closed.
+
         """
         # The raw escape hatch is not a way around the handshake state machine.
         if not self._accepted:
@@ -952,6 +1028,11 @@ class WebSocket(RawTransportMixin):
         `CLOSE_HANDSHAKE_TIMEOUT`) before dropping the TCP connection. A
         peer-initiated close already carries the peer's frame, so the reply is
         sent and the transport closed without waiting.
+
+        Args:
+            code: The close status code.
+            reason: Text sent with the close frame, truncated to 123 bytes.
+
         """
         code, reason = _sanitise_close(code, reason)
         if self._is_asgi:

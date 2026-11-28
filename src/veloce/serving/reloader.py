@@ -194,6 +194,14 @@ def run_with_reloader(
     current working directory), and re-spawns on every change until interrupted.
     Returns 0 once interrupted (Ctrl+C or SIGTERM). Runs only in the supervisor
     process; the child serves requests with no watcher attached.
+
+    Args:
+        watch_dirs: Directories to watch; defaults to the current working directory.
+        interval: Seconds between filesystem polls.
+
+    Returns:
+        `0` once interrupted.
+
     """
     dirs = watch_dirs if watch_dirs else [os.getcwd()]
     command = _restart_command()
