@@ -509,7 +509,12 @@ assert resp.status_code == 200
 assert resp.json() == {"id": 1, "name": "Ada"}
 ```
 
-`response_model` also accepts `list[Model]` — each element is dumped.
+`response_model` also accepts `list[Model]` — each element is dumped. When
+every returned item is already an instance of the declared model, the whole
+list serializes in one pass; a model with a `datetime` or `Decimal` field
+anywhere in it (including nested) keeps the per-element path instead, since
+the native encoder would format those differently from the rest of Veloce's
+JSON output.
 
 It also accepts these filter flags:
 

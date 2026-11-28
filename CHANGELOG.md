@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- A `list[Model]` response serializes in one pass through pydantic-core instead of a per-item dump followed by a separate JSON encode; a model with a `datetime` or `Decimal` field anywhere in its tree keeps the previous path, since the native encoder formats those differently. ([#PENDING](https://github.com/Lokesh-Tallapaneni/veloce/pull/PENDING))
+
 ## [0.23.0] - 2026-11-27
 
 ### Added

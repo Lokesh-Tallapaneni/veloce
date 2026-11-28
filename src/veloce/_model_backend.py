@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import datetime as _datetime
+import decimal as _decimal
 import types
 import typing
 import weakref
@@ -202,6 +204,62 @@ def adapter_for(tp: Any) -> TypeAdapter[Any]:
     with contextlib.suppress(TypeError):
         _adapters[tp] = built
     return built
+
+
+# `datetime.datetime`/`datetime.time` are checked via `datetime.date`, their
+# common base in the `date`/`time` pairing pydantic-core treats alike here.
+_DUMP_JSON_UNSAFE_TYPES = (_datetime.date, _datetime.time, _decimal.Decimal)
+
+# Keyed by model class, not by instance - the question is about the schema.
+_dump_json_matches_cache: weakref.WeakKeyDictionary[type[_PydanticModel], bool] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def dump_json_matches_model_dump(model: type[_PydanticModel]) -> bool:
+    """Whether `model`'s fields all serialize the same through both paths.
+
+    pydantic-core's native JSON writer formats a UTC `datetime` with a `Z`
+    suffix rather than `+00:00`, and a `Decimal` as a JSON string rather than a
+    number - diverging from what the app's own JSON encoder writes for the
+    per-item path. A model with neither type
+    anywhere in its field tree - including through a nested model, `list`,
+    `dict`, or `X | None` - is unaffected either way. Checked once per model
+    class and cached; a self-referential model is judged safe at the cycle
+    rather than walked forever.
+    """
+    cached = _dump_json_matches_cache.get(model)
+    if cached is not None:
+        return cached
+    safe = _fields_are_dump_json_safe(model, set())
+    with contextlib.suppress(TypeError):
+        _dump_json_matches_cache[model] = safe
+    return safe
+
+
+def _fields_are_dump_json_safe(
+    model: type[_PydanticModel], seen: set[type[_PydanticModel]]
+) -> bool:
+    if model in seen:
+        return True
+    seen.add(model)
+    return all(
+        _type_is_dump_json_safe(field.annotation, seen) for field in model.model_fields.values()
+    )
+
+
+def _type_is_dump_json_safe(tp: Any, seen: set[type[_PydanticModel]]) -> bool:
+    if tp is None:
+        return True
+    args = get_args(tp)
+    if args:
+        return all(_type_is_dump_json_safe(arg, seen) for arg in args)
+    if isinstance(tp, type):
+        if issubclass(tp, _DUMP_JSON_UNSAFE_TYPES):
+            return False
+        if is_pydantic_model(tp):
+            return _fields_are_dump_json_safe(cast("type[_PydanticModel]", tp), seen)
+    return True
 
 
 def shape_through_model(value: Any, model: Any) -> Any:
