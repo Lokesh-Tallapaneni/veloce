@@ -164,7 +164,6 @@ UNEXPORTED: dict[str, str] = {
     # MCP integration internals, consistent with the other names from these
     # modules above.
     "contrib.mcp.auth.TokenVerifier": "internal to the MCP integration; not part of its published surface",
-    "contrib.mcp.authorization.Authenticator": "internal to the MCP integration; not part of its published surface",
     "contrib.mcp.registry.ToolFilter": "internal to the MCP integration; not part of its published surface",
     "contrib.mcp.subscriptions.Sink": "internal to the MCP integration; not part of its published surface",
     # `exceptions.NotImplemented_` is the back-compat alias described above; it
@@ -237,17 +236,6 @@ UNEXPORTED: dict[str, str] = {
     # `veloce.routing` publishes the `Converter` base and `register_converter`;
     # the built-in converters are implementations reached through that seam,
     # and the parsing helpers serve the router alone.
-    "routing.converters.StringConverter": "implementation behind the Converter base / register_converter seam",
-    "routing.converters.IntConverter": "implementation behind the Converter base / register_converter seam",
-    "routing.converters.FloatConverter": "implementation behind the Converter base / register_converter seam",
-    "routing.converters.UUIDConverter": "implementation behind the Converter base / register_converter seam",
-    "routing.converters.PathConverter": "implementation behind the Converter base / register_converter seam",
-    "routing.converters.DateConverter": "implementation behind the Converter base / register_converter seam",
-    "routing.converters.DateTimeConverter": "implementation behind the Converter base / register_converter seam",
-    "routing.converters.TimeConverter": "implementation behind the Converter base / register_converter seam",
-    "routing.converters.TimeDeltaConverter": "implementation behind the Converter base / register_converter seam",
-    "routing.converters.DecimalConverter": "implementation behind the Converter base / register_converter seam",
-    "routing.converters.AnyConverter": "implementation behind the Converter base / register_converter seam",
     "routing.converters.parse_converter": "implementation behind the Converter base / register_converter seam",
     "routing.converters.is_regex_path": "implementation behind the Converter base / register_converter seam",
     "routing.converters.extract_regex_converters": "implementation behind the Converter base / register_converter seam",

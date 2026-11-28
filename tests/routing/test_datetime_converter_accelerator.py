@@ -50,7 +50,7 @@ from unittest import mock
 import pytest
 
 from veloce import Veloce
-from veloce.routing import converters
+from veloce.routing import _converter_temporal, converters
 from veloce.testclient import TestClient
 
 ACCEPTED = [
@@ -138,7 +138,7 @@ def test_a_value_with_no_offset_takes_the_accelerated_path(monkeypatch):
     pytest.importorskip("ciso8601")
     seen: list[str] = []
     monkeypatch.setattr(
-        converters,
+        _converter_temporal,
         "_parse_datetime_ciso",
         lambda v: seen.append(v) or datetime.datetime(2026, 1, 1),
     )
@@ -150,7 +150,7 @@ def test_a_value_with_an_offset_does_not_reach_ciso8601(monkeypatch):
     """The whole basis of the split: an offset must never go through it."""
     pytest.importorskip("ciso8601")
     monkeypatch.setattr(
-        converters,
+        _converter_temporal,
         "_parse_datetime_ciso",
         lambda v: pytest.fail(f"offset value {v!r} reached ciso8601"),
     )
@@ -309,7 +309,7 @@ def test_the_fallback_answers_identically(monkeypatch):
     converter = converters.DateTimeConverter()
     accelerated = [converter.match(v) for v in ACCEPTED + REJECTED]
 
-    monkeypatch.setattr(converters, "_parse_datetime", converters._parse_datetime_stdlib)
+    monkeypatch.setattr(_converter_temporal, "_parse_datetime", converters._parse_datetime_stdlib)
     fallback = [converter.match(v) for v in ACCEPTED + REJECTED]
 
     assert accelerated == fallback
@@ -317,13 +317,13 @@ def test_the_fallback_answers_identically(monkeypatch):
 
 def test_the_fallback_still_normalises_z(monkeypatch):
     """3.10's `fromisoformat` rejects `Z`, so the rewrite has to stay."""
-    monkeypatch.setattr(converters, "_parse_datetime", converters._parse_datetime_stdlib)
+    monkeypatch.setattr(_converter_temporal, "_parse_datetime", converters._parse_datetime_stdlib)
     _matched, parsed = converters.DateTimeConverter().match("2026-08-26T12:30:00Z")
     assert parsed.utcoffset() == datetime.timedelta(0)
 
 
 def test_the_fallback_rejects_the_same_values(monkeypatch):
-    monkeypatch.setattr(converters, "_parse_datetime", converters._parse_datetime_stdlib)
+    monkeypatch.setattr(_converter_temporal, "_parse_datetime", converters._parse_datetime_stdlib)
     for value in REJECTED:
         assert converters.DateTimeConverter().match(value)[0] is False
 

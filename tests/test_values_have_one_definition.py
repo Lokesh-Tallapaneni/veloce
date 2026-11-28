@@ -342,7 +342,10 @@ def test_the_not_authenticated_message_is_referenced():
 
 
 def test_the_field_required_message_is_referenced():
-    source = (SRC / "_dependency_resolver.py").read_text(encoding="utf-8")
+    source = "".join(
+        (SRC / name).read_text(encoding="utf-8")
+        for name in ("_dependency_resolver.py", "_dependency_body.py", "_dependency_params.py")
+    )
     assert '"msg": "field required"' not in source
     assert "MSG_FIELD_REQUIRED" in source
 

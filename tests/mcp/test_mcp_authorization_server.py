@@ -558,12 +558,13 @@ def _advance(monkeypatch, seconds: float) -> None:
     real `asyncio.sleep` proving a 1ms TTL costs wall time and depends on the
     sleep being long enough on a loaded machine.
     """
-    # The module object, because the helper patches an attribute on it -
-    # importing `_now` by name would give a value, not the binding to swap.
-    from veloce.contrib.mcp import authorization
+    # The modules that read `_now`, because each binds it by name: swapping the
+    # package's re-export would leave the clock they actually call untouched.
+    from veloce.contrib.mcp.authorization import _endpoints, _records, _server
 
-    base = authorization._now()
-    monkeypatch.setattr(authorization, "_now", lambda: base + seconds)
+    base = _records._now()
+    for module in (_records, _endpoints, _server):
+        monkeypatch.setattr(module, "_now", lambda: base + seconds)
 
 
 async def test_the_verifier_refuses_a_token_it_never_issued():
