@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- The Streamable HTTP MCP transport replies with `application/json` unless the call actually notifies before its response; resumability, an open subscription connection, a task-augmented call, and a client that refuses JSON still keep the stream. ([#PENDING](https://github.com/Lokesh-Tallapaneni/veloce/pull/PENDING))
+- The Streamable HTTP MCP transport replies with `application/json` unless the call actually notifies before its response; resumability, an open subscription connection, a task-augmented call, and a client that refuses JSON still keep the stream. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
 
 ## [0.23.0] - 2026-11-27
 
