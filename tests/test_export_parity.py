@@ -98,9 +98,6 @@ UNEXPORTED: dict[str, str] = {
     # `debug.py` — the debug traceback renderer, wired by the app when
     # `DEBUG` is set.
     "debug.render_traceback_html": "internal debug-page renderer wired by the app",
-    # `dependency.py` — the resolver behind `Depends()`. Users declare
-    # dependencies; they do not drive the resolver.
-    "dependency.DependencyResolver": "DI engine; `Depends`/`Security` are the public surface",
     # `encoders.py` — the orjson `default=` hook. `register_encoder` is the
     # public way to extend encoding.
     "encoders.orjson_default": "orjson hook; `register_encoder` is the public extension point",
@@ -177,6 +174,15 @@ UNEXPORTED: dict[str, str] = {
     "app.asgi.AsgiMixin": "composition unit of Veloce; not constructed by application code",
     "app.background.BackgroundTasksMixin": "composition unit of Veloce; not constructed by application code",
     "app.dispatch.DispatchMixin": "composition unit of Veloce; not constructed by application code",
+    "app.accessors.AccessorsMixin": "composition unit of Veloce; not constructed by application code",
+    "app.construction.ConstructionMixin": "composition unit of Veloce; not constructed by application code",
+    "app.posture.PostureMixin": "composition unit of Veloce; not constructed by application code",
+    "app.registration.RegistrationMixin": "composition unit of Veloce; not constructed by application code",
+    "app.dispatch_aliases.AliasDispatchMixin": "composition unit of Veloce; not constructed by application code",
+    "app.dispatch_errors.ErrorDispatchMixin": "composition unit of Veloce; not constructed by application code",
+    "app.dispatch_hooks.HookDispatchMixin": "composition unit of Veloce; not constructed by application code",
+    "app.dispatch_middleware.MiddlewareDispatchMixin": "composition unit of Veloce; not constructed by application code",
+    "app.dispatch_response.ResponseDispatchMixin": "composition unit of Veloce; not constructed by application code",
     "app.errors.ErrorsMixin": "composition unit of Veloce; not constructed by application code",
     "app.introspection.IntrospectionMixin": "composition unit of Veloce; not constructed by application code",
     "app.lifecycle.LifecycleMixin": "composition unit of Veloce; not constructed by application code",

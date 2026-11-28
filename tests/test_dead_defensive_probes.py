@@ -145,9 +145,12 @@ def _hasattr_probes(module: str) -> list[tuple[int, str]]:
     The old form searched for the exact text `hasattr(sub_app, "match")`, which
     a rename of the variable or a line wrap would have hidden.
     """
-    tree = ast.parse((SRC / "app" / module).read_text(encoding="utf-8"))
+    # `dispatch.py` is a family of modules; the probes may sit in any of them.
+    paths = sorted((SRC / "app").glob(module.replace(".py", "*.py")))
+    trees = [ast.parse(p.read_text(encoding="utf-8")) for p in paths]
     return [
         (node.lineno, node.args[1].value)
+        for tree in trees
         for node in ast.walk(tree)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)

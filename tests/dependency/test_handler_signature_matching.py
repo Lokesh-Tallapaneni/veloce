@@ -26,7 +26,7 @@ from __future__ import annotations
 import pytest
 
 from veloce import JSONResponse, Request, Response, Veloce
-from veloce.app import dispatch
+from veloce.app import dispatch_support
 from veloce.app.dispatch import _adapt_hook_kwargs, _resolve_hook_binding
 from veloce.testclient import TestClient
 
@@ -367,7 +367,7 @@ def test_the_signature_is_inspected_once_across_many_requests(monkeypatch):
         calls += 1
         return _resolve_hook_binding(fn, second_name)
 
-    monkeypatch.setattr(dispatch, "_resolve_hook_binding", counting_resolve)
+    monkeypatch.setattr(dispatch_support, "_resolve_hook_binding", counting_resolve)
 
     async def handle(req, error):
         return Response(body=b"ok", status_code=418)

@@ -132,9 +132,9 @@ def test_a_trivial_route_allocates_no_resolver():
 
 def test_reset_is_only_reachable_through_the_resolve_entry_points():
     """The docstring now names these two; a third would make it stale again."""
-    source = (pathlib.Path(__file__).resolve().parents[1] / "src/veloce/dependency.py").read_text(
-        encoding="utf-8"
-    )
+    source = (
+        pathlib.Path(__file__).resolve().parents[1] / "src/veloce/_dependency_resolver.py"
+    ).read_text(encoding="utf-8")
     # Counted as calls rather than as text: a regex over the source also
     # matches `self.reset()` written in a comment or a docstring, so it
     # could be satisfied by prose while a real third call site was added.
@@ -202,7 +202,7 @@ def test_a_structured_validation_detail_is_still_a_list():
 def test_there_is_one_payload_builder():
     """The two copies differing by one substitution is what caused the drift."""
     root = pathlib.Path(__file__).resolve().parents[1] / "src/veloce/app"
-    for name in ("errors.py", "dispatch.py"):
+    for name in ("errors.py", "dispatch_errors.py"):
         source = (root / name).read_text(encoding="utf-8")
         assert "http_exception_payload" in source, name
     assert 'exc.detail or "Error"' not in (root / "errors.py").read_text(encoding="utf-8")

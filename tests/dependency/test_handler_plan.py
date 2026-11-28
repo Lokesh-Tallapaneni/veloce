@@ -10,7 +10,7 @@ from typing import Annotated
 import pytest
 from pydantic import BaseModel
 
-import veloce.dependency as dep
+import veloce._dependency_resolver as dep
 from veloce import Depends, Header, Query, Request, Security, Veloce
 from veloce._handler_plan import (
     K_BG_TASKS,
