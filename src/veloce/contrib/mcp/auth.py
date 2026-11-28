@@ -32,8 +32,8 @@ if TYPE_CHECKING:  # pragma: no cover
 # Returns the authenticated `Principal`, or `None` to reject; sync or async.
 TokenVerifier = Callable[[str], "Principal | None | Awaitable[Principal | None]"]
 
-# RFC 9728 well-known path for OAuth 2.0 Protected Resource Metadata.
-PROTECTED_RESOURCE_METADATA_PATH = "/.well-known/oauth-protected-resource"
+PROTECTED_RESOURCE_METADATA_PATH: str = "/.well-known/oauth-protected-resource"
+"""RFC 9728 well-known path for OAuth 2.0 Protected Resource Metadata."""
 
 
 @dataclass(slots=True)
@@ -52,18 +52,18 @@ class MCPAuth:
     For a static token on a trusted network, see `MCPAuth.bearer`.
     """
 
-    # Must verify the token's audience is this server.
     verify: TokenVerifier
-    # Required of every request; per-tool scopes are checked additionally.
+    """Must verify the token's audience is this server."""
     required_scopes: Iterable[str] = ()
-    # The canonical resource URI (RFC 8707 / RFC 9728), echoed as `resource`.
+    """Required of every request; per-tool scopes are checked additionally."""
     resource_server_url: str | None = None
-    # Issuer URLs advertised so a client can discover where to get a token.
+    """The canonical resource URI (RFC 8707 / RFC 9728), echoed as `resource`."""
     authorization_servers: Iterable[str] = ()
-    # Scopes advertised in the metadata as available for this resource.
+    """Issuer URLs advertised so a client can discover where to get a token."""
     scopes_supported: Iterable[str] = field(default_factory=tuple)
-    # Static-token mode, set through `MCPAuth.bearer`: no metadata is served.
+    """Scopes advertised in the metadata as available for this resource."""
     bearer_only: bool = False
+    """Static-token mode, set through `MCPAuth.bearer`: no metadata is served."""
 
     def __post_init__(self) -> None:
         if isinstance(self.required_scopes, (str, bytes)):
@@ -115,11 +115,29 @@ class MCPAuth:
                 verify=check_my_token,            # str token -> Principal | None
                 required_scopes=["mcp:tools"],
             ))
+
+        Args:
+            verify: Callable turning a bearer token string into a `Principal`, or `None` to
+                reject it.
+            required_scopes: Scopes the verified principal must hold.
+
+        Returns:
+            Auth configuration that accepts the one pre-shared token.
+
         """
         return cls(verify=verify, required_scopes=required_scopes, bearer_only=True)
 
     def metadata(self) -> dict[str, object]:
-        """Build the RFC 9728 protected-resource metadata document."""
+        """Build the RFC 9728 protected-resource metadata document.
+
+        Returns:
+            The metadata document, omitting fields the configuration leaves empty.
+
+        Raises:
+            RuntimeError: If the instance was built with `MCPAuth.bearer`, which serves no
+                metadata.
+
+        """
         if self.bearer_only:
             raise RuntimeError(
                 "MCPAuth.bearer has no protected-resource metadata to serve; the "

@@ -47,7 +47,7 @@ def _collect_chained(exc: BaseException) -> list[BaseException]:
         seen.add(id(current))
         if _BaseExceptionGroup is not None and isinstance(current, _BaseExceptionGroup):
             # Reversed, because the whole list is; a group's members are siblings.
-            out.extend(reversed(current.exceptions))  # type: ignore[attr-defined]
+            out.extend(reversed(current.exceptions))  # type: ignore[attr-defined]  # ExceptionGroup exists only on 3.11+
         else:
             out.append(current)
         current = current.__context__
@@ -92,7 +92,7 @@ def _attach_note(error: BaseException, note: str) -> None:
     if not isinstance(notes, list):
         notes = []
         with contextlib.suppress(AttributeError):
-            error.__notes__ = notes  # type: ignore[attr-defined]
+            error.__notes__ = notes  # type: ignore[attr-defined]  # __notes__ exists only on 3.11+
     notes.append(note)
 
 
@@ -319,7 +319,15 @@ class LifecycleMixin(AppHost):
 
         Deprecated: call `app.on_startup(fn)` / `app.on_shutdown(fn)`
         directly instead. Scheduled for removal in v1.0.0.
-        """
+
+        Args:
+            event: `"startup"` or `"shutdown"`.
+            func: The handler to run for that event.
+
+        Raises:
+            ValueError: If `event` is not a known event name.
+
+        """  # noqa: DOC502 - the exception is raised or caught by a callee
         warnings.warn(
             "Veloce.add_event_handler() is deprecated and will be removed "
             "in v1.0.0; use app.on_startup(fn) / app.on_shutdown(fn) instead.",

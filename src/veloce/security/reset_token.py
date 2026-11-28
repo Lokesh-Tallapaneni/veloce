@@ -26,7 +26,8 @@ from collections.abc import Sequence
 from veloce.exceptions import VeloceError
 from veloce.signing import BadSignature, Signer
 
-RESET_TOKEN_SALT = "veloce.security.reset_token"
+RESET_TOKEN_SALT: str = "veloce.security.reset_token"
+"""Default signing salt, keeping reset tokens from verifying as any other signed value."""
 _RESET_TOKEN_VERSION = 1
 
 
@@ -49,7 +50,21 @@ def make_reset_token(
     secret: str | bytes,
     salt: str | bytes = RESET_TOKEN_SALT,
 ) -> str:
-    """Bind a caller-supplied state fingerprint into a signed reset token."""
+    """Bind a caller-supplied state fingerprint into a signed reset token.
+
+    Args:
+        state: Bytes describing what the token is only valid for, such as a password hash
+            and last-login time; the token stops verifying when they change.
+        secret: The signing secret.
+        salt: Namespaces the token; override only to keep unrelated tokens apart.
+
+    Returns:
+        The signed token.
+
+    Raises:
+        BadResetToken: If `state` is not bytes.
+
+    """
     if not isinstance(state, (bytes, bytearray)):
         raise BadResetToken("state must be bytes")
     fp = _fingerprint(bytes(state))
@@ -66,7 +81,24 @@ def check_reset_token(
     fallback_secrets: Sequence[str | bytes] = (),
     salt: str | bytes = RESET_TOKEN_SALT,
 ) -> bool:
-    """Return True iff the token is authentic, unexpired, and still bound to `state`."""
+    """Return True iff the token is authentic, unexpired, and still bound to `state`.
+
+    Args:
+        token: A token from `make_reset_token`.
+        state: The current state bytes; a change since issue invalidates the token.
+        secret: The signing secret.
+        max_age: Seconds the token stays valid.
+        fallback_secrets: Retired secrets still accepted, for key rotation.
+        salt: The salt the token was issued with.
+
+    Returns:
+        True when the token verifies. A tampered, expired or malformed token is False,
+        not an exception.
+
+    Raises:
+        BadResetToken: If `state` is not bytes.
+
+    """
     if not isinstance(state, (bytes, bytearray)):
         raise BadResetToken("state must be bytes")
     signer = Signer(secret, salt)

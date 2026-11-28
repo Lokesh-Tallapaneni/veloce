@@ -103,3 +103,5 @@ for `yield` teardown, scopes, and security schemes.
 
 Our handlers happily index a missing task. Next we return proper error
 responses: **[Errors & validation](errors-and-validation.md)**.
+
+**Source and tests:** [`src/veloce/_dependency_resolver.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/_dependency_resolver.py), [`src/veloce/_dependency_markers.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/_dependency_markers.py), [`tests/dependency/test_annotated_depends.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/dependency/test_annotated_depends.py), [`tests/dependency/test_depends_no_arg.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/dependency/test_depends_no_arg.py)

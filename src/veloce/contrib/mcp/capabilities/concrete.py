@@ -24,10 +24,12 @@ class ToolsCapability(_ServerCapability):
     __slots__ = ()
 
     def advertise(self, *, modern: bool = False) -> dict[str, Any]:
+        """Advertise the tools capability, with `listChanged` when the connection can be told."""
         # The registry is fixed, but `MCPContext.hide` narrows a connection's view.
         return {"tools": {"listChanged": self._connection_can_be_told()}}
 
     def handlers(self) -> dict[str, MethodHandler]:
+        """Map the tools methods to their handlers."""
         return {
             "tools/list": self._server._handle_tools_list,
             "tools/call": self._server._tools_call,
@@ -40,6 +42,7 @@ class ResourcesCapability(_ServerCapability):
     __slots__ = ()
 
     def advertise(self, *, modern: bool = False) -> dict[str, Any] | None:
+        """Advertise the resources capability, or `None` when no resource is exposed."""
         # Subscriptions are per-connection state on the outbound stream, so a
         # stateless request cannot serve them and must not advertise them.
         if not self._server.resources.resources:
@@ -54,6 +57,7 @@ class ResourcesCapability(_ServerCapability):
         }
 
     def handlers(self) -> dict[str, MethodHandler]:
+        """Map the resources methods to their handlers."""
         return {
             "resources/list": self._server._handle_resources_list,
             "resources/templates/list": self._server._handle_resource_templates_list,
@@ -67,11 +71,13 @@ class PromptsCapability(_ServerCapability):
     __slots__ = ()
 
     def advertise(self, *, modern: bool = False) -> dict[str, Any] | None:
+        """Advertise the prompts capability, or `None` when no prompts are registered."""
         if not self._server.prompts.prompts:
             return None
         return {"prompts": {"listChanged": self._connection_can_be_told()}}
 
     def handlers(self) -> dict[str, MethodHandler]:
+        """Map the prompts methods to their handlers."""
         return {
             "prompts/list": self._server._handle_prompts_list,
             "prompts/get": self._server._prompts_get,
@@ -90,7 +96,9 @@ class LoggingCapability(_ServerCapability):
     handshake_only_methods = frozenset({"logging/setLevel"})
 
     def advertise(self, *, modern: bool = False) -> dict[str, Any] | None:
+        """Advertise the logging capability; the modern protocol does not carry it."""
         return None if modern else {"logging": {}}
 
     def handlers(self) -> dict[str, MethodHandler]:
+        """Map `logging/setLevel` to its handler."""
         return {"logging/setLevel": self._server._handle_set_log_level}

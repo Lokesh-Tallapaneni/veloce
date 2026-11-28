@@ -17,11 +17,14 @@ from veloce.http.datastructures import FormData, Headers, UploadFile
 if TYPE_CHECKING:  # pragma: no cover
     from python_multipart.multipart import MultipartCallbacks
 
-# Safety limits against a body with pathologically many or oversized parts.
-DEFAULT_MAX_MULTIPART_PARTS = 1000
-DEFAULT_MAX_MULTIPART_PART_SIZE = 10 * 1024 * 1024  # 10 MiB per part
-# Spool threshold: in memory until this size, then rolls to a temp file.
-MULTIPART_SPOOL_MAX_SIZE = 1024 * 1024  # 1 MiB
+DEFAULT_MAX_MULTIPART_PARTS: int = 1000
+"""Cap on parts per form, a safety limit against a body with pathologically many."""
+
+DEFAULT_MAX_MULTIPART_PART_SIZE: int = 10 * 1024 * 1024
+"""Cap on one part's body, in bytes (10 MiB), against a pathologically large part."""
+
+MULTIPART_SPOOL_MAX_SIZE: int = 1024 * 1024
+"""Spool threshold in bytes (1 MiB): an upload stays in memory until this size, then rolls to a temp file."""
 
 # RFC 2046 Sec. 5.1.1: 1-70 bcharsnospace characters plus space, none trailing.
 # Checked up front, where the parser would report only an opaque failure.
@@ -191,7 +194,7 @@ class _MultipartCollector:
         self.headers = {}
         self.header_field = bytearray()
         self.header_value = bytearray()
-        self.spool = tempfile.SpooledTemporaryFile(  # noqa: SIM115
+        self.spool = tempfile.SpooledTemporaryFile(  # noqa: SIM115 - closed by the part's cleanup
             max_size=MULTIPART_SPOOL_MAX_SIZE
         )
         self.part_size = 0
@@ -368,7 +371,27 @@ def parse_multipart_form(
     declaring its own charset (RFC 7578 Sec. 5.1.2, one of `ascii`, `us-ascii`,
     `utf-8`, `iso-8859-1`) is decoded strictly with it, so invalid bytes raise
     `BadRequest` rather than being corrupted.
-    """
+
+    Args:
+        body: The complete request body.
+        content_type: The `Content-Type` header value, carrying the `boundary`.
+        max_parts: Cap on total parts; `None` disables it.
+        max_files: Cap on file parts.
+        max_fields: Cap on text-field parts.
+        max_part_size: Cap on each part's body size, in bytes.
+        max_file_size: Per-file size cap, overriding `max_part_size`.
+        max_field_size: Per-field size cap, overriding `max_part_size`.
+        max_field_memory: Cap on the cumulative bytes held by text fields.
+        charset_fallback: How to decode field bytes that are not UTF-8 and declare no charset.
+
+    Returns:
+        The parsed form, with file parts as `UploadFile`.
+
+    Raises:
+        RequestEntityTooLarge: If any limit is exceeded.
+        BadRequest: If the boundary is missing or malformed, or a field cannot be decoded.
+
+    """  # noqa: DOC503 - the exception is raised or caught by a callee
     # The same walker as the part headers, so a quoted `boundary=` parses alike.
     _, ct_params = parse_header_params(content_type, delimiter=";", unescape=True)
     boundary_present = "boundary" in ct_params

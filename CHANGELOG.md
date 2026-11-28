@@ -6,6 +6,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Settings` and `app.settings` expose the configuration keys Veloce reads as a typed, read-only view. ([#368](https://github.com/Lokesh-Tallapaneni/veloce/pull/368))
+- `CacheBackend`, `SessionStoreBackend`, `RateLimitStoreBackend` and `JSONProviderBackend` protocols describe each pluggable backend. ([#368](https://github.com/Lokesh-Tallapaneni/veloce/pull/368))
+- `WebSocketError` is the common base of the WebSocket exceptions and derives from `VeloceError`. ([#368](https://github.com/Lokesh-Tallapaneni/veloce/pull/368))
+- `MCPTransport` and `SameSite` name closed sets of values; plain strings are still accepted. ([#368](https://github.com/Lokesh-Tallapaneni/veloce/pull/368))
+- `CookiePrefix` names the `host` and `secure` cookie-name prefixes; plain strings are still accepted. ([#368](https://github.com/Lokesh-Tallapaneni/veloce/pull/368))
+- `BackendError` is raised when a backend lacks a method or a required `async def`. ([#368](https://github.com/Lokesh-Tallapaneni/veloce/pull/368))
+- `CacheError`, `SessionError` and `RateLimitError` are roots; a rejected backend raises its subsystem's. ([#368](https://github.com/Lokesh-Tallapaneni/veloce/pull/368))
+- `DuplicatePolicy`, `WebSocketMode` and `ContentCoding` name closed sets; plain strings are still accepted. ([#368](https://github.com/Lokesh-Tallapaneni/veloce/pull/368))
+- A session store with async `read`, `write` and `delete` works without subclassing `SessionStore`. ([#368](https://github.com/Lokesh-Tallapaneni/veloce/pull/368))
+- Each guide, how-to and deployment page ends with a `Source and tests` line linking its code and tests. ([#368](https://github.com/Lokesh-Tallapaneni/veloce/pull/368))
+
+### Changed
+
+- `import veloce` resolves public names on first use, loading 2 modules instead of 99. ([#368](https://github.com/Lokesh-Tallapaneni/veloce/pull/368))
+- Route options after `methods` in `add_route` and `route` are keyword-only. ([#368](https://github.com/Lokesh-Tallapaneni/veloce/pull/368))
+- Boolean parameters of public functions are keyword-only; pass them by name. ([#368](https://github.com/Lokesh-Tallapaneni/veloce/pull/368))
+- `MCPError`, `MCPRequestError` and `ScaffoldError` derive from `VeloceError`. ([#368](https://github.com/Lokesh-Tallapaneni/veloce/pull/368))
+- `Veloce.add_route` is inherited from `Router`; registration checks run in `_add_route_options`. ([#368](https://github.com/Lokesh-Tallapaneni/veloce/pull/368))
+- `Signal.connect` takes `weak` and `sender` by keyword; pass `sender=` explicitly. ([#368](https://github.com/Lokesh-Tallapaneni/veloce/pull/368))
+- `cached`, `ServerSessionMiddleware` and `RateLimitMiddleware` refuse a backend missing a required method, when it is passed. ([#368](https://github.com/Lokesh-Tallapaneni/veloce/pull/368))
+- Assigning `app.json` refuses a provider without `dumps` and `loads`. ([#368](https://github.com/Lokesh-Tallapaneni/veloce/pull/368))
+- `Finding` raises `ValueError` for a severity other than `error`, `warning` or `info`. ([#368](https://github.com/Lokesh-Tallapaneni/veloce/pull/368))
+- Public functions and classes carry `Args`, `Returns` and `Raises` documentation. ([#368](https://github.com/Lokesh-Tallapaneni/veloce/pull/368))
+- Modules over 800 lines became packages or mixin modules with unchanged import paths. ([#368](https://github.com/Lokesh-Tallapaneni/veloce/pull/368))
+
 ## [0.23.0] - 2026-11-27
 
 ### Added

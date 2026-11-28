@@ -81,7 +81,7 @@ def _handler_shapes(path: pathlib.Path) -> tuple[int, int]:
     return (trivial, request_only)
 
 
-_SHAPES = {path: _handler_shapes(path) for path in sorted(TESTS.glob("test_*.py"))}
+_SHAPES = {path: _handler_shapes(path) for path in sorted(TESTS.rglob("test_*.py"))}
 _TRIVIAL = sum(trivial for trivial, _ in _SHAPES.values())
 _REQUEST_ONLY = sum(request_only for _, request_only in _SHAPES.values())
 _REQUEST_ONLY_MODULES = [path.name for path, (_, n) in _SHAPES.items() if n]

@@ -27,16 +27,17 @@ from veloce.security.base import SecurityScheme
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.http.request import Request
 
-# The default on both sides of the contract - `SessionAuth(subject_key=...)`
-# reads it and `login_session(subject_key=...)` writes it.
-SESSION_SUBJECT_KEY = "_auth_subject"
+SESSION_SUBJECT_KEY: str = "_auth_subject"
+"""Session key for the subject: `SessionAuth(subject_key=...)` reads it and
+`login_session(subject_key=...)` writes it, so both default to the same slot."""
 
-# A list, because a session payload round-trips through JSON.
-SESSION_SCOPES_KEY = "_auth_scopes"
+SESSION_SCOPES_KEY: str = "_auth_scopes"
+"""Session key for the scopes; stored as a list because a session payload round-trips
+through JSON."""
 
-# `SessionAuth` is constructed independently of `SessionMiddleware` and cannot
-# read its configuration, so this is what the schema advertises by default.
-DEFAULT_SESSION_COOKIE_NAME = "session"
+DEFAULT_SESSION_COOKIE_NAME: str = "session"
+"""Cookie name the schema advertises by default: `SessionAuth` is built independently of
+`SessionMiddleware` and cannot read its configuration."""
 
 
 class SessionAuth(SecurityScheme):
@@ -158,6 +159,15 @@ def login_session(
     be replayed against the now-authenticated session. `subject_key` /
     `scopes_key` must name the same slots as the `SessionAuth` that reads it
     back, or every request resolves anonymous.
+
+    Args:
+        request: The request whose session is signed in.
+        subject: The authenticated identity.
+        scopes: Scopes granted; none removes any previously stored.
+        subject_key: Session key the subject is stored under.
+        scopes_key: Session key the scopes are stored under.
+        **claims: Extra values stored in the session and carried on the principal.
+
     """
     session = request.session
     session.regenerate_id()

@@ -527,6 +527,21 @@ class LiveServer:
         The connection closes after the answer, so this sends
         `Connection: close` and a `Connection` header passed here is replaced.
         Hold a connection open with `connect()` to decide that yourself.
+
+        Args:
+            method: HTTP verb, case-insensitive.
+            path: Request path.
+            headers: Extra request headers.
+            json: Body serialised as JSON.
+            data: Body sent as a urlencoded form.
+            content: Raw request body bytes.
+            files: Files to upload as a multipart form.
+            params: Query parameters appended to the path.
+            stream: Body sent chunked; excludes `json`, `data`, `content` and `files`.
+
+        Returns:
+            The response.
+
         """
         async with self.connect() as connection:
             return await connection.request(

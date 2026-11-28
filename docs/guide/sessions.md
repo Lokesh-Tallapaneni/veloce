@@ -525,3 +525,5 @@ refresh, since `touch` deliberately leaves the payload alone.
   full middleware table.
 - The [API reference](../reference/index.md) documents the `Signer` that backs
   the session cookie.
+
+**Source and tests:** [`src/veloce/sessions.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/sessions.py), [`src/veloce/middleware/sessions/__init__.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/middleware/sessions/__init__.py), [`tests/sessions/test_session_middleware.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/sessions/test_session_middleware.py)

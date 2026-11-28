@@ -746,3 +746,5 @@ pipeline.
 - [Routing](routing.md)
 - [Dependency injection](dependency-injection.md)
 - The [API reference](../reference/index.md) lists every middleware class.
+
+**Source and tests:** [`src/veloce/middleware/base.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/middleware/base.py), [`tests/middleware/test_middleware_e2e.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/middleware/test_middleware_e2e.py), [`tests/middleware/test_base_http_middleware.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/middleware/test_base_http_middleware.py)

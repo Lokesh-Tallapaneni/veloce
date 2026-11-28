@@ -50,7 +50,7 @@ def _source_of(path: pathlib.Path, node) -> str:
 
 
 def _mcp_modules():
-    return sorted(TESTS.glob("test_mcp*.py"))
+    return sorted(TESTS.rglob("test_mcp*.py"))
 
 
 def test_there_are_modules_to_check():

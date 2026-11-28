@@ -147,7 +147,7 @@ def test_every_shipped_capability_is_on_one_gateway() -> None:
 
 def test_import_star_binds_exactly_all() -> None:
     namespace: dict[str, object] = {}
-    exec("from veloce.contrib.mcp import *", namespace)  # noqa: S102
+    exec("from veloce.contrib.mcp import *", namespace)
     bound = {k for k in namespace if not k.startswith("__")}
     assert bound == set(ALL)
 

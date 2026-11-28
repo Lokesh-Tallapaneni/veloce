@@ -106,3 +106,5 @@ FastAPI-compatible model reuse. Both can be used in the same application.
 - [Request models](request-models.md) — declare and validate bodies with Pydantic, the default backend.
 - [Requests and responses](requests-responses.md) — response shaping, tuple shorthands, and custom response classes.
 - Full signatures are in the [API reference](../reference/index.md).
+
+**Source and tests:** [`src/veloce/_model_backend.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/_model_backend.py), [`tests/params/test_msgspec_integration.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/params/test_msgspec_integration.py)

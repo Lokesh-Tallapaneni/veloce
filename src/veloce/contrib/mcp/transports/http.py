@@ -120,6 +120,7 @@ def register_http_transport(
     auth: MCPAuth | None = None,
     allowed_origins: frozenset[str] | None = None,
     exclude_middleware: Sequence[str] | None = None,
+    *,
     sessions: bool = False,
     resumable: bool = False,
     session_backend: SessionBackend | None = None,
@@ -197,7 +198,7 @@ async def _handle_http(
     """
     try:
         message = await request.json()
-    except Exception:
+    except Exception:  # noqa: BLE001 - an undecodable body is a JSON-RPC parse error
         return _protocol_response(parse_error(), status_code=status.HTTP_400_BAD_REQUEST)
     if not request.data:
         return _protocol_response(parse_error(), status_code=status.HTTP_400_BAD_REQUEST)

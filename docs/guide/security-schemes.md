@@ -770,3 +770,5 @@ send(token.reveal())    # the real value
   `Security` resolve, including `yield` teardown and overrides.
 - The [API reference](../reference/index.md) documents the full signature of
   every scheme.
+
+**Source and tests:** [`src/veloce/security/http.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/security/http.py), [`src/veloce/security/oauth2.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/security/oauth2.py), [`tests/security/test_security_schemes.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/security/test_security_schemes.py), [`tests/security/test_security_e2e.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/security/test_security_e2e.py)

@@ -85,7 +85,6 @@ UNEXPORTED: dict[str, str] = {
     # a 304. Not underscore-prefixed because `app/asgi.py` imports it across a
     # subpackage boundary, which guardrails L173 forbids for a private name; not
     # exported because it describes an emit-time detail no user chooses.
-    "http.response.advertised_length": "shared by the three emit paths; internal to the transport, not a user-facing name",
     # `cli.py` — console-script entry points, reached through `[project.scripts]`
     # by dotted string, never imported by application code.
     "cli.build_parser": "console-script entry point, referenced by dotted path",
@@ -99,9 +98,6 @@ UNEXPORTED: dict[str, str] = {
     # `debug.py` — the debug traceback renderer, wired by the app when
     # `DEBUG` is set.
     "debug.render_traceback_html": "internal debug-page renderer wired by the app",
-    # `dependency.py` — the resolver behind `Depends()`. Users declare
-    # dependencies; they do not drive the resolver.
-    "dependency.DependencyResolver": "DI engine; `Depends`/`Security` are the public surface",
     # `encoders.py` — the orjson `default=` hook. `register_encoder` is the
     # public way to extend encoding.
     "encoders.orjson_default": "orjson hook; `register_encoder` is the public extension point",
@@ -126,8 +122,11 @@ UNEXPORTED: dict[str, str] = {
     # `status.py` — a predicate over the status constants, used by the response
     # encoders to decide whether a body may be emitted.
     "status.status_permits_body": "internal predicate used by the response encoders",
-    # `websocket.py` — handshake internals. `WebSocket` is the public object.
-    "websocket.compute_accept": "RFC 6455 handshake internals",
+    # `websocket/` — handshake internals. `WebSocket` is the public object.
+    "websocket.handshake.compute_accept": "RFC 6455 handshake internals",
+    "websocket.raw.RawTransportMixin": "the raw-transport half of `WebSocket`, composed into it",
+    "websocket.receiving.ReceiveMixin": "the receive and idle-timeout half of `WebSocket`, composed into it",
+    "websocket.view.HandshakeViewMixin": "the handshake-introspection half of `WebSocket`, composed into it",
     # `workers.py` — the gunicorn worker class, named to gunicorn by dotted
     # string on the command line, never imported.
     "workers.VeloceWorker": "gunicorn worker, referenced by dotted path",
@@ -142,11 +141,13 @@ UNEXPORTED: dict[str, str] = {
     #
     # Tuning defaults: buffer and chunk sizes, settable through `Config` or a
     # keyword rather than by importing the constant.
+    "exceptions.CacheBackendError": "raised for a rejected cache; catch CacheError or BackendError",
+    "exceptions.SessionBackendError": "raised for a rejected session store; catch SessionError or BackendError",
+    "exceptions.RateLimitBackendError": "raised for a rejected rate-limit backend; catch RateLimitError or BackendError",
     "config.DEFAULT_WRITE_BUFFER_HIGH_WATER": "tuning default; set through Config, not by import",
     "http.formparsers.DEFAULT_MAX_MULTIPART_PART_SIZE": "tuning default for the multipart parser",
     "http.formparsers.MULTIPART_SPOOL_MAX_SIZE": "tuning default for the multipart parser",
-    "http.response.FILE_STREAM_CHUNK": "file-response read size; an implementation constant",
-    "serving.protocol.WRITE_BUFFER_HIGH_WATER": "raw-transport tuning; `app.run()` is the public entry point",
+    "http.response.file.FILE_STREAM_CHUNK": "file-response read size; an implementation constant",
     # Callback aliases whose owning object is itself unexported, so the alias
     # is written as `veloce.health.ReadinessCheck` if it is written at all.
     "health.ReadinessCheck": "callback alias for a health check; used as veloce.health.ReadinessCheck",
@@ -154,15 +155,19 @@ UNEXPORTED: dict[str, str] = {
     # fallback layers split out of `router.py`. `router.py` re-imports each, so
     # the old `veloce.routing.router.X` paths still resolve; these are the names
     # under their new home.
+    "routing.router.decorators.DecoratorsMixin": "one layer of the Router class; reached through Router",
+    "routing.router.matching.MatchingMixin": "one layer of the Router class; reached through Router",
+    "routing.router.merging.MergingMixin": "one layer of the Router class; reached through Router",
+    "routing.router.registration.RegistrationMixin": "one layer of the Router class; reached through Router",
+    "routing.router.tree.TreeMixin": "one layer of the Router class; reached through Router",
+    "routing.router.urls.UrlsMixin": "one layer of the Router class; reached through Router",
     "routing.route_info.MCPRouteOptions": "the record behind RouteInfo.mcp; read through its properties",
+    "routing.route_info.RouteOptions": "the record add_route and route collect their options into; registration plumbing, not user-facing",
     "routing.route_info.RouteHandler": "router-internal handler alias; RouteInfo/RouteMatch are equally internal",
-    "testclient.StreamBody": "accepted shape of TestClient's `stream=`; callers pass an iterable, not the alias",
     # MCP integration internals, consistent with the other names from these
     # modules above.
     "contrib.mcp.auth.TokenVerifier": "internal to the MCP integration; not part of its published surface",
-    "contrib.mcp.authorization.Authenticator": "internal to the MCP integration; not part of its published surface",
     "contrib.mcp.registry.ToolFilter": "internal to the MCP integration; not part of its published surface",
-    "contrib.mcp.server.MethodHandler": "internal to the MCP integration; not part of its published surface",
     "contrib.mcp.subscriptions.Sink": "internal to the MCP integration; not part of its published surface",
     # `exceptions.NotImplemented_` is the back-compat alias described above; it
     # is a `Name` value, so the widened scan now reports it as a definition.
@@ -173,6 +178,15 @@ UNEXPORTED: dict[str, str] = {
     "app.asgi.AsgiMixin": "composition unit of Veloce; not constructed by application code",
     "app.background.BackgroundTasksMixin": "composition unit of Veloce; not constructed by application code",
     "app.dispatch.DispatchMixin": "composition unit of Veloce; not constructed by application code",
+    "app.accessors.AccessorsMixin": "composition unit of Veloce; not constructed by application code",
+    "app.construction.ConstructionMixin": "composition unit of Veloce; not constructed by application code",
+    "app.posture.PostureMixin": "composition unit of Veloce; not constructed by application code",
+    "app.registration.RegistrationMixin": "composition unit of Veloce; not constructed by application code",
+    "app.dispatch_aliases.AliasDispatchMixin": "composition unit of Veloce; not constructed by application code",
+    "app.dispatch_errors.ErrorDispatchMixin": "composition unit of Veloce; not constructed by application code",
+    "app.dispatch_hooks.HookDispatchMixin": "composition unit of Veloce; not constructed by application code",
+    "app.dispatch_middleware.MiddlewareDispatchMixin": "composition unit of Veloce; not constructed by application code",
+    "app.dispatch_response.ResponseDispatchMixin": "composition unit of Veloce; not constructed by application code",
     "app.errors.ErrorsMixin": "composition unit of Veloce; not constructed by application code",
     "app.introspection.IntrospectionMixin": "composition unit of Veloce; not constructed by application code",
     "app.lifecycle.LifecycleMixin": "composition unit of Veloce; not constructed by application code",
@@ -203,14 +217,10 @@ UNEXPORTED: dict[str, str] = {
     "contrib.mcp.pagination.encode_cursor": "internal to the MCP integration; not part of its published surface",
     "contrib.mcp.pagination.decode_cursor": "internal to the MCP integration; not part of its published surface",
     "contrib.mcp.pagination.paginate": "internal to the MCP integration; not part of its published surface",
-    "contrib.mcp.plan_bridge.build_input_schema": "internal to the MCP integration; not part of its published surface",
-    "contrib.mcp.plan_bridge.build_output_schema": "internal to the MCP integration; not part of its published surface",
-    "contrib.mcp.plan_bridge.bind_arguments": "internal to the MCP integration; not part of its published surface",
     "contrib.mcp.safety.require_mcp_description": "internal to the MCP integration; not part of its published surface",
     "contrib.mcp.safety.TOOL_ANNOTATION_HINTS": "internal to the MCP integration; not part of its published surface",
     "contrib.mcp.safety.validate_tool_annotations": "internal to the MCP integration; not part of its published surface",
     "contrib.mcp.sampling.content_blocks": "internal to the MCP integration; not part of its published surface",
-    "contrib.mcp.server.is_modern_version": "internal to the MCP integration; not part of its published surface",
     "contrib.mcp.subscriptions.resource_updated_notification": "internal to the MCP integration; not part of its published surface",
     "contrib.mcp.subscriptions.resources_list_changed_notification": "internal to the MCP integration; not part of its published surface",
     "contrib.mcp.subscriptions.subscription_acknowledged_notification": "internal to the MCP integration; not part of its published surface",
@@ -229,17 +239,6 @@ UNEXPORTED: dict[str, str] = {
     # `veloce.routing` publishes the `Converter` base and `register_converter`;
     # the built-in converters are implementations reached through that seam,
     # and the parsing helpers serve the router alone.
-    "routing.converters.StringConverter": "implementation behind the Converter base / register_converter seam",
-    "routing.converters.IntConverter": "implementation behind the Converter base / register_converter seam",
-    "routing.converters.FloatConverter": "implementation behind the Converter base / register_converter seam",
-    "routing.converters.UUIDConverter": "implementation behind the Converter base / register_converter seam",
-    "routing.converters.PathConverter": "implementation behind the Converter base / register_converter seam",
-    "routing.converters.DateConverter": "implementation behind the Converter base / register_converter seam",
-    "routing.converters.DateTimeConverter": "implementation behind the Converter base / register_converter seam",
-    "routing.converters.TimeConverter": "implementation behind the Converter base / register_converter seam",
-    "routing.converters.TimeDeltaConverter": "implementation behind the Converter base / register_converter seam",
-    "routing.converters.DecimalConverter": "implementation behind the Converter base / register_converter seam",
-    "routing.converters.AnyConverter": "implementation behind the Converter base / register_converter seam",
     "routing.converters.parse_converter": "implementation behind the Converter base / register_converter seam",
     "routing.converters.is_regex_path": "implementation behind the Converter base / register_converter seam",
     "routing.converters.extract_regex_converters": "implementation behind the Converter base / register_converter seam",
@@ -258,7 +257,6 @@ UNEXPORTED: dict[str, str] = {
     "http.cookies.dump_cookie": "header-level helper behind Response.set_cookie",
     "http.dates.http_date": "header-level date formatting behind the response helpers",
     "http.dates.parse_date": "header-level date parsing behind the request helpers",
-    "http.response.header_pop": "raw header-list helper used by the emit paths",
     "middleware.base.Auditable": "protocol the startup audit checks middleware against",
     "serving.reloader.is_reloader_child": "reloader process-role probe, used by the runner",
     "serving.reloader.run_with_reloader": "reloader entry point, reached through Veloce.run",

@@ -5,13 +5,25 @@ Semantics) and RFC 6585 (Additional HTTP Status Codes), and the subclass identit
 lets a handler registered against one class catch every subclass. The two default
 handler functions at the end render ``HTTPException`` and
 ``RequestValidationError`` as JSON responses.
+
+Roots, so one ``except`` covers a whole family: ``VeloceError`` (everything
+Veloce raises), ``HTTPException`` (every HTTP status error, including
+``ValidationError`` and ``RequestValidationError``) and ``WebSocketError``
+(``WebSocketDisconnect``, ``WebSocketException`` and
+``WebSocketRequestValidationError``). ``CacheError``, ``SessionError`` and
+``RateLimitError`` are the roots for those subsystems, so one ``except`` covers
+the subsystem. ``BackendError`` is what a backend handed to Veloce raises when
+it does not satisfy its protocol (it is also a ``TypeError``); the cache,
+session and rate-limit ones raise ``CacheBackendError``, ``SessionBackendError``
+and ``RateLimitBackendError``, which are both. ``ConfigurationError`` and ``SetupError``
+cover misconfiguration at startup; ``BuildError``, ``DuplicateRouteError`` and
+``FilesKeyError`` are the routing and request-data lookups.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from veloce.http.response import JSONResponse
 from veloce.status import (
     HTTP_400_BAD_REQUEST,
     HTTP_401_UNAUTHORIZED,
@@ -118,112 +130,156 @@ class HTTPException(VeloceError):
 
 
 class BadRequest(HTTPException):
+    """400 Bad Request."""
+
     code = HTTP_400_BAD_REQUEST
     description = "Bad Request"
 
 
 class Unauthorized(HTTPException):
+    """401 Unauthorized."""
+
     code = HTTP_401_UNAUTHORIZED
     description = "Unauthorized"
 
 
 class PaymentRequired(HTTPException):
+    """402 Payment Required."""
+
     code = HTTP_402_PAYMENT_REQUIRED
     description = "Payment Required"
 
 
 class Forbidden(HTTPException):
+    """403 Forbidden."""
+
     code = HTTP_403_FORBIDDEN
     description = "Forbidden"
 
 
 class NotFound(HTTPException):
+    """404 Not Found."""
+
     code = HTTP_404_NOT_FOUND
     description = "Not Found"
 
 
 class MethodNotAllowed(HTTPException):
+    """405 Method Not Allowed."""
+
     code = HTTP_405_METHOD_NOT_ALLOWED
     description = "Method Not Allowed"
 
 
 class NotAcceptable(HTTPException):
+    """406 Not Acceptable."""
+
     code = HTTP_406_NOT_ACCEPTABLE
     description = "Not Acceptable"
 
 
 class ProxyAuthenticationRequired(HTTPException):
+    """407 Proxy Authentication Required."""
+
     code = HTTP_407_PROXY_AUTHENTICATION_REQUIRED
     description = "Proxy Authentication Required"
 
 
 class RequestTimeout(HTTPException):
+    """408 Request Timeout."""
+
     code = HTTP_408_REQUEST_TIMEOUT
     description = "Request Timeout"
 
 
 class Conflict(HTTPException):
+    """409 Conflict."""
+
     code = HTTP_409_CONFLICT
     description = "Conflict"
 
 
 class Gone(HTTPException):
+    """410 Gone."""
+
     code = HTTP_410_GONE
     description = "Gone"
 
 
 class LengthRequired(HTTPException):
+    """411 Length Required."""
+
     code = HTTP_411_LENGTH_REQUIRED
     description = "Length Required"
 
 
 class PreconditionFailed(HTTPException):
+    """412 Precondition Failed."""
+
     code = HTTP_412_PRECONDITION_FAILED
     description = "Precondition Failed"
 
 
 class RequestEntityTooLarge(HTTPException):
+    """413 Content Too Large."""
+
     code = HTTP_413_REQUEST_ENTITY_TOO_LARGE
     description = "Content Too Large"
 
-    #: The `MAX_CONTENT_LENGTH` the body exceeded, rendered into the error body;
-    #: `None` when a caller raises this directly without a limit to report.
     limit: int | None = None
+    """The `MAX_CONTENT_LENGTH` the body exceeded, rendered into the error body.
+
+    `None` when a caller raises this directly without a limit to report.
+    """
 
 
 class RequestURITooLong(HTTPException):
+    """414 URI Too Long."""
+
     code = HTTP_414_REQUEST_URI_TOO_LONG
     description = "URI Too Long"
 
 
 class UnsupportedMediaType(HTTPException):
+    """415 Unsupported Media Type."""
+
     code = HTTP_415_UNSUPPORTED_MEDIA_TYPE
     description = "Unsupported Media Type"
 
 
 class RangeNotSatisfiable(HTTPException):
+    """416 Range Not Satisfiable."""
+
     code = HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE
     description = "Range Not Satisfiable"
 
 
 class ExpectationFailed(HTTPException):
+    """417 Expectation Failed."""
+
     code = HTTP_417_EXPECTATION_FAILED
     description = "Expectation Failed"
 
 
 class ImATeapot(HTTPException):
+    """418 I'm a teapot."""
+
     # RFC 2324 - not technically RFC 9110 but ubiquitous in test suites.
     code = HTTP_418_IM_A_TEAPOT
     description = "I'm a teapot"
 
 
 class UnprocessableEntity(HTTPException):
+    """422 Unprocessable Content."""
+
     # Reused by RFC 9110 Sec. 15.5.21 (formerly WebDAV-only); also the typed-DI 422.
     code = HTTP_422_UNPROCESSABLE_ENTITY
     description = "Unprocessable Content"
 
 
 class TooManyRequests(HTTPException):
+    """429 Too Many Requests."""
+
     # RFC 6585 Sec. 4.
     code = HTTP_429_TOO_MANY_REQUESTS
     description = "Too Many Requests"
@@ -233,11 +289,15 @@ class TooManyRequests(HTTPException):
 
 
 class InternalServerError(HTTPException):
+    """500 Internal Server Error."""
+
     code = HTTP_500_INTERNAL_SERVER_ERROR
     description = "Internal Server Error"
 
 
 class ServerNotImplemented(HTTPException):
+    """501 Not Implemented."""
+
     # `NotImplemented` is a builtin, so the 501 cannot be named for its phrase.
     code = HTTP_501_NOT_IMPLEMENTED
     description = "Not Implemented"
@@ -248,16 +308,22 @@ NotImplemented_ = ServerNotImplemented
 
 
 class BadGateway(HTTPException):
+    """502 Bad Gateway."""
+
     code = HTTP_502_BAD_GATEWAY
     description = "Bad Gateway"
 
 
 class ServiceUnavailable(HTTPException):
+    """503 Service Unavailable."""
+
     code = HTTP_503_SERVICE_UNAVAILABLE
     description = "Service Unavailable"
 
 
 class GatewayTimeout(HTTPException):
+    """504 Gateway Timeout."""
+
     code = HTTP_504_GATEWAY_TIMEOUT
     description = "Gateway Timeout"
 
@@ -300,7 +366,11 @@ class RequestValidationError(ValidationError):
 # ── WebSocket exceptions ──────────────────────────────────
 
 
-class WebSocketDisconnect(VeloceError):
+class WebSocketError(VeloceError):
+    """Root of every exception a WebSocket connection raises or is closed by."""
+
+
+class WebSocketDisconnect(WebSocketError):
     """WebSocket connection closed."""
 
     def __init__(self, code: int = WS_1000_NORMAL_CLOSURE) -> None:
@@ -310,7 +380,7 @@ class WebSocketDisconnect(VeloceError):
         self.code = code
 
 
-class WebSocketException(VeloceError):
+class WebSocketException(WebSocketError):
     """Raised inside a WebSocket handler to close the connection cleanly.
 
     The dispatch layer catches it and sends a close frame carrying `code`
@@ -323,7 +393,7 @@ class WebSocketException(VeloceError):
         super().__init__(f"{code}: {reason or ''}")
 
 
-class WebSocketRequestValidationError(RequestValidationError):
+class WebSocketRequestValidationError(RequestValidationError, WebSocketError):
     """A WebSocket dependency failed parameter validation.
 
     The dispatch layer closes the connection with code 1008 (policy violation)
@@ -402,6 +472,39 @@ class SetupError(VeloceError, RuntimeError):
     late mutation would race in-flight requests. The lock is relaxed in
     `DEBUG`/`TESTING` so hot-reload and test monkeypatching stay ergonomic.
     """
+
+
+class CacheError(VeloceError):
+    """Root of the errors a result-cache backend raises."""
+
+
+class SessionError(VeloceError):
+    """Root of the errors a server-side session store raises."""
+
+
+class RateLimitError(VeloceError):
+    """Root of the errors a rate-limit state store raises."""
+
+
+class BackendError(VeloceError, TypeError):
+    """A backend handed to Veloce does not satisfy the protocol its extension point asks for.
+
+    Raised at registration, never on a request: a missing method, or a method
+    that is not `async def` where the protocol declares it so. Also a
+    `TypeError`, so code that already catches that keeps working.
+    """
+
+
+class CacheBackendError(CacheError, BackendError):
+    """A result-cache backend does not satisfy `CacheBackend`."""
+
+
+class SessionBackendError(SessionError, BackendError):
+    """A session store does not satisfy `SessionStoreBackend`."""
+
+
+class RateLimitBackendError(RateLimitError, BackendError):
+    """A rate-limit backend does not satisfy `RateLimitStoreBackend`."""
 
 
 class ConfigurationError(VeloceError, RuntimeError):
@@ -483,7 +586,17 @@ async def http_exception_handler(request: Any, exc: HTTPException) -> Response:
 
     Honours ``exc.status_code``, ``exc.detail`` (falling back to the
     subclass description), and ``exc.headers``.
+
+    Args:
+        request: The request being answered; unused, kept for the handler signature.
+        exc: The exception to render.
+
+    Returns:
+        A JSON response carrying the exception's status code and headers.
+
     """
+    from veloce.http.response import JSONResponse  # breaks exceptions <-> http cycle
+
     payload = http_exception_payload(exc)
     return JSONResponse(
         payload,
@@ -498,7 +611,17 @@ async def request_validation_exception_handler(
     """Render a ``RequestValidationError`` as a 422 with the error list.
 
     Uses the structured shape ``{"detail": [ ...per-field errors... ]}``.
+
+    Args:
+        request: The request being answered; unused, kept for the handler signature.
+        exc: The validation failure to render.
+
+    Returns:
+        A 422 JSON response listing the per-field errors.
+
     """
+    from veloce.http.response import JSONResponse  # breaks exceptions <-> http cycle
+
     return JSONResponse({"detail": exc.errors or []}, status_code=HTTP_422_UNPROCESSABLE_ENTITY)
 
 

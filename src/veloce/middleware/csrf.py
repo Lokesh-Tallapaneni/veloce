@@ -56,6 +56,7 @@ from veloce._protocol_constants import (
     HTTP_METHOD_TRACE,
     URL_SCHEME_HTTPS,
 )
+from veloce.enums import SameSite
 from veloce.http.request import Request
 from veloce.http.response import JSONResponse, Response
 from veloce.middleware.base import Middleware
@@ -99,15 +100,33 @@ class CSRFMiddleware(Middleware):
             HTTP_METHOD_QUERY,
             HTTP_METHOD_TRACE,
         ),
+        *,
         cookie_secure: bool = True,
         cookie_httponly: bool = False,
-        cookie_samesite: str = "Lax",
+        cookie_samesite: SameSite | str = "Lax",
         token_factory: Callable[[], str] | None = None,
         secret: str | None = None,
         max_age: int | None = None,
         trusted_origins: tuple[str, ...] | None = None,
         name: str | None = None,
     ) -> None:
+        """Configure the token cookie and its checks.
+
+        Args:
+            cookie_name: Cookie the token is issued in.
+            header_name: Request header the token is echoed in.
+            form_field: Form field the token is echoed in.
+            safe_methods: Methods that skip the check.
+            cookie_secure: Mark the cookie `Secure`.
+            cookie_httponly: Mark the cookie `HttpOnly`; script-based clients need it off.
+            cookie_samesite: The cookie's `SameSite` attribute.
+            token_factory: Mints a token; random by default.
+            secret: When set, tokens are HMAC-signed and unsigned ones are refused.
+            max_age: Seconds a signed token stays valid; `None` for no limit.
+            trusted_origins: Origins, or `.suffix` hosts, whose requests pass the origin check.
+            name: Name for `exclude_middleware`.
+
+        """
         super().__init__(name=name)
         self.cookie_name = cookie_name
         self.header_name = header_name
@@ -181,7 +200,7 @@ class CSRFMiddleware(Middleware):
         if MIME_FORM_URLENCODED in ct or MIME_MULTIPART_FORM_DATA in ct:
             try:
                 form = await request.form()
-            except Exception:
+            except Exception:  # noqa: BLE001 - an unreadable form means no token, not a 500
                 # No form-field token available: the mismatch verdict, not a 500.
                 form = None
             # Multipart parts can resolve to UploadFile; only a string echoes the cookie.

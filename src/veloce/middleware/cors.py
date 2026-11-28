@@ -102,12 +102,33 @@ class CORSMiddleware(Middleware):
         allow_origin_regex: str | None = None,
         allow_methods: list[str] | None = None,
         allow_headers: list[str] | None = None,
+        *,
         allow_credentials: bool = False,
         allow_private_network: bool = False,
         max_age: int = 600,
         expose_headers: list[str] | None = None,
         name: str | None = None,
     ) -> None:
+        """Configure the policy.
+
+        Args:
+            allow_origins: Origins that may make cross-origin requests; `["*"]` when
+                neither this nor `allow_origin_regex` is given.
+            allow_origin_regex: A pattern a request origin must fully match.
+            allow_methods: Methods advertised on a preflight; the common set by default.
+            allow_headers: Request headers advertised on a preflight; `["*"]` by default.
+            allow_credentials: Allow cookies and `Authorization` on cross-origin requests.
+            allow_private_network: Answer private-network-access preflights.
+            max_age: Seconds a browser may cache a preflight answer.
+            expose_headers: Response headers a script may read.
+            name: Name for `exclude_middleware`.
+
+        Raises:
+            ValueError: If `allow_origin_regex` is not a valid pattern, or
+                `allow_credentials` is combined with a wildcard origin, wildcard
+                regex or wildcard header list.
+
+        """
         super().__init__(name=name)
         # A regex-only config must not fall back to `*`: `_origin_allowed` would
         # short-circuit on the star, echo it to every origin, and leave the regex dead.

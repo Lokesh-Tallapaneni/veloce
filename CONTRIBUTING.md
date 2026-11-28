@@ -79,6 +79,9 @@ pytest benchmarks/memory --codspeed     # allocation of held structures
   `async def test_*` functions (do **not** add `@pytest.mark.asyncio`).
 - Add a regression test for every bug fix, placed in the test module for the
   feature it exercises - not in a catch-all file.
+- `tests/` mirrors the package: a test for one module goes in the subfolder named
+  for it (`tests/http/`, `tests/mcp/`, `tests/routing/`, ...). Only the
+  cross-cutting guards listed in `tests/top_level_tests.txt` stay at the top level.
 - Benchmarks live in `benchmarks/` (outside `testpaths`, so a plain `pytest`
   never collects them). See `benchmarks/README.md` before adding one.
 - `mkdocs build --strict` must succeed for any docs change.

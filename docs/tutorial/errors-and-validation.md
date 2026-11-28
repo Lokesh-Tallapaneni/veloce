@@ -132,3 +132,5 @@ against `RequestValidationError` instead — see the
 
 The app is feature-complete. Before shipping, let's prove it works with the
 in-memory test client: **[Testing](testing.md)**.
+
+**Source and tests:** [`src/veloce/exceptions.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/exceptions.py), [`src/veloce/app/errors.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/app/errors.py), [`tests/app/test_error_handler_spec.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/app/test_error_handler_spec.py), [`tests/app/test_builtin_error_format.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/app/test_builtin_error_format.py)

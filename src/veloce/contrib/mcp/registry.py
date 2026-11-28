@@ -45,41 +45,41 @@ class MCPTool(MCPDescriptor):
     handler: Callable[..., Any]
     plan: HandlerPlan
     input_schema: dict[str, Any]
-    # Set by a tool that dispatches OTHER tools; a signature cannot show that.
     dispatches_tools: bool = False
-    # Read by `_needs_stream`; `init=False` so no caller can claim streamlessness.
+    """Set by a tool that dispatches OTHER tools; a signature cannot show that."""
     may_stream: bool = field(default=True, init=False, repr=False, compare=False)
-    # Route-level `dependencies=`, run before the handler's own `Depends` graph.
+    """Read by `_needs_stream`; `init=False` so no caller can claim streamlessness."""
     route_dep_plans: list[Any] = field(default_factory=list)
-    # The return runs through the route's response shaping, so excluded fields
-    # never leak over MCP.
+    """Route-level `dependencies=`, run before the handler's own `Depends` graph."""
     route_info: Any = None
-    # Bound onto the synthetic `Request.method`, so hooks see the route's real verb.
+    """The return runs through the route's response shaping, so excluded fields never leak over MCP.
+    """
     route_method: str | None = None
-    # Held to their declared type, not the query-string rules the resolver applies.
+    """Bound onto the synthetic `Request.method`, so hooks see the route's real verb."""
     dependency_inputs: dict[str, Any] = field(default_factory=dict)
-    # Hints span the whole set, so `GET`+`DELETE` is flagged destructive.
+    """Held to their declared type, not the query-string rules the resolver applies."""
     route_methods: list[str] = field(default_factory=list)
-    # `None` when the result has no object schema; `tools/call` then returns text.
+    """Hints span the whole set, so `GET`+`DELETE` is flagged destructive."""
     output_schema: dict[str, Any] | None = None
-    # Lets a pure `@app.mcp_tool` coerce its return to the advertised schema.
+    """`None` when the result has no object schema; `tools/call` then returns text."""
     output_model: Any = None
-    # Checked before invocation; empty means no per-tool requirement.
+    """Lets a pure `@app.mcp_tool` coerce its return to the advertised schema."""
     required_scopes: frozenset[str] = frozenset()
-    # Read by a `mount_mcp(tool_filter=)` policy; the spec has no tag field to emit.
+    """Checked before invocation; empty means no per-tool requirement."""
     tags: frozenset[str] = frozenset()
-    # `True` lets a client run the call detached and poll `tasks/result`. Opt-in.
+    """Read by a `mount_mcp(tool_filter=)` policy; the spec has no tag field to emit."""
     task_support: bool = False
-    # `readOnlyHint` and friends; `None` leaves the spec's cautious defaults.
+    """`True` lets a client run the call detached and poll `tasks/result`. Opt-in."""
     annotations: dict[str, Any] | None = None
-    # An upstream result is relayed unchanged; re-shaping would lose `isError`.
+    """`readOnlyHint` and friends; `None` leaves the spec's cautious defaults."""
     passthrough_result: bool = False
-    # On a `derive_tool` tool: published surface -> original handler arguments.
+    """An upstream result is relayed unchanged; re-shaping would lose `isError`."""
     derived_from: Any = None
-    # Every version of a name is registered; the highest answers a bare call.
+    """On a `derive_tool` tool: published surface -> original handler arguments."""
     version: str | None = None
-    # Ascending. `init=False`: meaningful only with the sibling map a copy lacks.
+    """Every version of a name is registered; the highest answers a bare call."""
     version_history: tuple[str, ...] = field(default=(), init=False, repr=False, compare=False)
+    """Ascending. `init=False`: meaningful only with the sibling map a copy lacks."""
 
     def __post_init__(self) -> None:
         # A property of the plan, so a `replace` copy re-derives against its own.
@@ -90,8 +90,8 @@ class MCPTool(MCPDescriptor):
         )
 
 
-# The spec defines no version field, so publishing and naming one share this key.
-VERSION_META_KEY = "veloce"
+VERSION_META_KEY: str = "veloce"
+"""`_meta` key under which a tool's version is published and named; the spec defines no version field."""
 
 
 def _version_key(version: str | None) -> tuple[int, tuple[int, ...], int, str]:
@@ -122,8 +122,8 @@ class ToolRegistry(Registry[MCPTool]):
 
     tools: dict[str, MCPTool] = field(default_factory=dict)
     schemas: dict[str, dict[str, Any]] = field(default_factory=dict)
-    # Only a name with more than one version has an entry, so most servers none.
     versions: dict[str, dict[str, MCPTool]] = field(default_factory=dict)
+    """Only a name with more than one version has an entry, so most servers none."""
 
     @property
     def _store(self) -> dict[str, MCPTool]:
@@ -144,6 +144,13 @@ class ToolRegistry(Registry[MCPTool]):
 
         Two registrations sharing a name under different versions are both kept:
         the higher is listed, and either answers a call naming its own.
+
+        Args:
+            tool: Tool to register.
+
+        Raises:
+            ValueError: If the name is already registered under the same version.
+
         """
         existing = self.tools.get(tool.name)
         if existing is None or existing.version is None or tool.version is None:
@@ -158,7 +165,16 @@ class ToolRegistry(Registry[MCPTool]):
         self.tools[tool.name] = listed
 
     def resolve(self, name: str, version: str | None) -> MCPTool | None:
-        """Return the tool `name` registered under `version`, or the listed one."""
+        """Return the tool `name` registered under `version`, or the listed one.
+
+        Args:
+            name: Tool name.
+            version: Version to select, or `None` for the listed one.
+
+        Returns:
+            The matching tool, or `None` when none matches.
+
+        """
         if version is None:
             return self.get(name)
         siblings = self.versions.get(name)

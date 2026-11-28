@@ -236,3 +236,5 @@ async def signup(request: Request):
 
 For background on the algorithms and storage advice, see the
 [OWASP Password Storage cheat sheet](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html).
+
+**Source and tests:** [`src/veloce/passwords.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/passwords.py), [`tests/security/test_passwords.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/security/test_passwords.py)

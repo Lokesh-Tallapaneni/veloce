@@ -200,3 +200,5 @@ command is the one selected, so built-in commands never run plugin code.
 - [Deployment](deployment.md) — serve the app you scaffolded under a production server.
 - [Testing](testing.md) — the in-memory `TestClient` the generated tests use.
 - [Configuration](configuration.md) — environment-driven settings and the `.env` file `veloce run` loads.
+
+**Source and tests:** [`src/veloce/cli.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/cli.py), [`tests/app/test_cli.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/app/test_cli.py)

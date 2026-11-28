@@ -17,9 +17,9 @@ class Icon:
 
     src: str
     mime_type: str | None = None
-    # Mirrors the HTML ``sizes`` token list: ``("48x48",)``, or ``("any",)``
-    # for a scalable source.
     sizes: tuple[str, ...] = ()
+    """Mirrors the HTML ``sizes`` token list: ``("48x48",)``, or ``("any",)`` for a scalable source.
+    """
 
     def to_payload(self) -> dict[str, Any]:
         """Render this icon as its MCP icon dict, omitting unset optionals."""

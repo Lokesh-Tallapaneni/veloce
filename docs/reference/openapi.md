@@ -13,6 +13,7 @@ Schema generation and the JSON encoding layer.
 ::: veloce.unregister_encoder
 ::: veloce.JSONProvider
 ::: veloce.DefaultJSONProvider
+::: veloce.JSONProviderBackend
 ::: veloce.config_orjson_options
 
 ::: veloce.contrib.openapi.get_openapi_schema

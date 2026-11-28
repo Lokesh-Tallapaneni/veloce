@@ -11,30 +11,38 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
-import os
 from collections.abc import Sequence
 from http import HTTPStatus
 from typing import Any, NoReturn
 
-from veloce._constants import (
-    HEADER_CACHE_CONTROL,
-    HEADER_ETAG,
-    HEADER_LAST_MODIFIED,
-    MSG_ACCESS_DENIED,
+from veloce._helpers_files import (
+    _attachment_name as _attachment_name,
+)
+from veloce._helpers_files import (
+    _range_negotiable_request as _range_negotiable_request,
+)
+from veloce._helpers_files import (
+    async_send_file as async_send_file,
+)
+from veloce._helpers_files import (
+    send_file as send_file,
+)
+from veloce._helpers_files import (
+    send_from_directory as send_from_directory,
+)
+from veloce._helpers_files import (
+    send_from_directory_async as send_from_directory_async,
 )
 from veloce._internal import (
     MIME_HTML,
     _current_app_var,
     _current_request_var,
-    _serving_error_page_var,
     _unpack_response_tuple,
 )
 from veloce.exceptions import exception_for_status
-from veloce.http.dates import http_date
-from veloce.http.response import FileResponse, JSONResponse, RedirectResponse, Response
-from veloce.safe import safe_join
+from veloce.http.response import JSONResponse, RedirectResponse, Response
 from veloce.signals import message_flashed
-from veloce.status import HTTP_200_OK, HTTP_302_FOUND, HTTP_403_FORBIDDEN
+from veloce.status import HTTP_200_OK, HTTP_302_FOUND
 
 # ── Proxy classes ─────────────────────────────────────────
 
@@ -252,6 +260,18 @@ class Aborter:
         detail: str = "",
         headers: dict[str, str] | None = None,
     ) -> NoReturn:
+        """Raise the exception registered for `code`.
+
+        Args:
+            code: HTTP status code to abort with.
+            detail: Message for the error body; defaults to the status phrase.
+            headers: Extra headers to send with the error response.
+
+        Raises:
+            HTTPException: Always - the class registered for `code` on this
+                aborter, then on `mapping`, then the stock class for the status.
+
+        """  # noqa: DOC503 - the exception is raised or caught by a callee
         if not detail:
             detail = _default_detail(code)
         cls = self._mapping.get(code) or self.mapping.get(code) or exception_for_status(code)
@@ -301,7 +321,16 @@ def abort(status_code: int, detail: str = "", headers: dict[str, str] | None = N
 
         abort(404)              # -> raises NotFound
         abort(403, "Forbidden") # -> raises Forbidden
-    """
+
+    Args:
+        status_code: HTTP status code to abort with.
+        detail: Message for the error body; defaults to the status phrase.
+        headers: Extra headers to send with the error response.
+
+    Raises:
+        HTTPException: Always - the typed subclass for `status_code`.
+
+    """  # noqa: DOC502 - the exception is raised or caught by a callee
     app = _current_app_var.get()
     aborter: Aborter = _default_aborter if app is None else app.aborter
     aborter(status_code, detail, headers)
@@ -326,136 +355,6 @@ def after_this_request(func: Any) -> Any:
     return func
 
 
-# ── send_file() ───────────────────────────────────────────
-
-
-def _attachment_name(resolved: str, as_attachment: bool, download_name: str | None) -> str | None:
-    """Resolve the `Content-Disposition` filename for a file response."""
-    if not as_attachment:
-        return None
-    return download_name or os.path.basename(resolved)
-
-
-def _build_send_file_args(
-    path_or_file: Any,
-    as_attachment: bool,
-    download_name: str | None,
-    last_modified: Any,
-    etag: bool | str,
-    max_age: int | None,
-) -> tuple[str, str | None, dict[str, str], bool]:
-    """Compute the path, attachment name, headers, and strip-ETag flag."""
-    headers: dict[str, str] = {}
-    if last_modified is not None:
-        if isinstance(last_modified, str):
-            headers[HEADER_LAST_MODIFIED] = last_modified
-        else:
-            headers[HEADER_LAST_MODIFIED] = http_date(last_modified)
-
-    if isinstance(etag, str):
-        headers[HEADER_ETAG] = etag
-
-    if max_age is None:
-        # Through the context var, so the helper still works (with no
-        # Cache-Control) outside a request.
-        app = _current_app_var.get()
-        if app is not None:
-            max_age = app.config.get("SEND_FILE_MAX_AGE_DEFAULT")
-    if max_age is not None:
-        headers[HEADER_CACHE_CONTROL] = f"public, max-age={max_age}"
-
-    path = str(path_or_file)
-    attachment_name = _attachment_name(path, as_attachment, download_name)
-    return path, attachment_name, headers, etag is False
-
-
-def _finish_send_file(resp: Response, strip_etag: bool) -> Response:
-    """Apply the `etag=False` strip-and-reset to a built FileResponse."""
-    if strip_etag:
-        resp.headers.pop(HEADER_ETAG, None)
-        resp._encoded = None
-    return resp
-
-
-def _range_negotiable_request() -> Any:
-    """Return the request a file helper may negotiate a `Range` against, if any.
-
-    `None` while an exception handler runs: a `Range` applies only to the target
-    resource's own representation (RFC 9110 Sec. 14.2), and an error page is a
-    stand-in for one the request did not get.
-    """
-    if _serving_error_page_var.get():
-        return None
-    return _current_request_var.get()
-
-
-def send_file(
-    path_or_file: Any,
-    mimetype: str | None = None,
-    as_attachment: bool = False,
-    download_name: str | None = None,
-    last_modified: Any = None,
-    etag: bool | str = True,
-    max_age: int | None = None,
-) -> Response:
-    """Serve a file from a filesystem path.
-
-    Accepts a `str` or `PathLike` and returns a `FileResponse` with the
-    conditional-GET headers (`Last-Modified` and `ETag`) already set. Optional
-    knobs:
-
-    - `mimetype=` overrides the auto-guessed content type.
-    - `as_attachment=True` sets `Content-Disposition: attachment;
-      filename=<download_name or basename>`.
-    - `download_name=` overrides the filename in `Content-Disposition`.
-    - `last_modified=` overrides the file's mtime (datetime, unix ts,
-      or pre-formatted IMF-fixdate string).
-    - `etag=False` suppresses the auto-generated ETag; `etag="<value>"`
-      uses the caller-provided one verbatim (already-quoted).
-    - `max_age=` adds `Cache-Control: public, max-age=<n>`.
-    """
-    path, attachment_name, headers, strip_etag = _build_send_file_args(
-        path_or_file, as_attachment, download_name, last_modified, etag, max_age
-    )
-    resp = FileResponse(
-        path=path,
-        filename=attachment_name,
-        content_type=mimetype,
-        headers=headers,
-        # This helper serves the file the current request asked for, so it opts
-        # into `Range` handling; a hand-built `FileResponse` does not.
-        request=_range_negotiable_request(),
-    )
-    return _finish_send_file(resp, strip_etag)
-
-
-async def async_send_file(
-    path_or_file: Any,
-    mimetype: str | None = None,
-    as_attachment: bool = False,
-    download_name: str | None = None,
-    last_modified: Any = None,
-    etag: bool | str = True,
-    max_age: int | None = None,
-) -> Response:
-    """Serve a file - async variant of `send_file`.
-
-    Reads the file in an executor, so it never blocks the event loop. Prefer it
-    from async handlers; the sync `send_file` warns when called on a running loop.
-    """
-    path, attachment_name, headers, strip_etag = _build_send_file_args(
-        path_or_file, as_attachment, download_name, last_modified, etag, max_age
-    )
-    resp = await FileResponse.from_path(
-        path=path,
-        filename=attachment_name,
-        content_type=mimetype,
-        headers=headers,
-        request=_range_negotiable_request(),
-    )
-    return _finish_send_file(resp, strip_etag)
-
-
 # ── redirect() ────────────────────────────────────────────
 
 
@@ -469,6 +368,15 @@ def redirect(
     RFC 9110 Sec. 15.4 catalogue: 301 (permanent, method may change), 302
     (found, method may change), 303 (see other, method becomes GET), 307
     (temporary, method preserved), 308 (permanent, method preserved).
+
+    Args:
+        location: Target URL, sent in the `Location` header.
+        code: Redirect status code.
+        headers: Extra headers to send with the response.
+
+    Returns:
+        A `RedirectResponse` to `location`.
+
     """
     return RedirectResponse(location, status_code=code, headers=headers)
 
@@ -559,6 +467,19 @@ def make_response(
         resp = make_response({"data": True}, 201)
         resp = make_response((b"raw", 201))
         resp = make_response(jsonify({"error": "forbidden"}), 403)
+
+    Args:
+        body: The value to wrap: a `Response`, a `dict`/`list` (JSON), text or
+            bytes, or a tuple in one of the handler return shapes.
+        status_code: Status for the response; `None` keeps an existing
+            `Response`'s own status and means 200 otherwise.
+        headers: Headers to set on the response.
+        content_type: Content type for text or bytes bodies; `text/html` when
+            omitted.
+
+    Returns:
+        The response.
+
     """
     if isinstance(body, tuple):
         unpacked = _unpack_response_tuple(body)
@@ -596,60 +517,6 @@ def make_response(
     return JSONResponse(body, status_code=status_code, headers=headers)
 
 
-# ── send_from_directory() ─────────────────────────────────
-
-
-def send_from_directory(
-    directory: str,
-    filename: str,
-    mimetype: str | None = None,
-    as_attachment: bool = False,
-    download_name: str | None = None,
-) -> FileResponse:
-    """Send a file from a directory (sync version).
-
-    Traversal-safe via `safe_join`. Returns 403 on any escape attempt.
-
-    For async, use send_from_directory_async() instead.
-    """
-    resolved = safe_join(directory, filename)
-    if resolved is None:
-        abort(HTTP_403_FORBIDDEN, MSG_ACCESS_DENIED)
-
-    attachment_name = _attachment_name(str(resolved), as_attachment, download_name)
-    return FileResponse(
-        path=resolved,
-        filename=attachment_name,
-        content_type=mimetype,
-        request=_range_negotiable_request(),
-    )
-
-
-async def send_from_directory_async(
-    directory: str,
-    filename: str,
-    mimetype: str | None = None,
-    as_attachment: bool = False,
-    download_name: str | None = None,
-) -> FileResponse:
-    """Send a file from a directory - async version, reads file in executor.
-
-    Traversal-safe via `safe_join`.
-    """
-    # `safe_join` is pure string arithmetic; the file read happens below.
-    resolved = safe_join(directory, filename)  # noqa: ASYNC240
-    if resolved is None:
-        abort(HTTP_403_FORBIDDEN, MSG_ACCESS_DENIED)
-
-    attachment_name = _attachment_name(str(resolved), as_attachment, download_name)
-    return await FileResponse.from_path(
-        path=resolved,
-        filename=attachment_name,
-        content_type=mimetype,
-        request=_range_negotiable_request(),
-    )
-
-
 # ── flash() / get_flashed_messages() ──────────────────────
 
 
@@ -676,7 +543,16 @@ def flash(message: str, category: str = "message") -> None:
 
         flash("Item created successfully")
         flash("Invalid input", "error")
-    """
+
+    Args:
+        message: The text to show on the next request.
+        category: A label such as `"error"` or `"info"` to filter on.
+
+    Raises:
+        RuntimeError: Outside a request, or when no session middleware is
+            installed.
+
+    """  # noqa: DOC502 - the exception is raised or caught by a callee
     store = _flash_store()
     flashes = store.setdefault("_flashes", [])
     flashes.append((category, message))
@@ -688,7 +564,7 @@ def flash(message: str, category: str = "message") -> None:
 
 
 def get_flashed_messages(
-    with_categories: bool = False, category_filter: Sequence[str] | None = None
+    *, with_categories: bool = False, category_filter: Sequence[str] | None = None
 ) -> list[str] | list[tuple[str, str]]:
     """Get flashed messages - call in templates.
 
@@ -696,6 +572,15 @@ def get_flashed_messages(
 
         messages = get_flashed_messages()
         messages = get_flashed_messages(with_categories=True)
+
+    Args:
+        with_categories: Return `(category, message)` pairs instead of bare
+            messages.
+        category_filter: Keep only messages in these categories.
+
+    Returns:
+        The queued messages, which are consumed; empty outside a request.
+
     """
     req = _current_request_var.get()
     # Empty rather than raising, so a template render outside a request works.

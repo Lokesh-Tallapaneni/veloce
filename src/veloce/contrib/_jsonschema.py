@@ -23,7 +23,7 @@ import types
 import uuid
 import weakref
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, Literal, Union, get_args, get_origin
+from typing import Any, Literal, Union, get_args, get_origin
 
 from pydantic import BaseModel, create_model
 
@@ -38,9 +38,6 @@ from veloce._model_backend import (
     is_msgspec_struct,
     is_pydantic_model,
 )
-
-if TYPE_CHECKING:  # pragma: no cover
-    pass
 
 _logger = logging.getLogger(__name__)
 
@@ -411,8 +408,8 @@ class _SchemaEntry:
                 # A dataclass is described by the adapter that validates it.
                 schema = adapter_for(self.model).json_schema()
             else:
-                schema = self.model.model_json_schema(mode=self.mode)  # type: ignore[arg-type]
-        except Exception as exc:
+                schema = self.model.model_json_schema(mode=self.mode)  # type: ignore[arg-type]  # mode is validated upstream as a literal
+        except Exception as exc:  # noqa: BLE001 - schema generation falls back to a bare object with a warning
             _warn_schema_fallback(f"{self.model.__name__} ({self.mode} mode)", exc)
             self.body = {"type": "object"}
             return
@@ -434,7 +431,7 @@ class _SchemaEntry:
             schemas, components = _msgspec.json.schema_components(
                 [self.model], ref_template="#/$defs/{name}"
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - schema generation falls back to a bare object with a warning
             _warn_schema_fallback(f"{self.model.__name__} (msgspec)", exc)
             self.body = {"type": "object"}
             return
@@ -524,7 +521,7 @@ def _adapted_to_schema(model: Any, registry: dict[str, dict[str, Any]]) -> dict[
     if name not in registry:
         try:
             _register_schema(name, adapter_for(model).json_schema(), registry)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - schema generation falls back to a bare object with a warning
             _warn_schema_fallback(name, exc)
             registry[name] = {"type": "object"}
     return {"$ref": f"#/components/schemas/{name}"}
@@ -547,9 +544,9 @@ def _pydantic_to_schema(
     name = model.__name__
     if name not in registry:
         try:
-            schema = model.model_json_schema(mode=mode, by_alias=by_alias)  # type: ignore[arg-type]
+            schema = model.model_json_schema(mode=mode, by_alias=by_alias)  # type: ignore[arg-type]  # mode is validated upstream as a literal
             _register_schema(name, schema, registry)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - schema generation falls back to a bare object with a warning
             _warn_schema_fallback(name, exc)
             registry[name] = {"type": "object"}
     return {"$ref": f"#/components/schemas/{name}"}

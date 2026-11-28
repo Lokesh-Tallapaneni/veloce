@@ -42,7 +42,7 @@ try:
 except ImportError as exc:  # pragma: no cover - exercised only without prometheus_client
     # `Any` rather than three suppressions: `_PROM_IMPORT_ERROR` gates every use.
     _prom = cast("Any", None)
-    Counter = Histogram = cast("Any", None)  # type: ignore[misc]
+    Counter = Histogram = cast("Any", None)  # type: ignore[misc]  # placeholder when the optional dependency is missing
     _PROM_IMPORT_ERROR = exc
 
 
@@ -121,7 +121,23 @@ def instrument_with_prometheus(
 
     Raise :class:`ImportError` with an install hint when ``prometheus_client``
     is not installed. Return the registered hook.
-    """
+
+    Args:
+        app: Application whose instrumentation the metrics are taken from.
+        registry: Registry to bind the metrics to; the client library's default when omitted.
+        prefix: Prefix of the metric names.
+        buckets: Histogram bucket bounds, in seconds.
+        group_status: Collapse the status code into its class (`2xx`) for the `status` label.
+        exclude_routes: Route templates whose series are suppressed.
+
+    Returns:
+        The registered instrumentation hook.
+
+    Raises:
+        ImportError: If `prometheus_client` is not installed (the `metrics` extra).
+        ValueError: If the metric names already exist in `registry`.
+
+    """  # noqa: DOC503 - the exception is raised or caught by a callee
     if _PROM_IMPORT_ERROR is not None:
         raise ImportError(_INSTALL_HINT) from _PROM_IMPORT_ERROR
 

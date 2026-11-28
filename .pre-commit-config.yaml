@@ -26,7 +26,15 @@ repos:
       - id: forbid-catch-all-tests
         name: forbid catch-all / iteration-named test files
         entry: >-
-          bash -c 'bad=$(ls tests/ | grep -E "^test_(iteration[0-9]+|new_features|final_coverage|misc_e2e|reliability_fixes|vel[0-9]*_[a-z0-9_]*|reported_bugs|issues|bugs|fixes)\.py$" || true); if [ -n "$bad" ]; then echo "Catch-all test files are forbidden; place each test in test_<feature>.py. Offending: $bad"; exit 1; fi'
+          bash -c 'bad=$(find tests -name "test_*.py" -exec basename {} \; | grep -E "^test_(iteration[0-9]+|new_features|final_coverage|misc_e2e|reliability_fixes|vel[0-9]*_[a-z0-9_]*|reported_bugs|issues|bugs|fixes)\.py$" || true); if [ -n "$bad" ]; then echo "Catch-all test files are forbidden; place each test in test_<feature>.py. Offending: $bad"; exit 1; fi'
+        language: system
+        pass_filenames: false
+        files: ^tests/
+
+      - id: forbid-new-top-level-tests
+        name: forbid new top-level test files
+        entry: >-
+          bash -c 'bad=$(ls tests/test_*.py 2>/dev/null | sed "s#tests/##" | grep -vxFf tests/top_level_tests.txt || true); if [ -n "$bad" ]; then echo "New tests go in the subfolder that mirrors the module they cover (tests/http/, tests/mcp/, ...). tests/ itself holds only the cross-cutting guards listed in tests/top_level_tests.txt. Offending: $bad"; exit 1; fi'
         language: system
         pass_filenames: false
         files: ^tests/

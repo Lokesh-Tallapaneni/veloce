@@ -217,6 +217,10 @@ dev = [
     "tomli>=2.0; python_version < '3.11'",
     "ruff>=0.16.5",
     "mypy>=1.10",
+    # Checks that each public docstring's Args/Returns match the signature.
+    "pydoclint>=0.8",
+    # Runs the suite across every core: `pytest -n auto`.
+    "pytest-xdist>=3.5",
     # uvicorn is now an optional extra, but the test suite still exercises the
     # `veloce run` / serving paths, so the dev environment installs it.
     "uvicorn[standard]>=0.23",
@@ -344,6 +348,10 @@ extend-exclude = ["build", "dist", ".pytest_cache"]
 exclude = ["*.md"]
 
 [tool.ruff.lint]
+# Codes owned by another tool (pydoclint's `DOC5xx`): `RUF100` must not report
+# a `noqa` for them as unused.
+external = ["DOC"]
+
 select = [
     "E",    # pycodestyle errors
     "W",    # pycodestyle warnings
@@ -354,6 +362,26 @@ select = [
     "SIM",  # flake8-simplify
     "ASYNC",
     "TID251",  # banned APIs, named under `flake8-tidy-imports.banned-api`
+    # Size and shape ceilings, set at today's maximum like `max-complexity`
+    # below: no new function exceeds them, and they can only be lowered. The
+    # argument ceiling is the width of the documented route signatures.
+    "PLR0911",  # too many return statements
+    "PLR0912",  # too many branches
+    "PLR0913",  # too many arguments
+    "PLR0915",  # too many statements
+    # Only the type-checking-block correctness checks. The rest of `TC` would
+    # move imports under `TYPE_CHECKING` that handler-annotation resolution
+    # reads at runtime, which a linter cannot tell apart from the harmless ones.
+    "TC004",  # a runtime use of a name imported only for type checking
+    "TC005",  # an empty `if TYPE_CHECKING:` block
+    "TC006",  # `cast()` with an unquoted type
+    "N",       # PEP 8 naming
+    "PGH004",  # blanket `noqa` without a rule code
+    "RUF100",  # unused `noqa` - keeps every suppression load-bearing
+    "BLE",     # blind `except`; each deliberate one carries its reason inline
+    "ANN",     # every signature annotated (mypy strict already requires it)
+    "T20",     # no stray `print`; the CLI and startup banner opt out below
+    "C90",     # cyclomatic complexity, capped by `max-complexity` below
     # PEP 257 docstring rules. The style guide names ruff as the write-time gate
     # for its PEP 257 clause; before this, `select` carried no `D` family at all,
     # so that clause was prose nothing executed. The subset below is every `D`
@@ -367,13 +395,12 @@ ignore = [
     "E501",  # line length handled by formatter
     "B008",  # function calls in default args (Depends/Query/etc. legitimately need this)
     # ── PEP 257 rules deliberately not enforced ──────────────────────
-    # The style guide explicitly says to skip docstrings on dunders, `__init__`,
-    # HTTP-method shortcuts and delegation methods under five lines, so these
-    # three would flag exactly what it tells authors not to write.
+    # The style guide says to skip docstrings on dunders and `__init__` (the class
+    # docstring and the signature document construction), so these two would flag
+    # exactly what it tells authors not to write. Public classes and methods are
+    # documented and held there by D101/D102/D103.
     "D105",  # undocumented magic method
     "D107",  # undocumented `__init__`
-    "D102",  # undocumented public method
-    "D101",  # undocumented public class - same skip list (HTTP exception subclasses)
     # A predicate reads better as a noun phrase ("True when the port is the
     # default for the scheme") than as "Return True when ...", and the codebase
     # uses that form consistently for properties and predicates. Enforcing
@@ -390,7 +417,22 @@ ignore = [
     "D415",  # first line should end with punctuation - as D400
     "D203",  # incompatible with D211, which is the convention here
     "D213",  # incompatible with D212, which is the convention here
+    # Public exception names are part of the documented API and are kept as
+    # shipped; a rename would break every `except` clause that names them.
+    "N818",  # exception name without an `Error` suffix
+    # `Any` is a deliberate choice where the shape is genuinely open (handler
+    # callables, JSON values, plugin hooks); mypy's strict flags decide where
+    # it is acceptable, not a blanket ban.
+    "ANN401",
 ]
+
+# A ceiling set at the most complex function today, so no new function exceeds
+# it and the number can only be lowered as functions are decomposed.
+mccabe.max-complexity = 37
+pylint.max-args = 42
+pylint.max-returns = 20
+pylint.max-branches = 41
+pylint.max-statements = 104
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 # The event-loop policy API is deprecated as of Python 3.14 and scheduled for
@@ -417,18 +459,49 @@ ignore = [
 # docstring and the test name, not in a per-function docstring.
 # TID251: the JSON ban keeps the *framework* on one backend. A test has to
 # reach a library directly to check the seam against something independent.
-"tests/**" = ["B", "D", "TID251"]  # bugbear false positives in test patterns; see above
+"tests/**" = ["ANN", "B", "BLE", "D", "T20", "TID251", "N801", "N802", "N817"]  # bugbear false positives in test patterns; see above
 "src/veloce/__init__.py" = ["F401"]  # re-exports
-"benchmarks/**" = ["D"]
-"example_app.py" = ["D"]
-"bench/**" = ["D"]
+"src/veloce/routing/converters.py" = ["F401"]  # re-exports the converter modules it was split into
+"src/veloce/contrib/mcp/authorization/__init__.py" = ["F401"]  # re-exports the modules it was split into
+"src/veloce/websocket/__init__.py" = ["F401"]  # re-exports, including the private names in-tree callers import
+"src/veloce/serving/protocol/__init__.py" = ["F401"]  # re-exports, including the private names in-tree callers import
+"src/veloce/middleware/sessions/__init__.py" = ["F401"]  # re-exports, including the private names in-tree callers import
+"src/veloce/middleware/security/__init__.py" = ["F401"]  # re-exports, including the private names in-tree callers import
+"src/veloce/testclient/__init__.py" = ["F401"]  # re-exports, including the private names in-tree callers import
+# `TemplateResponse` is the documented public method name.
+"src/veloce/contrib/templating.py" = ["N802"]
+# The OAuth2 flow parameters are named after the OpenAPI flow object fields.
+"src/veloce/security/oauth2.py" = ["N803"]
+"benchmarks/**" = ["D", "ANN", "T20"]
+# Standard output is these modules' interface: command output and the startup banner.
+"src/veloce/cli.py" = ["T20"]
+"src/veloce/app/serving.py" = ["T20"]
+"src/veloce/serving/reloader.py" = ["T20"]
+"example_app.py" = ["D", "ANN", "T20"]  # a demo script
+"bench/**" = ["D", "ANN", "T20"]
+"scripts/**" = ["D", "ANN", "T20"]
 "mkdocs_hooks.py" = ["D"]  # a build hook, not shipped API
 
 # The only three modules allowed to name a JSON library directly. Everything
 # else goes through `veloce._json`, which the TID251 bans above enforce.
 "src/veloce/_json.py" = ["TID251"]  # owns the backend choice
 "src/veloce/_model_backend.py" = ["TID251"]  # msgspec for model validation, not encoding
-"src/veloce/http/response.py" = ["TID251"]  # `UJSONResponse` is an explicit opt-out
+"src/veloce/http/response/json_response.py" = ["TID251"]  # `UJSONResponse` is an explicit opt-out
+
+[tool.pydoclint]
+style = "google"
+# Types live in the signature; the docstring describes meaning.
+arg-type-hints-in-docstring = false
+arg-type-hints-in-signature = true
+# One-line summaries need no sections; a `Args:` block is required once the
+# docstring is longer than that and the signature has parameters.
+skip-checking-short-docstrings = true
+allow-init-docstring = true
+check-return-types = false
+check-class-attributes = false
+# A function that documents the exceptions its callee raises would be reported
+# as a mismatch, since the checker reads only the function's own `raise`s.
+exclude = "/(tests|benchmarks|bench|docs|examples)/|example_app.py|mkdocs_hooks.py"
 
 [tool.pyright]
 include = ["src/veloce"]
@@ -495,12 +568,28 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = [
     "veloce._handler_plan",
+    "veloce._plan_kinds",
+    "veloce._plan_annotations",
+    "veloce._plan_slot",
+    "veloce._plan_core",
+    "veloce._plan_hints",
+    "veloce._plan_build",
     "veloce._pipeline",
     "veloce._resolver_codegen",
     "veloce.app.asgi",
     "veloce.app.background",
     "veloce.app.core",
+    "veloce.app.accessors",
+    "veloce.app.registration",
+    "veloce.app.posture",
+    "veloce.app.construction",
     "veloce.app.dispatch",
+    "veloce.app.dispatch_support",
+    "veloce.app.dispatch_errors",
+    "veloce.app.dispatch_hooks",
+    "veloce.app.dispatch_response",
+    "veloce.app.dispatch_middleware",
+    "veloce.app.dispatch_aliases",
     "veloce.app.errors",
     "veloce.app.lifecycle",
     "veloce.app.middleware",
@@ -512,27 +601,39 @@ module = [
     "veloce.contrib.mcp.completion",
     "veloce.contrib.mcp.descriptors",
     "veloce.contrib.mcp.plan_bridge",
+    "veloce.contrib.mcp.plan_bridge.*",
     "veloce.contrib.mcp.prompts",
     "veloce.contrib.mcp.registry",
     "veloce.contrib.openapi",
+    "veloce.contrib.openapi.*",
     "veloce.contrib.redis",
     "veloce.contrib.templating",
     "veloce.dependency",
+    "veloce._dependency_coerce",
+    "veloce._dependency_markers",
+    "veloce._dependency_resolver",
     "veloce.encoders",
     "veloce.helpers",
     "veloce.http.datastructures",
     "veloce.http.request",
+    "veloce.http.request.*",
     "veloce.middleware.base",
     "veloce.middleware.compression",
     "veloce.middleware.security",
+    "veloce.middleware.security.*",
+    "veloce.middleware.sessions",
+    "veloce.middleware.sessions.*",
     "veloce.otel",
     "veloce.routing.router",
     "veloce.security._utils",
     "veloce.serving.protocol",
+    "veloce.serving.protocol.*",
     "veloce.signals",
     "veloce.testclient",
+    "veloce.testclient.*",
     "veloce.views",
     "veloce.websocket",
+    "veloce.websocket.*",
     "veloce.workers",
 ]
 warn_return_any = false

@@ -497,3 +497,5 @@ dispatch instead of being converted to a `500`. See
   error handler can return.
 - The [API reference](../reference/index.md) lists `HTTPException`, `abort`, and
   the registration methods with full signatures.
+
+**Source and tests:** [`src/veloce/exceptions.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/exceptions.py), [`src/veloce/app/errors.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/app/errors.py), [`tests/app/test_error_handler_spec.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/app/test_error_handler_spec.py), [`tests/http/test_http_exceptions.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/http/test_http_exceptions.py)

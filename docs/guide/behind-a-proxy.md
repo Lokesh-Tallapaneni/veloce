@@ -191,3 +191,5 @@ assert resp.json() == {
 - [Configuration](configuration.md) — set `SERVER_NAME` and `PREFERRED_URL_SCHEME` for absolute `url_for`.
 - [Deployment](deployment.md) — run the app behind a real proxy in production.
 - Full signatures are in the [API reference](../reference/index.md).
+
+**Source and tests:** [`src/veloce/middleware/proxy_fix.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/middleware/proxy_fix.py), [`tests/middleware/test_proxy_fix.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/middleware/test_proxy_fix.py), [`tests/middleware/test_proxy_fix_forwarded_authority.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/middleware/test_proxy_fix_forwarded_authority.py)

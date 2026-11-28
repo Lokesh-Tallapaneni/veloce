@@ -64,6 +64,15 @@ def constant_time_compare(a: str | bytes, b: str | bytes) -> bool:
     that already hold two equal-typed ``bytes`` values call
     ``hmac.compare_digest`` directly, avoiding an ``isinstance`` ladder and a
     redundant encode on a security-hot verify path.
+
+    Args:
+        a: The first value.
+        b: The second value.
+
+    Returns:
+        True when both are the same type (`str` or `bytes`) and equal. A `str`
+        compared with `bytes` is never equal.
+
     """
     if isinstance(a, str) and isinstance(b, str):
         return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))

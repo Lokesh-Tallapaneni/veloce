@@ -11,6 +11,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from veloce.exceptions import VeloceError
+
 # ── Naming helpers ───────────────────────────────────────────────────
 
 
@@ -518,7 +520,7 @@ GENERATOR_KINDS = tuple(GENERATORS)
 # ── Public operations ────────────────────────────────────────────────
 
 
-class ScaffoldError(Exception):
+class ScaffoldError(VeloceError):
     """A scaffolding request could not be fulfilled (bad target, collision)."""
 
 

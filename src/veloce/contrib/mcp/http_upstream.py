@@ -53,6 +53,7 @@ class HttpUpstreamRequest:
         self,
         url: str,
         client: httpx2.AsyncClient,
+        *,
         owns_client: bool,
         headers: Mapping[str, str] | None,
     ) -> None:
@@ -69,6 +70,7 @@ class HttpUpstreamRequest:
         self._next_id = itertools.count(1)
 
     async def __call__(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Send one JSON-RPC request to the upstream, initialising the session on first use."""
         if not self._initialized:
             async with self._init_lock:
                 if not self._initialized:
@@ -187,6 +189,7 @@ class HttpUpstreamRequest:
         self._initialized = True
 
     async def aclose(self) -> None:
+        """Terminate the upstream session and close the client, when this object owns it."""
         if self._owns_client:
             if self._session_id is not None:
                 with contextlib.suppress(Exception):
@@ -277,6 +280,19 @@ def http_upstream(
         request = http_upstream("http://localhost:9000/mcp")
         await add_mcp_proxy(app, "upstream", request)
         app.mount_mcp(transport="http")
+
+    Args:
+        url: Upstream Streamable HTTP endpoint.
+        client: Caller-owned `httpx2.AsyncClient`; one is created and owned when omitted.
+        headers: Headers merged onto every request.
+
+    Returns:
+        The `request(method, params)` callable, which also exposes `aclose()`.
+
+    Raises:
+        RuntimeError: If `httpx2` is not installed (the `mcp-proxy` extra) or the interpreter
+            cannot run it.
+
     """
     try:
         import httpx2
@@ -297,4 +313,4 @@ def http_upstream(
         if client is not None
         else httpx2.AsyncClient(timeout=httpx2.Timeout(10.0, read=120.0))
     )
-    return HttpUpstreamRequest(url, resolved_client, owns_client, headers)
+    return HttpUpstreamRequest(url, resolved_client, owns_client=owns_client, headers=headers)

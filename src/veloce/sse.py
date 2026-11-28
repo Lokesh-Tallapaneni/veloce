@@ -71,6 +71,16 @@ class ServerSentEvent:
 
         Use the regular constructor when the payload is already a formatted
         string.
+
+        Args:
+            payload: The value to serialise into the `data` field.
+            event: The event name.
+            id: The event id.
+            retry: Reconnection delay in milliseconds.
+
+        Returns:
+            The event.
+
         """
         return cls(
             # The shared encoder, so one JSON dialect reaches both doors.
@@ -175,7 +185,7 @@ class EventSourceResponse(Response):
         # Normalised to bytes up front, so both transports consume one stream.
         self._stream = self._encode_stream(content)
 
-    def encode(self, keep_alive: bool = True) -> bytes:
+    def encode(self, *, keep_alive: bool = True) -> bytes:
         """Encode the event-stream head.
 
         The native transport calls `encode()` to answer a HEAD, and RFC 9110
@@ -196,6 +206,7 @@ class EventSourceResponse(Response):
         self,
         transport: Any,
         drain: Callable[[], Awaitable[None]] | None = None,
+        *,
         keep_alive: bool = True,
     ) -> None:
         """Stream SSE events to transport.
@@ -205,6 +216,12 @@ class EventSourceResponse(Response):
         producer feeding a slow client is throttled at the transport buffer
         instead of growing it without bound. It is a no-op until the buffer
         crosses the high-water mark.
+
+        Args:
+            transport: The raw transport to write to.
+            drain: Awaited after each event to apply flow control; `None` skips it.
+            keep_alive: Whether to advertise a persistent connection.
+
         """
         transport.write(self.encode(keep_alive=keep_alive))
         # `_encode_stream` normalised `_stream` to bytes for the chunk writer.

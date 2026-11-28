@@ -311,3 +311,5 @@ assert resp.json() == {"host": "testserver", "best": "text/html", "user": "alice
 - Read the body, query params, and cookies off the request — see [Requests and responses](requests-responses.md).
 - Wire `Authorization` into a login flow — see [Security schemes](security-schemes.md).
 - Full signatures are in the [API reference](../reference/index.md).
+
+**Source and tests:** [`src/veloce/http/datastructures.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/http/datastructures.py), [`tests/http/test_datastructures.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/http/test_datastructures.py), [`tests/http/test_multidict_semantics.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/http/test_multidict_semantics.py)

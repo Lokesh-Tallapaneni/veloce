@@ -80,7 +80,7 @@ def _return_annotation(handler: Callable[..., Any]) -> Any:
         from veloce._internal import resolve_hint_target
 
         hints = typing.get_type_hints(resolve_hint_target(handler))
-    except Exception:
+    except Exception:  # noqa: BLE001 - an unresolvable return annotation means no declared model
         return None
     return hints.get("return")
 
@@ -179,7 +179,7 @@ def _typeddict_is_adaptable(tp: Any) -> bool:
     try:
         TypeAdapter(tp)
         supported = True
-    except Exception:
+    except Exception:  # noqa: BLE001 - any adapter-construction failure marks the type unsupported
         supported = False
     with contextlib.suppress(TypeError):
         _typeddict_support[tp] = supported

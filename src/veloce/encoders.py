@@ -119,7 +119,7 @@ def _resolve_encoder(cls: type[Any]) -> Callable[[Any], Any] | None:
     """
     cached = _RESOLVED_ENCODERS.get(cls, _MISSING)
     if cached is not _MISSING:
-        return cached  # type: ignore[return-value]
+        return cached  # type: ignore[return-value]  # the cache stores the encoder's own return type
     resolved: Callable[[Any], Any] | None = None
     # The registry must win for the same base, so it is probed first.
     registry = _REGISTERED_ENCODERS
@@ -147,6 +147,14 @@ def register_encoder(type_: type[Any], encoder: Callable[[Any], Any]) -> None:
     Usage::
 
         register_encoder(MyId, lambda v: v.hex)
+
+    Args:
+        type_: The type, with its subclasses, the encoder handles.
+        encoder: Converts one instance to a JSON-able value.
+
+    Raises:
+        TypeError: If `type_` is not a type or `encoder` is not callable.
+
     """
     if not isinstance(type_, type):
         raise TypeError("register_encoder requires a type as its first argument")
@@ -285,7 +293,25 @@ def jsonable_encoder(
     Usage::
 
         data = jsonable_encoder(my_pydantic_model, exclude={"password"})
-    """
+
+    Args:
+        obj: The value to convert.
+        include: Key names to keep, applied at every depth.
+        exclude: Key names to drop, applied at every depth.
+        exclude_unset: Drop model fields that were never set.
+        exclude_defaults: Drop model fields equal to their default.
+        exclude_none: Drop `None` values.
+        custom_encoder: Per-type encoders consulted before every built-in rule.
+        _seen: Internal recursion guard; leave unset.
+
+    Returns:
+        A structure of JSON-serialisable values.
+
+    Raises:
+        ValueError: If the object graph refers to itself.
+        TypeError: If a `Secret` reaches the serialiser.
+
+    """  # noqa: DOC503 - the exception is raised or caught by a callee
     # Checked before `custom_encoder`, so a caller cannot register the guard away.
     if isinstance(obj, Secret):
         _reject_secret()
@@ -324,7 +350,7 @@ def jsonable_encoder(
     if resolved_encoder is _MISSING:
         resolved_encoder = _resolve_encoder(type(obj))
     if resolved_encoder is not None:
-        return resolved_encoder(obj)  # type: ignore[operator]
+        return resolved_encoder(obj)  # type: ignore[operator]  # resolved_encoder is callable by construction
 
     # Only containers can cycle, so the seen-set is allocated lazily.
     if _seen is None:

@@ -89,7 +89,12 @@ class EventLoopWatchdog:
         self._stopped = threading.Event()
 
     def start(self) -> None:
-        """Arm the watchdog. Must be called from inside the loop thread."""
+        """Arm the watchdog. Must be called from inside the loop thread.
+
+        Raises:
+            RuntimeError: If already started, or called from outside the thread running its loop.
+
+        """
         if self._thread is not None and self._thread.is_alive():
             raise RuntimeError("EventLoopWatchdog is already started")
         try:
@@ -169,7 +174,7 @@ class EventLoopWatchdog:
             return ""
         try:
             label = self._attributor(frame)
-        except Exception:
+        except Exception:  # noqa: BLE001 - a failing attributor must not break the report
             return ""
         return f" while serving {label}" if label else ""
 

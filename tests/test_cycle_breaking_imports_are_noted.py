@@ -74,6 +74,13 @@ def test_the_cycle_is_still_there_to_break() -> None:
     from test_module_import_graph import _graph, _module_name
 
     graph = _graph(include_gateway=True)
+    # Importing `veloce.a.b` first runs `veloce/a/__init__.py`, so a package's
+    # gateway is a dependency of everything beneath it. A loop that closes
+    # through a package `__init__` is real, and invisible without these edges.
+    for edges in graph.values():
+        for name in tuple(edges):
+            parts = name.split(".")
+            edges.update(".".join(parts[:n]) for n in range(2, len(parts)))
     stale: list[str] = []
     for where, line, module in NOTED:
         owner = _module_name(SRC / where)

@@ -16,16 +16,14 @@ from collections.abc import Callable, Mapping
 from typing import IO, Any
 
 import veloce._json as _json
-from veloce._protocol_constants import URL_SCHEME_HTTP
 
 _logger = logging.getLogger(__name__)
 
-# Without a cap, a DDoS can open sockets faster than dispatch drains them.
-DEFAULT_MAX_CONCURRENT_CONNECTIONS = 1000
+DEFAULT_MAX_CONCURRENT_CONNECTIONS: int = 1000
+"""Open-socket cap; without it a flood opens sockets faster than dispatch drains them."""
 
-# Write-side high watermark (bytes): a producer outrunning a slow client would
-# otherwise grow the transport write buffer into a memory-exhaustion vector.
-DEFAULT_WRITE_BUFFER_HIGH_WATER = 256 * 1024
+DEFAULT_WRITE_BUFFER_HIGH_WATER: int = 256 * 1024
+"""Write-side high watermark in bytes; a producer outrunning a slow client would otherwise grow the transport buffer into a memory-exhaustion vector."""
 
 
 def _json_load(fp: IO[str] | IO[bytes]) -> Mapping[str, Any]:
@@ -108,7 +106,7 @@ def _import_string(dotted_path: str) -> object:
 
 
 #: Keys typed but defaulting to `None`, so the type cannot be read off the
-#: default. `tests/test_env_file_typing.py` pins this table as complete.
+#: default. `tests/app/test_env_file_typing.py` pins this table as complete.
 _ENV_TYPED_NONE_DEFAULTS: dict[str, str] = {
     "MAX_FORM_FIELDS": "int",
     "MAX_FORM_FIELD_MEMORY": "int",
@@ -229,55 +227,10 @@ class Config(dict[str, Any]):
 
         Seeded into `app.config` at construction so reads never raise `KeyError`.
         """
-        return {
-            "DEBUG": False,
-            "TESTING": False,
-            "SECRET_KEY": None,
-            "SERVER_NAME": None,
-            "PREFERRED_URL_SCHEME": URL_SCHEME_HTTP,
-            # The body is buffered, so unbounded lets one request OOM us.
-            "MAX_CONTENT_LENGTH": 100 * 1024 * 1024,
-            "MAX_FORM_PARTS": 1000,
-            "MAX_FORM_PART_SIZE": 10 * 1024 * 1024,
-            "MAX_FORM_FILES": None,
-            "MAX_FORM_FIELDS": None,
-            "MAX_FORM_FILE_SIZE": None,
-            "MAX_FORM_FIELD_SIZE": None,
-            "MAX_FORM_FIELD_MEMORY": None,
-            # Finding ids the audit drops, so it stays on for everything else.
-            "SILENCED_AUDIT_IDS": (),
-            "JSON_SORT_KEYS": False,
-            "JSONIFY_PRETTYPRINT_REGULAR": False,
-            # The verbose reason can leak decoder internals; unset means DEBUG.
-            "JSON_ERRORS_VERBOSE": False,
-            "PROPAGATE_EXCEPTIONS": None,
-            "SEND_FILE_MAX_AGE_DEFAULT": None,
-            "REQUEST_HANDLER_TIMEOUT": 30,
-            "KEEP_ALIVE_TIMEOUT": 75,
-            "REQUEST_TIMEOUT": 30,
-            "MAX_PIPELINED_REQUESTS": 64,
-            "MAX_CONCURRENT_CONNECTIONS": DEFAULT_MAX_CONCURRENT_CONNECTIONS,
-            "WRITE_BUFFER_HIGH_WATER": DEFAULT_WRITE_BUFFER_HIGH_WATER,
-            # SO_KEEPALIVE, so the kernel tears down a peer that vanished
-            # without a FIN. The knobs map to TCP_KEEPIDLE / INTVL / CNT.
-            "TCP_KEEPALIVE": True,
-            "TCP_KEEPALIVE_IDLE": None,
-            "TCP_KEEPALIVE_INTERVAL": None,
-            "TCP_KEEPALIVE_COUNT": None,
-            # Truthy turns the watchdog on; a mapping tunes it.
-            "EVENT_LOOP_WATCHDOG": None,
-            # Declared so an env-file value is typed, not a bare string.
-            "MCP_CALL_TIMEOUT": None,
-            "MCP_ENFORCE_LIFECYCLE": False,
-            "MCP_RESOURCE_SUBSCRIPTIONS": False,
-            # Seconds a cancelled `app.spawn(...)` task is awaited on shutdown.
-            "GRACEFUL_TASK_TIMEOUT": 10,
-            # Seconds shutdown waits for in-flight requests; runs in sequence
-            # with the above, so a termination grace period must cover both.
-            "GRACEFUL_DRAIN_TIMEOUT": 30,
-            # Seconds a WebSocket may idle before a 1001 close, both transports.
-            "WEBSOCKET_IDLE_TIMEOUT": None,
-        }
+        # `Settings` declares every key, type and default; this seeds `app.config` from it.
+        from veloce.settings import Settings  # breaks config <-> settings cycle
+
+        return Settings.defaults()
 
     @staticmethod
     def _is_uppercase_key(name: str) -> bool:
@@ -333,12 +286,23 @@ class Config(dict[str, Any]):
 
     # ── from_pyfile ───────────────────────────────────────
 
-    def from_pyfile(self, filename: str, silent: bool = False) -> bool:
+    def from_pyfile(self, filename: str, *, silent: bool = False) -> bool:
         """Execute a Python file and pull UPPERCASE module-level names.
 
         Returns True on success, or False when `silent=True` and the file is
         missing.
-        """
+
+        Args:
+            filename: Path of the Python file to execute.
+            silent: Return `False` instead of raising when the file cannot be opened.
+
+        Returns:
+            `True` once the file is loaded, `False` for a silent miss.
+
+        Raises:
+            OSError: If the file cannot be opened and `silent` is false.
+
+        """  # noqa: DOC502 - the exception is raised or caught by a callee
         module = types.ModuleType("veloce_config")
         module.__file__ = filename
         source = _read_config_file(filename, "rb", lambda handle: handle.read(), silent=silent)
@@ -354,7 +318,7 @@ class Config(dict[str, Any]):
 
     # ── from_env_file ─────────────────────────────────────
 
-    def from_env_file(self, filename: str = ".env", silent: bool = False) -> bool:
+    def from_env_file(self, filename: str = ".env", *, silent: bool = False) -> bool:
         """Load ``KEY=VALUE`` pairs from a dotenv-style ``.env`` file.
 
         Full-line `#` comments and blank lines are skipped, an optional `export `
@@ -372,7 +336,19 @@ class Config(dict[str, Any]):
         prefix: a file setting `MYAPP_TIMEOUT` becomes the config key
         `MYAPP_TIMEOUT` here and `TIMEOUT` there. Pick one of the two and use it
         on every path.
-        """
+
+        Args:
+            filename: Path of the dotenv file.
+            silent: Return `False` instead of raising when the file cannot be opened.
+
+        Returns:
+            `True` once the file is loaded, `False` for a silent miss.
+
+        Raises:
+            OSError: If the file cannot be opened and `silent` is false.
+            ValueError: If a value for a typed key cannot be converted.
+
+        """  # noqa: DOC502 - the exception is raised or caught by a callee
         lines = _read_config_file(
             filename, "r", lambda handle: handle.readlines(), silent=silent, encoding="utf-8"
         )
@@ -388,8 +364,21 @@ class Config(dict[str, Any]):
 
     # ── from_envvar ───────────────────────────────────────
 
-    def from_envvar(self, varname: str, silent: bool = False) -> bool:
-        """Read a filename from `os.environ[varname]` and `from_pyfile` it."""
+    def from_envvar(self, varname: str, *, silent: bool = False) -> bool:
+        """Read a filename from `os.environ[varname]` and `from_pyfile` it.
+
+        Args:
+            varname: Name of the environment variable holding the file path.
+            silent: Return `False` instead of raising when the variable is unset
+                or the file is missing.
+
+        Returns:
+            `True` once the file is loaded, `False` for a silent miss.
+
+        Raises:
+            RuntimeError: If the variable is unset and `silent` is false.
+
+        """
         path = os.environ.get(varname)
         if not path:
             if silent:
@@ -414,6 +403,14 @@ class Config(dict[str, Any]):
         verbatim, so the two name the same setting differently - see its note. A
         value that is not valid JSON is given the type its key is read as, or
         raises by name; a nested key has no declared type and is stored as read.
+
+        Args:
+            prefix: Variable-name prefix, without the trailing underscore.
+            loads: Decoder applied to each value before the string fallback.
+
+        Returns:
+            Always `True`.
+
         """
         sep = f"{prefix}_"
         for name, raw in os.environ.items():
@@ -449,6 +446,7 @@ class Config(dict[str, Any]):
         self,
         filename: str,
         load: Callable[[Any], Mapping[str, Any]] = _json_load,
+        *,
         silent: bool = False,
         text: bool = False,
     ) -> bool:
@@ -456,7 +454,21 @@ class Config(dict[str, Any]):
 
         Opens in text or binary mode per `text=`, hands the file object to
         `load`, and applies the mapping it returns through `from_mapping`.
-        """
+
+        Args:
+            filename: Path of the file to load.
+            load: Callable that reads the open file object into a mapping.
+            silent: Return `False` instead of raising when the file cannot be opened.
+            text: Open in text mode rather than binary.
+
+        Returns:
+            `True` once the file is loaded, `False` for a silent miss.
+
+        Raises:
+            OSError: If the file cannot be opened and `silent` is false.
+            TypeError: If `load` returns something other than a mapping.
+
+        """  # noqa: DOC503 - the exception is raised or caught by a callee
         mode = "r" if text else "rb"
         data = _read_config_file(filename, mode, load, silent=silent)
         if data is _SILENT_MISS:
@@ -476,6 +488,15 @@ class Config(dict[str, Any]):
 
         With `lowercase=True` (default) trimmed keys are lower-cased, matching
         the attribute names extension code conventionally uses.
+
+        Args:
+            namespace: Key prefix to select, such as `"MAIL_"`.
+            lowercase: Lower-case the returned keys.
+            trim_namespace: Strip `namespace` from the returned keys.
+
+        Returns:
+            The matching entries as a new dict.
+
         """
         result: dict[str, Any] = {}
         for key, value in self.items():

@@ -21,6 +21,6 @@ def resolve_version() -> str:
         return version("veloceframework")
     except PackageNotFoundError:
         return UNKNOWN_VERSION
-    except Exception:
+    except Exception:  # noqa: BLE001 - a version string is never worth failing an import over
         # A version string is never worth failing an import over.
         return UNKNOWN_VERSION

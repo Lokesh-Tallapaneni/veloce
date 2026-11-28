@@ -158,7 +158,7 @@ async def test_an_expired_entry_reads_as_a_miss_under_load():
     # but not the same *path*: a deleted key is gone from `_entries`, where an
     # expired one is still there and has to be rejected on the deadline check -
     # which is the branch this test is named for, and the one twenty concurrent
-    # readers race. `tests/test_cache.py:37` expires the same way.
+    # readers race. `tests/core/test_cache.py:37` expires the same way.
     value, _deadline = cache._entries["k"]
     cache._entries["k"] = (value, time.monotonic() - 1)
 

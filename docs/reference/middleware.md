@@ -13,6 +13,7 @@ The middleware base classes and every middleware shipped with the framework.
 ::: veloce.CORSMiddleware
 ::: veloce.GZipMiddleware
 ::: veloce.CompressionMiddleware
+::: veloce.ContentCoding
 ::: veloce.ConditionalGetMiddleware
 ::: veloce.CSRFMiddleware
 ::: veloce.rotate_csrf_token

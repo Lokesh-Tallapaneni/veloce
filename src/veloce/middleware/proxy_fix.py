@@ -89,9 +89,26 @@ class ProxyFix(Middleware):
         x_host: int = 0,
         x_port: int = 0,
         x_prefix: int = 0,
+        *,
         trust_forwarded: bool = False,
         name: str | None = None,
     ) -> None:
+        """Set how many hops of each forwarded header are trusted.
+
+        Args:
+            x_for: Hops trusted for `X-Forwarded-For` (client address).
+            x_proto: Hops trusted for `X-Forwarded-Proto` (scheme).
+            x_host: Hops trusted for `X-Forwarded-Host`; 0 ignores it.
+            x_port: Hops trusted for `X-Forwarded-Port`; 0 ignores it.
+            x_prefix: Hops trusted for `X-Forwarded-Prefix`; 0 ignores it.
+            trust_forwarded: Trust the RFC 7239 `Forwarded` header instead of the
+                `X-Forwarded-*` set.
+            name: Name for `exclude_middleware`.
+
+        Raises:
+            ValueError: If any hop count is negative.
+
+        """
         # The per-instance name lets `exclude_middleware=[...]` target it.
         super().__init__(name=name)
         for field, val in (

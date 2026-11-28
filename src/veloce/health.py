@@ -176,7 +176,7 @@ class HealthPlugin:
                 if inspect.isawaitable(result):
                     result = await result
                 return bool(result)
-            except Exception:
+            except Exception:  # noqa: BLE001 - a raising check reports not-ready
                 # A raising check is not-ready; a 500 would tell the
                 # orchestrator nothing it can act on, a named 503 does.
                 return False

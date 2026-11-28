@@ -514,3 +514,5 @@ with client.websocket_connect("/ws") as ws:
 
 - [Testing](testing.md#testing-websockets)
 - [Middleware](middleware.md)
+
+**Source and tests:** [`src/veloce/websocket/connection.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/websocket/connection.py), [`tests/websocket/test_websocket_spec.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/websocket/test_websocket_spec.py), [`tests/websocket/test_websocket_listener.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/websocket/test_websocket_listener.py)

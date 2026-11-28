@@ -238,7 +238,7 @@ class InvocationMixin:
         if route_info is None:
             try:
                 return await self._invoke_pure(tool, arguments, context, resolver, request)
-            except BaseException as err:  # noqa: BLE001 - re-raised after teardown
+            except BaseException as err:
                 exc = err
                 raise
             finally:
@@ -284,7 +284,7 @@ class InvocationMixin:
         except MCPError:
             # Raised about the protocol, so it is not rendered as an HTTP body.
             raise
-        except BaseException as err:  # noqa: BLE001 - re-raised / routed after teardown
+        except BaseException as err:
             exc = err
             # Through the app's exception handlers, as the HTTP path does.
             if isinstance(err, Exception):

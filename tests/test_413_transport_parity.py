@@ -117,7 +117,10 @@ def test_the_builder_has_one_definition():
     """Two copies is how the two transports came to disagree."""
     root = pathlib.Path(__file__).resolve().parents[1] / "src" / "veloce"
     dispatch = (root / "app" / "dispatch.py").read_text(encoding="utf-8")
-    protocol = (root / "serving" / "protocol.py").read_text(encoding="utf-8")
+    protocol = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted((root / "serving" / "protocol").glob("*.py"))
+    )
     assert "too_large_payload(" in dispatch
     assert "too_large_payload(" in protocol
     assert '"detail": MSG_REQUEST_BODY_EXCEEDS_MAX' not in dispatch

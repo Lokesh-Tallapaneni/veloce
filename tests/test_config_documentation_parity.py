@@ -13,12 +13,14 @@ that does not exist, fails here rather than being noticed a release later.
 
 from __future__ import annotations
 
+import ast
+import dataclasses
 import pathlib
 import re
 
 import pytest
 
-from veloce import Veloce
+from veloce import Settings, Veloce
 from veloce.config import _ENV_FREE_FORM, _ENV_TYPED_NONE_DEFAULTS, Config
 from veloce.contrib.mcp.server import MCPServer
 
@@ -133,3 +135,30 @@ def test_the_typing_tables_name_no_key_that_does_not_exist():
     known = set(Config.default_config())
     assert set(_ENV_TYPED_NONE_DEFAULTS) <= known
     assert known >= _ENV_FREE_FORM
+
+
+# ── the typed view is the same set ───────────────────────────────────
+
+
+def _documented_defaults() -> dict[str, object]:
+    """Key -> the literal default in the first code span of the guide's row."""
+    rows = re.findall(
+        r"^\| `([A-Z][A-Z0-9_]*)` \| `([^`]*)`", GUIDE.read_text(encoding="utf-8"), re.M
+    )
+    return {key: ast.literal_eval(default) for key, default in rows}
+
+
+def test_the_settings_dataclass_declares_exactly_the_shipped_keys():
+    declared = {f.name for f in dataclasses.fields(Settings)}
+    assert declared == set(Config.default_config())
+
+
+def test_the_guide_shows_the_declared_default_for_every_key():
+    """Docs, `Config.default_config()` and `Settings` agree on every default."""
+    documented = _documented_defaults()
+    wrong = {
+        key: (documented[key], default)
+        for key, default in Settings.defaults().items()
+        if documented[key] != default
+    }
+    assert wrong == {}, f"guide default differs from the declared default: {wrong}"

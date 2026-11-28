@@ -21,435 +21,48 @@ segment - so a typed mismatch is a **route miss**, not a 422.
 
 from __future__ import annotations
 
-import datetime
-import decimal
 import functools
-import math
 import re
-import uuid
 import warnings
-from typing import Any, cast
+from typing import Any
 
 from veloce._internal import _SCALAR_JSON_SCHEMAS, _require_methods
-
-# A C ISO-8601 parser `_parse_datetime` selects over the stdlib when installed.
-try:  # pragma: no cover - one branch per environment
-    from ciso8601 import parse_datetime as _parse_datetime_ciso
-
-    _HAS_CISO8601 = True
-except ImportError:  # pragma: no cover
-    _parse_datetime_ciso = cast("Any", None)
-    _HAS_CISO8601 = False
-
-# RFC 4122, un-anchored so it is reusable as a group in the regex fallback.
-_UUID_PATTERN = (
-    r"[0-9a-fA-F]{8}-"
-    r"[0-9a-fA-F]{4}-"
-    r"[0-9a-fA-F]{4}-"
-    r"[0-9a-fA-F]{4}-"
-    r"[0-9a-fA-F]{12}"
+from veloce.routing._converter_base import (
+    _BUILTIN_REGEX,
+    _MAX_INT_DIGITS,
+    _UUID_PATTERN,
+    _UUID_RE,
+    AnyConverter,
+    Converter,
+    FloatConverter,
+    IntConverter,
+    PathConverter,
+    StringConverter,
+    UUIDConverter,
+)
+from veloce.routing._converter_temporal import (
+    _DATE_RE,
+    _DATETIME_RE,
+    _DECIMAL_RE,
+    _HAS_CISO8601,
+    _MAX_DECIMAL_CHARS,
+    _TIME_RE,
+    _TIMEDELTA_RE,
+    _TIMEDELTA_STR_RE,
+    DateConverter,
+    DateTimeConverter,
+    DecimalConverter,
+    TimeConverter,
+    TimeDeltaConverter,
+    _normalize_z,
+    _parse_datetime,
+    _parse_datetime_accelerated,
+    _parse_datetime_ciso,
+    _parse_datetime_stdlib,
 )
 
-# Anchored for whole-segment validation; one source, so the two cannot drift.
-_UUID_RE = re.compile(f"^{_UUID_PATTERN}$")
-
-# Fragments for the regex fallback only; the radix fast path never reads them.
-_BUILTIN_REGEX: dict[str, str] = {
-    "str": r"[^/]+",
-    "string": r"[^/]+",
-    "int": r"-?\d+",
-    # A superset of `FloatConverter.match`, since a stricter fragment would 404
-    # what the tree matches. The dot stays required to exclude `int` values.
-    "float": r"[+-]?(?:\d+\.\d*|\.\d+)",
-    "uuid": _UUID_PATTERN,
-    "path": r".+",
-    # Each is a SUPERSET of its converter, which re-validates the matched group.
-    "date": r"\d{4}-\d{2}-\d{2}",
-    "datetime": r"\d{4}-\d{2}-\d{2}[T ][\d:.]+(?:[+-][\d:]+|Z)?",
-    "time": r"\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:[+-][\d:]+|Z)?",
-    "timedelta": r"P(?:\d+D)?(?:T(?:\d+H)?(?:\d+M)?(?:\d+(?:\.\d+)?S)?)?",
-    "decimal": r"[+-]?\d+(?:\.\d+)?",
-}
-
-# A bignum-DoS guard on arbitrary-precision coercion, not a 64-bit range check.
-_MAX_INT_DIGITS = 20
-
-
-# ── Converters ────────────────────────────────────────────
-
-
-class Converter:
-    """Base class - subclasses override `match` and may set `greedy`."""
-
-    __slots__ = ()
-    greedy = False
-
-    #: How restrictive this converter is: the lower value is tried first when two
-    #: parameter segments compete, so `/items/{id:int}` beats `/items/{slug:str}`
-    #: however declared. On the converter, not in a router table that would tie
-    #: an unlisted one with `str` and make resolution depend on decorator order.
-    specificity = 50
-
-    #: Checked at definition: a converter that cannot match silently 404s.
-    _required = ("match",)
-
-    def __init_subclass__(cls, **kwargs: object) -> None:
-        super().__init_subclass__(**kwargs)
-        _require_methods(cls, Converter, Converter._required)
-        # Warned, not raised, so an older third-party converter still imports.
-        if "__slots__" not in cls.__dict__:
-            warnings.warn(
-                f"{cls.__name__} does not declare __slots__; add `__slots__ = ()` "
-                "so its instances stay slotted like every other Converter",
-                stacklevel=2,
-            )
-
-    def match(self, value: str) -> tuple[bool, Any]:
-        """Validate (and coerce) `value`. Return (ok, coerced)."""
-        raise NotImplementedError
-
-
-class StringConverter(Converter):
-    """Default. Accepts a single non-empty segment (slashes excluded).
-
-    Optional constraints bound the segment length so a violation is a route
-    miss, not a handler-layer error: `{code:str(length=2)}` is an exact length
-    and `{slug:str(minlength=3,maxlength=64)}` an inclusive range. Zero-arg use
-    keeps the unbounded fast path.
-    """
-
-    __slots__ = ("_minlength", "_maxlength")
-    #: Any single non-empty segment - the baseline.
-    specificity = 50
-
-    _minlength: int
-    _maxlength: int | None
-
-    def __init__(
-        self,
-        length: int | None = None,
-        minlength: int | None = None,
-        maxlength: int | None = None,
-    ) -> None:
-        if length is not None:
-            if minlength is not None or maxlength is not None:
-                raise ValueError("str converter: length cannot combine with minlength/maxlength")
-            if length < 1:
-                raise ValueError("str converter: length must be >= 1")
-            self._minlength = self._maxlength = length
-            return
-        lo = 1 if minlength is None else minlength
-        if lo < 1:
-            raise ValueError("str converter: minlength must be >= 1")
-        if maxlength is not None and maxlength < lo:
-            raise ValueError("str converter: maxlength must be >= minlength")
-        self._minlength = lo
-        self._maxlength = maxlength
-
-    def match(self, value: str) -> tuple[bool, Any]:
-        """Accept the segment when its length satisfies the configured bounds."""
-        # The splitter strips empty segments, so one cannot arrive here.
-        length = len(value)
-        if length < self._minlength:
-            return False, None
-        if self._maxlength is not None and length > self._maxlength:
-            return False, None
-        return True, value
-
-
-class IntConverter(Converter):
-    """Matches a decimal integer; coerces to Python int.
-
-    Optional constraints participate in matching rather than the handler layer,
-    so `{page:int(min=1)}` makes `0` a route miss. `signed=False` forbids the
-    leading `-`; zero-arg use keeps the unbounded fast path.
-    """
-
-    __slots__ = ("_min", "_max", "_signed")
-    #: Digits only, optionally signed.
-    specificity = 20
-
-    def __init__(
-        self,
-        min: int | None = None,
-        max: int | None = None,
-        signed: bool = True,
-    ) -> None:
-        if min is not None and max is not None and max < min:
-            raise ValueError("int converter: max must be >= min")
-        self._min = min
-        self._max = max
-        self._signed = signed
-
-    def match(self, value: str) -> tuple[bool, Any]:
-        """Accept a decimal-integer segment within the configured bounds; coerce to `int`."""
-        if not value or len(value) > _MAX_INT_DIGITS:
-            return False, None
-        if value[0] == "-":
-            if not self._signed:
-                return False, None
-            check = value[1:]
-        else:
-            check = value
-        if not check or not check.isdigit():
-            return False, None
-        coerced = int(value)
-        if self._min is not None and coerced < self._min:
-            return False, None
-        if self._max is not None and coerced > self._max:
-            return False, None
-        return True, coerced
-
-
-class FloatConverter(Converter):
-    """Matches a decimal float (no scientific notation); coerces to float.
-
-    Optional `min`/`max` bound the value during matching and `signed=False`
-    forbids the leading `-`. Zero-arg use keeps the unbounded fast path.
-    """
-
-    __slots__ = ("_min", "_max", "_signed")
-    #: Digits with a required fractional part - a strict subset of `decimal`,
-    #: so it is the more restrictive of the two and is tried first.
-    specificity = 40
-
-    def __init__(
-        self,
-        min: float | None = None,
-        max: float | None = None,
-        signed: bool = True,
-    ) -> None:
-        if min is not None and max is not None and max < min:
-            raise ValueError("float converter: max must be >= min")
-        self._min = min
-        self._max = max
-        self._signed = signed
-
-    def match(self, value: str) -> tuple[bool, Any]:
-        """Accept a decimal-float segment within the configured bounds; coerce to `float`."""
-        if not value:
-            return False, None
-        # A required `.` keeps this distinct from `int`.
-        if "." not in value:
-            return False, None
-        if "e" in value or "E" in value:
-            return False, None
-        if not self._signed and value[0] == "-":
-            return False, None
-        try:
-            f = float(value)
-        except ValueError:
-            return False, None
-        if math.isnan(f) or math.isinf(f):
-            return False, None
-        if self._min is not None and f < self._min:
-            return False, None
-        if self._max is not None and f > self._max:
-            return False, None
-        return True, f
-
-
-class UUIDConverter(Converter):
-    """Matches a canonical UUID per RFC 4122; coerces to uuid.UUID."""
-
-    __slots__ = ()
-    #: A fixed 36-character format; almost nothing else matches.
-    specificity = 10
-
-    def match(self, value: str) -> tuple[bool, Any]:
-        """Accept a canonical RFC 4122 UUID segment; coerce to `uuid.UUID`."""
-        if len(value) != 36 or not _UUID_RE.match(value):
-            return False, None
-        try:
-            return True, uuid.UUID(value)
-        except ValueError:
-            return False, None
-
-
-class PathConverter(Converter):
-    """Greedy converter - consumes the rest of the URL, including slashes."""
-
-    __slots__ = ()
-    #: Greedy: consumes the rest of the URL. Always tried last.
-    specificity = 90
-    greedy = True
-
-    def match(self, value: str) -> tuple[bool, Any]:
-        """Accept any non-empty remainder of the URL, slashes included."""
-        if not value:
-            return False, None
-        return True, value
-
-
-# Anchored prefilters keep the try/except parse off the hot path for a reject.
-_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}$")
-# The offset is captured because the parse below needs to know it is there.
-_DATETIME_RE = re.compile(r"\d{4}-\d{2}-\d{2}[T ][\d:.]+(?:([+-][\d:]+)|Z)?$")
-_TIME_RE = re.compile(r"\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:[+-][\d:]+|Z)?$")
-# ISO 8601 duration: at least one component required.
-_TIMEDELTA_RE = re.compile(
-    r"P(?=\d|T)(?:(\d+)D)?(?:T(?=\d)(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?)?$"
-)
-# Python's `str(timedelta)`, so a real one round-trips through `url_for`.
-_TIMEDELTA_STR_RE = re.compile(
-    r"(?:(?P<days>-?\d+) days?, )?(?P<hours>\d+):(?P<minutes>\d{2}):(?P<seconds>\d{2}(?:\.\d{1,6})?)$"
-)
-_DECIMAL_RE = re.compile(r"[+-]?\d+(?:\.\d+)?$")
-_MAX_DECIMAL_CHARS = 40
-
-
-def _normalize_z(value: str) -> str:
-    """Replace a trailing `Z` with `+00:00` (3.10 fromisoformat rejects Z)."""
-    if value.endswith("Z"):
-        return value[:-1] + "+00:00"
-    return value
-
-
-def _parse_datetime_stdlib(value: str, offset: str | None) -> datetime.datetime:
-    """Parse an admitted datetime segment with the stdlib.
-
-    `offset` is unused here; the signature matches `_parse_datetime_accelerated`
-    so `_parse_datetime` can select either.
-    """
-    return datetime.datetime.fromisoformat(_normalize_z(value))
-
-
-def _parse_datetime_accelerated(value: str, offset: str | None) -> datetime.datetime:
-    """Parse through ciso8601 where it answers exactly as the stdlib does.
-
-    ciso8601 returns its own `FixedOffset` for a *numeric* offset where the
-    stdlib returns a `datetime.timezone`, so `type(dt.tzinfo)` would depend on
-    whether an optional package is installed. The accelerated path therefore
-    takes only naive values and `Z`; `_DATETIME_RE` already captured the offset,
-    so the split costs a group read rather than a second scan.
-    """
-    if offset is None:
-        return _parse_datetime_ciso(value)
-    return datetime.datetime.fromisoformat(_normalize_z(value))
-
-
-_parse_datetime = _parse_datetime_accelerated if _HAS_CISO8601 else _parse_datetime_stdlib
-
-
-class DateConverter(Converter):
-    """Matches an ISO 8601 date; coerces to datetime.date."""
-
-    __slots__ = ()
-    #: A fixed ISO-8601 shape.
-    specificity = 31
-
-    def match(self, value: str) -> tuple[bool, Any]:
-        """Accept an ISO 8601 date segment; coerce to `datetime.date`."""
-        if not _DATE_RE.match(value):
-            return False, None
-        try:
-            return True, datetime.date.fromisoformat(value)
-        except ValueError:
-            return False, None
-
-
-class DateTimeConverter(Converter):
-    """Matches an ISO 8601 datetime; coerces to datetime.datetime."""
-
-    __slots__ = ()
-    #: A fixed ISO-8601 shape.
-    specificity = 30
-
-    def match(self, value: str) -> tuple[bool, Any]:
-        """Accept an ISO 8601 datetime segment; coerce to `datetime.datetime`."""
-        matched = _DATETIME_RE.match(value)
-        if matched is None:
-            return False, None
-        try:
-            # Read off the module, so a test can swap the two parsers.
-            return True, _parse_datetime(value, matched.group(1))
-        except ValueError:
-            return False, None
-
-
-class TimeConverter(Converter):
-    """Matches an ISO 8601 time; coerces to datetime.time."""
-
-    __slots__ = ()
-    #: A fixed ISO-8601 shape.
-    specificity = 32
-
-    def match(self, value: str) -> tuple[bool, Any]:
-        """Accept an ISO 8601 time segment; coerce to `datetime.time`."""
-        if not _TIME_RE.match(value):
-            return False, None
-        try:
-            return True, datetime.time.fromisoformat(_normalize_z(value))
-        except ValueError:
-            return False, None
-
-
-class TimeDeltaConverter(Converter):
-    """Matches an ISO 8601 duration or `str(timedelta)`; coerces to timedelta.
-
-    A bare number such as `60` is rejected. An ISO duration (`P1DT2H`, at least
-    one component) is accepted, as is Python's own `str(timedelta)` form so a
-    real `timedelta` round-trips through `url_for`.
-    """
-
-    __slots__ = ()
-    #: A fixed duration shape.
-    specificity = 33
-
-    def match(self, value: str) -> tuple[bool, Any]:
-        """Accept an ISO 8601 duration or `str(timedelta)` segment; coerce to `timedelta`."""
-        m = _TIMEDELTA_RE.match(value)
-        if m is not None:
-            days, hours, minutes, seconds = m.groups()
-            return True, datetime.timedelta(
-                days=int(days) if days else 0,
-                hours=int(hours) if hours else 0,
-                minutes=int(minutes) if minutes else 0,
-                seconds=float(seconds) if seconds else 0,
-            )
-        # A negative timedelta is `-1 day, 23:00:00`: signed days, unsigned clock.
-        sm = _TIMEDELTA_STR_RE.match(value)
-        if sm is None:
-            return False, None
-        return True, datetime.timedelta(
-            days=int(sm["days"]) if sm["days"] else 0,
-            hours=int(sm["hours"]),
-            minutes=int(sm["minutes"]),
-            seconds=float(sm["seconds"]),
-        )
-
-
-class DecimalConverter(Converter):
-    """Matches a decimal literal; coerces to decimal.Decimal."""
-
-    __slots__ = ()
-    #: Accepts everything `float` does and more, so it sorts after it.
-    specificity = 41
-
-    def match(self, value: str) -> tuple[bool, Any]:
-        """Accept a decimal-literal segment; coerce to `decimal.Decimal`."""
-        if not value or len(value) > _MAX_DECIMAL_CHARS or not _DECIMAL_RE.match(value):
-            return False, None
-        try:
-            return True, decimal.Decimal(value)
-        except decimal.InvalidOperation:
-            return False, None
-
-
-class AnyConverter(Converter):
-    """Matches one of a fixed set of literal values: `{x:any(red,blue)}`."""
-
-    __slots__ = ("_choices",)
-    #: An explicit set of literals - only those values match.
-    specificity = 25
-
-    def __init__(self, choices: tuple[str, ...]) -> None:
-        self._choices = frozenset(choices)
-
-    def match(self, value: str) -> tuple[bool, Any]:
-        """Accept the segment only when it is one of the declared literal values."""
-        return (value in self._choices), value
-
+# Every name imported above is re-exported, so the historical
+# `veloce.routing.converters.X` paths keep resolving.
 
 # ── Registry and parsing ──────────────────────────────────
 
@@ -547,6 +160,15 @@ def register_converter(name: str, converter_cls: type[Converter]) -> None:
     After `register_converter("slug", SlugConverter)`, routes may use
     `{post:slug}` and the radix tree coerces the segment through
     `SlugConverter().match(...)`. Shadowing a built-in name raises `ValueError`.
+
+    Args:
+        name: The converter name used in `{param:name}`.
+        converter_cls: A `Converter` subclass.
+
+    Raises:
+        ValueError: If `name` is a built-in converter.
+        TypeError: If `converter_cls` is not a `Converter` subclass.
+
     """
     if name in _BUILTIN:
         raise ValueError(f"cannot override built-in converter {name!r}")

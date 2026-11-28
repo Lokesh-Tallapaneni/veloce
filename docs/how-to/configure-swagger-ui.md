@@ -173,3 +173,5 @@ regardless of these two arguments.
 - Declare the schemes the Authorize dialog drives — see [Security schemes](../guide/security-schemes.md).
 - Customise the document the page renders — see [OpenAPI, metadata and docs](../guide/openapi.md).
 - Full signatures are in the [API reference](../reference/index.md).
+
+**Source and tests:** [`src/veloce/contrib/docs_ui.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/contrib/docs_ui.py), [`tests/openapi/test_swagger_ui_passthrough.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/openapi/test_swagger_ui_passthrough.py), [`tests/openapi/test_docs_ui_schema_url.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/openapi/test_docs_ui_schema_url.py)

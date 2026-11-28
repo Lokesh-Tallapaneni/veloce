@@ -538,3 +538,5 @@ not the replacement.
 - Read injected values from the request — see [Requests and responses](requests-responses.md).
 - Override dependencies as part of a wider test suite — see [Testing](testing.md#overriding-dependencies).
 - Full signatures are in the [API reference](../reference/index.md).
+
+**Source and tests:** [`src/veloce/dependency.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/dependency.py), [`src/veloce/_dependency_resolver.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/_dependency_resolver.py), [`tests/dependency/test_dependency_overrides.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/dependency/test_dependency_overrides.py), [`tests/dependency/test_yield_dependencies.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/dependency/test_yield_dependencies.py)

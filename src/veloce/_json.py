@@ -24,7 +24,7 @@ unsorted fallback would not raise - it would silently change every key.
 an int outside 64 bits and a non-`str` dict key, which the other three accept;
 msgspec is alone in encoding a `set`. Matching that strictness would mean
 walking the object graph on every encode, which this path cannot afford, so
-the difference is pinned by `tests/test_json_backend.py` rather than hidden.
+the difference is pinned by `tests/http/test_json_backend.py` rather than hidden.
 
 Two differences were closed instead of pinned, because leaving them would let
 the same payload behave differently per deployment rather than merely be

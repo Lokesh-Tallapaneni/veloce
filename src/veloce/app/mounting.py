@@ -83,6 +83,7 @@ class MountingMixin(AppHost):
         directory: Annotated[
             str, Doc("Directory to serve, absolute or relative to the package root.")
         ] = "static",
+        *,
         html: Annotated[
             bool, Doc("Serve `index.html` for a directory request, in HTML mode.")
         ] = False,

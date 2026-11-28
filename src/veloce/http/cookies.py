@@ -22,6 +22,7 @@ from veloce._constants import (
 )
 from veloce._header_parsing import unquote_value
 from veloce._internal import _reject_header_crlf
+from veloce.enums import CookiePrefix, SameSite
 from veloce.http.dates import http_date
 
 # RFC 6265 Sec. 4.1.1: cookie-name = token (RFC 7230 Sec. 3.2.6) - the VCHAR set
@@ -79,8 +80,8 @@ def dump_cookie(
     domain: str | None = None,
     secure: bool = False,
     httponly: bool = False,
-    samesite: str | None = None,
-    prefix: Literal["host", "secure"] | None = None,
+    samesite: SameSite | str | None = None,
+    prefix: CookiePrefix | Literal["host", "secure"] | None = None,
 ) -> str:
     """Build a `Set-Cookie:` header value - RFC 6265 Sec. 4.1.
 
@@ -96,6 +97,26 @@ def dump_cookie(
       its invariants: `"secure"` requires `secure=True` and emits the wire name
       `__Secure-<key>`; `"host"` additionally requires `path="/"` and no
       `domain`, emitting `__Host-<key>`.
+
+    Args:
+        key: Cookie name; must be an RFC 6265 token and not a reserved attribute keyword.
+        value: Cookie value; percent-quoted on output.
+        max_age: Lifetime in seconds, or a `timedelta`.
+        expires: Expiry as a POSIX timestamp or a date/datetime.
+        path: `Path` attribute; `None` or empty omits it.
+        domain: `Domain` attribute; `None` or empty omits it.
+        secure: Emit the `Secure` attribute.
+        httponly: Emit the `HttpOnly` attribute.
+        samesite: `Strict`, `Lax` or `None`, case-insensitive; blank omits the attribute.
+        prefix: `"secure"` or `"host"` to emit the matching cookie-name prefix.
+
+    Returns:
+        The header value, without the `Set-Cookie:` name.
+
+    Raises:
+        ValueError: If the name, value, path, domain or `samesite` carries CR/LF or is
+            invalid, or the `prefix` invariants are not met.
+
     """
     if prefix is not None:
         # RFC 6265bis Sec. 4.1.3 - validated against the BARE key.

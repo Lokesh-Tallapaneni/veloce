@@ -51,6 +51,7 @@ class OAuth2PasswordBearer(_OAuth2BearerScheme):
             str,
             Doc("Endpoint the password flow exchanges credentials at."),
         ],
+        *,
         auto_error: Annotated[
             bool,
             Doc("Raise 401 when the token is absent; False resolves to None."),
@@ -112,6 +113,7 @@ class OAuth2AuthorizationCodeBearer(_OAuth2BearerScheme):
             dict[str, str] | None,
             Doc("Scope name to description, published in the OpenAPI document."),
         ] = None,
+        *,
         auto_error: Annotated[
             bool,
             Doc("Raise 401 when the token is absent; False resolves to None."),
@@ -150,6 +152,7 @@ class OpenIdConnect(_OAuth2BearerScheme):
             str,
             Doc("OpenID Connect discovery document URL."),
         ],
+        *,
         auto_error: Annotated[
             bool,
             Doc("Raise 401 when the token is absent; False resolves to None."),
@@ -184,6 +187,17 @@ class OAuth2PasswordRequestForm:
         client_id: Any = Form(default=None),
         client_secret: Any = Form(default=None),
     ) -> None:
+        """Hold the form fields, unwrapping `Form` markers on direct construction.
+
+        Args:
+            grant_type: The grant type; `password` when absent.
+            username: The resource owner's username.
+            password: The resource owner's password.
+            scope: Space-separated scopes requested.
+            client_id: Client identifier, when the client authenticates in the form.
+            client_secret: Client secret, when the client authenticates in the form.
+
+        """
         # As a `Depends()` class dependency the resolver passes resolved form
         # values; direct construction leaves `Form` markers to unwrap.
         self.grant_type = _form_value(grant_type)
@@ -195,7 +209,15 @@ class OAuth2PasswordRequestForm:
 
     @classmethod
     async def from_request(cls, request: Request) -> OAuth2PasswordRequestForm:
-        """Parse an OAuth2 password grant from the request form data."""
+        """Parse an OAuth2 password grant from the request form data.
+
+        Args:
+            request: The request carrying the form body.
+
+        Returns:
+            The parsed form.
+
+        """
         form_data = await request.form()
         return cls._from_form(form_data)
 
@@ -229,6 +251,17 @@ class OAuth2PasswordRequestFormStrict(OAuth2PasswordRequestForm):
         client_id: Any = Form(default=None),
         client_secret: Any = Form(default=None),
     ) -> None:
+        """Hold the form fields; `grant_type` must be the literal `password`.
+
+        Args:
+            grant_type: The grant type; validated against `password`.
+            username: The resource owner's username.
+            password: The resource owner's password.
+            scope: Space-separated scopes requested.
+            client_id: Client identifier, when the client authenticates in the form.
+            client_secret: Client secret, when the client authenticates in the form.
+
+        """
         super().__init__(
             grant_type=grant_type,
             username=username,
@@ -240,7 +273,18 @@ class OAuth2PasswordRequestFormStrict(OAuth2PasswordRequestForm):
 
     @classmethod
     async def from_request(cls, request: Request) -> OAuth2PasswordRequestFormStrict:
-        """Parse and validate that grant_type is present and equals 'password'."""
+        """Parse and validate that grant_type is present and equals 'password'.
+
+        Args:
+            request: The request carrying the form body.
+
+        Returns:
+            The parsed form.
+
+        Raises:
+            HTTPException: `422` when `grant_type` is missing or not `password`.
+
+        """
         form_data = await request.form()
         grant_type = form_data.get("grant_type")
         # Strict: missing OR not exactly "password" both fail; the non-strict

@@ -385,3 +385,4 @@ developer's responsibility to keep linear.
 - [Testing](testing.md)
 - [Comparison](../comparison.md)
 
+**Source and tests:** [`src/veloce/app/serving.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/app/serving.py), [`src/veloce/cli.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/cli.py), [`tests/serving/test_workers.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/serving/test_workers.py), [`tests/serving/test_http_e2e.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/serving/test_http_e2e.py), [`tests/serving/test_dev_server_worker_count.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/serving/test_dev_server_worker_count.py), [`tests/app/test_cli.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/app/test_cli.py)

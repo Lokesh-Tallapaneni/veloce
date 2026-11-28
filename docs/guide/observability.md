@@ -248,3 +248,5 @@ a time, does not trigger it. Exercising the watchdog needs a running server.
 - [Middleware](middleware.md) — `LoggingMiddleware` and `RequestIDMiddleware`
   for request-scoped logging without the instrumentation hook.
 - [Deployment](deployment.md) — running Veloce in production.
+
+**Source and tests:** [`src/veloce/observability.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/observability.py), [`src/veloce/metrics.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/metrics.py), [`src/veloce/otel.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/otel.py), [`tests/app/test_observability.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/app/test_observability.py), [`tests/app/test_metrics.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/app/test_metrics.py), [`tests/app/test_otel.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/app/test_otel.py)

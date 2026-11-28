@@ -76,7 +76,7 @@ def test_setting_openapi_version_changes_the_document():
     """The defect: the attribute changed and the document did not.
 
     The dialect warning a 3.0 version raises is covered where it belongs, in
-    `tests/test_openapi_customization.py`.
+    `tests/openapi/test_openapi_customization.py`.
     """
     app = _app(openapi_url=None)
     app.openapi_version = "3.0.3"
@@ -139,8 +139,8 @@ def test_a_custom_title_reaches_both_doors():
 @pytest.mark.parametrize(
     ("path", "literal"),
     [
-        ("contrib/openapi.py", '"Veloce API"'),
-        ("contrib/openapi.py", 'getattr(app, "title"'),
+        ("contrib/openapi", '"Veloce API"'),
+        ("contrib/openapi", 'getattr(app, "title"'),
         ("contrib/mcp/server.py", 'getattr(app, "title"'),
         ("contrib/mcp/server.py", 'getattr(app, "version"'),
     ],
@@ -151,7 +151,9 @@ def test_no_second_copy_of_the_metadata_default(path, literal):
     Comment lines are stripped first - the removed literal is quoted in the
     comment that records why it went.
     """
-    source = (SRC / path).read_text(encoding="utf-8")
+    target = SRC / path
+    files = sorted(target.rglob("*.py")) if target.is_dir() else [target]
+    source = chr(10).join(f.read_text(encoding="utf-8") for f in files)
     code = chr(10).join(line for line in source.splitlines() if not line.lstrip().startswith("#"))
     assert literal not in code
 
@@ -340,7 +342,10 @@ def test_the_not_authenticated_message_is_referenced():
 
 
 def test_the_field_required_message_is_referenced():
-    source = (SRC / "dependency.py").read_text(encoding="utf-8")
+    source = "".join(
+        (SRC / name).read_text(encoding="utf-8")
+        for name in ("_dependency_resolver.py", "_dependency_body.py", "_dependency_params.py")
+    )
     assert '"msg": "field required"' not in source
     assert "MSG_FIELD_REQUIRED" in source
 
@@ -362,7 +367,10 @@ def test_the_sse_retry_hint_has_one_definition():
 
 
 def test_the_prior_protocol_revision_has_one_definition():
-    source = (SRC / "contrib" / "mcp" / "server.py").read_text(encoding="utf-8")
+    # The dispatcher's constants live in `_protocol.py`; the server modules share one copy.
+    mcp = SRC / "contrib" / "mcp"
+    names = ("server.py", "_protocol.py", "_listing.py", "_handshake.py")
+    source = chr(10).join((mcp / name).read_text(encoding="utf-8") for name in names)
     assert source.count('"2025-06-18"') == 1
 
 

@@ -133,7 +133,7 @@ def _guarded(read: Callable[[], Any]) -> Any:
     except AttributeError:
         # An unset slot holds nothing, so there is nothing to share.
         return None
-    except Exception:
+    except Exception:  # noqa: BLE001 - an unreadable value is reported, not raised
         return _UNREADABLE
 
 
@@ -176,6 +176,14 @@ def is_immutable(value: Any, depth: int = 0) -> bool:
     attributes - and neither is `isinstance`, so an atomic type matches exactly.
     Every uncertain answer is `False`, which costs a per-request copy and stays
     correct. The one widening is the `Enum` member a deep copy hands back.
+
+    Args:
+        value: The value to inspect.
+        depth: Current recursion depth; leave at the default.
+
+    Returns:
+        True when the value is provably immutable.
+
     """
     kind = type(value)
     if kind in _ATOMIC_TYPES:
@@ -192,7 +200,7 @@ def is_immutable(value: Any, depth: int = 0) -> bool:
     if getattr(_guarded(functools.partial(getattr, kind, "__dataclass_params__")), "frozen", False):
         try:
             return _frozen_dataclass_is_immutable(value, kind, depth)
-        except Exception:
+        except Exception:  # noqa: BLE001 - unreadable is not vouched for and must not block registration
             # Unreadable is not vouched for; it must not block registration.
             return False
     return False
@@ -249,7 +257,7 @@ def deepcopyable(value: Any) -> bool:
             _deepcopy_below_margin(value, _COPY_STACK_MARGIN)
         else:
             copy.deepcopy(value)
-    except Exception:
+    except Exception:  # noqa: BLE001 - a value that cannot be copied is not shareable
         return False
     return True
 
@@ -425,6 +433,35 @@ class ParamBase:
             ),
         ] = True,
     ) -> None:
+        """Declare the parameter; every argument is documented through its `Doc`.
+
+        Args:
+            default: Static fallback; `...` marks the parameter required.
+            default_factory: Builds a fresh default per request.
+            alias: External name to read the value under.
+            title: Title emitted into the OpenAPI schema.
+            description: Description emitted into the OpenAPI schema.
+            ge: Inclusive lower bound.
+            le: Inclusive upper bound.
+            gt: Exclusive lower bound.
+            lt: Exclusive upper bound.
+            min_length: Minimum length.
+            max_length: Maximum length.
+            multiple_of: The value must be a positive multiple of this.
+            regex: Pattern the value must match.
+            pattern: Pattern the value must match; takes precedence over `regex`.
+            deprecated: Mark the parameter deprecated in the schema.
+            examples: Example values for the schema.
+            embed: For `Body` markers, nest the value under the parameter name.
+            convert_underscores: For `Header` markers, read `x_token` as `x-token`.
+            group: Read a model annotation's fields from this source.
+            include_in_schema: Omit the parameter from the OpenAPI document when false.
+
+        Raises:
+            ValueError: If both `default` and `default_factory` are given, or
+                `multiple_of` is not positive.
+
+        """
         # Mutually exclusive: the factory exists to build a fresh value.
         if default is not ... and default_factory is not None:
             raise ValueError("default and default_factory are mutually exclusive")
@@ -467,6 +504,17 @@ class ParamBase:
         slot, the OpenAPI document and the MCP tool schema all read the marker
         and none of them knows about `FieldInfo`. `default` is the parameter's
         own, adopted only when the `Field` declares none.
+
+        Args:
+            field_info: The `Field` found in the parameter's `Annotated` metadata.
+            default: The parameter's own default.
+
+        Returns:
+            A marker carrying the `Field`'s constraints, default and documentation.
+
+        Raises:
+            TypeError: If the `Field`'s `default_factory` takes an argument.
+
         """
         constraints: dict[str, Any] = {}
         for meta in field_info.metadata:
@@ -532,7 +580,20 @@ class ParamBase:
         return self.default
 
     def validate(self, value: Any, name: str) -> Any:
-        """Validate value against constraints."""
+        """Validate value against constraints.
+
+        Args:
+            value: The value to check; `None` yields the default when one exists.
+            name: The parameter name, used in the error message.
+
+        Returns:
+            The value, or the default when `value` is `None` and one is declared.
+
+        Raises:
+            ValueError: If a numeric bound, `multiple_of`, a length bound or the
+                pattern is violated.
+
+        """
         if value is None and self.has_default:
             return self.resolve_default()
 

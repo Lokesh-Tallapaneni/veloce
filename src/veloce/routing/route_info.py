@@ -59,6 +59,122 @@ class MCPRouteOptions:
         return cls(**options)
 
 
+# Distinguishes "not supplied" - derive the model from the handler's return
+# annotation - from an explicit `response_model=None`, which declares none.
+_INFER_RESPONSE_MODEL: Any = object()
+
+
+@dataclass(slots=True)
+class RouteOptions:
+    """Every per-route option `add_route` and `route` accept, as one record.
+
+    The public signatures stay spelled out so a route's options are documented
+    and completable at the call site; internally they are collected here once
+    and passed as a single object, rather than being re-listed at each hand-off
+    between `route`, `add_route`, `RouteInfo` and the blueprint and router
+    merge paths. A field added here is forwarded by all of them.
+
+    Not frozen: a frozen dataclass sets each of its 39 fields through
+    `object.__setattr__`, which measured as most of the cost this record adds to
+    registering a route. Nothing mutates it after construction.
+    """
+
+    dependencies: list[Any] | None = None
+    response_model: Any = _INFER_RESPONSE_MODEL
+    tags: list[str] | None = None
+    summary: str | None = None
+    name: str | None = None
+    description: str | None = None
+    deprecated: bool = False
+    response_description: str = MSG_SUCCESSFUL_RESPONSE
+    status_code: int = HTTP_200_OK
+    response_class: Any = None
+    response_model_include: set[str] | None = None
+    response_model_exclude: set[str] | None = None
+    response_model_exclude_unset: bool = False
+    response_model_exclude_defaults: bool = False
+    response_model_by_alias: bool = False
+    response_model_exclude_none: bool = False
+    include_in_schema: bool = True
+    responses: dict[int, dict[str, Any]] | None = None
+    operation_id: str | None = None
+    openapi_extra: dict[str, Any] | None = None
+    defaults: dict[str, Any] | None = None
+    callbacks: dict[str, Any] | None = None
+    strict_slashes: bool | None = None
+    subdomain: str | None = None
+    host: str | None = None
+    expose_as_mcp_tool: bool = False
+    mcp_description: str | None = None
+    expose_as_mcp_resource: bool = False
+    mcp_resource_uri: str | None = None
+    mcp_resource_mime_type: str | None = None
+    mcp_meta: dict[str, Any] | None = None
+    mcp_resource_size: int | None = None
+    mcp_resource_annotations: dict[str, Any] | None = None
+    mcp_scopes: Sequence[str] | None = None
+    mcp_icons: Sequence[Any] | None = None
+    mcp_task_support: bool = False
+    mcp_annotations: dict[str, Any] | None = None
+    exclude_middleware: Sequence[str | type[Any]] | None = None
+    stream: bool = False
+
+    @classmethod
+    def from_info(cls, info: RouteInfo, *, name: str | None = None) -> RouteOptions:
+        """Read the options a registered route was built from back off `info`.
+
+        Args:
+            info: The registered route to read from.
+            name: Endpoint name to record instead of `info.name`.
+
+        Returns:
+            The options, ready to register the same route again.
+
+        """
+        excluded = info.excluded_middleware
+        return cls(
+            dependencies=info.dependencies,
+            response_model=info.response_model,
+            tags=info.tags,
+            summary=info.summary,
+            description=info.description,
+            deprecated=info.deprecated,
+            response_description=info.response_description,
+            status_code=info.status_code,
+            response_class=info.response_class,
+            response_model_include=info.response_model_include,
+            response_model_exclude=info.response_model_exclude,
+            response_model_exclude_unset=info.response_model_exclude_unset,
+            response_model_exclude_defaults=info.response_model_exclude_defaults,
+            response_model_by_alias=info.response_model_by_alias,
+            response_model_exclude_none=info.response_model_exclude_none,
+            include_in_schema=info.include_in_schema,
+            responses=info.responses,
+            operation_id=info.operation_id,
+            openapi_extra=info.openapi_extra,
+            defaults=info.defaults,
+            callbacks=info.callbacks,
+            strict_slashes=info.strict_slashes,
+            subdomain=info.subdomain,
+            host=info.host,
+            expose_as_mcp_tool=info.expose_as_mcp_tool,
+            mcp_description=info.mcp_description,
+            expose_as_mcp_resource=info.expose_as_mcp_resource,
+            mcp_resource_uri=info.mcp_resource_uri,
+            mcp_resource_mime_type=info.mcp_resource_mime_type,
+            mcp_meta=info.mcp_meta,
+            mcp_resource_size=info.mcp_resource_size,
+            mcp_resource_annotations=info.mcp_resource_annotations,
+            mcp_icons=info.mcp_icons,
+            mcp_task_support=info.mcp_task_support,
+            mcp_annotations=info.mcp_annotations,
+            stream=info.stream,
+            name=name if name is not None else info.name,
+            mcp_scopes=list(info.mcp_scopes) if info.mcp_scopes else None,
+            exclude_middleware=[*excluded[0], *excluded[1]] if excluded else None,
+        )
+
+
 class RouteInfo:
     """Stored route metadata."""
 
@@ -111,45 +227,42 @@ class RouteInfo:
         self,
         handler: RouteHandler,
         param_names: list[str],
-        dependencies: list[Any] | None = None,
-        response_model: Any = None,
-        tags: list[str] | None = None,
-        summary: str | None = None,
-        name: str | None = None,
-        path_template: str = "",
-        description: str | None = None,
-        deprecated: bool = False,
-        response_description: str = MSG_SUCCESSFUL_RESPONSE,
-        status_code: int = HTTP_200_OK,
-        response_class: Any = None,
-        response_model_include: set[str] | None = None,
-        response_model_exclude: set[str] | None = None,
-        response_model_exclude_unset: bool = False,
-        response_model_exclude_defaults: bool = False,
-        response_model_by_alias: bool = False,
-        response_model_exclude_none: bool = False,
-        include_in_schema: bool = True,
-        responses: dict[int, dict[str, Any]] | None = None,
-        operation_id: str | None = None,
-        openapi_extra: dict[str, Any] | None = None,
-        defaults: dict[str, Any] | None = None,
-        callbacks: dict[str, Any] | None = None,
-        subdomain: str | None = None,
-        host: str | None = None,
-        expose_as_mcp_tool: bool = False,
-        mcp_description: str | None = None,
-        expose_as_mcp_resource: bool = False,
-        mcp_resource_uri: str | None = None,
-        mcp_resource_mime_type: str | None = None,
-        mcp_meta: dict[str, Any] | None = None,
-        mcp_resource_size: int | None = None,
-        mcp_resource_annotations: dict[str, Any] | None = None,
-        mcp_scopes: Sequence[str] | None = None,
-        mcp_icons: Sequence[Any] | None = None,
-        mcp_task_support: bool = False,
-        mcp_annotations: dict[str, Any] | None = None,
+        path_template: str,
+        options: RouteOptions,
         excluded_middleware: tuple[frozenset[str], tuple[type[Any], ...]] | None = None,
+        *,
+        dependencies: list[Any] | None,
+        response_model: Any,
+        tags: list[str] | None,
+        name: str | None,
+        response_class: Any,
+        responses: dict[int, dict[str, Any]] | None,
     ) -> None:
+        # The six keyword-only values are the ones registration derives from the
+        # router it lands on (its dependencies, tags, responses and default
+        # response class, the inferred model, the settled name). They are passed
+        # in rather than copied into a second `RouteOptions`: building and
+        # `dataclasses.replace`-ing a 39-field record per route added about 30%
+        # to registration. The rest is read from `options` once, so the body
+        # below reads as it always has; none of these are touched afterwards.
+        summary = options.summary
+        description = options.description
+        deprecated = options.deprecated
+        response_description = options.response_description
+        status_code = options.status_code
+        response_model_include = options.response_model_include
+        response_model_exclude = options.response_model_exclude
+        response_model_exclude_unset = options.response_model_exclude_unset
+        response_model_exclude_defaults = options.response_model_exclude_defaults
+        response_model_by_alias = options.response_model_by_alias
+        response_model_exclude_none = options.response_model_exclude_none
+        include_in_schema = options.include_in_schema
+        operation_id = options.operation_id
+        openapi_extra = options.openapi_extra
+        defaults = options.defaults
+        callbacks = options.callbacks
+        subdomain = options.subdomain
+        host = options.host
         self.handler = handler
         self.param_names = param_names
         self.dependencies = dependencies or []
@@ -223,25 +336,25 @@ class RouteInfo:
         self.is_fast_eligible = False
         # Opt-in request-body streaming: dispatch does not eagerly buffer, so
         # the synchronous body accessors are unavailable until it is drained.
-        self.stream = False
+        self.stream = options.stream
         # The message contract of a typed `websocket_listener`, else `None`.
         self.ws_messages: Any = None
         # Carried here so `_readd_route` can rebuild the route without losing it.
-        self.strict_slashes: bool | None = None
+        self.strict_slashes: bool | None = options.strict_slashes
         # Every MCP option in one record; `None` when the route declares none.
         self.mcp = MCPRouteOptions.build(
-            expose_as_mcp_tool=expose_as_mcp_tool,
-            mcp_description=mcp_description,
-            expose_as_mcp_resource=expose_as_mcp_resource,
-            mcp_resource_uri=mcp_resource_uri,
-            mcp_resource_mime_type=mcp_resource_mime_type,
-            mcp_meta=mcp_meta,
-            mcp_resource_size=mcp_resource_size,
-            mcp_resource_annotations=mcp_resource_annotations,
-            mcp_scopes=mcp_scopes,
-            mcp_icons=mcp_icons,
-            mcp_task_support=mcp_task_support,
-            mcp_annotations=mcp_annotations,
+            expose_as_mcp_tool=options.expose_as_mcp_tool,
+            mcp_description=options.mcp_description,
+            expose_as_mcp_resource=options.expose_as_mcp_resource,
+            mcp_resource_uri=options.mcp_resource_uri,
+            mcp_resource_mime_type=options.mcp_resource_mime_type,
+            mcp_meta=options.mcp_meta,
+            mcp_resource_size=options.mcp_resource_size,
+            mcp_resource_annotations=options.mcp_resource_annotations,
+            mcp_scopes=options.mcp_scopes,
+            mcp_icons=options.mcp_icons,
+            mcp_task_support=options.mcp_task_support,
+            mcp_annotations=options.mcp_annotations,
         )
         # `None` lets the hot path iterate the app's list directly.
         #: A name matches exactly; a type matches by `isinstance`.
@@ -256,50 +369,62 @@ class RouteInfo:
 
     @property
     def expose_as_mcp_tool(self) -> bool:
+        """True when the route is exposed as an MCP tool."""
         return False if self.mcp is None else self.mcp.expose_as_mcp_tool
 
     @property
     def mcp_description(self) -> str | None:
+        """The LLM-facing description of the route's MCP tool."""
         return None if self.mcp is None else self.mcp.mcp_description
 
     @property
     def expose_as_mcp_resource(self) -> bool:
+        """True when the route is exposed as an MCP resource."""
         return False if self.mcp is None else self.mcp.expose_as_mcp_resource
 
     @property
     def mcp_resource_uri(self) -> str | None:
+        """The URI the route's MCP resource is served under."""
         return None if self.mcp is None else self.mcp.mcp_resource_uri
 
     @property
     def mcp_resource_mime_type(self) -> str | None:
+        """The MIME type declared for the route's MCP resource."""
         return None if self.mcp is None else self.mcp.mcp_resource_mime_type
 
     @property
     def mcp_meta(self) -> dict[str, Any] | None:
+        """The extension metadata attached to the route's MCP entry."""
         return None if self.mcp is None else self.mcp.mcp_meta
 
     @property
     def mcp_resource_size(self) -> int | None:
+        """The declared byte size of the route's MCP resource."""
         return None if self.mcp is None else self.mcp.mcp_resource_size
 
     @property
     def mcp_resource_annotations(self) -> dict[str, Any] | None:
+        """The annotations attached to the route's MCP resource."""
         return None if self.mcp is None else self.mcp.mcp_resource_annotations
 
     @property
     def mcp_scopes(self) -> frozenset[str] | None:
+        """The scopes a caller needs to see or call the route over MCP."""
         return None if self.mcp is None else self.mcp.mcp_scopes
 
     @property
     def mcp_icons(self) -> tuple[Any, ...] | None:
+        """The icons a client may render next to the route's MCP entry."""
         return None if self.mcp is None else self.mcp.mcp_icons
 
     @property
     def mcp_task_support(self) -> bool:
+        """True when the route's MCP tool may run as a task."""
         return False if self.mcp is None else self.mcp.mcp_task_support
 
     @property
     def mcp_annotations(self) -> dict[str, Any] | None:
+        """The annotations attached to the route's MCP tool."""
         return None if self.mcp is None else self.mcp.mcp_annotations
 
 

@@ -27,9 +27,10 @@ from veloce.contrib.mcp.safety import require_mcp_description
 class MCPPrompt(MCPDescriptor):
     """One registered MCP prompt template."""
 
-    # Wrapped as a route-less `MCPTool` so ``prompts/get`` replays it through the
-    # shared pure-tool invocation path.
     tool: MCPTool
+    """Wrapped as a route-less `MCPTool` so ``prompts/get`` replays it through the shared pure-tool
+    invocation path.
+    """
     arguments: list[dict[str, Any]]
 
 

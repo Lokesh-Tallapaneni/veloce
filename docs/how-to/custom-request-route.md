@@ -212,3 +212,5 @@ for the full set of built-in response classes.
 - [Requests and responses](../guide/requests-responses.md) — `request.state`, response classes, and raw access.
 - [Migrating from FastAPI](../why-veloce/migrating-from-fastapi.md) — other behaviours that differ from FastAPI.
 - Full signatures are in the [API reference](../reference/index.md).
+
+**Source and tests:** [`src/veloce/http/request/request.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/http/request/request.py), [`tests/routing/test_default_response_class_contract.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/routing/test_default_response_class_contract.py), [`tests/http/test_request_state.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/http/test_request_state.py), [`tests/http/test_custom_request_route_claims.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/http/test_custom_request_route_claims.py)

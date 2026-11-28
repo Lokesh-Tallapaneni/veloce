@@ -36,6 +36,7 @@ from veloce.contrib.mcp._helpers import encode_envelope
 from veloce.contrib.mcp.context import _transport_var
 from veloce.contrib.mcp.errors import internal_error, invalid_request_error, parse_error
 from veloce.contrib.mcp.session import MCPSession
+from veloce.exceptions import VeloceError
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.server import MCPServer
@@ -220,7 +221,7 @@ class StdioTransport:
                 # `Task.cancelling()` would say the same, but only from 3.11.
                 if not previous.cancelled():
                     raise
-            except Exception:
+            except Exception:  # noqa: BLE001 - a failed predecessor must not block the next message
                 pass
         await self._dispatch(message, session)
 
@@ -285,7 +286,7 @@ class StdioTransport:
 # ── Errors ────────────────────────────────────────────────
 
 
-class MCPRequestError(Exception):
+class MCPRequestError(VeloceError):
     """A server->client request failed (the client replied with an error or closed)."""
 
 
@@ -384,6 +385,13 @@ async def serve_stdio(server: MCPServer) -> None:
     handler that prints, logs to stdout or spawns a child cannot corrupt the
     JSON-RPC stream. Blocking stdin reads are offloaded to the default thread
     executor; stdout writes are flushed per line.
+
+    Args:
+        server: Server whose messages are served.
+
+    Raises:
+        RuntimeError: If a stdio MCP server is already serving this process.
+
     """
     global _wire_claimed
     if _wire_claimed:
@@ -423,4 +431,4 @@ async def _serve_on(
 
 if TYPE_CHECKING:  # pragma: no cover
     # Static assertion that the transport satisfies the bidirectional contract.
-    _: BidirectionalTransport = StdioTransport(None, None, None)  # type: ignore[arg-type]
+    _: BidirectionalTransport = StdioTransport(None, None, None)  # type: ignore[arg-type]  # import-time conformance probe; never run

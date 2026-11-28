@@ -112,3 +112,5 @@ and users install it with one line.
 - [Middleware](middleware.md) — the request/response hooks a plugin often registers.
 - [Lifespan & Events](lifespan.md) — `on_startup` / `on_shutdown` for async setup.
 - [Dependency Injection](dependency-injection.md) — sharing plugin state with handlers.
+
+**Source and tests:** [`src/veloce/app/plugins.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/app/plugins.py), [`tests/app/test_plugins.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/app/test_plugins.py)

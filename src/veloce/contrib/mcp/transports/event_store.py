@@ -44,6 +44,15 @@ class SSEEventStore:
 
         The id is `"{stream_id}.{seq}"`, so a later `Last-Event-ID` resolves to
         the right ring.
+
+        Args:
+            stream_id: Stream the payload belongs to.
+            seq: Position of the payload within the stream.
+            payload: Outbound JSON-RPC message.
+
+        Returns:
+            The event id, `{stream_id}.{seq}`.
+
         """
         event_id = f"{stream_id}{_EVENT_ID_SEP}{seq}"
         ring = self._streams.get(stream_id)

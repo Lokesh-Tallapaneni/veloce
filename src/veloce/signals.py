@@ -42,8 +42,8 @@ from veloce._internal import T_route
 
 _logger = logging.getLogger(__name__)
 
-# Sentinel for "connect to all senders", compared by identity only.
 ANY_SENDER: Any = object()
+"""Sentinel for "connect to all senders", compared by identity only."""
 
 # `(receiver, value)` per entry; for the `_robust` variants `value` may be the
 # `Exception` the receiver raised.
@@ -62,7 +62,7 @@ def _matches(subscribed: Any, sent: Any) -> bool:
     # Equality so a primitive sender ("login", 1) works; `__eq__` may raise.
     try:
         return bool(subscribed == sent)
-    except Exception:
+    except Exception:  # noqa: BLE001 - an incomparable receiver is not a match
         return False
 
 
@@ -124,8 +124,8 @@ class Signal:
     def connect(
         self,
         receiver: T_route,
-        weak: bool = True,
         *,
+        weak: bool = True,
         sender: Any = ANY_SENDER,
     ) -> T_route:
         """Register `receiver` to fire when `send(sender)` runs.
@@ -133,6 +133,16 @@ class Signal:
         `sender=ANY_SENDER` (the default) subscribes to every send; a specific
         sender filters to it. Returns the receiver unchanged, so it can be used
         as a decorator.
+
+        Args:
+            receiver: Callable invoked as `receiver(sender, **kwargs)`; may be a
+                coroutine function.
+            weak: Hold the receiver by weak reference so it can be collected.
+            sender: Fire only for sends from this sender; any sender by default.
+
+        Returns:
+            `receiver`, unchanged.
+
         """
         is_async = inspect.iscoroutinefunction(receiver)
         if weak:
@@ -155,6 +165,11 @@ class Signal:
         through `_matches`, which is the `send`-time rule under which a stored
         `ANY_SENDER` matches every send - reusing it here would delete an
         `ANY_SENDER` subscription whenever the caller targeted one sender.
+
+        Args:
+            receiver: The callable passed to `connect`.
+            sender: Remove only the subscription bound to this sender.
+
         """
         for i, (sub_sender, ref, is_weak, _is_async) in enumerate(self._subs):
             target = ref() if is_weak else ref
@@ -172,7 +187,7 @@ class Signal:
                 if sub_sender == sender:
                     del self._subs[i]
                     return
-            except Exception:
+            except Exception:  # noqa: BLE001 - an incomparable receiver is skipped
                 continue
 
     def send(self, sender: Any = None, **kwargs: Any) -> SignalResult:
@@ -200,7 +215,7 @@ class Signal:
         for target in self._iter_live_targets(sender):
             try:
                 value: Any = target(sender, **kwargs)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - a failing receiver must not stop the others
                 self._log_receiver_raised(target, exc)
                 value = exc
             else:
@@ -282,7 +297,7 @@ class Signal:
         for target, is_async in self._iter_live_pairs(sender):
             try:
                 value: Any = target(sender, **kwargs)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - a failing receiver must not stop the others
                 self._log_receiver_raised(target, exc)
                 targets.append((target, exc))
                 continue
@@ -391,6 +406,14 @@ class Namespace:
 
         Repeated calls return the identical instance and keep the first call's
         `doc`, which is recorded as `Signal.doc` rather than discarded.
+
+        Args:
+            name: The signal's name within this namespace.
+            doc: Description recorded on a newly created signal.
+
+        Returns:
+            The signal registered under `name`.
+
         """
         existing = self._signals.get(name)
         if existing is not None:

@@ -136,7 +136,7 @@ def _message_annotation(callback: Any, wants_socket: bool) -> Any:
         hints = typing_extensions.get_type_hints(
             probe, getattr(hint_target, "__globals__", None), include_extras=True
         )
-    except Exception as exc:  # noqa: BLE001 - the name genuinely cannot be resolved
+    except Exception as exc:
         # Refused, not warned: a dropped annotation would let every message reach
         # the callback unvalidated, and a message parameter has no default escape.
         raise TypeError(
@@ -424,7 +424,7 @@ def build_listener_handler(
                 if validate is not None:
                     try:
                         data = validate(data)
-                    except Exception:
+                    except Exception:  # noqa: BLE001 - any validator failure closes the socket with 1007
                         # RFC 6455 Sec. 7.4.1: 1007 is "data inconsistent with the
                         # type of the message", so the peer learns why it closed.
                         await ws.close(
@@ -446,5 +446,5 @@ def build_listener_handler(
     # The callback's name without its signature (see the no-`wraps` note above).
     listener.__name__ = getattr(callback, "__name__", "listener")
     # On the handler, not `add_route`: every registration path re-registers it.
-    listener._ws_message_contract = contract  # type: ignore[attr-defined]
+    listener._ws_message_contract = contract  # type: ignore[attr-defined]  # attribute set on the generated listener
     return listener, contract

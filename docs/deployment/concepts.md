@@ -297,3 +297,5 @@ assert events == ["startup", "shutdown"]
 - Run startup and shutdown code correctly — see [Lifespan events](../guide/lifespan.md).
 - Audit an app before deploying with `veloce check` — see [Deployment overview](../guide/deployment.md).
 - Full signatures are in the [API reference](../reference/index.md).
+
+**Source and tests:** [`src/veloce/app/serving.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/app/serving.py), [`src/veloce/serving/protocol/http.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/serving/protocol/http.py), [`tests/serving/test_graceful_drain_timeout.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/serving/test_graceful_drain_timeout.py), [`tests/serving/test_server_shutdown_ordering.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/serving/test_server_shutdown_ordering.py)

@@ -6,7 +6,7 @@ import gzip
 import zlib
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from veloce._constants import (
     HEADER_ACCEPT_ENCODING,
@@ -22,6 +22,7 @@ from veloce._constants import (
     MIME_TEXT_EVENT_STREAM,
 )
 from veloce._internal import offload
+from veloce.enums import ContentCoding
 from veloce.http.request import Request
 from veloce.http.response import Response, header_get, header_key, header_present
 from veloce.middleware.base import Middleware
@@ -239,9 +240,29 @@ class CompressionMiddleware(Middleware):
         latency_sensitive_types: frozenset[str] = frozenset({MIME_TEXT_EVENT_STREAM}),
         name: str | None = None,
         *,
-        algorithms: tuple[str, ...] | None = None,
+        algorithms: tuple[ContentCoding | Literal["zstd", "br", "gzip"], ...] | None = None,
         levels: dict[str, int] | None = None,
     ) -> None:
+        """Choose what is compressed and how.
+
+        Args:
+            minimum_size: Smallest body, in bytes, worth compressing.
+            compresslevel: Level for gzip; use `levels` to set several codings.
+            include_types: Media-type prefixes eligible for compression.
+            exclude_types: Media-type prefixes never compressed.
+            min_stream_chunk_offload: Size, in bytes, above which compression runs on a
+                worker thread instead of the event loop.
+            latency_sensitive_types: Media types sent unbuffered, such as event streams.
+            name: Name for `exclude_middleware`.
+            algorithms: Content codings to offer, in preference order.
+            levels: Compression level per coding.
+
+        Raises:
+            ValueError: If `algorithms` is empty or names an unknown coding, none of the
+                requested codings has its package installed, or `levels` names an
+                unknown coding.
+
+        """  # noqa: DOC502 - the exception is raised or caught by a callee
         super().__init__(name=name)
         self.minimum_size = minimum_size
         self.algorithms, self.levels = self._resolve_codings(algorithms, levels, compresslevel)
@@ -262,7 +283,7 @@ class CompressionMiddleware(Middleware):
     @classmethod
     def _resolve_codings(
         cls,
-        algorithms: tuple[str, ...] | None,
+        algorithms: tuple[ContentCoding | Literal["zstd", "br", "gzip"], ...] | None,
         levels: dict[str, int] | None,
         compresslevel: int | None,
     ) -> tuple[tuple[str, ...], dict[str, int]]:
@@ -272,7 +293,9 @@ class CompressionMiddleware(Middleware):
         Asking *only* for a missing one raises, naming the package to install,
         since silently serving plaintext would hide it.
         """
-        requested = tuple(algorithms) if algorithms is not None else cls._supported
+        requested = (
+            tuple(str(name) for name in algorithms) if algorithms is not None else cls._supported
+        )
         if not requested:
             raise ValueError("algorithms must name at least one content coding")
         unknown = [name for name in requested if name not in _CODECS_PACKAGE]

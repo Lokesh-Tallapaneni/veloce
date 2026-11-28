@@ -13,6 +13,11 @@ anything the framework raised regardless of which family it came from.
 ::: veloce.HTTPException
 ::: veloce.ValidationError
 ::: veloce.RequestValidationError
+::: veloce.WebSocketError
+::: veloce.BackendError
+::: veloce.CacheError
+::: veloce.SessionError
+::: veloce.RateLimitError
 ::: veloce.WebSocketException
 ::: veloce.WebSocketDisconnect
 ::: veloce.WebSocketRequestValidationError

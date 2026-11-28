@@ -180,3 +180,5 @@ Flip the construction to the defaults and the same three paths return `200`.
 - Centralise the gating flag — see [Configuration](../guide/configuration.md).
 - Protect the routes the docs would have described — see [Security schemes](../guide/security-schemes.md).
 - Full signatures are in the [API reference](../reference/index.md).
+
+**Source and tests:** [`src/veloce/app/openapi.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/app/openapi.py), [`tests/openapi/test_openapi_through_the_client.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/openapi/test_openapi_through_the_client.py), [`tests/openapi/test_docs_ui_schema_url.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/openapi/test_docs_ui_schema_url.py)

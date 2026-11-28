@@ -555,3 +555,5 @@ assert client.get("/").body == b'{"a":1,"b":2}'
 - Validate and shape request/response bodies with models — see [Request models](request-models.md).
 - Swap in a Struct-based encoder for hot endpoints — see [msgspec](msgspec.md).
 - Full signatures are in the [API reference](../reference/index.md).
+
+**Source and tests:** [`src/veloce/encoders.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/encoders.py), [`tests/params/test_jsonable_encoder.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/params/test_jsonable_encoder.py), [`tests/params/test_encoder_registry.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/params/test_encoder_registry.py)
