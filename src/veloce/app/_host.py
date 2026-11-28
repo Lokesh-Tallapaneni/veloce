@@ -171,6 +171,42 @@ class AppHost:
         ) -> None: ...
 
         # ── Provided by sibling mixins ──
+        async def _call_handler(
+            self,
+            handler: Callable[..., Any],
+            kwargs: dict[str, Any],
+            is_coro: bool | None = None,
+            positional_only: tuple[str, ...] = (),
+        ) -> Any: ...
+
+        async def _dispatch_request(
+            self, request: Request, cp: CompiledPipeline, match: Any = None
+        ) -> Response: ...
+
+        async def _handle_error(
+            self, request: Request, status_code: int, default: Response, exc: BaseException
+        ) -> Response: ...
+
+        def _route_middleware_chains(
+            self, route_info: Any
+        ) -> tuple[list[Middleware], list[Middleware]] | None: ...
+
+        async def _run_after_hooks(
+            self, request: Request, response: Response, bp_name: str | None
+        ) -> Response: ...
+
+        async def _run_response_middleware(
+            self, request: Request, response: Response
+        ) -> Response: ...
+
+        async def _run_response_phase(
+            self,
+            fused: tuple[Callable[..., Any], ...] | None,
+            request: Request,
+            response: Response,
+            excluded: bool,
+        ) -> Response: ...
+
         async def handle_request(
             self, request: Request, cp: CompiledPipeline | None = None, match: Any = None
         ) -> Response: ...

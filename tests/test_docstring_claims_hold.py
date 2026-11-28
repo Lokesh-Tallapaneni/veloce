@@ -202,7 +202,7 @@ def test_a_structured_validation_detail_is_still_a_list():
 def test_there_is_one_payload_builder():
     """The two copies differing by one substitution is what caused the drift."""
     root = pathlib.Path(__file__).resolve().parents[1] / "src/veloce/app"
-    for name in ("errors.py", "dispatch.py"):
+    for name in ("errors.py", "dispatch_errors.py"):
         source = (root / name).read_text(encoding="utf-8")
         assert "http_exception_payload" in source, name
     assert 'exc.detail or "Error"' not in (root / "errors.py").read_text(encoding="utf-8")
