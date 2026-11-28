@@ -367,57 +367,73 @@ async def _coalesce(
     timing exactly as before.
     """
     agen = stream.__aiter__()
+    agen_aclose = getattr(agen, "aclose", None)
     buf = bytearray()
-    while True:
-        # `__anext__()` is typed as a bare `Awaitable` (the `AsyncIterator`
-        # protocol); on a native async generator it is always a coroutine,
-        # which is what manual `.send()`/`.throw()` driving needs.
-        coro = cast("Coroutine[Any, Any, bytes | str]", agen.__anext__())
-        value: Any = None
-        exc: BaseException | None = None
-        suspended = False
-        try:
-            while True:
-                try:
-                    yielded = coro.throw(exc) if exc is not None else coro.send(value)
-                except StopIteration as stop:
-                    chunk = stop.value
-                    break
-                if not suspended:
-                    suspended = True
-                    if buf:
-                        yield bytes(buf)
-                        buf.clear()
-                try:
-                    value = await _forward(yielded)
-                    exc = None
-                except BaseException as caught:  # noqa: BLE001 - handed to the producer below
-                    exc = caught
-                    value = None
-        except StopAsyncIteration:
-            break
-        except GeneratorExit:
-            # Reached mid-suspend: `coro` is still live and would otherwise be
-            # abandoned for the garbage collector to close later, non-
-            # deterministically. `coro.close()` does not reliably drive an
-            # `async_generator_asend`'s own cleanup, so this throws by hand.
-            # Yielding the leftover buffer here is also illegal - an async
-            # generator may not ignore its own GeneratorExit.
-            with contextlib.suppress(StopIteration, GeneratorExit):
-                coro.throw(GeneratorExit)
-            raise
-        except BaseException:
-            if buf:
+    try:
+        while True:
+            # `__anext__()` is only guaranteed to return *some* awaitable (the
+            # `AsyncIterator` protocol); `__await__()` is what every awaitable
+            # exposes as the actual `.send()`/`.throw()`-driveable iterator -
+            # for a native coroutine, a thin proxy with identical behaviour,
+            # for a bare `Future` or similar, the only way in at all.
+            coro = cast("Coroutine[Any, Any, bytes | str]", agen.__anext__().__await__())
+            value: Any = None
+            exc: BaseException | None = None
+            suspended = False
+            try:
+                while True:
+                    try:
+                        yielded = coro.throw(exc) if exc is not None else coro.send(value)
+                    except StopIteration as stop:
+                        chunk = stop.value
+                        break
+                    if not suspended:
+                        suspended = True
+                        if buf:
+                            yield bytes(buf)
+                            buf.clear()
+                    try:
+                        value = await _forward(yielded)
+                        exc = None
+                    except BaseException as caught:  # noqa: BLE001 - handed to the producer below
+                        exc = caught
+                        value = None
+            except StopAsyncIteration:
+                break
+            except GeneratorExit:
+                # Reached mid-drive: `coro` is still live, suspended inside
+                # the producer's own frame - closing it here, rather than
+                # leaving it for the `finally` below, is what actually
+                # unwinds that frame. `agen.aclose()` on a producer with a
+                # live, abandoned `asend()`/`__anext__()` handle raises
+                # "already running"; closing `coro` first is what empties
+                # that handle, so the `finally`'s `agen.aclose()` is then a
+                # safe no-op (already-closed async generators tolerate a
+                # second close).
+                with contextlib.suppress(StopIteration, GeneratorExit):
+                    coro.throw(GeneratorExit)
+                raise
+            except BaseException:
+                if buf:
+                    yield bytes(buf)
+                raise
+            if isinstance(chunk, str):
+                chunk = chunk.encode("utf-8")
+            buf += chunk
+            if len(buf) >= flush_at:
                 yield bytes(buf)
-            raise
-        if isinstance(chunk, str):
-            chunk = chunk.encode("utf-8")
-        buf += chunk
-        if len(buf) >= flush_at:
+                buf.clear()
+        if buf:
             yield bytes(buf)
-            buf.clear()
-    if buf:
-        yield bytes(buf)
+    finally:
+        # Covers every path `coro.throw` above does not: normal exhaustion,
+        # a producer exception, and closing at either yield outside the
+        # inner `try`, where the last-read `coro` is already exhausted and
+        # `agen` itself - not `coro` - is what is still open. `aclose()` is
+        # an async-generator method, not a general `AsyncIterator` one; a
+        # plain class-based async iterator has nothing here to close.
+        if agen_aclose is not None:
+            await agen_aclose()
 
 
 async def _write_chunked(

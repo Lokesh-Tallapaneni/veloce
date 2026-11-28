@@ -172,3 +172,75 @@ async def test_cancelling_a_pending_chunk_runs_the_producers_finally():
     with pytest.raises(asyncio.CancelledError):
         await task
     assert ran_finally == [True]
+
+
+async def test_closing_at_a_flush_at_boundary_still_closes_the_producer():
+    """The flush-at yield sits outside the inner `try` that drives `coro` by
+    hand - closing there must still close the still-open producer, not rely
+    on the garbage collector to get to it eventually."""
+    ran_finally = []
+
+    async def gen():
+        try:
+            yield b"x" * 10
+            yield b"x" * 10
+            yield b"x" * 10  # pragma: no cover - the consumer closes first
+        finally:
+            ran_finally.append(True)
+
+    agen = _coalesce(gen(), flush_at=15)
+    first = await agen.__anext__()
+    assert first == b"x" * 20
+    await agen.aclose()
+    assert ran_finally == [True]
+
+
+async def test_a_class_based_async_iterator_with_a_non_coroutine_anext_works():
+    """`__anext__` need not be `async def` - a class returning a bare
+    `Future` is a valid async iterator too, and `StreamingResponse` is
+    documented to accept "an async iterator", not specifically a generator."""
+
+    class FutureIterator:
+        def __init__(self, items):
+            self._items = list(items)
+
+        def __aiter__(self):
+            return self
+
+        def __anext__(self):
+            loop = asyncio.get_event_loop()
+            fut = loop.create_future()
+            if self._items:
+                fut.set_result(self._items.pop(0))
+            else:
+                fut.set_exception(StopAsyncIteration())
+            return fut
+
+    assert await _collect(FutureIterator([b"a", b"b", b"c"])) == [b"abc"]
+
+
+async def test_closing_a_class_based_async_iterator_does_not_require_aclose():
+    """`aclose()` is an async-*generator* method; a plain class-based async
+    iterator has no such thing, and closing one must not assume it does."""
+
+    class FutureIterator:
+        def __init__(self):
+            self._done = False
+
+        def __aiter__(self):
+            return self
+
+        def __anext__(self):
+            loop = asyncio.get_event_loop()
+            fut = loop.create_future()
+            if self._done:
+                fut.set_exception(StopAsyncIteration())
+            else:
+                self._done = True
+                fut.set_result(b"only")
+            return fut
+
+    agen = _coalesce(FutureIterator(), flush_at=1)
+    first = await agen.__anext__()
+    assert first == b"only"
+    await agen.aclose()
