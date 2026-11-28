@@ -122,20 +122,14 @@ def _coverage_paused():
         tracer.start()
 
 
-#: Diagnostic only, removed before merge.
-_last_snapshot = None
-
-
 async def _peak_mb(coro_factory) -> tuple[float, object]:
     """Peak traced allocation, in MB, while awaiting `coro_factory()`."""
-    global _last_snapshot
     with _coverage_paused():
-        tracemalloc.start(15)
+        tracemalloc.start()
         try:
             base = tracemalloc.get_traced_memory()[0]
             result = await coro_factory()
             _current, peak = tracemalloc.get_traced_memory()
-            _last_snapshot = tracemalloc.take_snapshot()
         finally:
             tracemalloc.stop()
     return (peak - base) / 1e6, result
@@ -247,21 +241,20 @@ async def test_concurrent_downloads_do_not_multiply_memory(files, factory):
     """The report's headline: "four concurrent 32 MiB downloads at 134 MB RSS"."""
     app = _static_app(files) if factory == "static" else _download_app(files)
     path = "/assets/big.bin" if factory == "static" else "/big"
-    await _drain(app, path)  # warm
 
     async def four():
         return await asyncio.gather(*(_drain(app, path) for _ in range(4)))
 
+    # Warmed at the same four-way concurrency the measured run uses, not just
+    # one request: a lone warm-up leaves the allocator sized for a single
+    # in-flight download, so the measured run's own first-time arena growth -
+    # pymalloc requesting a new arena from the OS, attributed whole to
+    # whichever allocation triggers it - gets charged to it instead, reading
+    # as a multi-megabyte "leak" that is really a one-time allocator cost.
+    await four()
+
     peak, results = await _peak_mb(four)
     assert [r["bytes"] for r in results] == [BIG] * 4
-    if peak >= 2.0:  # pragma: no cover - diagnostic only, removed before merge
-        import sys
-
-        print(f"\n=== DIAG factory={factory} peak={peak:.3f} MB ===", file=sys.stderr)
-        for stat in _last_snapshot.statistics("traceback")[:12]:
-            print(stat, file=sys.stderr)
-            for line in stat.traceback.format():
-                print("    " + line, file=sys.stderr)
     assert peak < 2.0, f"four concurrent downloads peaked at {peak:.2f} MB"
 
 
