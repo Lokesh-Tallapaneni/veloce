@@ -7,6 +7,7 @@ description: Veloce API reference - application.
 The application object and its configuration.
 
 ::: veloce.Veloce
+::: veloce.DuplicatePolicy
 ::: veloce.Config
 ::: veloce.Settings
 ::: veloce.Plugin

@@ -38,6 +38,34 @@ class CookiePrefix(_StrEnum):
     SECURE = "secure"
 
 
+class DuplicatePolicy(_StrEnum):
+    """What a router does when a second handler claims the same path and method."""
+
+    #: Refuse the second registration with `DuplicateRouteError`.
+    ERROR = "error"
+    #: Keep the second handler and log that it replaced the first.
+    WARN = "warn"
+    #: Keep the second handler silently.
+    OVERRIDE = "override"
+
+
+class WebSocketMode(_StrEnum):
+    """How `WebSocket.send_json` frames its payload."""
+
+    #: A text frame (opcode 0x1).
+    TEXT = "text"
+    #: A binary frame (opcode 0x2) carrying the raw JSON bytes.
+    BINARY = "binary"
+
+
+class ContentCoding(_StrEnum):
+    """The content codings `CompressionMiddleware` can offer."""
+
+    ZSTD = "zstd"
+    BR = "br"
+    GZIP = "gzip"
+
+
 class SameSite(_StrEnum):
     """The `SameSite` cookie attribute values (RFC 6265bis Sec. 4.1.2.7)."""
 

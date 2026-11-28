@@ -87,7 +87,12 @@ class JSONProviderBackend(Protocol):
 
 
 def _require_backend(
-    obj: Any, protocol: type, *, role: str, names: tuple[str, ...] | None = None
+    obj: Any,
+    protocol: type,
+    *,
+    role: str,
+    names: tuple[str, ...] | None = None,
+    error: type[BackendError] = BackendError,
 ) -> None:
     """Refuse `obj` at registration unless it provides what `protocol` asks for.
 
@@ -104,12 +109,14 @@ def _require_backend(
         protocol: The protocol it must satisfy.
         role: What the backend is for, used in the message ("cache", "session store").
         names: Check only these members, for a protocol that declares optional extras.
+        error: The refusal to raise; a subsystem passes its own, so `except CacheError`
+            catches a bad cache.
 
     Raises:
         BackendError: If a member is missing or not callable, or is not `async def`
             where the protocol declares it so. It is also a `TypeError`.
 
-    """
+    """  # noqa: DOC503 - `error` is a parameter, `BackendError` by default
     members = {
         name: member
         for name, member in vars(protocol).items()
@@ -131,7 +138,7 @@ def _require_backend(
             problems.append(f"missing {', '.join(missing)}")
         if not_async:
             problems.append(f"{', '.join(not_async)} must be `async def`")
-        raise BackendError(
+        raise error(
             f"the {role} {type(obj).__name__} does not satisfy {protocol.__name__}: "
             f"{'; '.join(problems)}"
         )

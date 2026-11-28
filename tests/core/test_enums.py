@@ -6,14 +6,19 @@ import pytest
 
 import veloce
 from veloce import (
+    CompressionMiddleware,
+    ContentCoding,
     CookiePrefix,
+    DuplicatePolicy,
     Finding,
     MCPTransport,
     SameSite,
     ServerSessionMiddleware,
     TestClient,
     Veloce,
+    WebSocketMode,
 )
+from veloce.exceptions import DuplicateRouteError
 from veloce.http.cookies import dump_cookie
 
 
@@ -102,3 +107,45 @@ def test_at_least_refuses_an_unknown_threshold():
 def test_known_severities_still_rank():
     assert Finding("m", severity="error").at_least("warning")
     assert not Finding("m", severity="info").at_least("warning")
+
+
+# ── duplicate-route policy, send mode, compression codings ───────────
+
+
+def test_the_policy_mode_and_coding_members_are_the_plain_strings():
+    assert DuplicatePolicy.OVERRIDE == "override"
+    assert WebSocketMode.BINARY == "binary"
+    assert str(ContentCoding.GZIP) == "gzip"
+
+
+@pytest.mark.parametrize("value", [DuplicatePolicy.ERROR, "error"])
+def test_a_router_accepts_the_policy_as_enum_or_string(value):
+    app = Veloce(openapi_url=None, on_duplicate=value)
+    assert app.on_duplicate == "error"
+
+    @app.get("/x")
+    async def first() -> dict:
+        return {}
+
+    async def second() -> dict:
+        return {}
+
+    with pytest.raises(DuplicateRouteError):
+        app.add_route("/x", second, ["GET"])
+
+
+def test_an_unknown_policy_is_still_refused_with_the_allowed_values():
+    with pytest.raises(ValueError, match="on_duplicate must be one of"):
+        Veloce(openapi_url=None, on_duplicate="ignore")  # type: ignore[arg-type]  # the refusal under test
+
+
+def test_the_compression_middleware_accepts_codings_as_enums_or_strings():
+    middleware = CompressionMiddleware(algorithms=(ContentCoding.GZIP,))
+    assert middleware.algorithms == ("gzip",)
+    assert all(type(name) is str for name in middleware.algorithms)
+    assert CompressionMiddleware(algorithms=("gzip",)).algorithms == ("gzip",)
+
+
+def test_an_unknown_coding_is_still_refused():
+    with pytest.raises(ValueError, match="unknown content coding"):
+        CompressionMiddleware(algorithms=("lzma",))  # type: ignore[arg-type]  # the refusal under test

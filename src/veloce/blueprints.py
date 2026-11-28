@@ -29,11 +29,12 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable
-from typing import Annotated, Any, TypeVar
+from typing import Annotated, Any, Literal, TypeVar
 
 from typing_extensions import Doc
 
 from veloce._internal import T_route, _readd_route
+from veloce.enums import DuplicatePolicy
 from veloce.exceptions import _error_handler_key_error
 from veloce.routing.router import RouteInfo, Router
 
@@ -197,7 +198,7 @@ class Blueprint(Router):
             Doc("OpenAPI tags applied to every route registered on this blueprint."),
         ] = None,
         on_duplicate: Annotated[
-            str,
+            DuplicatePolicy | Literal["error", "warn", "override"],
             Doc(
                 "Policy for a second handler on the same path and method: `error`, `warn`, or `override`."
             ),

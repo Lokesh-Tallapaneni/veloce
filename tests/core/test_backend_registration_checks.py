@@ -11,10 +11,14 @@ from __future__ import annotations
 import pytest
 
 from veloce import (
+    BackendError,
     CacheBackend,
+    CacheError,
     FixedWindow,
+    RateLimitError,
     RateLimitMiddleware,
     ServerSessionMiddleware,
+    SessionError,
     Veloce,
     cached,
 )
@@ -181,3 +185,42 @@ def test_a_provider_with_dumps_and_loads_is_accepted():
     app = Veloce(openapi_url=None)
     app.json = Plain()
     assert isinstance(app.json, Plain)
+
+
+# ── a refusal is its subsystem's error and a BackendError ────────────
+
+
+def test_a_bad_cache_is_a_cache_error_and_a_backend_error():
+    class Empty:
+        pass
+
+    with pytest.raises(CacheError) as excinfo:
+        cached(Empty(), ttl=5)
+    assert isinstance(excinfo.value, BackendError)
+    assert isinstance(excinfo.value, TypeError)
+
+
+def test_a_bad_session_store_is_a_session_error():
+    class Empty:
+        pass
+
+    with pytest.raises(SessionError):
+        ServerSessionMiddleware(store=Empty())
+
+
+def test_a_bad_rate_limit_backend_is_a_rate_limit_error():
+    class Empty:
+        pass
+
+    with pytest.raises(RateLimitError):
+        RateLimitMiddleware(strategy=FixedWindow(5), backend=Empty())
+
+
+def test_the_refusals_do_not_cross_subsystems():
+    class Empty:
+        pass
+
+    with pytest.raises(BackendError) as excinfo:
+        cached(Empty(), ttl=5)
+    assert not isinstance(excinfo.value, SessionError)
+    assert not isinstance(excinfo.value, RateLimitError)

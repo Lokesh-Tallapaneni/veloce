@@ -11,11 +11,11 @@ Veloce raises), ``HTTPException`` (every HTTP status error, including
 ``ValidationError`` and ``RequestValidationError``) and ``WebSocketError``
 (``WebSocketDisconnect``, ``WebSocketException`` and
 ``WebSocketRequestValidationError``). ``CacheError``, ``SessionError`` and
-``RateLimitError`` are the roots for those subsystems, for a backend or store to
-derive its own errors from so one ``except`` covers the subsystem; the
-framework raises none of them itself today. ``BackendError`` is what a backend
-handed to Veloce raises when it does not satisfy its protocol (it is also a
-``TypeError``). ``ConfigurationError`` and ``SetupError``
+``RateLimitError`` are the roots for those subsystems, so one ``except`` covers
+the subsystem. ``BackendError`` is what a backend handed to Veloce raises when
+it does not satisfy its protocol (it is also a ``TypeError``); the cache,
+session and rate-limit ones raise ``CacheBackendError``, ``SessionBackendError``
+and ``RateLimitBackendError``, which are both. ``ConfigurationError`` and ``SetupError``
 cover misconfiguration at startup; ``BuildError``, ``DuplicateRouteError`` and
 ``FilesKeyError`` are the routing and request-data lookups.
 """
@@ -493,6 +493,18 @@ class BackendError(VeloceError, TypeError):
     that is not `async def` where the protocol declares it so. Also a
     `TypeError`, so code that already catches that keeps working.
     """
+
+
+class CacheBackendError(CacheError, BackendError):
+    """A result-cache backend does not satisfy `CacheBackend`."""
+
+
+class SessionBackendError(SessionError, BackendError):
+    """A session store does not satisfy `SessionStoreBackend`."""
+
+
+class RateLimitBackendError(RateLimitError, BackendError):
+    """A rate-limit backend does not satisfy `RateLimitStoreBackend`."""
 
 
 class ConfigurationError(VeloceError, RuntimeError):

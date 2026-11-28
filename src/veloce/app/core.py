@@ -9,7 +9,7 @@ import sys
 import threading
 import warnings
 from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from typing_extensions import Doc
 
@@ -40,6 +40,7 @@ from veloce.app.templating import TemplatingMixin
 from veloce.app.testing import TestingMixin
 from veloce.app.urls import URLMap
 from veloce.blueprints import Blueprint
+from veloce.enums import DuplicatePolicy
 from veloce.exceptions import (
     SetupError,
 )
@@ -293,7 +294,7 @@ class Veloce(
             Doc("Instance folder for runtime files; computed from the package root when omitted."),
         ] = None,
         on_duplicate: Annotated[
-            str,
+            DuplicatePolicy | Literal["error", "warn", "override"],
             Doc(
                 "Policy for a second handler on the same path and method: `error`, `warn`, or `override`."
             ),

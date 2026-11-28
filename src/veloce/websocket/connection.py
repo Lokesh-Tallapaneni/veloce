@@ -6,7 +6,7 @@ import asyncio
 import contextlib
 import logging
 import struct
-from typing import Any, NoReturn
+from typing import Any, Literal, NoReturn
 
 from veloce._constants import (
     HEADER_SEC_WEBSOCKET_KEY,
@@ -19,6 +19,7 @@ from veloce._protocol_constants import (
     ASGI_EVENT_WS_DISCONNECT,
     ASGI_EVENT_WS_SEND,
 )
+from veloce.enums import WebSocketMode
 from veloce.exceptions import WebSocketDisconnect
 from veloce.http.datastructures import State
 from veloce.status import (
@@ -443,7 +444,9 @@ class WebSocket(HandshakeViewMixin, ReceiveMixin, RawTransportMixin):
             return
         await self._raw_send(data.encode("utf-8"), opcode=0x1)  # _OP_TEXT
 
-    async def send_json(self, data: Any, mode: str = "text") -> None:
+    async def send_json(
+        self, data: Any, mode: WebSocketMode | Literal["text", "binary"] = "text"
+    ) -> None:
         """Send JSON data.
 
         `mode="text"` (default) wraps the JSON in a text frame (opcode 0x1).

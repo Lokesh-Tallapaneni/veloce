@@ -23,7 +23,7 @@ from veloce._constants import (
     HEADER_X_RATELIMIT_RESET,
 )
 from veloce.audit import Finding
-from veloce.exceptions import TooManyRequests
+from veloce.exceptions import RateLimitBackendError, TooManyRequests
 from veloce.http.request import Request
 from veloce.http.response import Response
 from veloce.middleware.base import Middleware
@@ -275,7 +275,12 @@ class RateLimitMiddleware(Middleware):
             if backend is None:
                 self._backend = InMemoryRateLimitBackend(max_keys=max_keys)
             else:
-                _require_backend(backend, RateLimitStoreBackend, role="rate-limit backend")
+                _require_backend(
+                    backend,
+                    RateLimitStoreBackend,
+                    role="rate-limit backend",
+                    error=RateLimitBackendError,
+                )
                 # A backend carries its own `max_keys`; two caps would disagree.
                 if max_keys != 100_000:
                     raise ValueError(

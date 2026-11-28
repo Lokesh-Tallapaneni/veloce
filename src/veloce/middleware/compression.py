@@ -6,7 +6,7 @@ import gzip
 import zlib
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from veloce._constants import (
     HEADER_ACCEPT_ENCODING,
@@ -22,6 +22,7 @@ from veloce._constants import (
     MIME_TEXT_EVENT_STREAM,
 )
 from veloce._internal import offload
+from veloce.enums import ContentCoding
 from veloce.http.request import Request
 from veloce.http.response import Response, header_get, header_key, header_present
 from veloce.middleware.base import Middleware
@@ -239,7 +240,7 @@ class CompressionMiddleware(Middleware):
         latency_sensitive_types: frozenset[str] = frozenset({MIME_TEXT_EVENT_STREAM}),
         name: str | None = None,
         *,
-        algorithms: tuple[str, ...] | None = None,
+        algorithms: tuple[ContentCoding | Literal["zstd", "br", "gzip"], ...] | None = None,
         levels: dict[str, int] | None = None,
     ) -> None:
         """Choose what is compressed and how.
@@ -282,7 +283,7 @@ class CompressionMiddleware(Middleware):
     @classmethod
     def _resolve_codings(
         cls,
-        algorithms: tuple[str, ...] | None,
+        algorithms: tuple[ContentCoding | Literal["zstd", "br", "gzip"], ...] | None,
         levels: dict[str, int] | None,
         compresslevel: int | None,
     ) -> tuple[tuple[str, ...], dict[str, int]]:
@@ -292,7 +293,9 @@ class CompressionMiddleware(Middleware):
         Asking *only* for a missing one raises, naming the package to install,
         since silently serving plaintext would hide it.
         """
-        requested = tuple(algorithms) if algorithms is not None else cls._supported
+        requested = (
+            tuple(str(name) for name in algorithms) if algorithms is not None else cls._supported
+        )
         if not requested:
             raise ValueError("algorithms must name at least one content coding")
         unknown = [name for name in requested if name not in _CODECS_PACKAGE]

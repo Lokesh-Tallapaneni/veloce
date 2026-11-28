@@ -52,7 +52,14 @@ if TYPE_CHECKING:  # pragma: no cover
     )
     from veloce.dependency import Depends, Security, SecurityScopes
     from veloce.encoders import jsonable_encoder, register_encoder, unregister_encoder
-    from veloce.enums import CookiePrefix, MCPTransport, SameSite
+    from veloce.enums import (
+        ContentCoding,
+        CookiePrefix,
+        DuplicatePolicy,
+        MCPTransport,
+        SameSite,
+        WebSocketMode,
+    )
     from veloce.exceptions import (
         BackendError,
         BadGateway,
@@ -402,6 +409,9 @@ __all__ = [
     "MCPTransport",
     "SameSite",
     "CookiePrefix",
+    "ContentCoding",
+    "DuplicatePolicy",
+    "WebSocketMode",
     "SessionStoreBackend",
     "RateLimitStoreBackend",
     "JSONProviderBackend",

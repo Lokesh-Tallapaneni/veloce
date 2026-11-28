@@ -14,7 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `MCPTransport` and `SameSite` name closed sets of values; plain strings are still accepted. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
 - `CookiePrefix` names the `host` and `secure` cookie-name prefixes; plain strings are still accepted. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
 - `BackendError` is raised when a backend lacks a method or a required `async def`. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
-- `CacheError`, `SessionError` and `RateLimitError` are roots for a subsystem's own errors. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
+- `CacheError`, `SessionError` and `RateLimitError` are roots; a rejected backend raises its subsystem's. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
+- `DuplicatePolicy`, `WebSocketMode` and `ContentCoding` name closed sets; plain strings are still accepted. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
 - A session store with async `read`, `write` and `delete` works without subclassing `SessionStore`. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
 - Each guide, how-to and deployment page ends with a `Source and tests` line linking its code and tests. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
 

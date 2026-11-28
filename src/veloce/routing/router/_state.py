@@ -58,7 +58,7 @@ class RouterState:
             raise ValueError(
                 f"on_duplicate must be one of {sorted(_DUPLICATE_POLICIES)}, got {on_duplicate!r}"
             )
-        self.on_duplicate = on_duplicate
+        self.on_duplicate = str(on_duplicate)
         # Copied: appended to as routes register, so aliasing mutates the caller's.
         self.tags = list(tags or [])
         # Once set it is the class every return value goes to, so a text class

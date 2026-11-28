@@ -31,6 +31,7 @@ from typing import Any
 
 import veloce._json as _json
 from veloce._internal import _is_async_callable, _require_methods
+from veloce.exceptions import CacheBackendError
 from veloce.protocols import CacheBackend, _require_backend
 
 # Sort dict keys so equal mappings hash identically regardless of order.
@@ -182,7 +183,7 @@ def cached(
             JSON-serialisable (raised by the wrapped call).
 
     """  # noqa: DOC503 - the exception is raised or caught by a callee
-    _require_backend(cache, CacheBackend, role="cache")
+    _require_backend(cache, CacheBackend, role="cache", error=CacheBackendError)
     if ttl < 1:
         raise ValueError("cached ttl must be >= 1 second")
 

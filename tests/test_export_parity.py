@@ -141,6 +141,9 @@ UNEXPORTED: dict[str, str] = {
     #
     # Tuning defaults: buffer and chunk sizes, settable through `Config` or a
     # keyword rather than by importing the constant.
+    "exceptions.CacheBackendError": "raised for a rejected cache; catch CacheError or BackendError",
+    "exceptions.SessionBackendError": "raised for a rejected session store; catch SessionError or BackendError",
+    "exceptions.RateLimitBackendError": "raised for a rejected rate-limit backend; catch RateLimitError or BackendError",
     "config.DEFAULT_WRITE_BUFFER_HIGH_WATER": "tuning default; set through Config, not by import",
     "http.formparsers.DEFAULT_MAX_MULTIPART_PART_SIZE": "tuning default for the multipart parser",
     "http.formparsers.MULTIPART_SPOOL_MAX_SIZE": "tuning default for the multipart parser",

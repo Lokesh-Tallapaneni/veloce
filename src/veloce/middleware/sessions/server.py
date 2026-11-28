@@ -7,6 +7,7 @@ from collections.abc import Callable
 from typing import Any, Literal
 
 from veloce.enums import CookiePrefix
+from veloce.exceptions import SessionBackendError
 from veloce.http.request import Request
 from veloce.http.response import Response
 from veloce.middleware.sessions._shared import (
@@ -105,7 +106,9 @@ class ServerSessionMiddleware(SessionMiddlewareBase):
         if store is None:
             self.store: SessionStore = InMemorySessionStore()
         else:
-            _require_backend(store, SessionStoreBackend, role="session store")
+            _require_backend(
+                store, SessionStoreBackend, role="session store", error=SessionBackendError
+            )
             # A store that only duck-types the protocol gets the default
             # `replace` and `touch` the middleware calls; a subclass keeps its own.
             self.store = store if isinstance(store, SessionStore) else _StoreAdapter(store)
