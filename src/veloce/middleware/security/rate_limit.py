@@ -28,6 +28,7 @@ from veloce.http.request import Request
 from veloce.http.response import Response
 from veloce.middleware.base import Middleware
 from veloce.principal import current_principal
+from veloce.protocols import RateLimitStoreBackend, _require_backend
 
 if TYPE_CHECKING:  # pragma: no cover
     from collections.abc import Callable, Iterable
@@ -37,7 +38,6 @@ if TYPE_CHECKING:  # pragma: no cover
 from veloce.ratelimit import (
     RATE_LIMIT_ATTR,
     InMemoryRateLimitBackend,
-    RateLimitBackend,
     RateLimitResult,
     RateLimitStrategy,
 )
@@ -209,7 +209,7 @@ class RateLimitMiddleware(Middleware):
         window_seconds: int = 60,
         *,
         strategy: RateLimitStrategy | None = None,
-        backend: RateLimitBackend | None = None,
+        backend: RateLimitStoreBackend | None = None,
         key_func: Callable[[Request], str | None | Awaitable[str | None]] | None = None,
         overrides: dict[str, RateLimitStrategy] | None = None,
         strict_overrides: bool = True,
@@ -235,8 +235,8 @@ class RateLimitMiddleware(Middleware):
         Raises:
             ValueError: If `max_keys` is below 1, `backend` or `overrides` is given
                 without `strategy`, or `max_keys` is set alongside a custom `backend`.
-            TypeError: If `key_func` is not callable or an override is not a
-                `RateLimitStrategy`.
+            TypeError: If `key_func` is not callable, an override is not a
+                `RateLimitStrategy`, or `backend` lacks an async `evaluate`.
 
         """
         super().__init__(name=name)
@@ -258,7 +258,7 @@ class RateLimitMiddleware(Middleware):
         self._reported_unknown: list[str] = []
         # Shared by both construction modes, since a `@rate_limit` tag is honored
         # either way; built lazily so an untagged app never allocates one.
-        self._backend: RateLimitBackend | None = None
+        self._backend: RateLimitStoreBackend | None = None
         self._overrides: dict[str, RateLimitStrategy] | None = None
         # Rebuilt when the route-table generation advances; empty is the fast path.
         self._route_strategies: dict[str, RateLimitStrategy] | None = None
@@ -275,6 +275,7 @@ class RateLimitMiddleware(Middleware):
             if backend is None:
                 self._backend = InMemoryRateLimitBackend(max_keys=max_keys)
             else:
+                _require_backend(backend, RateLimitStoreBackend, role="rate-limit backend")
                 # A backend carries its own `max_keys`; two caps would disagree.
                 if max_keys != 100_000:
                     raise ValueError(

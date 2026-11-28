@@ -9,6 +9,7 @@ from typing import Any
 
 from veloce.app._host import AppHost
 from veloce.helpers import Aborter, send_from_directory, send_from_directory_async
+from veloce.protocols import JSONProviderBackend, _require_backend
 
 
 class AccessorsMixin(AppHost):
@@ -29,11 +30,17 @@ class AccessorsMixin(AppHost):
         application's to restyle.
         """
         if self._json_provider is None:
-            self._json_provider = self.json_provider_class(self)
+            self.json = self.json_provider_class(self)
         return self._json_provider
 
     @json.setter
     def json(self, provider: Any) -> None:
+        # `dumps` and `loads` are what every serialiser needs. `response` is read
+        # only by `jsonify`, and a provider without it has always been accepted
+        # here, so it is not required up front.
+        _require_backend(
+            provider, JSONProviderBackend, role="JSON provider", names=("dumps", "loads")
+        )
         self._json_provider = provider
 
     def _resolve_handler_json_dumps(self) -> Any:

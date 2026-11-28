@@ -29,6 +29,12 @@ Severity = Literal["error", "warning", "info"]
 _RANK: dict[str, int] = {"info": 0, "warning": 1, "error": 2}
 
 
+def _check_severity(severity: str) -> None:
+    """Raise `ValueError` naming the allowed values unless `severity` is one."""
+    if severity not in _RANK:
+        raise ValueError(f"severity must be one of {', '.join(_RANK)}; got {severity!r}")
+
+
 class AuditFailed(VeloceError, ValueError):
     """An `error`-severity finding refused the application's startup.
 
@@ -63,8 +69,24 @@ class Finding:
     fix: str | None = None
     id: str | None = None
 
+    def __post_init__(self) -> None:
+        """Refuse an unknown severity now, not when a gate later ranks it."""
+        _check_severity(self.severity)
+
     def at_least(self, severity: Severity) -> bool:
-        """Whether this finding is at or above `severity`."""
+        """Whether this finding is at or above `severity`.
+
+        Args:
+            severity: The threshold to compare against.
+
+        Returns:
+            True when this finding ranks at least as high as `severity`.
+
+        Raises:
+            ValueError: If `severity` is not `error`, `warning` or `info`.
+
+        """  # noqa: DOC502 - the exception is raised or caught by a callee
+        _check_severity(severity)
         return _RANK[self.severity] >= _RANK[severity]
 
     def __str__(self) -> str:

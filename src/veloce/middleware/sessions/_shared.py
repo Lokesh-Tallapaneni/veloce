@@ -7,6 +7,7 @@ from collections.abc import Callable
 from typing import Any, Final, Literal
 
 from veloce._constants import HEADER_COOKIE
+from veloce.enums import CookiePrefix
 from veloce.http.response import Response
 from veloce.signing import Signer
 
@@ -36,7 +37,7 @@ _CHUNK_SEP = "."
 
 def _validate_cookie_security(
     *,
-    cookie_prefix: Literal["host", "secure"] | None,
+    cookie_prefix: CookiePrefix | Literal["host", "secure"] | None,
     partitioned: bool,
     domain: str | None,
     path: str,
@@ -53,7 +54,7 @@ def _validate_cookie_security(
         if cookie_prefix not in ("host", "secure"):
             raise ValueError("cookie_prefix must be 'host', 'secure', or None")
         if not secure:
-            raise ValueError(f"cookie_prefix={cookie_prefix!r} requires secure=True")
+            raise ValueError(f"cookie_prefix={str(cookie_prefix)!r} requires secure=True")
         if cookie_prefix == "host":
             if path != "/":
                 raise ValueError("cookie_prefix='host' requires path='/'")
@@ -102,7 +103,9 @@ def _build_signer(secret_key: str | list[str]) -> Signer:
     return signer
 
 
-def _wire_name(cookie_prefix: Literal["host", "secure"] | None, cookie_name: str) -> str:
+def _wire_name(
+    cookie_prefix: CookiePrefix | Literal["host", "secure"] | None, cookie_name: str
+) -> str:
     """Apply the RFC 6265bis name prefix to the configured cookie name.
 
     The prefix must be on both the request read and the response write, so it is

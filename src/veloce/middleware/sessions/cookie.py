@@ -18,6 +18,7 @@ if TYPE_CHECKING:  # pragma: no cover
 
     from veloce.audit import AuditContext
 
+from veloce.enums import CookiePrefix
 from veloce.middleware.sessions._shared import (
     _CHUNK_SEP,
     _DEFAULT_MAX_COOKIE_CHUNKS,
@@ -72,7 +73,7 @@ class SessionMiddleware(SessionMiddlewareBase):
         max_cookie_size: int | _UnsetType = _UNSET,
         vary_on_cookie: bool = True,
         persist_on_status: Callable[[int], bool] | None = None,
-        cookie_prefix: Literal["host", "secure"] | None = None,
+        cookie_prefix: CookiePrefix | Literal["host", "secure"] | None = None,
         partitioned: bool = False,
         renew_on_access: bool = False,
         chunked: bool = False,

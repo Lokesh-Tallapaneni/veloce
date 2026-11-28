@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `CacheBackend`, `SessionStoreBackend`, `RateLimitStoreBackend` and `JSONProviderBackend` protocols describe each pluggable backend. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
 - `WebSocketError` is the common base of the WebSocket exceptions and derives from `VeloceError`. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
 - `MCPTransport` and `SameSite` name closed sets of values; plain strings are still accepted. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
+- `CookiePrefix` names the `host` and `secure` cookie-name prefixes; plain strings are still accepted. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
+- `BackendError` is raised when a backend lacks a method or a required `async def`. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
+- `CacheError`, `SessionError` and `RateLimitError` are roots for a subsystem's own errors. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
+- A session store with async `read`, `write` and `delete` works without subclassing `SessionStore`. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
 - Each guide, how-to and deployment page ends with a `Source and tests` line linking its code and tests. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
 
 ### Changed
@@ -22,6 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `MCPError`, `MCPRequestError` and `ScaffoldError` derive from `VeloceError`. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
 - `Veloce.add_route` is inherited from `Router`; registration checks run in `_add_route_options`. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
 - `Signal.connect` takes `weak` and `sender` by keyword; pass `sender=` explicitly. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
+- `cached`, `ServerSessionMiddleware` and `RateLimitMiddleware` refuse a backend missing a required method, when it is passed. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
+- Assigning `app.json` refuses a provider without `dumps` and `loads`. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
+- `Finding` raises `ValueError` for a severity other than `error`, `warning` or `info`. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
 - Public functions and classes carry `Args`, `Returns` and `Raises` documentation. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
 - Modules over 800 lines became packages or mixin modules with unchanged import paths. ([#367](https://github.com/Lokesh-Tallapaneni/veloce/pull/367))
 

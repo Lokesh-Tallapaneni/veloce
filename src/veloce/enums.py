@@ -29,6 +29,15 @@ class MCPTransport(_StrEnum):
     SSE = "sse"
 
 
+class CookiePrefix(_StrEnum):
+    """The cookie-name prefixes of RFC 6265bis Sec. 4.1.3."""
+
+    #: `__Host-`: Secure, `Path=/`, and no `Domain`, so the cookie is host-bound.
+    HOST = "host"
+    #: `__Secure-`: the cookie is only accepted over HTTPS.
+    SECURE = "secure"
+
+
 class SameSite(_StrEnum):
     """The `SameSite` cookie attribute values (RFC 6265bis Sec. 4.1.2.7)."""
 

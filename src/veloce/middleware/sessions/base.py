@@ -14,6 +14,7 @@ if TYPE_CHECKING:  # pragma: no cover
 
     from veloce.audit import AuditContext
 
+from veloce.enums import CookiePrefix
 from veloce.middleware.sessions._shared import (
     _RETIRED_CONFIG_KEYS,
     _shared_cookie_settings,
@@ -74,7 +75,7 @@ class SessionMiddlewareBase(Middleware):
         secure: bool | _UnsetType,
         samesite: str | None | _UnsetType,
         domain: str | None,
-        cookie_prefix: Literal["host", "secure"] | None,
+        cookie_prefix: CookiePrefix | Literal["host", "secure"] | None,
         partitioned: bool,
         vary_on_cookie: bool,
         persist_on_status: Callable[[int], bool] | None,
@@ -120,7 +121,7 @@ class SessionMiddlewareBase(Middleware):
         self.secure = settled_secure
         self.samesite = settled_samesite
         self.domain = domain
-        self.cookie_prefix: Literal["host", "secure"] | None = cookie_prefix
+        self.cookie_prefix: CookiePrefix | Literal["host", "secure"] | None = cookie_prefix
         self.partitioned = partitioned
         # Without `Vary: Cookie` a URL-keyed cache could serve one user's
         # session-bearing body to another (RFC 9110 Sec. 12.5.5).

@@ -16,7 +16,10 @@ MCP subpackage or the app.
 from __future__ import annotations
 
 import importlib
+import inspect
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+
+from veloce.exceptions import BackendError
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.http.response import Response
@@ -81,6 +84,82 @@ class JSONProviderBackend(Protocol):
     def response(self, value: Any, **kwargs: Any) -> Response:
         """Wrap `value` in a JSON response."""
         ...
+
+
+def _require_backend(
+    obj: Any, protocol: type, *, role: str, names: tuple[str, ...] | None = None
+) -> None:
+    """Refuse `obj` at registration unless it provides what `protocol` asks for.
+
+    A type checker proves a custom backend has the right methods; this proves it
+    to an application that is not type-checked, at the moment the backend is
+    handed over rather than on the first live request that reaches a missing
+    method. Beyond presence it checks the one thing a runtime `isinstance` against
+    a protocol cannot: a method the protocol declares `async def` must be a
+    coroutine function, because the framework `await`s it and a plain function
+    would fail there with a confusing `TypeError` about awaiting a non-awaitable.
+
+    Args:
+        obj: The backend instance being registered.
+        protocol: The protocol it must satisfy.
+        role: What the backend is for, used in the message ("cache", "session store").
+        names: Check only these members, for a protocol that declares optional extras.
+
+    Raises:
+        BackendError: If a member is missing or not callable, or is not `async def`
+            where the protocol declares it so. It is also a `TypeError`.
+
+    """
+    members = {
+        name: member
+        for name, member in vars(protocol).items()
+        if inspect.isfunction(member) and not name.startswith("_")
+    }
+    missing: list[str] = []
+    not_async: list[str] = []
+    for name in names if names is not None else tuple(members):
+        attribute = getattr(obj, name, None)
+        if not callable(attribute):
+            missing.append(name)
+        elif inspect.iscoroutinefunction(members[name]) and not inspect.iscoroutinefunction(
+            attribute
+        ):
+            not_async.append(name)
+    if missing or not_async:
+        problems = []
+        if missing:
+            problems.append(f"missing {', '.join(missing)}")
+        if not_async:
+            problems.append(f"{', '.join(not_async)} must be `async def`")
+        raise BackendError(
+            f"the {role} {type(obj).__name__} does not satisfy {protocol.__name__}: "
+            f"{'; '.join(problems)}"
+        )
+
+
+if TYPE_CHECKING:  # pragma: no cover
+
+    def _conformance(app: Any) -> None:
+        """Make the type checker prove every shipped backend satisfies its protocol.
+
+        Never called and absent at runtime. A change to a shipped backend that
+        drifts from the signature its protocol asks for fails `mypy` here,
+        rather than being found by a user who passes it to an extension point.
+        """
+        from veloce.cache import InMemoryCache
+        from veloce.contrib.redis import RedisCache, RedisRateLimitBackend, RedisSessionStore
+        from veloce.json_provider import DefaultJSONProvider
+        from veloce.ratelimit import InMemoryRateLimitBackend
+        from veloce.sessions import InMemorySessionStore
+
+        cache: CacheBackend = InMemoryCache()
+        redis_cache: CacheBackend = RedisCache(app)
+        store: SessionStoreBackend = InMemorySessionStore()
+        redis_store: SessionStoreBackend = RedisSessionStore(app)
+        limiter: RateLimitStoreBackend = InMemoryRateLimitBackend()
+        redis_limiter: RateLimitStoreBackend = RedisRateLimitBackend(app)
+        provider: JSONProviderBackend = DefaultJSONProvider(app)
+        del cache, redis_cache, store, redis_store, limiter, redis_limiter, provider
 
 
 # Protocols that live beside the code that drives them.

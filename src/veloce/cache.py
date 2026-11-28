@@ -31,6 +31,7 @@ from typing import Any
 
 import veloce._json as _json
 from veloce._internal import _is_async_callable, _require_methods
+from veloce.protocols import CacheBackend, _require_backend
 
 # Sort dict keys so equal mappings hash identically regardless of order.
 _KEY_OPTIONS = _json.OPT_SORT_KEYS
@@ -147,7 +148,7 @@ class InMemoryCache(Cache):
 
 
 def cached(
-    cache: Cache,
+    cache: CacheBackend,
     *,
     ttl: int,
     key: Callable[..., str] | None = None,
@@ -166,7 +167,8 @@ def cached(
     async functions are supported.
 
     Args:
-        cache: The store holding cached results.
+        cache: The store holding cached results: any object with async `get`, `set`
+            and `delete`; it need not subclass `Cache`.
         ttl: Seconds an entry lives; at least 1.
         key: Builds the cache key from the wrapped function's arguments.
 
@@ -175,10 +177,12 @@ def cached(
 
     Raises:
         ValueError: If `ttl` is less than 1.
-        TypeError: When decorating a non-async function, or when a result is
-            not JSON-serialisable (raised by the wrapped call).
+        TypeError: If `cache` lacks an async `get`, `set` or `delete`, when
+            decorating a non-async function, or when a result is not
+            JSON-serialisable (raised by the wrapped call).
 
     """  # noqa: DOC503 - the exception is raised or caught by a callee
+    _require_backend(cache, CacheBackend, role="cache")
     if ttl < 1:
         raise ValueError("cached ttl must be >= 1 second")
 

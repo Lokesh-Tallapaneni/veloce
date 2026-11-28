@@ -19,7 +19,7 @@ from veloce._internal import (
     _etag_matches_strong,
     _preconditions_say_unchanged,
 )
-from veloce.enums import SameSite
+from veloce.enums import CookiePrefix, SameSite
 from veloce.http.cache_control import CacheControl
 from veloce.http.dates import parse_date
 
@@ -238,7 +238,7 @@ class ValidatorsMixin(HeadersMixin):
         httponly: bool = False,
         samesite: SameSite | str | None = None,
         partitioned: bool = False,
-        prefix: Literal["host", "secure"] | None = None,
+        prefix: CookiePrefix | Literal["host", "secure"] | None = None,
     ) -> None:
         """Delete a cookie by overwriting it with an empty value + Max-Age=0.
 

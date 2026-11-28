@@ -22,7 +22,7 @@ from veloce._constants import (
 )
 from veloce._header_parsing import unquote_value
 from veloce._internal import _reject_header_crlf
-from veloce.enums import SameSite
+from veloce.enums import CookiePrefix, SameSite
 from veloce.http.dates import http_date
 
 # RFC 6265 Sec. 4.1.1: cookie-name = token (RFC 7230 Sec. 3.2.6) - the VCHAR set
@@ -81,7 +81,7 @@ def dump_cookie(
     secure: bool = False,
     httponly: bool = False,
     samesite: SameSite | str | None = None,
-    prefix: Literal["host", "secure"] | None = None,
+    prefix: CookiePrefix | Literal["host", "secure"] | None = None,
 ) -> str:
     """Build a `Set-Cookie:` header value - RFC 6265 Sec. 4.1.
 

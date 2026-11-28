@@ -33,7 +33,7 @@ from veloce._protocol_constants import (
     AUTH_SCHEME_BASIC,
     SET_COOKIE_JOINER,
 )
-from veloce.enums import SameSite
+from veloce.enums import CookiePrefix, SameSite
 from veloce.http.cookies import dump_cookie, iter_cookies
 from veloce.http.dates import http_date, parse_date
 from veloce.http.header_set import HeaderSet
@@ -69,7 +69,7 @@ class HeadersMixin(ResponseBase):
         httponly: bool = False,
         samesite: SameSite | str | None = "Lax",
         partitioned: bool = False,
-        prefix: Literal["host", "secure"] | None = None,
+        prefix: CookiePrefix | Literal["host", "secure"] | None = None,
     ) -> None:
         """Build a `Set-Cookie` header per RFC 6265.
 

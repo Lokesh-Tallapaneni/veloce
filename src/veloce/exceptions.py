@@ -10,7 +10,12 @@ Roots, so one ``except`` covers a whole family: ``VeloceError`` (everything
 Veloce raises), ``HTTPException`` (every HTTP status error, including
 ``ValidationError`` and ``RequestValidationError``) and ``WebSocketError``
 (``WebSocketDisconnect``, ``WebSocketException`` and
-``WebSocketRequestValidationError``). ``ConfigurationError`` and ``SetupError``
+``WebSocketRequestValidationError``). ``CacheError``, ``SessionError`` and
+``RateLimitError`` are the roots for those subsystems, for a backend or store to
+derive its own errors from so one ``except`` covers the subsystem; the
+framework raises none of them itself today. ``BackendError`` is what a backend
+handed to Veloce raises when it does not satisfy its protocol (it is also a
+``TypeError``). ``ConfigurationError`` and ``SetupError``
 cover misconfiguration at startup; ``BuildError``, ``DuplicateRouteError`` and
 ``FilesKeyError`` are the routing and request-data lookups.
 """
@@ -466,6 +471,27 @@ class SetupError(VeloceError, RuntimeError):
     request: once serving begins the route table and hook lists are frozen, so a
     late mutation would race in-flight requests. The lock is relaxed in
     `DEBUG`/`TESTING` so hot-reload and test monkeypatching stay ergonomic.
+    """
+
+
+class CacheError(VeloceError):
+    """Root of the errors a result-cache backend raises."""
+
+
+class SessionError(VeloceError):
+    """Root of the errors a server-side session store raises."""
+
+
+class RateLimitError(VeloceError):
+    """Root of the errors a rate-limit state store raises."""
+
+
+class BackendError(VeloceError, TypeError):
+    """A backend handed to Veloce does not satisfy the protocol its extension point asks for.
+
+    Raised at registration, never on a request: a missing method, or a method
+    that is not `async def` where the protocol declares it so. Also a
+    `TypeError`, so code that already catches that keeps working.
     """
 
 

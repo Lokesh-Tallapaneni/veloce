@@ -6,6 +6,7 @@ import secrets
 from collections.abc import Callable
 from typing import Any, Literal
 
+from veloce.enums import CookiePrefix
 from veloce.http.request import Request
 from veloce.http.response import Response
 from veloce.middleware.sessions._shared import (
@@ -17,7 +18,8 @@ from veloce.middleware.sessions._shared import (
 from veloce.middleware.sessions.base import (
     SessionMiddlewareBase,
 )
-from veloce.sessions import InMemorySessionStore, Session, SessionStore
+from veloce.protocols import SessionStoreBackend, _require_backend
+from veloce.sessions import InMemorySessionStore, Session, SessionStore, _StoreAdapter
 
 
 class ServerSessionMiddleware(SessionMiddlewareBase):
@@ -39,7 +41,7 @@ class ServerSessionMiddleware(SessionMiddlewareBase):
 
     def __init__(
         self,
-        store: SessionStore | None = None,
+        store: SessionStoreBackend | None = None,
         cookie_name: str | _UnsetType = _UNSET,
         max_age: int = 86400 * 14,
         permanent_lifetime: int | _UnsetType = _UNSET,
@@ -51,7 +53,7 @@ class ServerSessionMiddleware(SessionMiddlewareBase):
         domain: str | None = None,
         vary_on_cookie: bool = True,
         persist_on_status: Callable[[int], bool] | None = None,
-        cookie_prefix: Literal["host", "secure"] | None = None,
+        cookie_prefix: CookiePrefix | Literal["host", "secure"] | None = None,
         partitioned: bool = False,
         renew_on_access: bool = False,
         name: str | None = None,
@@ -59,7 +61,9 @@ class ServerSessionMiddleware(SessionMiddlewareBase):
         """Configure the server-side session.
 
         Args:
-            store: Where session payloads live; a process-local store when omitted.
+            store: Where session payloads live: any object with async `read`, `write`
+                and `delete`, with or without subclassing `SessionStore`; a
+                process-local store when omitted.
             cookie_name: Cookie name; the library default when omitted.
             max_age: Seconds a non-permanent session lasts.
             permanent_lifetime: Seconds a `session.permanent` session lasts.
@@ -79,6 +83,7 @@ class ServerSessionMiddleware(SessionMiddlewareBase):
         Raises:
             ValueError: If the cookie settings are an invalid combination, as for
                 `SessionMiddleware`.
+            TypeError: If `store` lacks an async `read`, `write` or `delete`.
 
         """  # noqa: DOC502 - the exception is raised or caught by a callee
         super().__init__(name=name)
@@ -97,7 +102,13 @@ class ServerSessionMiddleware(SessionMiddlewareBase):
             persist_on_status=persist_on_status,
             renew_on_access=renew_on_access,
         )
-        self.store = store if store is not None else InMemorySessionStore()
+        if store is None:
+            self.store: SessionStore = InMemorySessionStore()
+        else:
+            _require_backend(store, SessionStoreBackend, role="session store")
+            # A store that only duck-types the protocol gets the default
+            # `replace` and `touch` the middleware calls; a subclass keeps its own.
+            self.store = store if isinstance(store, SessionStore) else _StoreAdapter(store)
 
     async def process_request(self, request: Request) -> Response | None:
         """Load the session from the server-side store by cookie id."""

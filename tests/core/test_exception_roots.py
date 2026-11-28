@@ -49,3 +49,34 @@ def test_every_subsystem_error_is_a_veloce_error(cls):
 
 def test_mcp_error_still_renders_a_json_rpc_error():
     assert MCPError("boom", data=1).to_error(7)["error"]["message"] == "boom"
+
+
+# ── subsystem roots and the backend refusal ──────────────────────────
+
+
+@pytest.mark.parametrize("name", ["CacheError", "SessionError", "RateLimitError", "BackendError"])
+def test_the_subsystem_roots_derive_from_veloce_error(name):
+    cls = getattr(veloce, name)
+    assert issubclass(cls, VeloceError)
+    assert name in veloce.__all__
+
+
+def test_a_subsystem_error_is_caught_by_its_own_root_only():
+    class StoreDown(veloce.SessionError):
+        pass
+
+    with pytest.raises(veloce.SessionError):
+        raise StoreDown("down")
+    assert not issubclass(StoreDown, veloce.CacheError)
+
+
+def test_a_backend_refusal_is_also_a_type_error():
+    """Existing `except TypeError` handling keeps catching it."""
+
+    class Empty:
+        pass
+
+    with pytest.raises(TypeError) as excinfo:
+        veloce.cached(Empty(), ttl=5)
+    assert isinstance(excinfo.value, veloce.BackendError)
+    assert isinstance(excinfo.value, VeloceError)

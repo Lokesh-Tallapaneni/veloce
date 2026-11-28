@@ -237,6 +237,35 @@ class SessionStore:
         return True
 
 
+class _StoreAdapter(SessionStore):
+    """Lend `SessionStore`'s default `replace` and `touch` to a duck-typed store.
+
+    The middleware calls `replace` and `touch`, which the base class implements
+    in terms of `read` and `write`. A store that only has `read`, `write` and
+    `delete` satisfies `SessionStoreBackend` without inheriting any of that, so
+    the middleware wraps it here instead of failing on the first request.
+    """
+
+    __slots__ = ("wrapped",)
+
+    def __init__(self, wrapped: Any) -> None:
+        """Wrap `wrapped`, which already satisfies `SessionStoreBackend`."""
+        self.wrapped = wrapped
+
+    async def read(self, session_id: str) -> dict[str, Any] | None:
+        """Delegate to the wrapped store."""
+        data: dict[str, Any] | None = await self.wrapped.read(session_id)
+        return data
+
+    async def write(self, session_id: str, data: dict[str, Any], max_age: int) -> None:
+        """Delegate to the wrapped store."""
+        await self.wrapped.write(session_id, data, max_age)
+
+    async def delete(self, session_id: str) -> None:
+        """Delegate to the wrapped store."""
+        await self.wrapped.delete(session_id)
+
+
 class InMemorySessionStore(SessionStore):
     """A process-local `SessionStore` - a dict with per-entry expiry.
 
