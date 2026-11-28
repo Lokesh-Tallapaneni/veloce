@@ -38,8 +38,14 @@ async def _async_bytes_chunks():
 
 
 async def test_an_async_generator_of_str_is_encoded_for_the_transport():
-    """POSITIVE: the async branch now honours the encoding contract."""
-    response = StreamingResponse(content=_async_str_chunks(), content_type="text/plain")
+    """POSITIVE: the async branch now honours the encoding contract.
+
+    `coalesce=False` pins one write per chunk; batching is covered separately
+    in `test_internal_coalesce.py`.
+    """
+    response = StreamingResponse(
+        content=_async_str_chunks(), content_type="text/plain", coalesce=False
+    )
     transport = FakeTransport()
 
     await response.stream_to(transport)
@@ -53,9 +59,12 @@ async def test_a_sync_generator_of_str_still_behaves_the_same():
     """NEGATIVE: the branch that already worked must not change.
 
     Both branches now share one adapter, so this pins that the working half
-    was not broken while fixing the other.
+    was not broken while fixing the other. `coalesce=False` pins one write
+    per chunk; batching is covered separately in `test_internal_coalesce.py`.
     """
-    response = StreamingResponse(content=_sync_str_chunks(), content_type="text/plain")
+    response = StreamingResponse(
+        content=_sync_str_chunks(), content_type="text/plain", coalesce=False
+    )
     transport = FakeTransport()
 
     await response.stream_to(transport)

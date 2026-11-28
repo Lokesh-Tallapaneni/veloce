@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import gc
 import tracemalloc
 import warnings
 
@@ -122,9 +123,26 @@ def _coverage_paused():
         tracer.start()
 
 
+def _prime_allocator() -> None:
+    """Force a one-time allocator growth to happen before tracing starts.
+
+    A fresh pymalloc arena or OS allocation is charged in full to whichever
+    call triggers it; left to chance, that call can land inside the traced
+    window and read as a multi-megabyte spike that is really unrelated,
+    one-time allocator growth. Growing and releasing a block bigger than the
+    workload needs forces that growth to happen now, so the window it is
+    measured in is not it.
+    """
+    gc.collect()
+    scratch = bytearray(32 * 1024 * 1024)
+    del scratch
+    gc.collect()
+
+
 async def _peak_mb(coro_factory) -> tuple[float, object]:
     """Peak traced allocation, in MB, while awaiting `coro_factory()`."""
     with _coverage_paused():
+        _prime_allocator()
         tracemalloc.start()
         try:
             base = tracemalloc.get_traced_memory()[0]
@@ -241,10 +259,17 @@ async def test_concurrent_downloads_do_not_multiply_memory(files, factory):
     """The report's headline: "four concurrent 32 MiB downloads at 134 MB RSS"."""
     app = _static_app(files) if factory == "static" else _download_app(files)
     path = "/assets/big.bin" if factory == "static" else "/big"
-    await _drain(app, path)  # warm
 
     async def four():
         return await asyncio.gather(*(_drain(app, path) for _ in range(4)))
+
+    # Warmed at the same four-way concurrency the measured run uses, not just
+    # one request: a lone warm-up leaves the allocator sized for a single
+    # in-flight download, so the measured run's own first-time arena growth -
+    # pymalloc requesting a new arena from the OS, attributed whole to
+    # whichever allocation triggers it - gets charged to it instead, reading
+    # as a multi-megabyte "leak" that is really a one-time allocator cost.
+    await four()
 
     peak, results = await _peak_mb(four)
     assert [r["bytes"] for r in results] == [BIG] * 4
