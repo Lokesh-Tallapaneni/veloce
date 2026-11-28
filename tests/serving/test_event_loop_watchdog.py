@@ -158,7 +158,11 @@ def test_no_false_positive_while_the_loop_is_idle(caplog):
     """The in-memory TestClient drives the loop one request at a time;
     the gaps between requests must not be reported as stalls."""
     app = Veloce(debug=True, openapi_url=None)
-    app.config["EVENT_LOOP_WATCHDOG"] = True
+    # A threshold above what the first request costs under a tracer (coverage
+    # makes its CPU-bound setup run past the 100 ms default, which is a real
+    # stall, not the idle gap this test is about), and an idle gap longer than
+    # the threshold, so the test would still catch an idle gap read as a stall.
+    app.config["EVENT_LOOP_WATCHDOG"] = {"interval": 0.02, "stall_threshold": 0.3}
 
     @app.get("/")
     async def index():
@@ -168,7 +172,7 @@ def test_no_false_positive_while_the_loop_is_idle(caplog):
     try:
         with caplog.at_level(logging.WARNING, logger="veloce.watchdog"):
             client.get("/")
-            time.sleep(0.3)  # the loop is stopped (idle) the whole time
+            time.sleep(0.8)  # the loop is stopped (idle) the whole time
             client.get("/")
     finally:
         if app._watchdog is not None:
