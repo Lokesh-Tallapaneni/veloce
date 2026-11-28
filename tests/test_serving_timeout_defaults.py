@@ -18,7 +18,12 @@ from veloce.config import Config
 from veloce.serving.protocol import HttpProtocol
 
 PROTOCOL = (
-    pathlib.Path(__file__).resolve().parents[1] / "src" / "veloce" / "serving" / "protocol.py"
+    pathlib.Path(__file__).resolve().parents[1]
+    / "src"
+    / "veloce"
+    / "serving"
+    / "protocol"
+    / "http.py"
 )
 TIMEOUTS = ("KEEP_ALIVE_TIMEOUT", "REQUEST_TIMEOUT")
 

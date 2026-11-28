@@ -427,6 +427,7 @@ ignore = [
 "tests/**" = ["B", "BLE", "D", "TID251", "N801", "N802", "N817"]  # bugbear false positives in test patterns; see above
 "src/veloce/__init__.py" = ["F401"]  # re-exports
 "src/veloce/websocket/__init__.py" = ["F401"]  # re-exports, including the private names in-tree callers import
+"src/veloce/serving/protocol/__init__.py" = ["F401"]  # re-exports, including the private names in-tree callers import
 "src/veloce/testclient/__init__.py" = ["F401"]  # re-exports, including the private names in-tree callers import
 # `TemplateResponse` is the documented public method name.
 "src/veloce/contrib/templating.py" = ["N802"]
@@ -542,6 +543,7 @@ module = [
     "veloce.routing.router",
     "veloce.security._utils",
     "veloce.serving.protocol",
+    "veloce.serving.protocol.*",
     "veloce.signals",
     "veloce.testclient",
     "veloce.testclient.*",

@@ -147,7 +147,6 @@ UNEXPORTED: dict[str, str] = {
     "http.formparsers.DEFAULT_MAX_MULTIPART_PART_SIZE": "tuning default for the multipart parser",
     "http.formparsers.MULTIPART_SPOOL_MAX_SIZE": "tuning default for the multipart parser",
     "http.response.FILE_STREAM_CHUNK": "file-response read size; an implementation constant",
-    "serving.protocol.WRITE_BUFFER_HIGH_WATER": "raw-transport tuning; `app.run()` is the public entry point",
     # Callback aliases whose owning object is itself unexported, so the alias
     # is written as `veloce.health.ReadinessCheck` if it is written at all.
     "health.ReadinessCheck": "callback alias for a health check; used as veloce.health.ReadinessCheck",
