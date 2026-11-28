@@ -358,6 +358,9 @@ select = [
     "PGH004",  # blanket `noqa` without a rule code
     "RUF100",  # unused `noqa` - keeps every suppression load-bearing
     "BLE",     # blind `except`; each deliberate one carries its reason inline
+    "ANN",     # every signature annotated (mypy strict already requires it)
+    "T20",     # no stray `print`; the CLI and startup banner opt out below
+    "C90",     # cyclomatic complexity, capped by `max-complexity` below
     # PEP 257 docstring rules. The style guide names ruff as the write-time gate
     # for its PEP 257 clause; before this, `select` carried no `D` family at all,
     # so that clause was prose nothing executed. The subset below is every `D`
@@ -397,7 +400,15 @@ ignore = [
     # Public exception names are part of the documented API and are kept as
     # shipped; a rename would break every `except` clause that names them.
     "N818",  # exception name without an `Error` suffix
+    # `Any` is a deliberate choice where the shape is genuinely open (handler
+    # callables, JSON values, plugin hooks); mypy's strict flags decide where
+    # it is acceptable, not a blanket ban.
+    "ANN401",
 ]
+
+# A ceiling set at the most complex function today, so no new function exceeds
+# it and the number can only be lowered as functions are decomposed.
+mccabe.max-complexity = 37
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 # The event-loop policy API is deprecated as of Python 3.14 and scheduled for
@@ -424,7 +435,7 @@ ignore = [
 # docstring and the test name, not in a per-function docstring.
 # TID251: the JSON ban keeps the *framework* on one backend. A test has to
 # reach a library directly to check the seam against something independent.
-"tests/**" = ["B", "BLE", "D", "TID251", "N801", "N802", "N817"]  # bugbear false positives in test patterns; see above
+"tests/**" = ["ANN", "B", "BLE", "D", "T20", "TID251", "N801", "N802", "N817"]  # bugbear false positives in test patterns; see above
 "src/veloce/__init__.py" = ["F401"]  # re-exports
 "src/veloce/websocket/__init__.py" = ["F401"]  # re-exports, including the private names in-tree callers import
 "src/veloce/serving/protocol/__init__.py" = ["F401"]  # re-exports, including the private names in-tree callers import
@@ -433,9 +444,13 @@ ignore = [
 "src/veloce/contrib/templating.py" = ["N802"]
 # The OAuth2 flow parameters are named after the OpenAPI flow object fields.
 "src/veloce/security/oauth2.py" = ["N803"]
-"benchmarks/**" = ["D"]
-"example_app.py" = ["D"]
-"bench/**" = ["D"]
+"benchmarks/**" = ["D", "ANN", "T20"]
+# Standard output is these modules' interface: command output and the startup banner.
+"src/veloce/cli.py" = ["T20"]
+"src/veloce/app/serving.py" = ["T20"]
+"src/veloce/serving/reloader.py" = ["T20"]
+"example_app.py" = ["D", "ANN", "T20"]  # a demo script
+"bench/**" = ["D", "ANN", "T20"]
 "mkdocs_hooks.py" = ["D"]  # a build hook, not shipped API
 
 # The only three modules allowed to name a JSON library directly. Everything
