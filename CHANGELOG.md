@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- A native RSGI server entry point (`__rsgi__`/`__rsgi_init__`/`__rsgi_del__`), translating RSGI's `(scope, protocol)` pair into the existing ASGI dispatch path - mounts, the compiled ASGI middleware wrap, `MAX_CONTENT_LENGTH`, `stream=True` routes, and WebSockets all run unchanged underneath it. ([#372](https://github.com/Lokesh-Tallapaneni/veloce/pull/372))
+- Add a native RSGI server entry point (`__rsgi__`) alongside the ASGI one. ([#372](https://github.com/Lokesh-Tallapaneni/veloce/pull/372))
 
 ## [0.23.0] - 2026-11-27
 
