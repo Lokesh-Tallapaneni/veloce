@@ -95,6 +95,18 @@ class APIKeyHeader(_APIKeyBase):
     _openapi_in = "header"
 
     def __call__(self, request: Request) -> str | None:
+        """Return the key from the named header.
+
+        Args:
+            request: The incoming request.
+
+        Returns:
+            The key, or `None` when it is missing and `auto_error` is off.
+
+        Raises:
+            HTTPException: `401` when the header is missing and `auto_error` is set.
+
+        """
         # Not the header collection: on a WebSocket route that is a plain
         # lowercase-keyed dict, which a canonically-cased `name` would miss.
         key = request._peek_header(self.name)

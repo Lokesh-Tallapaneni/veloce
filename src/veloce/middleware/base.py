@@ -125,6 +125,7 @@ class BaseHTTPMiddleware(Auditable):
         return f"<{type(self).__name__}>"
 
     async def __call__(self, request: Request, call_next: CallNext) -> Response:
+        """Run `dispatch`, or the `dispatch=` callable the middleware was built with."""
         if self._dispatch_override is not None:
             return await self._dispatch_override(request, call_next)
         return await self.dispatch(request, call_next)

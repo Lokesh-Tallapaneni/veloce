@@ -415,6 +415,37 @@ class SessionMiddleware(SessionMiddlewareBase):
         max_chunks: int = _DEFAULT_MAX_COOKIE_CHUNKS,
         name: str | None = None,
     ) -> None:
+        """Configure the signed-cookie session.
+
+        Args:
+            secret_key: Signing key, or keys newest-first for rotation. When omitted it is
+                read from `app.secret_key` on the first request.
+            cookie_name: Cookie name; the library default when omitted.
+            max_age: Seconds a non-permanent session lasts.
+            path: Cookie `Path`; the library default when omitted.
+            httponly: Cookie `HttpOnly`; the library default when omitted.
+            secure: Cookie `Secure`; the library default when omitted.
+            samesite: Cookie `SameSite`; the library default when omitted.
+            domain: Cookie `Domain`.
+            permanent_lifetime: Seconds a `session.permanent` session lasts.
+            max_cookie_size: Largest cookie, in bytes, the session may serialise to.
+            vary_on_cookie: Add `Vary: Cookie` to responses that read the session.
+            persist_on_status: Decides from the status code whether to save the session;
+                by default any status below 500.
+            cookie_prefix: Apply the `__Host-` or `__Secure-` prefix to the cookie name.
+            partitioned: Mark the cookie `Partitioned`.
+            renew_on_access: Refresh the lifetime on every request that reads the session.
+            chunked: Split a large session across several cookies.
+            max_chunks: Most cookies a chunked session may use.
+            name: Name for `exclude_middleware`.
+
+        Raises:
+            ValueError: If `max_chunks` is below 1, or the cookie settings are an
+                invalid combination (a prefix without `Secure`, `__Host-` without
+                `path="/"` or with a `domain`, `partitioned` without `Secure` and
+                `SameSite=None`).
+
+        """
         super().__init__(name=name)
         self._configure_cookie(
             cookie_name=cookie_name,
@@ -483,6 +514,14 @@ class SessionMiddleware(SessionMiddlewareBase):
         in a test, or a CLI command that mints one. `hint` is appended to the
         error raised when there is no key, so the caller can say when it needed
         it.
+
+        Args:
+            config: The application config holding `SECRET_KEY`.
+            hint: Appended to the error message to say when the key was needed.
+
+        Raises:
+            RuntimeError: If the constructor was given no key and `config` has none.
+
         """
         if not self._pending_config:
             return
@@ -768,6 +807,31 @@ class ServerSessionMiddleware(SessionMiddlewareBase):
         renew_on_access: bool = False,
         name: str | None = None,
     ) -> None:
+        """Configure the server-side session.
+
+        Args:
+            store: Where session payloads live; a process-local store when omitted.
+            cookie_name: Cookie name; the library default when omitted.
+            max_age: Seconds a non-permanent session lasts.
+            permanent_lifetime: Seconds a `session.permanent` session lasts.
+            path: Cookie `Path`; the library default when omitted.
+            httponly: Cookie `HttpOnly`; the library default when omitted.
+            secure: Cookie `Secure`; the library default when omitted.
+            samesite: Cookie `SameSite`; the library default when omitted.
+            domain: Cookie `Domain`.
+            vary_on_cookie: Add `Vary: Cookie` to responses that read the session.
+            persist_on_status: Decides from the status code whether to save the session;
+                by default any status below 500.
+            cookie_prefix: Apply the `__Host-` or `__Secure-` prefix to the cookie name.
+            partitioned: Mark the cookie `Partitioned`.
+            renew_on_access: Refresh the lifetime on every request that reads the session.
+            name: Name for `exclude_middleware`.
+
+        Raises:
+            ValueError: If the cookie settings are an invalid combination, as for
+                `SessionMiddleware`.
+
+        """
         super().__init__(name=name)
         self._configure_cookie(
             cookie_name=cookie_name,

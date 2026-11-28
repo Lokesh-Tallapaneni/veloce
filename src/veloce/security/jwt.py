@@ -124,7 +124,21 @@ def encode_jwt(
     *,
     alg: str = "HS256",
 ) -> str:
-    """Sign `claims` into a compact JWS token using the given HMAC algorithm."""
+    """Sign `claims` into a compact JWS token using the given HMAC algorithm.
+
+    Args:
+        claims: The payload; serialised as a JSON object.
+        secret: The HMAC key; must be non-empty.
+        alg: The HMAC algorithm name, one of the supported `HS*` values.
+
+    Returns:
+        The compact `header.payload.signature` token.
+
+    Raises:
+        UnsupportedAlgorithmError: If `alg` is not a supported algorithm.
+        ValueError: If `secret` is empty.
+
+    """
     digestmod = _ALGORITHMS.get(alg)
     if digestmod is None:
         raise UnsupportedAlgorithmError(f"unsupported algorithm {alg!r}")
@@ -202,7 +216,32 @@ def decode_jwt(
     leeway: float = 0,
     now: float | None = None,
 ) -> Claims:
-    """Verify a compact JWS token and return its claims as a read-only mapping."""
+    """Verify a compact JWS token and return its claims as a read-only mapping.
+
+    The signature is checked, in constant time, before the payload is parsed. `alg: none`
+    and any algorithm outside `algorithms` are refused before any signature work.
+
+    Args:
+        token: The compact token.
+        secret: The HMAC key; must be non-empty.
+        algorithms: The allow-list of acceptable algorithms; required and non-empty.
+        audience: Required `aud` value, or any of several; `None` skips the check.
+        issuer: Required `iss` value; `None` skips the check.
+        require: Claim names that must be present.
+        leeway: Seconds of clock skew tolerated on time claims.
+        now: Override the current time, for tests.
+
+    Returns:
+        The verified claims.
+
+    Raises:
+        ValueError: If `algorithms` is empty or `secret` is empty.
+        InvalidTokenError: If the token is malformed.
+        UnsupportedAlgorithmError: If the header names an algorithm outside the allow-list.
+        InvalidSignatureError: If the signature does not verify.
+        MissingClaimError: If a `require`d claim is absent.
+
+    """
     if not algorithms:
         raise ValueError("algorithms allow-list is required and must be non-empty")
     secret_bytes = _coerce_secret_bytes(secret)

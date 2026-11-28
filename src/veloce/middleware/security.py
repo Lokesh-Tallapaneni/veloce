@@ -144,6 +144,20 @@ class CSPMiddleware(Middleware):
         nonce: bool = True,
         name: str | None = None,
     ) -> None:
+        """Configure the policy headers.
+
+        Args:
+            policy: The enforced policy, as a template or a directive mapping.
+            report_only_policy: A policy sent as `Content-Security-Policy-Report-Only`.
+            nonce: Mint a per-request nonce for `{nonce}` placeholders.
+            name: Name for `exclude_middleware`.
+
+        Raises:
+            ValueError: If neither policy is given, or a policy references a nonce
+                while `nonce=False`.
+            TypeError: If a policy is neither a string nor a mapping.
+
+        """
         super().__init__(name=name)
         # `ValueError`, not `assert`: `python -O` strips asserts, and an empty
         # configuration would then emit no header while the stack claims it does.
@@ -167,12 +181,14 @@ class CSPMiddleware(Middleware):
         self._needs_nonce = nonce and references_nonce
 
     async def process_request(self, request: Request) -> Response | None:
+        """Arm a per-request nonce when a policy references one; never short-circuits."""
         if self._needs_nonce:
             # One-shot factory: a request that never reads it pays only the store.
             request._state[_CSP_NONCE_STATE_KEY] = lambda: secrets.token_urlsafe(16)
         return None
 
     async def process_response(self, request: Request, response: Response) -> Response:
+        """Set the enforced and report-only policy headers unless the response already has them."""
         # Field names are case-insensitive (RFC 9110 Sec. 5.1) and browsers
         # INTERSECT multiple CSP headers, so a lowercase override must suppress this.
         for header, template in (
@@ -218,6 +234,17 @@ class TrustedHostMiddleware(Middleware):
         status_code: int = status.HTTP_400_BAD_REQUEST,
         name: str | None = None,
     ) -> None:
+        """Set the allow-list.
+
+        Args:
+            allowed_hosts: Literal hosts, `*`, or `*.example.com` subdomain patterns.
+            status_code: The 4xx status a refused host receives.
+            name: Name for `exclude_middleware`.
+
+        Raises:
+            ValueError: If `status_code` is not a 4xx.
+
+        """
         super().__init__(name=name)
         # `ValueError`, not `assert`: `python -O` strips asserts, and a non-4xx
         # status makes the refusal read as a success, a redirect or a fault.
@@ -426,6 +453,29 @@ class RateLimitMiddleware(Middleware):
         max_keys: int = 100_000,
         name: str | None = None,
     ) -> None:
+        """Choose the limiter.
+
+        Args:
+            max_requests: Requests allowed per window when no `strategy` is given.
+            window_seconds: Window length in seconds when no `strategy` is given.
+            strategy: The default algorithm; replaces `max_requests`/`window_seconds`.
+            backend: Where limiter state lives; process-local by default. Needs `strategy`.
+            key_func: Names the caller a request is counted against; may be async and
+                may return `None` to fall back to the derived caller.
+            overrides: Full route template to strategy, for handlers that cannot be
+                decorated with `rate_limit`. Needs `strategy`.
+            strict_overrides: Make the startup audit fail on an override naming no route; a
+                warning if False.
+            max_keys: Most caller keys kept by the default backend.
+            name: Name for `exclude_middleware`.
+
+        Raises:
+            ValueError: If `max_keys` is below 1, `backend` or `overrides` is given
+                without `strategy`, or `max_keys` is set alongside a custom `backend`.
+            TypeError: If `key_func` is not callable or an override is not a
+                `RateLimitStrategy`.
+
+        """
         super().__init__(name=name)
         if max_keys < 1:
             raise ValueError("RateLimitMiddleware max_keys must be >= 1")
@@ -793,6 +843,14 @@ class HTTPSRedirectMiddleware(Middleware):
         exempt_acme_challenge: bool = True,
         name: str | None = None,
     ) -> None:
+        """Configure the exemptions.
+
+        Args:
+            exempt_paths: Path prefixes served over plain HTTP.
+            exempt_acme_challenge: Also exempt `/.well-known/acme-challenge/`.
+            name: Name for `exclude_middleware`.
+
+        """
         super().__init__(name=name)
         paths = list(exempt_paths)
         if exempt_acme_challenge:
@@ -866,6 +924,20 @@ class SecurityHeadersMiddleware(Middleware):
         permissions_policy: str | None = None,
         name: str | None = None,
     ) -> None:
+        """Choose the default headers.
+
+        Args:
+            content_type_options: `X-Content-Type-Options` value; `None` omits it.
+            frame_options: `X-Frame-Options` value; `None` omits it.
+            referrer_policy: `Referrer-Policy` value; `None` omits it.
+            hsts_max_age: `Strict-Transport-Security` lifetime in seconds; `None` omits it.
+            hsts_include_subdomains: Add `includeSubDomains` to HSTS.
+            hsts_preload: Add `preload` to HSTS.
+            content_security_policy: A fixed `Content-Security-Policy` value.
+            permissions_policy: A `Permissions-Policy` value.
+            name: Name for `exclude_middleware`.
+
+        """
         super().__init__(name=name)
         # Resolved once so the per-response cost is copying a small fixed dict.
         headers: dict[str, str] = {}
@@ -956,6 +1028,14 @@ class WebSocketOriginMiddleware(Middleware):
     def __init__(
         self, allowed_origins: list[str], *, allow_missing: bool = True, name: str | None = None
     ) -> None:
+        """Set the allowed origins.
+
+        Args:
+            allowed_origins: Origins that may open a WebSocket; `*` allows any.
+            allow_missing: Admit handshakes that carry no `Origin` header.
+            name: Name for `exclude_middleware`.
+
+        """
         super().__init__(name=name)
         self._allowed: frozenset[str] = frozenset(o.rstrip("/").lower() for o in allowed_origins)
         self._allow_all = "*" in self._allowed

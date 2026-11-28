@@ -29,6 +29,14 @@ class LoggingMiddleware(Middleware):
     _START_KEY = "__veloce_logging_start"
 
     def __init__(self, logger: logging.Logger | None = None, *, name: str | None = None) -> None:
+        """Choose where access records go.
+
+        Args:
+            logger: Receives one record per request; defaults to the `veloce.access`
+                logger, given a stream handler when it has none.
+            name: Name for `exclude_middleware`.
+
+        """
         super().__init__(name=name)
         if logger is None:
             # A public contract: applications attach handlers to this name.
@@ -83,6 +91,13 @@ class RequestIDMiddleware(Middleware):
     """
 
     def __init__(self, header_name: str = HEADER_X_REQUEST_ID, *, name: str | None = None) -> None:
+        """Choose the header the ID travels in.
+
+        Args:
+            header_name: Header read from the request and echoed on the response.
+            name: Name for `exclude_middleware`.
+
+        """
         super().__init__(name=name)
         self.header_name = header_name
         self._header_name_lower = header_name.lower()
