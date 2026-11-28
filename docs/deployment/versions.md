@@ -160,3 +160,5 @@ The same call with `"ignore"` silences them once you have read them.
 - Read the guarantees in full — see the [versioning and stability policy](../policies.md).
 - Serve the pinned app — see [Run a server manually](manually.md).
 - Full signatures are in the [API reference](../reference/index.md).
+
+**Source and tests:** [`src/veloce/_version.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/_version.py), [`tests/serving/test_startup_banner_version.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/serving/test_startup_banner_version.py), [`tests/app/test_cli.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/app/test_cli.py)

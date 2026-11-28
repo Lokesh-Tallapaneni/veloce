@@ -516,3 +516,5 @@ for method, path, info in app.iter_routes(include_hidden=True):
 - [Requests & responses](requests-responses.md)
 - [Dependency injection](dependency-injection.md)
 - [Middleware](middleware.md)
+
+**Source and tests:** [`src/veloce/routing/router/core.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/routing/router/core.py), [`tests/routing/test_router.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/routing/test_router.py), [`tests/routing/test_routing_e2e.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/routing/test_routing_e2e.py)

@@ -192,3 +192,5 @@ assert resp.headers["www-authenticate"] == 'Basic realm="Staff area"'
 - Build a full login-to-bearer flow — see [Security schemes](../guide/security-schemes.md).
 - Wire authorization through the resolver — see [Dependency injection](../guide/dependency-injection.md).
 - Full signatures are in the [API reference](../reference/index.md).
+
+**Source and tests:** [`src/veloce/security/http.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/security/http.py), [`src/veloce/security/base.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/security/base.py), [`tests/security/test_security_schemes.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/security/test_security_schemes.py), [`tests/security/test_security_e2e.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/security/test_security_e2e.py)

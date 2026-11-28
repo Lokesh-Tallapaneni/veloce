@@ -286,3 +286,5 @@ model.
 - [Routing](routing.md) — path converters, query parameters, and `url_for`.
 - [Dependency injection](dependency-injection.md) — `Depends` and `Security`.
 - [API reference](../reference/index.md) — `Blueprint`, `APIRouter`, `Router`.
+
+**Source and tests:** [`src/veloce/blueprints.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/blueprints.py), [`tests/routing/test_blueprint.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/routing/test_blueprint.py), [`tests/routing/test_blueprint_nested.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/routing/test_blueprint_nested.py)

@@ -186,3 +186,5 @@ consults it.
 - Write tests against the in-memory client — see [Testing](testing.md).
 - Run the app for local development — see [Deployment](deployment.md).
 - Full signatures are in the [API reference](../reference/index.md).
+
+**Source and tests:** [`src/veloce/debug.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/debug.py), [`tests/http/test_debug.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/http/test_debug.py)

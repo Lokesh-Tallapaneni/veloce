@@ -332,3 +332,5 @@ if metrics.has_receivers_for("web"):
 - The [API reference](../reference/index.md) documents the public `veloce`
   surface; `Signal`, `Namespace`, and the standard signals live in
   `veloce.signals`.
+
+**Source and tests:** [`src/veloce/signals.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/signals.py), [`tests/app/test_signals.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/app/test_signals.py)

@@ -571,3 +571,5 @@ app = Veloce(validate_openapi=True)
 - [Parameters](parameters.md) — how path, query, header and cookie parameters become OpenAPI parameter objects.
 - [Routing](routing.md) — the full path-operation decorator surface.
 - Full signatures are in the [API reference](../reference/index.md).
+
+**Source and tests:** [`src/veloce/contrib/openapi/__init__.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/contrib/openapi/__init__.py), [`tests/openapi/test_openapi_customization.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/openapi/test_openapi_customization.py), [`tests/openapi/test_two_door_schema_parity.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/openapi/test_two_door_schema_parity.py)

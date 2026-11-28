@@ -303,3 +303,5 @@ change the conventions for your app.
 - Add compression and caching middleware around static responses — see
   [Middleware](middleware.md).
 - Full signatures are in the [API reference](../reference/index.md).
+
+**Source and tests:** [`src/veloce/contrib/staticfiles.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/contrib/staticfiles.py), [`tests/staticfiles/test_mount_staticfiles.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/staticfiles/test_mount_staticfiles.py), [`tests/staticfiles/test_staticfiles_range.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/staticfiles/test_staticfiles_range.py)

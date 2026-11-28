@@ -158,3 +158,5 @@ See [Middleware](middleware.md#rate-limiting) for the full algorithm comparison.
 - [Sessions](sessions.md)
 - [Middleware](middleware.md)
 - [Deployment](deployment.md)
+
+**Source and tests:** [`src/veloce/_dependency_resolver.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/_dependency_resolver.py), [`tests/test_database_and_graphql_guides.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/test_database_and_graphql_guides.py), [`tests/dependency/test_yield_dependencies.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/dependency/test_yield_dependencies.py)

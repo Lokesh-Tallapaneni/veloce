@@ -301,3 +301,5 @@ registered lifespan may depend on what it provided.
 - [Background Tasks](background-tasks.md) — run work after the response instead of at startup.
 - [Testing](testing.md) — the full `TestClient` and `AsyncTestClient` surface.
 - Full signatures are in the [API reference](../reference/index.md).
+
+**Source and tests:** [`src/veloce/app/lifecycle.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/app/lifecycle.py), [`tests/app/test_lifespan_context.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/app/test_lifespan_context.py), [`tests/app/test_lifespan_teardown_errors.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/app/test_lifespan_teardown_errors.py)

@@ -2767,3 +2767,5 @@ MCP door means the server is broken rather than that a tool refused some work.
 - [Dependency injection](dependency-injection.md) — `Depends()` and `Security()`, which run in tools exactly as in routes.
 - [Request models](request-models.md) — body models that become a tool's input schema.
 - Full signatures are in the [API reference](../reference/index.md).
+
+**Source and tests:** [`src/veloce/contrib/mcp/__init__.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/contrib/mcp/__init__.py), [`src/veloce/contrib/mcp/server.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/contrib/mcp/server.py), [`tests/test_mcp_guide_claims.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/test_mcp_guide_claims.py), [`tests/mcp/test_mcp_tools_roundtrip.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/mcp/test_mcp_tools_roundtrip.py)

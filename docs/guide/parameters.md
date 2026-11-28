@@ -360,3 +360,5 @@ See [Error handling](error-handling.md) for customising the response.
   across handlers with `Depends`.
 - [API reference](../reference/index.md) — `Query`, `Path`, `Body`, `Form`, `File`,
   `Header`, `Cookie`.
+
+**Source and tests:** [`src/veloce/_params.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/_params.py), [`tests/params/test_query_params.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/params/test_query_params.py), [`tests/params/test_param_classes.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/params/test_param_classes.py)

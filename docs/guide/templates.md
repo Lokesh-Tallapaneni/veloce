@@ -341,3 +341,5 @@ asynchronously pay nothing for it.
 - Use `g`, `flash`, and `current_app` from templates and handlers — see
   [Flask-style helpers](helpers.md).
 - Full signatures are in the [API reference](../reference/index.md).
+
+**Source and tests:** [`src/veloce/contrib/templating.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/contrib/templating.py), [`tests/templating/test_template_folder.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/templating/test_template_folder.py), [`tests/templating/test_render_template_helpers.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/templating/test_render_template_helpers.py)

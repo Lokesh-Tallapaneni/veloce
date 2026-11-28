@@ -306,3 +306,5 @@ client = TestClient(app)
 - Serve a static directory at a prefix — see [Static files](static-files.md).
 - Sit the whole tree behind a reverse proxy — see [Behind a proxy](behind-a-proxy.md).
 - Full signatures are in the [API reference](../reference/index.md).
+
+**Source and tests:** [`src/veloce/app/mounting.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/app/mounting.py), [`tests/routing/test_mount_subapp.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/routing/test_mount_subapp.py)

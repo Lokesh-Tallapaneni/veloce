@@ -278,3 +278,5 @@ def test_sse():
   sent.
 - API reference: [`EventSourceResponse`](../reference/websockets.md#veloce.EventSourceResponse),
   [`ServerSentEvent`](../reference/websockets.md#veloce.ServerSentEvent).
+
+**Source and tests:** [`src/veloce/sse.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/sse.py), [`tests/http/test_sse.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/http/test_sse.py)

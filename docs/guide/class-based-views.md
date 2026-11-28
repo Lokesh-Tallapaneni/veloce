@@ -254,3 +254,5 @@ def test_ping():
   `Security` in view methods.
 - API reference: [`View`](../reference/routers.md#veloce.View),
   [`MethodView`](../reference/routers.md#veloce.MethodView).
+
+**Source and tests:** [`src/veloce/views.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/views.py), [`tests/routing/test_method_view.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/routing/test_method_view.py), [`tests/routing/test_base_view.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/routing/test_base_view.py)

@@ -244,3 +244,5 @@ assert resp.headers["location"].startswith("https://")
 - Run multiple worker processes behind the proxy — see [Server workers](workers.md).
 - Containerise the app and proxy together — see [Docker](docker.md).
 - Full signatures are in the [API reference](../reference/index.md).
+
+**Source and tests:** [`src/veloce/app/serving.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/app/serving.py), [`tests/serving/test_dev_server_tls.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/serving/test_dev_server_tls.py), [`tests/middleware/test_https_redirect_trust.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/middleware/test_https_redirect_trust.py)

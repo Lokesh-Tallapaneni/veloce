@@ -250,3 +250,5 @@ I/O-bound async handlers
 - [Caching](../guide/caching.md) — swap the in-memory cache for a shared Redis backend.
 - [HTTPS concepts](https.md) — terminating TLS at the proxy versus in the worker.
 - Full signatures are in the [API reference](../reference/index.md).
+
+**Source and tests:** [`src/veloce/workers.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/workers.py), [`tests/serving/test_workers.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/serving/test_workers.py), [`tests/serving/test_native_transport_parity.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/serving/test_native_transport_parity.py)

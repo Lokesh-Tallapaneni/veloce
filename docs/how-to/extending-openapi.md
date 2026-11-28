@@ -236,3 +236,5 @@ assert body["openapi"] == "3.1.0"
 - Turn the docs on or off per environment — see [Conditional OpenAPI](conditional-openapi.md).
 - Document responses, metadata, and security schemes — see [OpenAPI, metadata and docs](../guide/openapi.md).
 - Full signatures are in the [API reference](../reference/index.md).
+
+**Source and tests:** [`src/veloce/app/openapi.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/app/openapi.py), [`tests/openapi/test_openapi_customization.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/openapi/test_openapi_customization.py)

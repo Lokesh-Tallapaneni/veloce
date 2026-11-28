@@ -221,3 +221,5 @@ assert resp.json() == {"client": "203.0.113.7", "scheme": "https"}
 - [HTTPS concepts](https.md) — TLS termination at the proxy or load balancer.
 - [Behind a proxy](../guide/behind-a-proxy.md) — `ProxyFix`, `root_path`, and mount prefixes in depth.
 - Full signatures are in the [API reference](../reference/index.md).
+
+**Source and tests:** [`src/veloce/app/serving.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/app/serving.py), [`src/veloce/middleware/proxy_fix.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/src/veloce/middleware/proxy_fix.py), [`tests/serving/test_http_e2e.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/serving/test_http_e2e.py), [`tests/middleware/test_proxy_fix.py`](https://github.com/Lokesh-Tallapaneni/veloce/blob/main/tests/middleware/test_proxy_fix.py)
