@@ -125,6 +125,8 @@ UNEXPORTED: dict[str, str] = {
     # `websocket/` — handshake internals. `WebSocket` is the public object.
     "websocket.handshake.compute_accept": "RFC 6455 handshake internals",
     "websocket.raw.RawTransportMixin": "the raw-transport half of `WebSocket`, composed into it",
+    "websocket.receiving.ReceiveMixin": "the receive and idle-timeout half of `WebSocket`, composed into it",
+    "websocket.view.HandshakeViewMixin": "the handshake-introspection half of `WebSocket`, composed into it",
     # `workers.py` — the gunicorn worker class, named to gunicorn by dotted
     # string on the command line, never imported.
     "workers.VeloceWorker": "gunicorn worker, referenced by dotted path",

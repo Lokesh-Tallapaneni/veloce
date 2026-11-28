@@ -14,6 +14,7 @@ from veloce import (
     SecurityHeadersMiddleware,  # noqa: F401
     __version__,
 )
+from veloce import _cli_plugins as cli_plugins
 from veloce import cli as cli_module
 from veloce.cli import _apply_env_file, _load_app, build_parser, main
 
@@ -468,7 +469,7 @@ class _FakeEntryPoint:
 
 def _patch_entry_points(monkeypatch, entry_points):
     """Make `_iter_command_entry_points` return `entry_points`."""
-    monkeypatch.setattr(cli_module, "_iter_command_entry_points", lambda: list(entry_points))
+    monkeypatch.setattr(cli_plugins, "_iter_command_entry_points", lambda: list(entry_points))
 
 
 def test_plugin_command_is_registered(monkeypatch):
@@ -746,7 +747,7 @@ def test_iter_command_entry_points_returns_list():
     # Smoke test against the real importlib.metadata machinery — no veloce
     # plugins are installed in the test env, so an empty list is expected,
     # but the call must not raise and must return a list.
-    result = cli_module._iter_command_entry_points()
+    result = cli_plugins._iter_command_entry_points()
     assert isinstance(result, list)
 
 
